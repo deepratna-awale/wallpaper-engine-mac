@@ -94,6 +94,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let projection = scene.general.orthogonalprojection ?? WEOrthogonalProjection(width: 1920, height: 1080)
         let skScene = SKScene(size: CGSize(width: projection.width, height: projection.height))
         skScene.scaleMode = .aspectFill
+        skScene.backgroundColor = .black
 
         // Background color from clearcolor
         if let colorStr = scene.general.clearcolor {

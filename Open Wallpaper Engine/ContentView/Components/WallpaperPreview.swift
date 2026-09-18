@@ -44,7 +44,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                 return url.appending(path: selectedProject.preview)
                             }
                             return Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!
-                        }(wallpaperViewModel.displayedWallpaper.wallpaperDirectory))
+                        }(wallpaperViewModel.displayedWallpaper.wallpaperDirectory), animates: viewModel.isApplicationActive)
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .background(Color(nsColor: NSColor.controlBackgroundColor))

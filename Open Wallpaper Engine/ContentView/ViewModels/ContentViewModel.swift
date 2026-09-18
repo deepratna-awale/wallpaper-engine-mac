@@ -62,6 +62,7 @@ class ContentViewModel: ObservableObject, DropDelegate {
     @Published var topTabBarHoverSelection: Int = -1
     
     @Published var imageScaleIndex: Int = -1
+    @Published var isApplicationActive = true
     
     @Published var wallpapers = [WEWallpaper]()
     

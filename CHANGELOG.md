@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Scene image layers use explicit SpriteKit depth ordering.
 - Only one desktop video wallpaper outputs audio to avoid duplicate playback artifacts.
 - Renamed the Installed sort label to `Date Downloaded` while preserving the existing saved preference value.
+- Paused foreground thumbnail and sidebar GIF animations while the app is inactive, and avoided redundant GIF image decoding during SwiftUI updates.
 
 ### Fixed
 
@@ -40,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed author lookup when downloaded projects have an empty `workshopid` by falling back to the numeric wallpaper folder name.
 - Fixed saved wallpaper assignments, recents, and the downloaded-ID index after moving the wallpaper library.
 - Preserved compatibility with legacy Workshop metadata cache encodings.
+- Fixed white flashes during wallpaper-window and SpriteKit scene initialization by using explicit black backing colors.
 
 ### Removed
 

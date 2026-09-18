@@ -140,7 +140,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func applicationDidBecomeActive(_ notification: Notification) {
+        contentViewModel.isApplicationActive = true
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func applicationDidResignActive(_ notification: Notification) {
+        contentViewModel.isApplicationActive = false
     }
     
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -228,6 +233,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.isMovable = false
             window.titlebarAppearsTransparent = true
             window.titleVisibility = .hidden
+            window.backgroundColor = .black
+            window.isOpaque = true
             window.canHide = false
             window.canBecomeVisibleWithoutLogin = true
             window.isReleasedWhenClosed = false
