@@ -507,6 +507,9 @@
         }
       }
     },
+    "Choose a folder for downloaded and imported wallpapers. You can move the current library to the new location." : {
+
+    },
     "Choose Display" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -517,6 +520,9 @@
           }
         }
       }
+    },
+    "Choose..." : {
+
     },
     "Clear selection" : {
 
@@ -1222,6 +1228,15 @@
       }
     },
     "Move All %lld to Trash" : {
+
+    },
+    "Move Current Wallpapers" : {
+
+    },
+    "Move Current Wallpapers?" : {
+
+    },
+    "Move existing wallpapers to the selected folder, or leave them in the current location and use the new folder from now on?" : {
 
     },
     "Move to Trash" : {
@@ -2321,6 +2336,12 @@
     "Use Cached Session" : {
 
     },
+    "Use Default Location" : {
+
+    },
+    "Use Empty Folder" : {
+
+    },
     "Verbose" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2438,6 +2459,9 @@
           }
         }
       }
+    },
+    "Wallpaper Storage" : {
+
     },
     "Wallpaper Title" : {
       "localizations" : {

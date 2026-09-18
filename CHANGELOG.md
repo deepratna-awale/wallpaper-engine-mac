@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added multi-desktop selection and an `All Desktops` control in Display Settings.
 - Added wallpaper placement controls for Fill, Fit, Center, Stretch, and Zoom.
 - Added audio/video speed linking controls for video wallpapers.
+- Added configurable wallpaper storage with an option to move the existing library to the selected location.
 
 ### Changed
 
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Cached Workshop previews are promoted to the permanent wallpaper library when applied, without a second download.
 - Scene image layers use explicit SpriteKit depth ordering.
 - Only one desktop video wallpaper outputs audio to avoid duplicate playback artifacts.
+- Renamed the Installed sort label to `Date Downloaded` while preserving the existing saved preference value.
 
 ### Fixed
 
@@ -36,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixed preview rendering requiring window movement before redraw.
 - Fixed preview audio continuing after the preview window closes.
 - Fixed author lookup when downloaded projects have an empty `workshopid` by falling back to the numeric wallpaper folder name.
+- Fixed saved wallpaper assignments, recents, and the downloaded-ID index after moving the wallpaper library.
+- Preserved compatibility with legacy Workshop metadata cache encodings.
 
 ### Removed
 

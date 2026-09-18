@@ -156,6 +156,21 @@ class WallpaperViewModel: ObservableObject {
         nextCurrentWallpaper = wallpaper
     }
 
+    func relocateWallpapers(from sourceDirectory: URL, to destinationDirectory: URL) {
+        func relocated(_ wallpaper: WEWallpaper) -> WEWallpaper {
+            let path = wallpaper.wallpaperDirectory.standardizedFileURL.path
+            let sourcePath = sourceDirectory.standardizedFileURL.path + "/"
+            guard path.hasPrefix(sourcePath) else { return wallpaper }
+            let suffix = String(path.dropFirst(sourcePath.count))
+            return WEWallpaper(using: wallpaper.project, where: destinationDirectory.appending(path: suffix))
+        }
+
+        wallpapers = wallpapers.mapValues(relocated)
+        recentWallpapers = recentWallpapers.map(relocated)
+        inspectedWallpaper = inspectedWallpaper.map(relocated)
+        saveRecents()
+    }
+
     private func promotePreviewIfNeeded(_ wallpaper: WEWallpaper) -> WEWallpaper {
         let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appending(path: "Open Wallpaper Engine/WorkshopPreviews/steamapps/workshop/content/431960")

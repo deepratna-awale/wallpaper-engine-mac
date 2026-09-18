@@ -162,9 +162,13 @@ enum WEWallpaperSortingMethod: String, CaseIterable, Identifiable {
     case rating = "Rating"
 //    case favorite = "Favorite"
     case fileSize = "File Size"
-    case dateAdded = "Date Downloaded"
+    case dateAdded = "Date Added"
 //    case subDate = "Subscription Date"
 //    case lastUpdated = "Last Updated"
+
+    var displayName: String {
+        self == .dateAdded ? "Date Downloaded" : rawValue
+    }
 }
 
 enum WEWallpaperSortingSequence: Int {

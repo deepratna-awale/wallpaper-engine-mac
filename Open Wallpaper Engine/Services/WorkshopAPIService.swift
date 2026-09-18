@@ -26,7 +26,7 @@ final class WorkshopMetadataStore {
     private var metadata: [String: WorkshopItem]
 
     private init() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
+        guard let data = Self.storedData(forKey: storageKey),
               let saved = try? JSONDecoder().decode([String: WorkshopItem].self, from: data) else {
             metadata = [:]
             return
@@ -44,6 +44,11 @@ final class WorkshopMetadataStore {
             UserDefaults.standard.set(data, forKey: storageKey)
         }
     }
+
+    private static func storedData(forKey key: String) -> Data? {
+        if let data = UserDefaults.standard.data(forKey: key) { return data }
+        return UserDefaults.standard.string(forKey: key)?.data(using: .utf8)
+    }
 }
 
 final class SteamPlayerStore {
@@ -53,7 +58,7 @@ final class SteamPlayerStore {
     private var players: [String: SteamPlayer]
 
     private init() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
+        guard let data = Self.storedData(forKey: storageKey),
               let saved = try? JSONDecoder().decode([String: SteamPlayer].self, from: data) else {
             players = [:]
             return
@@ -70,6 +75,11 @@ final class SteamPlayerStore {
         if let data = try? JSONEncoder().encode(players) {
             UserDefaults.standard.set(data, forKey: storageKey)
         }
+    }
+
+    private static func storedData(forKey key: String) -> Data? {
+        if let data = UserDefaults.standard.data(forKey: key) { return data }
+        return UserDefaults.standard.string(forKey: key)?.data(using: .utf8)
     }
 }
 

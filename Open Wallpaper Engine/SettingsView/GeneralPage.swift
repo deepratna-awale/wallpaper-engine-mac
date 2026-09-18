@@ -5,10 +5,14 @@
 //  Created by Haren on 2023/8/12.
 //
 
+import Cocoa
 import SwiftUI
 
 struct GeneralPage: SettingsPage {
     @ObservedObject var viewModel: GlobalSettingsViewModel
+    @State private var pendingStorageDirectory: URL?
+    @State private var isStorageMoveConfirming = false
+    @State private var storageError: String?
     
     init(globalSettings viewModel: GlobalSettingsViewModel) {
         self.viewModel = viewModel
@@ -32,6 +36,32 @@ struct GeneralPage: SettingsPage {
                 }.disabled(true)
             } header: {
                 Label("Basic Setup", systemImage: "gearshape.fill")
+            }
+            Section {
+                HStack {
+                    Text(WallpaperStorage.directory.path)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Choose...") {
+                        chooseStorageDirectory()
+                    }
+                }
+                if WallpaperStorage.usesCustomDirectory {
+                    Button("Use Default Location") {
+                        WallpaperStorage.resetToDefault()
+                    }
+                }
+                if let storageError {
+                    Text(storageError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            } header: {
+                Label("Wallpaper Storage", systemImage: "externaldrive")
+            } footer: {
+                Text("Choose a folder for downloaded and imported wallpapers. You can move the current library to the new location.")
             }
             // MARK: macOS
             Section {
@@ -105,6 +135,55 @@ struct GeneralPage: SettingsPage {
             } header: {
                 Label("Reset", systemImage: "exclamationmark.triangle.fill")
             }
-        }.formStyle(.grouped)
+        }
+        .formStyle(.grouped)
+        .confirmationDialog(
+            "Move Current Wallpapers?",
+            isPresented: $isStorageMoveConfirming,
+            titleVisibility: .visible
+        ) {
+            Button("Move Current Wallpapers") {
+                setStorageDirectory(moveExisting: true)
+            }
+            Button("Use Empty Folder") {
+                setStorageDirectory(moveExisting: false)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingStorageDirectory = nil
+            }
+        } message: {
+            Text("Move existing wallpapers to the selected folder, or leave them in the current location and use the new folder from now on?")
+        }
+    }
+
+    private func chooseStorageDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose Wallpaper Storage Folder"
+        if panel.runModal() == .OK, let directory = panel.url {
+            pendingStorageDirectory = directory
+            isStorageMoveConfirming = true
+        }
+    }
+
+    private func setStorageDirectory(moveExisting: Bool) {
+        guard let directory = pendingStorageDirectory else { return }
+        do {
+            let migration = try WallpaperStorage.setDirectory(directory, moveExisting: moveExisting)
+            if let migration {
+                AppDelegate.shared.wallpaperViewModel.relocateWallpapers(
+                    from: migration.source,
+                    to: migration.destination
+                )
+            }
+            DownloadedWallpaperIndex.shared.reloadFromLibrary()
+            AppDelegate.shared.contentViewModel.refresh()
+            storageError = nil
+        } catch {
+            storageError = error.localizedDescription
+        }
+        pendingStorageDirectory = nil
     }
 }

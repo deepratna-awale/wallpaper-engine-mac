@@ -59,7 +59,7 @@ struct ExplorerTopBar: SubviewOfContentView {
             .buttonStyle(.plain)
             Picker("Sort By", selection: $viewModel.sortingBy) {
                 ForEach(WEWallpaperSortingMethod.allCases) { method in
-                    Text(method.rawValue).tag(method.rawValue)
+                    Text(method.displayName).tag(method)
                 }
             }
             .labelsHidden()

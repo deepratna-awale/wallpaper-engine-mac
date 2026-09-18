@@ -1,6 +1,53 @@
 import Foundation
 import Combine
 
+enum WallpaperStorage {
+    private static let customPathKey = "CustomWallpapersDirectory"
+
+    static var defaultDirectory: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appending(path: "Open Wallpaper Engine")
+    }
+
+    static var directory: URL {
+        if let customPath = UserDefaults.standard.string(forKey: customPathKey), !customPath.isEmpty {
+            return URL(fileURLWithPath: customPath, isDirectory: true)
+        }
+        return defaultDirectory
+    }
+
+    static var usesCustomDirectory: Bool {
+        UserDefaults.standard.string(forKey: customPathKey) != nil
+    }
+
+    static func setDirectory(_ newDirectory: URL, moveExisting: Bool) throws -> (source: URL, destination: URL)? {
+        let fileManager = FileManager.default
+        let sourceDirectory = directory.standardizedFileURL
+        let destinationDirectory = newDirectory.standardizedFileURL
+        guard sourceDirectory != destinationDirectory else { return nil }
+
+        try fileManager.createDirectory(at: destinationDirectory, withIntermediateDirectories: true)
+        if moveExisting, fileManager.fileExists(atPath: sourceDirectory.path) {
+            let items = try fileManager.contentsOfDirectory(
+                at: sourceDirectory,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            )
+            for item in items {
+                let destination = destinationDirectory.appending(path: item.lastPathComponent)
+                guard !fileManager.fileExists(atPath: destination.path) else { continue }
+                try fileManager.moveItem(at: item, to: destination)
+            }
+        }
+        UserDefaults.standard.set(destinationDirectory.path, forKey: customPathKey)
+        return moveExisting ? (sourceDirectory, destinationDirectory) : nil
+    }
+
+    static func resetToDefault() {
+        UserDefaults.standard.removeObject(forKey: customPathKey)
+    }
+}
+
 final class DownloadedWallpaperIndex: ObservableObject {
     static let shared = DownloadedWallpaperIndex()
 
@@ -42,6 +89,12 @@ final class DownloadedWallpaperIndex: ObservableObject {
         guard ids.remove(workshopId) != nil else { return }
         downloadDates.removeValue(forKey: workshopId)
         save()
+    }
+
+    func reloadFromLibrary() {
+        ids.removeAll()
+        downloadDates.removeAll()
+        rebuildFromLibrary()
     }
 
     private func rebuildFromLibrary() {
@@ -86,11 +139,9 @@ final class DownloadedWallpaperIndex: ObservableObject {
 }
 
 extension FileManager {
-    /// The dedicated directory for storing wallpaper packages.
-    /// Located at `~/Documents/Open Wallpaper Engine/`, created automatically if missing.
+    /// The configured directory for storing wallpaper packages.
     var wallpapersDirectory: URL {
-        let dir = urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appending(path: "Open Wallpaper Engine")
+        let dir = WallpaperStorage.directory
         if !fileExists(atPath: dir.path) {
             try? createDirectory(at: dir, withIntermediateDirectories: true)
         }
