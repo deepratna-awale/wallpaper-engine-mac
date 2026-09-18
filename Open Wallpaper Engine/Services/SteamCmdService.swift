@@ -8,6 +8,13 @@ class SteamCmdService: ObservableObject {
     @Published var loginError: String?
     @Published var isLoggingIn = false
     @Published var downloadProgress: [String: DownloadState] = [:]
+    @Published var previewProgress: Set<String> = []
+    @Published var queuedDownloadIds: [String] = []
+    @Published var activeDownloadId: String?
+    @Published var downloadTitles: [String: String] = [:]
+    @Published var downloadItems: [String: DownloadItem] = [:]
+    @Published var downloadStartedAt: [String: Date] = [:]
+    @Published var downloadPercentages: [String: Double] = [:]
 
     enum DownloadState: Equatable {
         case downloading(status: String)
@@ -15,7 +22,19 @@ class SteamCmdService: ObservableObject {
         case failed(String)
     }
 
+    struct DownloadItem {
+        let title: String
+        let previewURL: URL?
+        let creatorId: String?
+        let subscriptions: Int
+        let fileSize: Int
+    }
+
     private static let lastUsernameKey = "SteamLastUsername"
+    private static let previewCacheLimit = 250 * 1024 * 1024
+    private let previewQueue = DispatchQueue(label: "steamcmd.preview.download")
+    private let downloadQueue = DispatchQueue(label: "steamcmd.workshop.download")
+    private var requestedPreviewId: String?
 
     init() {
         detectSteamCmd()
@@ -170,7 +189,7 @@ class SteamCmdService: ObservableObject {
         loginError = nil
         steamUsername = username
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        downloadQueue.async { [weak self] in
             guard let self = self else { return }
 
             var args = ["+login", username, password]
@@ -224,19 +243,70 @@ class SteamCmdService: ObservableObject {
     }
 
     /// Download a workshop item by its ID.
-    func downloadWorkshopItem(workshopId: String) {
+    func downloadWorkshopItem(
+        workshopId: String,
+        title: String? = nil,
+        previewURL: URL? = nil,
+        creatorId: String? = nil,
+        subscriptions: Int = 0,
+        fileSize: Int = 0
+    ) {
         guard let cmdPath = steamCmdPath, isLoggedIn else { return }
+        guard !queuedDownloadIds.contains(workshopId), activeDownloadId != workshopId else { return }
 
-        downloadProgress[workshopId] = .downloading(status: "Starting steamcmd...")
+        if let title {
+            downloadTitles[workshopId] = title
+            downloadItems[workshopId] = DownloadItem(
+                title: title,
+                previewURL: previewURL,
+                creatorId: creatorId,
+                subscriptions: subscriptions,
+                fileSize: fileSize
+            )
+        }
+        queuedDownloadIds.append(workshopId)
+        downloadPercentages[workshopId] = 0
+        downloadProgress[workshopId] = .downloading(status: "Queued")
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        downloadQueue.async { [weak self] in
             guard let self = self else { return }
+            defer {
+                DispatchQueue.main.async {
+                    self.queuedDownloadIds.removeAll { $0 == workshopId }
+                    if self.activeDownloadId == workshopId {
+                        self.activeDownloadId = nil
+                    }
+                }
+            }
+
+            DispatchQueue.main.async {
+                self.activeDownloadId = workshopId
+                self.downloadStartedAt[workshopId] = .now
+                self.downloadProgress[workshopId] = .downloading(status: "Starting steamcmd...")
+            }
+
+            let steamCmdInstallDirectory = FileManager.default.homeDirectoryForCurrentUser
+                .appending(path: "SteamCMD-Workshop")
+
+            do {
+                try FileManager.default.createDirectory(
+                    at: steamCmdInstallDirectory,
+                    withIntermediateDirectories: true
+                )
+            } catch {
+                DispatchQueue.main.async {
+                    self.downloadProgress[workshopId] = .failed("Could not prepare download directory: \(error.localizedDescription)")
+                }
+                return
+            }
 
             let process = Process()
             let outputPipe = Pipe()
             process.executableURL = URL(fileURLWithPath: cmdPath)
             process.currentDirectoryURL = URL(fileURLWithPath: cmdPath).deletingLastPathComponent()
             process.arguments = [
+                "+@sSteamCmdForcePlatformType", "windows",
+                "+force_install_dir", steamCmdInstallDirectory.path,
                 "+login", self.steamUsername,
                 "+workshop_download_item", "431960", workshopId, "validate",
                 "+quit"
@@ -253,9 +323,17 @@ class SteamCmdService: ObservableObject {
                 fullOutput += line
 
                 let status = self?.parseProgress(line) ?? nil
+                let percentage = self?.parseDownloadPercentage(line)
                 if let status = status {
                     DispatchQueue.main.async {
                         self?.downloadProgress[workshopId] = .downloading(status: status)
+                        if let percentage {
+                            self?.downloadPercentages[workshopId] = percentage
+                        }
+                    }
+                } else if let percentage {
+                    DispatchQueue.main.async {
+                        self?.downloadPercentages[workshopId] = percentage
                     }
                 }
             }
@@ -280,28 +358,27 @@ class SteamCmdService: ObservableObject {
             print("steamcmd download [\(workshopId)] exit=\(exitCode)\n\(fullOutput)")
 
             // Find downloaded content
-            let steamAppsDir = self.findSteamAppsDir(cmdPath: cmdPath)
-            let sourcePath = steamAppsDir?
-                .appending(path: "workshop/content/431960/\(workshopId)")
+            let sourcePath = steamCmdInstallDirectory
+                .appending(path: "steamapps/workshop/content/431960/\(workshopId)")
 
             DispatchQueue.main.async {
                 self.downloadProgress[workshopId] = .downloading(status: "Copying to library...")
+                self.downloadPercentages[workshopId] = 1
 
-                if let sourceDir = sourcePath {
-                    let fm = FileManager.default
-                    if fm.fileExists(atPath: sourceDir.path) {
-                        let dest = fm.wallpapersDirectory.appending(path: workshopId)
-                        if !fm.fileExists(atPath: dest.path) {
-                            do {
-                                try fm.copyItem(at: sourceDir, to: dest)
-                            } catch {
-                                self.downloadProgress[workshopId] = .failed("Copy failed: \(error.localizedDescription)")
-                                return
-                            }
+                let fm = FileManager.default
+                if fm.fileExists(atPath: sourcePath.path) {
+                    let dest = fm.wallpapersDirectory.appending(path: workshopId)
+                    if !fm.fileExists(atPath: dest.path) {
+                        do {
+                            try fm.copyItem(at: sourcePath, to: dest)
+                        } catch {
+                            self.downloadProgress[workshopId] = .failed("Copy failed: \(error.localizedDescription)")
+                            return
                         }
-                        self.downloadProgress[workshopId] = .completed
-                        return
                     }
+                    self.downloadProgress[workshopId] = .completed
+                    DownloadedWallpaperIndex.shared.insert(workshopId)
+                    return
                 }
 
                 if fullOutput.contains("ERROR") || fullOutput.contains("FAILED") {
@@ -318,6 +395,135 @@ class SteamCmdService: ObservableObject {
         }
     }
 
+    func previewWorkshopItem(workshopId: String) {
+        prepareWorkshopPreview(workshopId: workshopId, presentWhenReady: true)
+    }
+
+    private func prepareWorkshopPreview(workshopId: String, presentWhenReady: Bool) {
+        guard steamCmdPath != nil, isLoggedIn else { return }
+
+        if presentWhenReady {
+            requestedPreviewId = workshopId
+        }
+        guard !previewProgress.contains(workshopId) else { return }
+        previewProgress.insert(workshopId)
+
+        previewQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appending(path: "Open Wallpaper Engine/WorkshopPreviews")
+            let sourcePath = cacheRoot.appending(path: "steamapps/workshop/content/431960/\(workshopId)")
+
+            do {
+                try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+                try self.trimPreviewCache(at: cacheRoot, keeping: workshopId)
+            } catch {
+                self.finishPreview(workshopId, with: .failure(error), presentWhenReady: presentWhenReady)
+                return
+            }
+
+            if !FileManager.default.fileExists(atPath: sourcePath.path) {
+                let (output, exitCode) = self.runSteamCmd(
+                    arguments: [
+                        "+@sSteamCmdForcePlatformType", "windows",
+                        "+force_install_dir", cacheRoot.path,
+                        "+login", self.steamUsername,
+                        "+workshop_download_item", "431960", workshopId,
+                        "+quit"
+                    ],
+                    timeout: 300
+                )
+
+                guard exitCode == 0, FileManager.default.fileExists(atPath: sourcePath.path) else {
+                    let errorLine = output.components(separatedBy: "\n")
+                        .first(where: { $0.contains("ERROR") || $0.contains("FAILED") })
+                        ?? "Preview download failed."
+                    self.finishPreview(workshopId, with: .failure(PreviewError.downloadFailed(errorLine)), presentWhenReady: presentWhenReady)
+                    return
+                }
+            }
+
+            do {
+                let size = try self.directorySize(at: sourcePath)
+                guard size <= Self.previewCacheLimit else {
+                    try FileManager.default.removeItem(at: sourcePath)
+                    throw PreviewError.exceedsCacheLimit
+                }
+                try self.trimPreviewCache(at: cacheRoot, keeping: workshopId)
+
+                let projectURL = sourcePath.appending(path: "project.json")
+                let project = try JSONDecoder().decode(WEProject.self, from: Data(contentsOf: projectURL))
+                self.finishPreview(workshopId, with: .success(WEWallpaper(using: project, where: sourcePath)), presentWhenReady: presentWhenReady)
+            } catch {
+                self.finishPreview(workshopId, with: .failure(error), presentWhenReady: presentWhenReady)
+            }
+        }
+    }
+
+    private func finishPreview(
+        _ workshopId: String,
+        with result: Result<WEWallpaper, Error>,
+        presentWhenReady: Bool
+    ) {
+        DispatchQueue.main.async {
+            self.previewProgress.remove(workshopId)
+            switch result {
+            case .success(let wallpaper):
+                if presentWhenReady, self.requestedPreviewId == workshopId {
+                    AppDelegate.shared.showWorkshopPreview(wallpaper)
+                }
+            case .failure(let error):
+                if presentWhenReady, self.requestedPreviewId == workshopId {
+                    self.downloadProgress[workshopId] = .failed(error.localizedDescription)
+                }
+            }
+        }
+    }
+
+    private func trimPreviewCache(at cacheRoot: URL, keeping workshopId: String) throws {
+        let contentDirectory = cacheRoot.appending(path: "steamapps/workshop/content/431960")
+        guard FileManager.default.fileExists(atPath: contentDirectory.path) else { return }
+
+        var cacheSize = try directorySize(at: cacheRoot)
+        let entries = try FileManager.default.contentsOfDirectory(
+            at: contentDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: .skipsHiddenFiles
+        )
+        let oldestFirst = entries
+            .filter { $0.lastPathComponent != workshopId }
+            .sorted {
+                let firstDate = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let secondDate = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                return firstDate < secondDate
+            }
+
+        for entry in oldestFirst where cacheSize > Self.previewCacheLimit {
+            try FileManager.default.removeItem(at: entry)
+            cacheSize = try directorySize(at: cacheRoot)
+        }
+    }
+
+    private func directorySize(at directory: URL) throws -> Int {
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .totalFileAllocatedSizeKey, .fileAllocatedSizeKey]
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+
+        var totalSize = 0
+        for case let fileURL as URL in enumerator {
+            let values = try fileURL.resourceValues(forKeys: keys)
+            guard values.isRegularFile == true else { continue }
+            totalSize += values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0
+        }
+        return totalSize
+    }
+
     /// Parse steamcmd output lines into human-readable progress.
     private func parseProgress(_ output: String) -> String? {
         let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -330,10 +536,8 @@ class SteamCmdService: ObservableObject {
             return "Requesting download..."
         }
         if trimmed.contains("Downloading") || trimmed.contains("downloading") {
-            // Try to extract percentage like "Update state (0x61) downloading, progress: 45.23"
-            if let range = trimmed.range(of: "progress:\\s*([\\d.]+)", options: .regularExpression),
-               let pct = Double(trimmed[range].replacingOccurrences(of: "progress:", with: "").trimmingCharacters(in: .whitespaces)) {
-                return String(format: "Downloading... %.0f%%", min(pct, 100))
+            if let percentage = parseDownloadPercentage(trimmed) {
+                return String(format: "Downloading... %.0f%%", percentage * 100)
             }
             return "Downloading..."
         }
@@ -350,6 +554,17 @@ class SteamCmdService: ObservableObject {
             if trimmed.contains("0x101") { return "Committing..." }
         }
         return nil
+    }
+
+    private func parseDownloadPercentage(_ output: String) -> Double? {
+        guard let range = output.range(of: "progress:\\s*([0-9]+(?:\\.[0-9]+)?)", options: .regularExpression) else {
+            return nil
+        }
+        let value = output[range]
+            .replacingOccurrences(of: "progress:", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let percentage = Double(value) else { return nil }
+        return min(max(percentage / 100, 0), 1)
     }
 
     private func findSteamAppsDir(cmdPath: String) -> URL? {
@@ -372,5 +587,17 @@ class SteamCmdService: ObservableObject {
             }
         }
         return nil
+    }
+}
+
+private enum PreviewError: LocalizedError {
+    case downloadFailed(String)
+    case exceedsCacheLimit
+
+    var errorDescription: String? {
+        switch self {
+        case .downloadFailed(let message): return message
+        case .exceedsCacheLimit: return "Preview exceeds the 250 MB cache limit."
+        }
     }
 }

@@ -30,16 +30,7 @@ struct ExplorerGlobalMenu: SubviewOfContentView {
                         Text("Small Icons").tag(Double(100))
                         Text("Medium Icons").tag(Double(125))
                         Text("Large Icons").tag(Double(150))
-                    }
-                    .pickerStyle(.inline)
-                }
-                Section {
-                    Picker("Titles per page", selection: $viewModel.wallpapersPerPage) {
-                        Text("10 per page").tag(10)
-                        Text("25 per page").tag(25)
-                        Text("50 per page").tag(50)
-                        Text("1 per page (developer)").tag(1)
-                        Text("1 per page (developer)").tag(2)
+                        Text("XL Icons").tag(Double(200))
                     }
                     .pickerStyle(.inline)
                 }

@@ -107,6 +107,7 @@ struct GlobalSettings: Codable, Equatable {
     var autoRefresh = true
 }
 
+@MainActor
 class GlobalSettingsViewModel: ObservableObject {
     @Published var settings: GlobalSettings
     {

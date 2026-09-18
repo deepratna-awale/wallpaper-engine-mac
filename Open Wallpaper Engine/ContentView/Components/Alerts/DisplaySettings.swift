@@ -30,10 +30,22 @@ struct DisplaySettings: SubviewOfContentView {
             Text("Display Settings")
                 .font(.largeTitle)
 
-            Text("Click a display to select it, then choose a wallpaper from the library.")
+            Text("Click a display to select it. Hold Shift while clicking to select multiple desktops.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+
+            Toggle("All Desktops", isOn: Binding(
+                get: {
+                    let screenIds = Set(NSScreen.screens.map(WallpaperViewModel.screenId(for:)))
+                    return !screenIds.isEmpty && wallpaperViewModel.selectedScreenIds == screenIds
+                },
+                set: { selectAll in
+                    let screenIds = Set(NSScreen.screens.map(WallpaperViewModel.screenId(for:)))
+                    wallpaperViewModel.selectedScreenIds = selectAll ? screenIds : [wallpaperViewModel.selectedScreenId]
+                }
+            ))
+            .toggleStyle(.checkbox)
 
             // Monitor layout
             MonitorLayoutView(wallpaperViewModel: wallpaperViewModel)
@@ -131,7 +143,7 @@ private struct MonitorLayoutView: View {
             ZStack {
                 ForEach(screens, id: \.self) { screen in
                     let screenId = WallpaperViewModel.screenId(for: screen)
-                    let isSelected = screenId == wallpaperViewModel.selectedScreenId
+                    let isSelected = wallpaperViewModel.selectedScreenIds.contains(screenId)
                     let isEnabled = wallpaperViewModel.isScreenEnabled(screenId)
                     let frame = screen.frame
 
@@ -151,7 +163,10 @@ private struct MonitorLayoutView: View {
                     .position(x: x + w / 2 + (geo.size.width - bounds.width * scale) / 2,
                               y: y + h / 2 + (geo.size.height - bounds.height * scale) / 2)
                     .onTapGesture {
-                        wallpaperViewModel.selectedScreenId = screenId
+                        wallpaperViewModel.selectScreen(
+                            screenId,
+                            extendingSelection: NSEvent.modifierFlags.contains(.shift)
+                        )
                     }
                 }
             }

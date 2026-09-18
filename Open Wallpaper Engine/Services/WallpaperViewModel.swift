@@ -7,27 +7,44 @@
 
 import SwiftUI
 
+enum WallpaperPlacement: String, CaseIterable, Identifiable {
+    case fill = "Fill"
+    case fit = "Fit"
+    case center = "Center"
+    case stretch = "Stretch"
+    case zoom = "Zoom"
+
+    var id: Self { self }
+}
+
 /// Provide Wallpaper Database for WallpaperView and ContentView etc.
+@MainActor
 class WallpaperViewModel: ObservableObject {
+    private let persistsWallpapers: Bool
+
     @Published var nextCurrentWallpaper: WEWallpaper =
     WEWallpaper(using: .invalid, where: Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!) {
         willSet {
             if ["web", "application"].contains(newValue.project.type) {
                 if let trustedWallpapers = UserDefaults.standard.array(forKey: "TrustedWallpapers") as? [String],
                    trustedWallpapers.contains(newValue.wallpaperDirectory.path(percentEncoded: false)) {
-                    self.setWallpaper(newValue, for: selectedScreenId)
+                    self.setWallpaper(newValue, for: selectedScreenIds)
                 } else {
                     AppDelegate.shared.contentViewModel.warningUnsafeWallpaperModal(which: newValue)
                 }
             } else {
-                self.setWallpaper(newValue, for: selectedScreenId)
+                self.setWallpaper(newValue, for: selectedScreenIds)
             }
         }
     }
 
     /// Per-screen wallpaper assignments, keyed by CGDirectDisplayID as String.
     @Published var wallpapers: [String: WEWallpaper] = [:] {
-        didSet { saveWallpapers() }
+        didSet {
+            if persistsWallpapers {
+                saveWallpapers()
+            }
+        }
     }
 
     /// Screens where wallpaper display is enabled.
@@ -39,6 +56,20 @@ class WallpaperViewModel: ObservableObject {
 
     /// The screen currently selected in the UI for configuration.
     @Published var selectedScreenId: String = ""
+
+    /// Screens selected for the next wallpaper assignment.
+    @Published var selectedScreenIds: Set<String> = []
+
+    /// Wallpaper currently inspected in the sidebar or preview window.
+    @Published var inspectedWallpaper: WEWallpaper?
+    @Published var inspectedWorkshopItem: WorkshopItem?
+    @Published var inspectedAuthor: SteamPlayer?
+
+    @Published var wallpaperPlacement: WallpaperPlacement = .fill {
+        didSet {
+            UserDefaults.standard.set(wallpaperPlacement.rawValue, forKey: "WallpaperPlacement")
+        }
+    }
 
     static let defaultWallpaper = WEWallpaper(using: .invalid, where: Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!)
 
@@ -79,7 +110,69 @@ class WallpaperViewModel: ObservableObject {
             wallpapers[selectedScreenId] ?? Self.defaultWallpaper
         }
         set {
-            setWallpaper(newValue, for: selectedScreenId)
+            setWallpaper(newValue, for: selectedScreenIds)
+        }
+    }
+
+    var displayedWallpaper: WEWallpaper {
+        inspectedWallpaper ?? currentWallpaper
+    }
+
+    func inspect(_ wallpaper: WEWallpaper) {
+        inspectedWallpaper = wallpaper
+        inspectedWorkshopItem = nil
+        inspectedAuthor = nil
+
+        let projectWorkshopId = wallpaper.project.workshopid?.rawValue
+        let folderWorkshopId = wallpaper.wallpaperDirectory.lastPathComponent
+        let workshopId = (projectWorkshopId?.allSatisfy(\.isNumber) == true ? projectWorkshopId : nil)
+            ?? (folderWorkshopId.allSatisfy(\.isNumber) ? folderWorkshopId : nil)
+        guard let workshopId else { return }
+
+        if let cachedItem = WorkshopMetadataStore.shared.item(for: workshopId) {
+            inspectedWorkshopItem = cachedItem
+            if let creatorId = cachedItem.creatorId,
+               let cachedAuthor = SteamPlayerStore.shared.player(for: creatorId) {
+                inspectedAuthor = cachedAuthor
+                return
+            }
+        }
+        Task { [weak self] in
+            guard let item = try? await WorkshopAPIService().getItemDetails(workshopIds: [workshopId]).first else { return }
+            guard let self else { return }
+            guard self.displayedWallpaper.wallpaperDirectory.lastPathComponent == folderWorkshopId else { return }
+            self.inspectedWorkshopItem = item
+            if let creatorId = item.creatorId,
+               let author = try? await WorkshopAPIService().getPlayerSummary(steamId: creatorId) {
+                guard self.displayedWallpaper.wallpaperDirectory.lastPathComponent == folderWorkshopId else { return }
+                self.inspectedAuthor = author
+            }
+        }
+    }
+
+    func applyInspectedWallpaper() {
+        let wallpaper = promotePreviewIfNeeded(displayedWallpaper)
+        inspectedWallpaper = wallpaper
+        nextCurrentWallpaper = wallpaper
+    }
+
+    private func promotePreviewIfNeeded(_ wallpaper: WEWallpaper) -> WEWallpaper {
+        let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appending(path: "Open Wallpaper Engine/WorkshopPreviews/steamapps/workshop/content/431960")
+        let source = wallpaper.wallpaperDirectory
+        guard source.path.hasPrefix(cacheRoot.path + "/") else { return wallpaper }
+
+        let workshopId = source.lastPathComponent
+        let destination = FileManager.default.wallpapersDirectory.appending(path: workshopId)
+        do {
+            if !FileManager.default.fileExists(atPath: destination.path) {
+                try FileManager.default.moveItem(at: source, to: destination)
+            }
+            DownloadedWallpaperIndex.shared.insert(workshopId)
+            return WEWallpaper(using: wallpaper.project, where: destination)
+        } catch {
+            print("Failed to promote Workshop preview: \(error)")
+            return wallpaper
         }
     }
 
@@ -94,8 +187,45 @@ class WallpaperViewModel: ObservableObject {
         addToRecents(wallpaper)
     }
 
+    func setWallpaper(_ wallpaper: WEWallpaper, for screenIds: Set<String>) {
+        for screenId in screenIds {
+            wallpapers[screenId] = wallpaper
+        }
+        addToRecents(wallpaper)
+    }
+
+    func selectScreen(_ screenId: String, extendingSelection: Bool) {
+        if extendingSelection {
+            if selectedScreenIds.contains(screenId) {
+                selectedScreenIds.remove(screenId)
+            } else {
+                selectedScreenIds.insert(screenId)
+            }
+        } else {
+            selectedScreenIds = [screenId]
+        }
+        selectedScreenId = screenId
+    }
+
     func isScreenEnabled(_ screenId: String) -> Bool {
         enabledScreens.contains(screenId)
+    }
+
+    func shouldPlayAudio(on screenId: String) -> Bool {
+        guard persistsWallpapers else { return true }
+
+        let videoScreenIds = wallpapers.compactMap { screenId, wallpaper in
+            enabledScreens.contains(screenId) && wallpaper.project.type.lowercased() == "video"
+                ? screenId
+                : nil
+        }
+        guard !videoScreenIds.isEmpty else { return false }
+
+        let primaryScreenId = NSScreen.screens.first.map(Self.screenId(for:))
+        let audioScreenId = videoScreenIds.contains(primaryScreenId ?? "")
+            ? primaryScreenId
+            : videoScreenIds.sorted().first
+        return screenId == audioScreenId
     }
 
     func toggleScreen(_ screenId: String) {
@@ -119,6 +249,7 @@ class WallpaperViewModel: ObservableObject {
     var lastPlayRate: Float = 1.0
     @Published public var playRate: Float = 1.0 {
         willSet {
+            guard persistsWallpapers else { return }
             if newValue == 0.0 {
                 for (index, item) in AppDelegate.shared.statusItem.menu!.items.enumerated() {
                     if item.title == "Pause" {
@@ -137,12 +268,25 @@ class WallpaperViewModel: ObservableObject {
         }
         didSet {
             self.lastPlayRate = oldValue
+            if arePlaybackRatesLinked {
+                audioPlayRate = playRate
+            }
+        }
+    }
+
+    @Published var audioPlayRate: Float = 1.0
+    @Published var arePlaybackRatesLinked = true {
+        didSet {
+            if arePlaybackRatesLinked {
+                audioPlayRate = playRate
+            }
         }
     }
 
     var lastPlayVolume: Float = 1.0
     @Published public var playVolume: Float = 1.0 {
         willSet {
+            guard persistsWallpapers else { return }
             if newValue == 0.0 {
                 for (index, item) in AppDelegate.shared.statusItem.menu!.items.enumerated() {
                     if item.title == "Mute" {
@@ -164,7 +308,18 @@ class WallpaperViewModel: ObservableObject {
         }
     }
 
-    init() {
+    init(persistsWallpapers: Bool = true) {
+        self.persistsWallpapers = persistsWallpapers
+        if let storedPlacement = UserDefaults.standard.string(forKey: "WallpaperPlacement"),
+           let placement = WallpaperPlacement(rawValue: storedPlacement) {
+            wallpaperPlacement = placement
+        }
+        guard persistsWallpapers else {
+            self.selectedScreenId = "preview"
+            self.selectedScreenIds = [selectedScreenId]
+            return
+        }
+
         // Load per-screen wallpapers
         if let data = UserDefaults.standard.data(forKey: "ScreenWallpapers"),
            let saved = try? JSONDecoder().decode([String: WEWallpaper].self, from: data) {
@@ -187,6 +342,7 @@ class WallpaperViewModel: ObservableObject {
 
         // Default selected screen to main
         self.selectedScreenId = Self.mainScreenId()
+        self.selectedScreenIds = [selectedScreenId]
 
         // Load recent wallpapers
         loadRecents()

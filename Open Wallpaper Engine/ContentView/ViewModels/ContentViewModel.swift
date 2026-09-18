@@ -10,6 +10,28 @@ import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
+private struct URLListStorage: RawRepresentable {
+    var urls: [URL] = []
+
+    init() {}
+
+    init?(rawValue: String) {
+        guard let data = rawValue.data(using: .utf8),
+              let urls = try? JSONDecoder().decode([URL].self, from: data) else {
+            return nil
+        }
+        self.urls = urls
+    }
+
+    var rawValue: String {
+        guard let data = try? JSONEncoder().encode(urls),
+              let value = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return value
+    }
+}
+
 class ContentViewModel: ObservableObject, DropDelegate {
     @AppStorage("SortingBy") var sortingBy: WEWallpaperSortingMethod = .name
     @AppStorage("SortingSequence") var sortingSequence: WEWallpaperSortingSequence = .increase
@@ -27,7 +49,7 @@ class ContentViewModel: ObservableObject, DropDelegate {
     @AppStorage("FRTag")                        public var tag                          =                        FRTag.all
     
     @AppStorage("FilterReveal") var isFilterReveal = false
-    @AppStorage("WallpaperURLs") var wallpaperUrls = [URL]()
+    @AppStorage("WallpaperURLs") private var storedWallpaperUrls = URLListStorage()
     @AppStorage("SelectedIndex") var selectedIndex = 0
     
     @AppStorage("ExplorerIconSize") var explorerIconSize: Double = 200
@@ -51,6 +73,12 @@ class ContentViewModel: ObservableObject, DropDelegate {
 
     @Published var selectedWallpapers = Set<URL>()
     @Published var isBatchUnsubscribeConfirming = false
+    private var selectionAnchor: URL?
+
+    var wallpaperUrls: [URL] {
+        get { storedWallpaperUrls.urls }
+        set { storedWallpaperUrls.urls = newValue }
+    }
 
     lazy var steamCmd: SteamCmdService = {
         let svc = SteamCmdService()
@@ -64,9 +92,13 @@ class ContentViewModel: ObservableObject, DropDelegate {
 
     @Published var searchText = ""
     
-    @AppStorage("WallpapersPerPage") var wallpapersPerPage: Int = 50
+    @Published private(set) var installedItemsPerPage = 21
     
     var importAlertError: WPImportError? = nil
+
+    init() {
+        _ = steamCmd
+    }
     
     convenience init(isStaging: Bool, topTabBarSelection: Int = 0) {
         self.init()
@@ -146,7 +178,7 @@ class ContentViewModel: ObservableObject, DropDelegate {
             // Show Only
             var showOnly = FRShowOnly.none
             if let approved = wallpaper.project.approved, approved { showOnly.insert(.approved) }
-            guard self.showOnly.contains(showOnly) else { return false }
+            guard self.showOnly.isEmpty || !self.showOnly.intersection(showOnly).isEmpty else { return false }
             
             // Type
             var type = FRType.none
@@ -180,67 +212,6 @@ class ContentViewModel: ObservableObject, DropDelegate {
             }
             guard self.ageRating.contains(ageRating) else { return false }
             
-            // Tags
-            var tags = FRTag.none
-            var transformedTags: [FRTag] = []
-            if let someTags = wallpaper.project.tags {
-//                tags = someTags.map { tag in
-//                    switch tag.lowercased() {
-//                    case "abstract":
-//                        return FRTag.abstract
-//                    case "animal":
-//                        return FRTag.animal
-//                    case "anime":
-//                        return FRTag.anime
-//                    case "cartoon":
-//                        return FRTag.cartoon
-//                    case "cgi":
-//                        return FRTag.cgi
-//                    case "cyberpunk":
-//                        return FRTag.cyberpunk
-//                    case "fantasy":
-//                        return FRTag.fantasy
-//                    case "game":
-//                        return FRTag.game
-//                    case "girls":
-//                        return FRTag.girls
-//                    case "guys":
-//                        return FRTag.guys
-//                    case "landscape":
-//                        return FRTag.landscape
-//                    case "medieval":
-//                        return FRTag.medieval
-//                    case "memes":
-//                        return FRTag.memes
-//                    case "mmd":
-//                        return FRTag.mmd
-//                    case "music":
-//                        return FRTag.music
-//                    case "nature":
-//                        return FRTag.nature
-//                    case "pixelart":
-//                        return FRTag.pixelArt
-//                    case "relaxing":
-//                        return FRTag.relaxing
-//                    case "retro":
-//                        return FRTag.retro
-//                    case "sci-fi":
-//                        return FRTag.sciFi
-//                    case "sports":
-//                        return FRTag.sports
-//                    case "technology":
-//                        return FRTag.technology
-//                    case "television":
-//                        return FRTag.television
-//                    case "vehicle":
-//                        return FRTag.vehicle
-//                    default:
-//                        return FRTag.unspecifiedGenre
-//                    }
-//                }
-            } else {
-                tags = .none
-            }
             guard self.tag != .none else { return false }
             
             // Finish Filtering
@@ -283,6 +254,13 @@ class ContentViewModel: ObservableObject, DropDelegate {
                  { return false }
                 
                 return true
+            case .dateAdded:
+                let firstDate = DownloadedWallpaperIndex.shared.dateAdded(for: $0.wallpaperDirectory)
+                let secondDate = DownloadedWallpaperIndex.shared.dateAdded(for: $1.wallpaperDirectory)
+                if sortingSequence == .increase {
+                    return firstDate < secondDate
+                }
+                return firstDate > secondDate
 //            case .subDate:
 //                return false
 //            case .lastUpdated:
@@ -294,15 +272,33 @@ class ContentViewModel: ObservableObject, DropDelegate {
     /// Provide wallpapers information for UI, being filtered by FilterResults and divided in pages
     public var autoRefreshWallpapers: [WEWallpaper] {
         sortedWallpapers
-//        let startIndex = (self.currentPage - 1) * self.wallpapersPerPage
-//        let filteredWallpapers = self.filteredWallpapers
-//        let clip = filteredWallpapers[startIndex..<filteredWallpapers.endIndex]
-//        return Array(clip.prefix(self.wallpapersPerPage))
+    }
+
+    var displayedWallpapers: [WEWallpaper] {
+        let startIndex = (currentPage - 1) * installedItemsPerPage
+        guard startIndex < sortedWallpapers.count else { return [] }
+        let endIndex = min(startIndex + installedItemsPerPage, sortedWallpapers.count)
+        return Array(sortedWallpapers[startIndex..<endIndex])
+    }
+
+    var hasNextWallpaperPage: Bool {
+        currentPage < maxPage
+    }
+
+    func updateInstalledItemsPerPage(for size: CGSize) {
+        let itemSize = max(explorerIconSize, 1)
+        let spacing: CGFloat = 8
+        let columns = max(1, Int((size.width + spacing) / (itemSize + spacing)))
+        let rows = max(1, Int((size.height + spacing) / (itemSize + spacing)))
+        let pageSize = columns * rows
+        guard installedItemsPerPage != pageSize else { return }
+        installedItemsPerPage = pageSize
+        currentPage = min(currentPage, maxPage)
     }
     
     /// Caculates the maximium possible page index for all wallpapers in your application wallpaper directory
     var maxPage: Int {
-        Int(self.filteredWallpapers.count / self.wallpapersPerPage)
+        max(1, Int(ceil(Double(filteredWallpapers.count) / Double(installedItemsPerPage))))
     }
     
     func toggleSelection(for wallpaper: WEWallpaper) {
@@ -312,10 +308,35 @@ class ContentViewModel: ObservableObject, DropDelegate {
         } else {
             selectedWallpapers.insert(url)
         }
+        selectionAnchor = url
+    }
+
+    func selectWallpaper(
+        _ wallpaper: WEWallpaper,
+        from wallpapers: [WEWallpaper],
+        inspectingWith wallpaperViewModel: WallpaperViewModel
+    ) {
+        let url = wallpaper.wallpaperDirectory
+        let modifiers = NSEvent.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isAdditive = modifiers.contains(.control) || modifiers.contains(.command)
+
+        if modifiers.contains(.shift), !isAdditive,
+           let anchor = selectionAnchor,
+           let start = wallpapers.firstIndex(where: { $0.wallpaperDirectory == anchor }),
+           let end = wallpapers.firstIndex(where: { $0.wallpaperDirectory == url }) {
+            selectedWallpapers = Set(wallpapers[min(start, end)...max(start, end)].map(\.wallpaperDirectory))
+        } else if isAdditive {
+            toggleSelection(for: wallpaper)
+        } else {
+            clearSelection()
+            wallpaperViewModel.inspect(wallpaper)
+            selectionAnchor = url
+        }
     }
 
     func clearSelection() {
         selectedWallpapers.removeAll()
+        selectionAnchor = nil
     }
 
     func isSelected(_ wallpaper: WEWallpaper) -> Bool {
@@ -446,25 +467,5 @@ class ContentViewModel: ObservableObject, DropDelegate {
         self.miscResolution             = .all
         self.source                     = .all
         self.tag                        = .all
-    }
-}
-
-extension Array: RawRepresentable where Element: Codable {
-    public init?(rawValue: String) {
-        guard let data = rawValue.data(using: .utf8),
-              let result = try? JSONDecoder().decode([Element].self, from: data)
-        else {
-            return nil
-        }
-        self = result
-    }
-    
-    public var rawValue: String {
-        guard let data = try? JSONEncoder().encode(self),
-              let result = String(data: data, encoding: .utf8)
-        else {
-            return "[]"
-        }
-        return result
     }
 }

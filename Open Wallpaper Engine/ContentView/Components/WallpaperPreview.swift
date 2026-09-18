@@ -26,7 +26,7 @@ struct WallpaperPreview: SubviewOfContentView {
     }
     
     var wallpaperSize: String {
-        guard let sizeBytes = try? wallpaperViewModel.currentWallpaper.wallpaperDirectory.directoryTotalAllocatedSize(includingSubfolders: true)
+        guard let sizeBytes = try? wallpaperViewModel.displayedWallpaper.wallpaperDirectory.directoryTotalAllocatedSize(includingSubfolders: true)
         else {
             return "??? MB"
         }
@@ -44,7 +44,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                 return url.appending(path: selectedProject.preview)
                             }
                             return Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!
-                        }(wallpaperViewModel.currentWallpaper.wallpaperDirectory))
+                        }(wallpaperViewModel.displayedWallpaper.wallpaperDirectory))
                             .resizable()
                             .aspectRatio(contentMode: .fit)
                             .background(Color(nsColor: NSColor.controlBackgroundColor))
@@ -55,7 +55,7 @@ struct WallpaperPreview: SubviewOfContentView {
                             if isEditingId == "title" {
                                 TextField("Wallpaper Title", text: $title)
                                     .onSubmit {
-                                        var wallpaper = wallpaperViewModel.currentWallpaper
+                                        var wallpaper = wallpaperViewModel.displayedWallpaper
                                         
                                         wallpaper.project.title = title
                                         
@@ -63,17 +63,17 @@ struct WallpaperPreview: SubviewOfContentView {
                                         
                                         try? data.write(to: wallpaper.wallpaperDirectory.appending(path: "project.json"), options: .atomic)
                                         
-                                        wallpaperViewModel.currentWallpaper = wallpaper
+                                        wallpaperViewModel.inspect(wallpaper)
                                         
                                         isEditingId = ""
                                     }
                             } else {
-                                Text(wallpaperViewModel.currentWallpaper.project.title.isEmpty ? "Untitled" : wallpaperViewModel.currentWallpaper.project.title)
+                                Text(wallpaperViewModel.displayedWallpaper.project.title.isEmpty ? "Untitled" : wallpaperViewModel.displayedWallpaper.project.title)
                                     .frame(minWidth: 50)
                                     .id("title")
                                     .lineLimit(1)
                                     .onTapGesture(count: 2) {
-                                        title = wallpaperViewModel.currentWallpaper.project.title
+                                        title = wallpaperViewModel.displayedWallpaper.project.title
                                         isEditingId = "title"
                                     }
                                 Image(systemName: "square.and.pencil")
@@ -82,27 +82,39 @@ struct WallpaperPreview: SubviewOfContentView {
                         }
                     }
                     HStack {
-                        Image("we.placeholder")
-                            .resizable()
-                            .frame(width: 32, height: 32)
-                        Text("Unkown Author")
+                        AsyncImage(url: wallpaperViewModel.inspectedAuthor?.avatarURL) { phase in
+                            if case let .success(image) = phase {
+                                image.resizable()
+                            } else {
+                                Image("we.placeholder").resizable()
+                            }
+                        }
+                        .frame(width: 32, height: 32)
+                        .clipShape(Circle())
+                        Text(wallpaperViewModel.inspectedAuthor?.personaName
+                             ?? wallpaperViewModel.inspectedWorkshopItem?.creatorId
+                             ?? "Unknown Author")
+                    }
+                    if let subscriptions = wallpaperViewModel.inspectedWorkshopItem?.subscriptions,
+                       subscriptions > 0 {
+                        Label("\(formatCount(subscriptions))", systemImage: "heart")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     HStack {
-                        HStack(spacing: 5) {
-                            Image(systemName: "star")
-                            Image(systemName: "star")
-                            Image(systemName: "star")
-                            Image(systemName: "star")
-                            Image(systemName: "star")
+                        if let item = wallpaperViewModel.inspectedWorkshopItem {
+                            Label("\(item.votesUp)", systemImage: "hand.thumbsup")
+                                .foregroundStyle(.green)
+                            Label("\(item.votesDown)", systemImage: "hand.thumbsdown")
+                                .foregroundStyle(.red)
+                        } else {
+                            Text("Rating unavailable")
+                                .foregroundStyle(.secondary)
                         }
-                        .font(.caption)
-                        Button { } label: {
-                            Image(systemName: "heart")
-                        }
-                        .disabled(true)
                     }
+                    .font(.caption)
                     HStack {
-                        Text(wallpaperViewModel.currentWallpaper.project.type)
+                        Text(wallpaperViewModel.displayedWallpaper.project.type)
                         Text(wallpaperSize)
                     }
                     .font(.footnote)
@@ -133,7 +145,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                     
                                     guard !newTag.isEmpty else { return }
                                     
-                                    var wallpaper = wallpaperViewModel.currentWallpaper
+                                    var wallpaper = wallpaperViewModel.displayedWallpaper
                                     
                                     var tags = wallpaper.project.tags ?? []
                                     
@@ -149,17 +161,29 @@ struct WallpaperPreview: SubviewOfContentView {
                                     
                                     try? data.write(to: wallpaper.wallpaperDirectory.appending(path: "project.json"), options: .atomic)
                                     
-                                    wallpaperViewModel.currentWallpaper = wallpaper
+                                    wallpaperViewModel.inspect(wallpaper)
                                 }
                         }
                     }
                     VStack(spacing: 3) {
-                        Button { } label: {
-                            Label("Unsubscribe", systemImage: "xmark")
-                                .frame(maxWidth: .infinity)
+                        HStack(spacing: 3) {
+                            Button {
+                                wallpaperViewModel.applyInspectedWallpaper()
+                            } label: {
+                                Label("Set Wallpaper", systemImage: "checkmark.circle")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .buttonStyle(.borderedProminent)
+
+                            Button(role: .destructive) {
+                                viewModel.hoveredWallpaper = wallpaperViewModel.displayedWallpaper
+                                viewModel.isUnsubscribeConfirming = true
+                            } label: {
+                                Image(systemName: "trash")
+                            }
+                            .buttonStyle(.bordered)
+                            .help("Delete wallpaper")
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.red)
                         HStack(spacing: 3) {
                             Button { } label: {
                                 Label("Comment", systemImage: "text.badge.star")
@@ -172,8 +196,8 @@ struct WallpaperPreview: SubviewOfContentView {
                                 Image(systemName: "exclamationmark.triangle.fill")
                             }
                         }
+                        .disabled(true)
                     }
-                    .disabled(true)
                     // MARK: Properties
                     HStack(spacing: 3) {
                         Text("Properties")
@@ -184,6 +208,21 @@ struct WallpaperPreview: SubviewOfContentView {
                         }
                     }
                     VStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Menu {
+                                ForEach(WallpaperPlacement.allCases) { placement in
+                                    Button(placement.rawValue) {
+                                        wallpaperViewModel.wallpaperPlacement = placement
+                                    }
+                                }
+                            } label: {
+                                Label(
+                                    "Placement: \(wallpaperViewModel.wallpaperPlacement.rawValue)",
+                                    systemImage: "arrow.up.left.and.arrow.down.right"
+                                )
+                            }
+                            .menuStyle(.borderedButton)
+                        }
                         ColorPicker(selection: .constant(.red), supportsOpacity: true) {
                             HStack {
                                 Label("Scheme Color", systemImage: "paintpalette.fill")
@@ -192,7 +231,7 @@ struct WallpaperPreview: SubviewOfContentView {
                         }
                         .opacity(0.5)
                         .disabled(true)
-                        switch wallpaperViewModel.currentWallpaper.project.type.lowercased() {
+                        switch wallpaperViewModel.displayedWallpaper.project.type.lowercased() {
                         case "video":
                             HStack {
                                 Label("Volume", systemImage: "speaker.wave.3.fill")
@@ -202,10 +241,27 @@ struct WallpaperPreview: SubviewOfContentView {
                                     .frame(width: 35)
                             }
                             HStack {
-                                Label("Playback Rate", systemImage: "play.fill")
+                                Label("Video Speed", systemImage: "play.fill")
                                 Spacer()
                                 Slider(value: $wallpaperViewModel.playRate, in: 0...2, step: 0.1).frame(width: 100)
                                 Text(String(format: "%.01fx", wallpaperViewModel.playRate))
+                                    .frame(width: 35)
+                            }
+                            HStack {
+                                Label("Audio Speed", systemImage: "waveform")
+                                Spacer()
+                                Button {
+                                    wallpaperViewModel.arePlaybackRatesLinked.toggle()
+                                } label: {
+                                    Image(systemName: "link")
+                                        .foregroundStyle(wallpaperViewModel.arePlaybackRatesLinked ? Color.primary : .gray)
+                                }
+                                .buttonStyle(.plain)
+                                .help(wallpaperViewModel.arePlaybackRatesLinked ? "Unlink audio speed" : "Link audio speed")
+                                Slider(value: $wallpaperViewModel.audioPlayRate, in: 0...2, step: 0.1)
+                                    .frame(width: 76)
+                                    .disabled(wallpaperViewModel.arePlaybackRatesLinked)
+                                Text(String(format: "%.01fx", wallpaperViewModel.audioPlayRate))
                                     .frame(width: 35)
                             }
                         case "web":
@@ -253,14 +309,14 @@ struct WallpaperPreview: SubviewOfContentView {
                         .disabled(true)
                     }
                 }
-                .blur(radius: wallpaperViewModel.currentWallpaper.project == .invalid ? 16.0 : 0)
+                .blur(radius: wallpaperViewModel.displayedWallpaper.project == .invalid ? 16.0 : 0)
                 .overlay {
-                    if wallpaperViewModel.currentWallpaper.project == .invalid {
+                    if wallpaperViewModel.displayedWallpaper.project == .invalid {
                         Text("Please select a valid wallpaper")
                     }
                 }
-                .disabled(wallpaperViewModel.currentWallpaper.project == .invalid ? true : false)
-                .animation(.default, value: wallpaperViewModel.currentWallpaper.project)
+                .disabled(wallpaperViewModel.displayedWallpaper.project == .invalid ? true : false)
+                .animation(.default, value: wallpaperViewModel.displayedWallpaper.project)
                 .padding([.horizontal, .top])
             }
 
@@ -285,7 +341,7 @@ struct WallpaperPreview: SubviewOfContentView {
     /// Shows all tags about current wallpaper in horizontal
     var tags: some View {
         HStack {
-            if let tags = wallpaperViewModel.currentWallpaper.project.tags {
+            if let tags = wallpaperViewModel.displayedWallpaper.project.tags {
                 ForEach(tags, id: \.self) { tag in
                     Text(tag)
                         .padding(5)
@@ -299,7 +355,7 @@ struct WallpaperPreview: SubviewOfContentView {
                         .overlay(alignment: .topTrailing) {
                             if hoveredTag == tag {
                                 Button {
-                                    var wallpaper = wallpaperViewModel.currentWallpaper
+                                    var wallpaper = wallpaperViewModel.displayedWallpaper
                                     
                                     guard var tags = wallpaper.project.tags else { return } // else case seems impossible, however much safer
                                     
@@ -315,7 +371,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                     
                                     try? data.write(to: wallpaper.wallpaperDirectory.appending(path: "project.json"), options: .atomic)
                                     
-                                    wallpaperViewModel.currentWallpaper = wallpaper
+                                    wallpaperViewModel.inspect(wallpaper)
                                 } label: {
                                     Image(systemName: "xmark.circle.fill")
                                 }
@@ -350,6 +406,10 @@ struct WallpaperPreview: SubviewOfContentView {
         }
         .font(.footnote)
         .lineLimit(1)
+    }
+
+    private func formatCount(_ count: Int) -> String {
+        count >= 1_000 ? String(format: "%.1fK", Double(count) / 1_000) : "\(count)"
     }
 }
 

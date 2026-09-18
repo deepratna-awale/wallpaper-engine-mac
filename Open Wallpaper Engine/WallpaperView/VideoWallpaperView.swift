@@ -17,7 +17,11 @@ struct VideoWallpaperView: NSViewRepresentable {
     init(wallpaperViewModel: WallpaperViewModel, screenId: String) {
         self.wallpaperViewModel = wallpaperViewModel
         self.screenId = screenId
-        self._viewModel = StateObject(wrappedValue: VideoWallpaperViewModel(wallpaper: wallpaperViewModel.wallpaper(for: screenId)))
+        self._viewModel = StateObject(wrappedValue: VideoWallpaperViewModel(
+            wallpaper: wallpaperViewModel.wallpaper(for: screenId),
+            playsAudio: wallpaperViewModel.shouldPlayAudio(on: screenId),
+            wallpaperViewModel: wallpaperViewModel
+        ))
     }
 
     func makeNSView(context: Context) -> AVPlayerView {
@@ -25,8 +29,7 @@ struct VideoWallpaperView: NSViewRepresentable {
 
         view.player = viewModel.player
 
-        // make the video boundary extends to fit the full screen without black background border
-        view.videoGravity = .resizeAspectFill
+        view.videoGravity = videoGravity(for: wallpaperViewModel.wallpaperPlacement)
 
         // hide any unneeded ui component, we want just the video output
         view.controlsStyle = .none
@@ -49,6 +52,21 @@ struct VideoWallpaperView: NSViewRepresentable {
         }
 
         viewModel.playRate = wallpaperViewModel.playRate
-        viewModel.playVolume = wallpaperViewModel.playVolume
+        viewModel.playVolume = wallpaperViewModel.shouldPlayAudio(on: screenId)
+            ? wallpaperViewModel.playVolume
+            : 0
+        viewModel.setAudioEnabled(wallpaperViewModel.shouldPlayAudio(on: screenId))
+        nsView.videoGravity = videoGravity(for: wallpaperViewModel.wallpaperPlacement)
+    }
+
+    private func videoGravity(for placement: WallpaperPlacement) -> AVLayerVideoGravity {
+        switch placement {
+        case .stretch:
+            return .resize
+        case .fill, .zoom:
+            return .resizeAspectFill
+        case .fit, .center:
+            return .resizeAspect
+        }
     }
 }

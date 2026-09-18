@@ -162,6 +162,7 @@ enum WEWallpaperSortingMethod: String, CaseIterable, Identifiable {
     case rating = "Rating"
 //    case favorite = "Favorite"
     case fileSize = "File Size"
+    case dateAdded = "Date Downloaded"
 //    case subDate = "Subscription Date"
 //    case lastUpdated = "Last Updated"
 }

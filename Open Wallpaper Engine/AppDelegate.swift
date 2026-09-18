@@ -10,6 +10,66 @@ import SwiftUI
 import AVKit
 import WebKit
 
+private final class WorkshopPreviewWindow: NSWindow {
+    var onDismiss: (() -> Void)?
+
+    override func performClose(_ sender: Any?) {
+        orderOut(sender)
+        onDismiss?()
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        performClose(sender)
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isKeyWindow else { return }
+            self.orderOut(nil)
+            self.onDismiss?()
+        }
+    }
+}
+
+private struct WorkshopPreviewContent: View {
+    @ObservedObject var wallpaperViewModel: WallpaperViewModel
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            WallpaperView(
+                viewModel: wallpaperViewModel,
+                screenId: wallpaperViewModel.selectedScreenId
+            )
+            .id(wallpaperViewModel.currentWallpaper.wallpaperDirectory)
+
+            HStack(spacing: 10) {
+                if wallpaperViewModel.currentWallpaper.project.type.lowercased() == "video" {
+                    Button {
+                        wallpaperViewModel.playRate = wallpaperViewModel.playRate == 0
+                            ? max(wallpaperViewModel.lastPlayRate, 0.1)
+                            : 0
+                    } label: {
+                        Image(systemName: wallpaperViewModel.playRate == 0 ? "play.fill" : "pause.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .help(wallpaperViewModel.playRate == 0 ? "Play" : "Pause")
+
+                    Slider(value: $wallpaperViewModel.playVolume, in: 0...1)
+                        .frame(width: 110)
+                }
+
+                Button("Set Wallpaper") {
+                    AppDelegate.shared.applyWorkshopPreview()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+            .padding()
+        }
+    }
+}
+
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     var statusItem: NSStatusItem!
@@ -18,6 +78,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var mainWindowController: MainWindowController!
     
     var wallpaperWindows: [String: NSWindow] = [:]
+    private var workshopPreviewWindow: NSWindow?
+    private var workshopPreviewViewModel: WallpaperViewModel?
     
     var contentViewModel = ContentViewModel()
     var wallpaperViewModel = WallpaperViewModel()
@@ -183,6 +245,51 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         wallpaperWindows.removeAll()
         setWallpaperWindows()
         for (_, window) in wallpaperWindows { window.orderFront(nil) }
+    }
+
+    @MainActor
+    func showWorkshopPreview(_ wallpaper: WEWallpaper) {
+        if let previewViewModel = workshopPreviewViewModel,
+           let window = workshopPreviewWindow {
+            previewViewModel.setWallpaper(wallpaper, for: previewViewModel.selectedScreenId)
+            previewViewModel.playRate = wallpaperViewModel.playRate
+            previewViewModel.playVolume = wallpaperViewModel.playVolume
+            window.title = wallpaper.project.title
+            window.makeKeyAndOrderFront(nil)
+            return
+        }
+
+        let previewViewModel = WallpaperViewModel(persistsWallpapers: false)
+        previewViewModel.setWallpaper(wallpaper, for: previewViewModel.selectedScreenId)
+        previewViewModel.playRate = wallpaperViewModel.playRate
+        previewViewModel.playVolume = wallpaperViewModel.playVolume
+
+        let window = WorkshopPreviewWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 540),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.onDismiss = { [weak self] in
+            self?.workshopPreviewViewModel?.playRate = 0
+        }
+        window.title = wallpaper.project.title
+        window.contentView = NSHostingView(rootView: WorkshopPreviewContent(
+            wallpaperViewModel: previewViewModel
+        ))
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+
+        workshopPreviewViewModel = previewViewModel
+        workshopPreviewWindow = window
+    }
+
+    @MainActor
+    func applyWorkshopPreview() {
+        guard let wallpaper = workshopPreviewViewModel?.currentWallpaper else { return }
+        wallpaperViewModel.inspect(wallpaper)
+        wallpaperViewModel.applyInspectedWallpaper()
     }
 
     /// Called when monitors connect/disconnect — auto-enables newly connected screens.

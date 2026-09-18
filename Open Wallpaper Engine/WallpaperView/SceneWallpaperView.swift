@@ -22,12 +22,16 @@ struct SceneWallpaperView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> SKView {
         let skView = SKView(frame: .zero)
-        skView.ignoresSiblingOrder = true
+        skView.ignoresSiblingOrder = false
         skView.allowsTransparency = false
+        skView.isPaused = false
+        skView.scene?.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
         skView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
 
         if let scene = viewModel.skScene {
             skView.presentScene(scene)
+            scene.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
+            skView.setNeedsDisplay(skView.bounds)
         }
 
         return skView
@@ -46,12 +50,26 @@ struct SceneWallpaperView: NSViewRepresentable {
         // Present scene if available and not already presented
         if let scene = viewModel.skScene, skView.scene !== scene {
             skView.presentScene(scene)
+            scene.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
+            skView.setNeedsDisplay(skView.bounds)
         }
 
         // Update FPS
         skView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
+        skView.scene?.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
 
         // Pause/resume based on play rate
         skView.isPaused = wallpaperViewModel.playRate == 0
+    }
+
+    private func sceneScaleMode(for placement: WallpaperPlacement) -> SKSceneScaleMode {
+        switch placement {
+        case .stretch:
+            return .resizeFill
+        case .fill, .zoom:
+            return .aspectFill
+        case .fit, .center:
+            return .aspectFit
+        }
     }
 }

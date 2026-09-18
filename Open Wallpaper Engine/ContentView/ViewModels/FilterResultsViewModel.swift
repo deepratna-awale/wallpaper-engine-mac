@@ -20,8 +20,8 @@ struct FRShowOnly: OptionSet {
         ("Approved", "trophy.fill"),
         ("My Favourites", "heart.fill"),
         ("Mobile Compatible", "iphone.gen3"),
-        ("Audio Responsive", ""),
-        ("Customizable", "")
+        ("Audio Responsive", "waveform"),
+        ("Customizable", "slider.horizontal.3")
     ]
     
     static let approved             = FRShowOnly(rawValue: 1 << 0)

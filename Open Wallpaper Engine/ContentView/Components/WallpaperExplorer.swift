@@ -17,53 +17,96 @@ struct WallpaperExplorer: SubviewOfContentView {
     }
     
     var body: some View {
-        ScrollView {
-            // MARK: Items
-            if viewModel.autoRefreshWallpapers.isEmpty {
-                HStack {
+        GeometryReader { geometry in
+            VStack(spacing: 8) {
+                if viewModel.displayedWallpapers.isEmpty {
                     Spacer()
-                    Text("""
-                        No wallpapers found for your search.
-                        Expand or reset the categories in the filter sidebar or try another search term.
-                        """)
-                    .font(.title)
-                    .foregroundStyle(Color.secondary)
-                    .multilineTextAlignment(.center)
-                    .lineLimit(nil)
-                    .lineSpacing(10)
+                    Text("No wallpapers found for your search.")
+                        .font(.title)
+                        .foregroundStyle(Color.secondary)
+                        .multilineTextAlignment(.center)
                     Spacer()
-                }
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 50)
-            } else {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: viewModel.explorerIconSize, 
-                                                       maximum: viewModel.explorerIconSize * 2)
-                )], alignment: .leading) {
-                    ForEach(Array(viewModel.autoRefreshWallpapers.enumerated()), id: \.0) { (index, wallpaper) in
-                        ExplorerItem(viewModel: viewModel, wallpaperViewModel: wallpaperViewModel, wallpaper: wallpaper, index: index)
-                            .contextMenu {
-                                ExplorerItemMenu(contentViewModel: viewModel, wallpaperViewModel: wallpaperViewModel, current: wallpaper)
-                                ExplorerGlobalMenu(contentViewModel: viewModel, wallpaperViewModel: wallpaperViewModel)
-                            }
-                            .animation(.spring(), value: viewModel.imageScaleIndex)
-//                            .animation(.spring(), value: wallpaperViewModel.currentWallpaper.rawValue)
-                    }
-                }
-                .padding(.trailing)
-            }
-        }
-        .overlay {
-            VStack {
-                Spacer()
-                HStack {
-                    ForEach(0..<viewModel.maxPage, id: \.self) { page in
-                        Button("\(page + 1)") {
-                            viewModel.currentPage = page + 1
+                } else {
+                    LazyVGrid(columns: [
+                        GridItem(
+                            .adaptive(
+                                minimum: viewModel.explorerIconSize,
+                                maximum: viewModel.explorerIconSize
+                            ),
+                            spacing: 8
+                        )
+                    ], alignment: .leading, spacing: 8) {
+                        ForEach(Array(viewModel.displayedWallpapers.enumerated()), id: \.0) { (index, wallpaper) in
+                            ExplorerItem(viewModel: viewModel, wallpaperViewModel: wallpaperViewModel, wallpaper: wallpaper, index: index)
+                                .contextMenu {
+                                    ExplorerItemMenu(contentViewModel: viewModel, wallpaperViewModel: wallpaperViewModel, current: wallpaper)
+                                    ExplorerGlobalMenu(contentViewModel: viewModel, wallpaperViewModel: wallpaperViewModel)
+                                }
+                                .animation(.spring(), value: viewModel.imageScaleIndex)
                         }
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 }
-                .padding(.bottom)
+
+                InstalledPagination(viewModel: viewModel)
+                .padding(.vertical, 8)
             }
+            .onAppear {
+                viewModel.updateInstalledItemsPerPage(for: CGSize(
+                    width: geometry.size.width,
+                    height: max(geometry.size.height - 44, 1)
+                ))
+            }
+            .onChange(of: geometry.size) {
+                viewModel.updateInstalledItemsPerPage(for: CGSize(
+                    width: geometry.size.width,
+                    height: max(geometry.size.height - 44, 1)
+                ))
+            }
+        }
+    }
+}
+
+private struct InstalledPagination: View {
+    @ObservedObject var viewModel: ContentViewModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                viewModel.currentPage -= 1
+            } label: {
+                Image(systemName: "chevron.left")
+            }
+            .disabled(viewModel.currentPage == 1)
+
+            ForEach(pageNumbers, id: \.self) { page in
+                if page == viewModel.currentPage {
+                    pageButton(page)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    pageButton(page)
+                        .buttonStyle(.bordered)
+                }
+            }
+
+            Button {
+                viewModel.currentPage += 1
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(!viewModel.hasNextWallpaperPage)
+        }
+    }
+
+    private var pageNumbers: [Int] {
+        let firstPage = max(1, viewModel.currentPage - 2)
+        let lastPage = min(viewModel.maxPage, viewModel.currentPage + 2)
+        return Array(firstPage...lastPage)
+    }
+
+    private func pageButton(_ page: Int) -> some View {
+        Button("\(page)") {
+            viewModel.currentPage = page
         }
     }
 }

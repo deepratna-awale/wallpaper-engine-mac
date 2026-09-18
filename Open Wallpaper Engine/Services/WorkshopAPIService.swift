@@ -8,11 +8,80 @@ struct WorkshopItem: Identifiable, Codable {
     let subscriptions: Int
     let fileSize: Int
     let creatorAppId: Int?
+    let creatorId: String?
     let description: String?
+    let votesUp: Int
+    let votesDown: Int
 
     var previewImageURL: URL? {
         guard let urlString = previewURL else { return nil }
         return URL(string: urlString)
+    }
+}
+
+final class WorkshopMetadataStore {
+    static let shared = WorkshopMetadataStore()
+
+    private let storageKey = "WorkshopMetadataById"
+    private var metadata: [String: WorkshopItem]
+
+    private init() {
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let saved = try? JSONDecoder().decode([String: WorkshopItem].self, from: data) else {
+            metadata = [:]
+            return
+        }
+        metadata = saved
+    }
+
+    func item(for workshopId: String) -> WorkshopItem? {
+        metadata[workshopId]
+    }
+
+    func save(_ item: WorkshopItem) {
+        metadata[item.id] = item
+        if let data = try? JSONEncoder().encode(metadata) {
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+    }
+}
+
+final class SteamPlayerStore {
+    static let shared = SteamPlayerStore()
+
+    private let storageKey = "SteamPlayersById"
+    private var players: [String: SteamPlayer]
+
+    private init() {
+        guard let data = UserDefaults.standard.data(forKey: storageKey),
+              let saved = try? JSONDecoder().decode([String: SteamPlayer].self, from: data) else {
+            players = [:]
+            return
+        }
+        players = saved
+    }
+
+    func player(for steamId: String) -> SteamPlayer? {
+        players[steamId]
+    }
+
+    func save(_ player: SteamPlayer) {
+        players[player.steamId] = player
+        if let data = try? JSONEncoder().encode(players) {
+            UserDefaults.standard.set(data, forKey: storageKey)
+        }
+    }
+}
+
+struct SteamPlayer: Codable {
+    let steamId: String
+    let personaName: String
+    let avatarURL: URL?
+
+    enum CodingKeys: String, CodingKey {
+        case steamId = "steamid"
+        case personaName = "personaname"
+        case avatarURL = "avatarfull"
     }
 }
 
@@ -70,10 +139,12 @@ class WorkshopAPIService {
             URLQueryItem(name: "page", value: "\(page)"),
             URLQueryItem(name: "numperpage", value: "\(perPage)"),
             URLQueryItem(name: "appid", value: "\(Self.wallpaperEngineAppId)"),
+            URLQueryItem(name: "match_all_tags", value: "false"),
             URLQueryItem(name: "return_tags", value: "true"),
             URLQueryItem(name: "return_previews", value: "true"),
             URLQueryItem(name: "return_metadata", value: "true"),
             URLQueryItem(name: "return_short_description", value: "true"),
+            URLQueryItem(name: "return_details", value: "true"),
         ]
 
         if !query.isEmpty {
@@ -110,7 +181,9 @@ class WorkshopAPIService {
             throw WorkshopAPIError.httpError(httpResponse.statusCode)
         }
 
-        return try parseQueryResponse(data)
+        let items = try parseQueryResponse(data)
+        items.forEach { WorkshopMetadataStore.shared.save($0) }
+        return items
     }
 
     /// Get details for specific workshop items by their IDs.
@@ -120,7 +193,12 @@ class WorkshopAPIService {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
 
-        var bodyParts = ["itemcount=\(workshopIds.count)"]
+        var bodyParts = [
+            "itemcount=\(workshopIds.count)",
+            "includetags=true",
+            "includevotes=true",
+            "includeshortdescription=true"
+        ]
         for (index, id) in workshopIds.enumerated() {
             bodyParts.append("publishedfileids[\(index)]=\(id)")
         }
@@ -133,7 +211,36 @@ class WorkshopAPIService {
             throw WorkshopAPIError.requestFailed
         }
 
-        return try parseFileDetailsResponse(data)
+        let items = try parseFileDetailsResponse(data)
+        items.forEach { WorkshopMetadataStore.shared.save($0) }
+        return items
+    }
+
+    func getPlayerSummary(steamId: String) async throws -> SteamPlayer? {
+        let apiKey = Self.loadAPIKey()
+        guard !apiKey.isEmpty else { throw WorkshopAPIError.noAPIKey }
+
+        var components = URLComponents(string: "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/")!
+        components.queryItems = [
+            URLQueryItem(name: "key", value: apiKey),
+            URLQueryItem(name: "steamids", value: steamId)
+        ]
+        guard let url = components.url else { throw WorkshopAPIError.invalidURL }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw WorkshopAPIError.requestFailed
+        }
+
+        struct PlayerResponse: Decodable {
+            struct Response: Decodable { let players: [SteamPlayer] }
+            let response: Response
+        }
+        let player = try JSONDecoder().decode(PlayerResponse.self, from: data).response.players.first
+        if let player {
+            SteamPlayerStore.shared.save(player)
+        }
+        return player
     }
 
     // MARK: - API Key
@@ -178,11 +285,14 @@ class WorkshopAPIService {
         else { return nil }
 
         let previewURL = dict["preview_url"] as? String
-        let tags: [String] = (dict["tags"] as? [[String: Any]])?.compactMap { $0["tag"] as? String } ?? []
+        let tags = parseTags(from: dict["tags"])
         let subscriptions = dict["subscriptions"] as? Int ?? dict["lifetime_subscriptions"] as? Int ?? 0
         let fileSize = dict["file_size"] as? Int ?? 0
         let creatorAppId = dict["creator_app_id"] as? Int
+        let creatorId = dict["creator"] as? String
         let description = dict["short_description"] as? String ?? dict["description"] as? String
+        let votesUp = dict["votes_up"] as? Int ?? 0
+        let votesDown = dict["votes_down"] as? Int ?? 0
 
         return WorkshopItem(
             id: publishedFileId,
@@ -192,8 +302,26 @@ class WorkshopAPIService {
             subscriptions: subscriptions,
             fileSize: fileSize,
             creatorAppId: creatorAppId,
-            description: description
+            creatorId: creatorId,
+            description: description,
+            votesUp: votesUp,
+            votesDown: votesDown
         )
+    }
+
+    private func parseTags(from value: Any?) -> [String] {
+        let rawTags: [String]
+        if let tagObjects = value as? [[String: Any]] {
+            rawTags = tagObjects.compactMap { $0["tag"] as? String }
+        } else if let tagStrings = value as? [String] {
+            rawTags = tagStrings
+        } else {
+            rawTags = []
+        }
+
+        return Array(Set(rawTags.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }))
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 }
 

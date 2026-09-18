@@ -27,6 +27,14 @@ struct ExplorerTopBar: SubviewOfContentView {
                 Label("Filter Results", systemImage: "checklist.checked")
             }
             .buttonStyle(.borderedProminent)
+            if !viewModel.selectedWallpapers.isEmpty {
+                Button(role: .destructive) {
+                    viewModel.isBatchUnsubscribeConfirming = true
+                } label: {
+                    Label("Delete Selected (\(viewModel.selectedWallpapers.count))", systemImage: "trash")
+                }
+                .buttonStyle(.bordered)
+            }
             if globalSettingsViewModel.settings.autoRefresh {
                 Button {
                     viewModel.refresh()
@@ -35,7 +43,10 @@ struct ExplorerTopBar: SubviewOfContentView {
                 }
             }
             Spacer()
-            Button { 
+            Text(viewModel.sortingSequence == .increase ? "Ascending" : "Descending")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button {
                 if viewModel.sortingSequence == .decrease {
                     viewModel.sortingSequence = .increase
                 } else {

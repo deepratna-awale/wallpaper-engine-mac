@@ -14,7 +14,10 @@ struct WorkshopView: SubviewOfContentView {
             } else if !viewModel.steamCmd.isLoggedIn {
                 SteamLoginView(steamCmd: viewModel.steamCmd)
             } else {
-                WorkshopBrowserView(viewModel: viewModel.workshopVM)
+                WorkshopBrowserView(
+                    viewModel: viewModel.workshopVM,
+                    contentViewModel: viewModel
+                )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -192,8 +195,32 @@ private struct SteamLoginView: View {
 
 private struct WorkshopBrowserView: View {
     @ObservedObject var viewModel: WorkshopViewModel
+    @ObservedObject var contentViewModel: ContentViewModel
 
     var body: some View {
+        HStack(spacing: 0) {
+            WorkshopFiltersSidebar(viewModel: viewModel)
+                .frame(width: contentViewModel.isFilterReveal ? 225 : 0)
+                .opacity(contentViewModel.isFilterReveal ? 1 : 0)
+
+            workshopContent
+                .padding(.leading, contentViewModel.isFilterReveal ? 10 : 0)
+        }
+        .animation(.spring(), value: contentViewModel.isFilterReveal)
+        .confirmationDialog(
+            "Download Selected Wallpapers",
+            isPresented: $viewModel.isBatchDownloadConfirming
+        ) {
+            Button("Download \(viewModel.selectedItemIds.count) Wallpapers") {
+                viewModel.downloadSelectedItems()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Download \(viewModel.selectedItemIds.count) selected wallpapers to your library?")
+        }
+    }
+
+    private var workshopContent: some View {
         VStack(spacing: 8) {
             // Search bar
             HStack {
@@ -223,27 +250,40 @@ private struct WorkshopBrowserView: View {
                     }
                 }
                 .frame(width: 160)
-                .onChange(of: viewModel.sortOrder) { _ in
+                .onChange(of: viewModel.sortOrder) {
                     viewModel.currentPage = 1
                     Task { await viewModel.search() }
+                }
+
+                Button {
+                    contentViewModel.isFilterReveal.toggle()
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                }
+                .buttonStyle(.bordered)
+                .help("Show filters")
+
+                if !viewModel.selectedItemIds.isEmpty {
+                    Button {
+                        viewModel.isBatchDownloadConfirming = true
+                    } label: {
+                        Label("Download Selected (\(viewModel.selectedItemIds.count))", systemImage: "arrow.down.circle")
+                    }
+                    .buttonStyle(.borderedProminent)
+
+                    Button {
+                        viewModel.clearSelection()
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.bordered)
+                    .help("Clear selection")
                 }
             }
             .padding(8)
             .background(Color(nsColor: .controlBackgroundColor))
             .cornerRadius(8)
             .padding(.horizontal)
-
-            // Tag filters
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 4) {
-                    tagGroup("Rating:", WorkshopViewModel.contentRatingTags)
-                    Divider().frame(height: 20)
-                    tagGroup("Type:", WorkshopViewModel.typeTags)
-                    Divider().frame(height: 20)
-                    tagGroup("", WorkshopViewModel.genreTags)
-                }
-                .padding(.horizontal)
-            }
 
             // Results
             if viewModel.isLoading && viewModel.items.isEmpty {
@@ -290,21 +330,41 @@ private struct WorkshopBrowserView: View {
                 }
                 Spacer()
             } else {
-                ScrollView {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 200, maximum: 300))], spacing: 12) {
-                        ForEach(viewModel.items) { item in
-                            WorkshopItemCard(item: item, viewModel: viewModel)
+                GeometryReader { geometry in
+                    VStack(spacing: 8) {
+                        LazyVGrid(columns: [
+                            GridItem(
+                                .adaptive(
+                                    minimum: contentViewModel.explorerIconSize - 5,
+                                    maximum: contentViewModel.explorerIconSize - 5
+                                ),
+                                spacing: 13
+                            )
+                        ], alignment: .leading, spacing: 13) {
+                            ForEach(viewModel.visibleItems) { item in
+                                WorkshopItemCard(item: item, viewModel: viewModel)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                        WorkshopPagination(viewModel: viewModel)
+                            .padding(.bottom, 8)
+                    }
+                    .onAppear {
+                        Task {
+                            await viewModel.updateItemsPerPage(
+                                for: CGSize(width: geometry.size.width, height: max(geometry.size.height - 44, 1)),
+                                itemSize: contentViewModel.explorerIconSize - 5
+                            )
                         }
                     }
-                    .padding()
-
-                    if !viewModel.items.isEmpty {
-                        Button("Load More") {
-                            Task { await viewModel.loadMore() }
+                    .onChange(of: geometry.size) {
+                        Task {
+                            await viewModel.updateItemsPerPage(
+                                for: CGSize(width: geometry.size.width, height: max(geometry.size.height - 44, 1)),
+                                itemSize: contentViewModel.explorerIconSize - 5
+                            )
                         }
-                        .buttonStyle(.bordered)
-                        .disabled(viewModel.isLoading)
-                        .padding(.bottom)
                     }
                 }
             }
@@ -315,30 +375,101 @@ private struct WorkshopBrowserView: View {
             }
         }
     }
+}
 
-    private func tagGroup(_ label: String, _ tags: [String]) -> some View {
-        HStack(spacing: 4) {
-            if !label.isEmpty {
-                Text(label)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+private struct WorkshopPagination: View {
+    @ObservedObject var viewModel: WorkshopViewModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Button {
+                viewModel.currentPage -= 1
+                Task { await viewModel.search() }
+            } label: {
+                Image(systemName: "chevron.left")
             }
-            ForEach(tags, id: \.self) { tag in
+            .disabled(viewModel.currentPage == 1 || viewModel.isLoading)
+
+            ForEach(pageNumbers, id: \.self) { page in
+                if page == viewModel.currentPage {
+                    pageButton(page)
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    pageButton(page)
+                        .buttonStyle(.bordered)
+                }
+            }
+
+            Button {
+                viewModel.currentPage += 1
+                Task { await viewModel.search() }
+            } label: {
+                Image(systemName: "chevron.right")
+            }
+            .disabled(!viewModel.hasNextPage || viewModel.isLoading)
+        }
+    }
+
+    private var pageNumbers: [Int] {
+        let firstPage = max(1, viewModel.currentPage - 2)
+        let lastPage = viewModel.hasNextPage ? viewModel.currentPage + 2 : viewModel.currentPage
+        return Array(firstPage...lastPage)
+    }
+
+    private func pageButton(_ page: Int) -> some View {
+        Button("\(page)") {
+            viewModel.currentPage = page
+            Task { await viewModel.search() }
+        }
+        .disabled(viewModel.isLoading)
+    }
+}
+
+private struct WorkshopFiltersSidebar: View {
+    @ObservedObject var viewModel: WorkshopViewModel
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
                 Button {
-                    viewModel.toggleTag(tag)
-                    viewModel.currentPage = 1
+                    viewModel.resetFilters()
                     Task { await viewModel.search() }
                 } label: {
-                    Text(tag)
-                        .font(.caption)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(viewModel.selectedTags.contains(tag) ? Color.accentColor : Color(nsColor: .controlBackgroundColor))
-                        .foregroundStyle(viewModel.selectedTags.contains(tag) ? .white : .primary)
-                        .cornerRadius(12)
+                    Label("Reset Filters", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderedProminent)
+
+                Toggle("Hide Downloaded", isOn: $viewModel.hideDownloaded)
+                    .toggleStyle(.checkbox)
+                    .onChange(of: viewModel.hideDownloaded) {
+                        viewModel.currentPage = 1
+                        Task { await viewModel.search() }
+                    }
+
+                filterSection("Rating", tags: WorkshopViewModel.contentRatingTags)
+                filterSection("Type", tags: WorkshopViewModel.typeTags)
+                filterSection("Resolution", tags: WorkshopViewModel.resolutionTags)
+                filterSection("Genre", tags: WorkshopViewModel.genreTags)
             }
+            .padding()
+        }
+    }
+
+    private func filterSection(_ title: LocalizedStringKey, tags: [String]) -> some View {
+        FilterSection(title, alignment: .leading, spacing: 6) {
+            ForEach(tags, id: \.self) { tag in
+                Toggle(tag, isOn: Binding(
+                    get: { viewModel.selectedTags.contains(tag) },
+                    set: { isSelected in
+                        if isSelected != viewModel.selectedTags.contains(tag) {
+                            viewModel.toggleTag(tag)
+                            Task { await viewModel.search() }
+                        }
+                    }
+                ))
+            }
+            .toggleStyle(.checkbox)
         }
     }
 }
@@ -350,15 +481,13 @@ private struct WorkshopItemCard: View {
     @ObservedObject var viewModel: WorkshopViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Preview image
+        ZStack(alignment: .bottom) {
             AsyncImage(url: item.previewImageURL) { phase in
                 switch phase {
                 case .success(let image):
                     image
                         .resizable()
-                        .aspectRatio(16/9, contentMode: .fill)
-                        .clipped()
+                        .aspectRatio(1, contentMode: .fill)
                 case .failure:
                     placeholder
                 default:
@@ -366,95 +495,92 @@ private struct WorkshopItemCard: View {
                         .overlay(ProgressView().controlSize(.small))
                 }
             }
-            .frame(height: 120)
+            .aspectRatio(1, contentMode: .fit)
             .clipped()
 
-            // Info
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(.caption)
-                    .fontWeight(.medium)
-                    .lineLimit(2)
-
-                HStack {
-                    if !item.tags.isEmpty {
-                        Text(item.tags.prefix(2).joined(separator: ", "))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    if item.subscriptions > 0 {
-                        Label("\(formatCount(item.subscriptions))", systemImage: "heart")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                // Download button
-                downloadButton
-            }
-            .padding(8)
+            Text(item.title)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, minHeight: 30, maxHeight: 30)
+                .padding(4)
+                .background(Color(white: 0, opacity: 0.65))
+                .font(.footnote)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.white)
         }
-        .background(Color(nsColor: .controlBackgroundColor))
-        .cornerRadius(8)
-        .shadow(color: .black.opacity(0.1), radius: 2, y: 1)
+        .overlay(alignment: .topTrailing) {
+            downloadControl
+                .padding(6)
+                .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
+        }
+        .overlay(alignment: .topLeading) {
+            if !viewModel.selectedItemIds.isEmpty {
+                Button {
+                    viewModel.selectItem(item)
+                } label: {
+                    Image(systemName: viewModel.selectedItemIds.contains(item.id) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(viewModel.selectedItemIds.contains(item.id) ? Color.accentColor : .white)
+                }
+                .buttonStyle(.plain)
+                .padding(6)
+                .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
+                .help("Select item")
+            }
+        }
+        .border(Color(nsColor: .separatorColor), width: 1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            viewModel.selectItem(item)
+        }
+        .onTapGesture(count: 2) {
+            viewModel.preview(item: item)
+        }
     }
 
     @ViewBuilder
-    private var downloadButton: some View {
+    private var downloadControl: some View {
+        if viewModel.isPreviewLoading(item) {
+            ProgressView()
+                .controlSize(.small)
+                .help("Preparing preview")
+        } else {
         let state = viewModel.downloadState(for: item)
         switch state {
         case .downloading(let status):
-            HStack(spacing: 4) {
-                ProgressView().controlSize(.mini)
-                Text(status)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+            ProgressView()
+                .controlSize(.small)
+                .help(status)
         case .completed:
-            Label("Downloaded", systemImage: "checkmark.circle.fill")
-                .font(.caption2)
+            Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
+                .help("Downloaded")
         case .failed(let msg):
-            VStack(alignment: .leading) {
-                Label("Failed", systemImage: "xmark.circle")
-                    .font(.caption2)
-                    .foregroundStyle(.red)
-                Text(msg).font(.caption2).foregroundStyle(.secondary)
-            }
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.red)
+                .help(msg)
         case .none:
             if viewModel.steamCmd.isLoggedIn {
                 Button {
                     viewModel.download(item: item)
                 } label: {
-                    Label("Download", systemImage: "arrow.down.circle")
-                        .font(.caption)
+                    Image(systemName: "arrow.down.circle.fill")
+                        .font(.title3)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
+                .buttonStyle(.plain)
+                .help("Download")
             } else {
-                Text("Login to download")
-                    .font(.caption2)
+                Image(systemName: "person.badge.key")
                     .foregroundStyle(.secondary)
+                    .help("Log in to download")
             }
         }
+            }
     }
 
     private var placeholder: some View {
         Rectangle()
             .fill(Color(nsColor: .separatorColor))
-            .aspectRatio(16/9, contentMode: .fill)
-    }
-
-    private func formatCount(_ count: Int) -> String {
-        if count >= 1_000_000 {
-            return String(format: "%.1fM", Double(count) / 1_000_000)
-        } else if count >= 1_000 {
-            return String(format: "%.1fK", Double(count) / 1_000)
-        }
-        return "\(count)"
+            .aspectRatio(1, contentMode: .fit)
     }
 }
 

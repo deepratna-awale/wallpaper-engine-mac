@@ -27,7 +27,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     init(wallpaper: WEWallpaper) {
         self.currentWallpaper = wallpaper
-        Self.log("init: wallpaper=\(wallpaper.project.title ?? "?") dir=\(wallpaper.wallpaperDirectory.path)")
+        Self.log("init: wallpaper=\(wallpaper.project.title) dir=\(wallpaper.wallpaperDirectory.path)")
         NSWorkspace.shared.notificationCenter.addObserver(
             self, selector: #selector(systemWillSleep(_:)),
             name: NSWorkspace.screensDidSleepNotification, object: nil)
@@ -101,13 +101,14 @@ class SceneWallpaperViewModel: ObservableObject {
             skScene.backgroundColor = NSColor(red: c.r, green: c.g, blue: c.b, alpha: 1.0)
         }
 
-        // Show only the base background image (no effects/particles/additive layers)
+        // Preserve the source object order so foreground layers render above backgrounds.
         var hasImage = false
-        for obj in scene.objects {
+        for (index, obj) in scene.objects.enumerated() {
             guard obj.visible != false, obj.image != nil else { continue }
             // Skip additive/overlay layers that look like effects
             if let node = buildImageNode(obj, wallpaperDir: wallpaperDir) {
                 if node.blendMode == .add { continue }
+                node.zPosition = CGFloat(index)
                 skScene.addChild(node)
                 hasImage = true
             }

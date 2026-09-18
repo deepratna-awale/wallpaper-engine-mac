@@ -72,5 +72,20 @@ struct WebWallpaperView: NSViewRepresentable {
             viewModel.currentWallpaper = selectedWallpaper
             Self.loadWallpaper(nsView, viewModel: viewModel)
         }
+        applyPlacement(wallpaperViewModel.wallpaperPlacement, to: nsView)
+    }
+
+    private func applyPlacement(_ placement: WallpaperPlacement, to webView: WKWebView) {
+        let objectFit: String
+        switch placement {
+        case .stretch:
+            objectFit = "fill"
+        case .fill, .zoom:
+            objectFit = "cover"
+        case .fit, .center:
+            objectFit = "contain"
+        }
+        let javascript = "document.documentElement.style.width='100%';document.documentElement.style.height='100%';document.body.style.margin='0';document.body.style.width='100%';document.body.style.height='100%';document.querySelectorAll('video,img,canvas').forEach(function(element){element.style.width='100%';element.style.height='100%';element.style.objectFit='\(objectFit)';});"
+        webView.evaluateJavaScript(javascript, completionHandler: nil)
     }
 }

@@ -9,19 +9,17 @@ import AVKit
 import SwiftUI
 import Combine
 
+@MainActor
 class VideoWallpaperViewModel: ObservableObject {
+    private let playsAudio: Bool
+    private let wallpaperViewModel: WallpaperViewModel
+
     var currentWallpaper: WEWallpaper {
         didSet {
-            // Remove observer for old item before replacing
             if let oldItem = self.player.currentItem {
                 NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: oldItem)
             }
-            let newItem = AVPlayerItem(url: currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file))
-            self.player.replaceCurrentItem(with: newItem)
-            NotificationCenter.default.addObserver(self, selector: #selector(playerDidFinishPlaying(_:)), name: .AVPlayerItemDidPlayToEndTime, object: newItem)
-            // Force-apply rate and volume — replaceCurrentItem resets player to paused
-            self.player.rate = self.playRate
-            self.player.volume = self.playVolume
+            replacePlayers(with: currentWallpaper)
         }
     }
 
@@ -34,28 +32,44 @@ class VideoWallpaperViewModel: ObservableObject {
     var playVolume: Float = 0 {
         didSet {
             self.player.volume = playVolume
+            self.audioPlayer.volume = playVolume
         }
     }
 
     var player = AVPlayer()
+    private var audioPlayer = AVPlayer()
     private var cancellables = Set<AnyCancellable>()
 
-    init(wallpaper currentWallpaper: WEWallpaper) {
+    init(
+        wallpaper currentWallpaper: WEWallpaper,
+        playsAudio: Bool = true,
+        wallpaperViewModel: WallpaperViewModel
+    ) {
         self.currentWallpaper = currentWallpaper
+        self.playsAudio = playsAudio
+        self.wallpaperViewModel = wallpaperViewModel
         self.player = AVPlayer(url: currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file))
+        self.audioPlayer = AVPlayer(url: currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file))
+        self.player.isMuted = true
+        self.audioPlayer.currentItem?.audioTimePitchAlgorithm = .timeDomain
+        self.audioPlayer.isMuted = !playsAudio
         NotificationCenter.default.addObserver(self, selector: #selector(playerDidFinishPlaying(_:)), name: .AVPlayerItemDidPlayToEndTime, object: self.player.currentItem)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemWillSleep(_:)), name: NSWorkspace.screensDidSleepNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemDidWake(_:)), name: NSWorkspace.didWakeNotification, object: nil)
 
-        // Directly observe playRate/playVolume changes from the shared WallpaperViewModel
-        let wvm = AppDelegate.shared.wallpaperViewModel
-        wvm.$playRate
+        wallpaperViewModel.$playRate
             .receive(on: DispatchQueue.main)
             .sink { [weak self] rate in
                 self?.playRate = rate
             }
             .store(in: &cancellables)
-        wvm.$playVolume
+        wallpaperViewModel.$audioPlayRate
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] rate in
+                self?.audioPlayer.rate = self?.playsAudio == true ? rate : 0
+            }
+            .store(in: &cancellables)
+        wallpaperViewModel.$playVolume
             .receive(on: DispatchQueue.main)
             .sink { [weak self] volume in
                 self?.playVolume = volume
@@ -68,10 +82,17 @@ class VideoWallpaperViewModel: ObservableObject {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
+    func setAudioEnabled(_ enabled: Bool) {
+        player.isMuted = true
+        audioPlayer.isMuted = !enabled
+        audioPlayer.rate = enabled ? wallpaperViewModel.audioPlayRate : 0
+    }
+
     @objc private func playerDidFinishPlaying(_ notification: Notification) {
-        // Replay video
         self.player.seek(to: CMTime.zero)
+        self.audioPlayer.seek(to: CMTime.zero)
         self.player.rate = self.playRate
+        self.audioPlayer.rate = playsAudio ? wallpaperViewModel.audioPlayRate : 0
     }
 
     @objc private func playerDidStopPlaying(_ notification: Notification) {
@@ -81,9 +102,31 @@ class VideoWallpaperViewModel: ObservableObject {
 
     @objc func systemWillSleep(_ notification: Notification) {
         self.player.rate = 0
+        self.audioPlayer.rate = 0
     }
 
     @objc func systemDidWake(_ notification: Notification) {
         self.player.rate = self.playRate
+        self.audioPlayer.rate = playsAudio ? wallpaperViewModel.audioPlayRate : 0
+    }
+
+    private func replacePlayers(with wallpaper: WEWallpaper) {
+        let url = wallpaper.wallpaperDirectory.appending(path: wallpaper.project.file)
+        let videoItem = AVPlayerItem(url: url)
+        let audioItem = AVPlayerItem(url: url)
+        audioItem.audioTimePitchAlgorithm = .timeDomain
+
+        player.replaceCurrentItem(with: videoItem)
+        audioPlayer.replaceCurrentItem(with: audioItem)
+        player.isMuted = true
+        audioPlayer.isMuted = !playsAudio
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(playerDidFinishPlaying(_:)),
+            name: .AVPlayerItemDidPlayToEndTime,
+            object: videoItem
+        )
+        player.rate = playRate
+        audioPlayer.rate = playsAudio ? wallpaperViewModel.audioPlayRate : 0
     }
 }

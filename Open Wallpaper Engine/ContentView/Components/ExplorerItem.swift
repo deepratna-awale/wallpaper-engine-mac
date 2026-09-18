@@ -55,20 +55,30 @@ struct ExplorerItem: SubviewOfContentView {
                 .stroke(Color.blue, lineWidth: viewModel.isSelected(wallpaper) ? 3 : 0)
         )
         .overlay(alignment: .topLeading) {
-            if viewModel.isSelected(wallpaper) {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.white, .blue)
+            if !viewModel.selectedWallpapers.isEmpty {
+                Button {
+                    viewModel.toggleSelection(for: wallpaper)
+                } label: {
+                    Image(systemName: viewModel.isSelected(wallpaper) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(viewModel.isSelected(wallpaper) ? Color.accentColor : .white)
+                }
+                .buttonStyle(.plain)
+                .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
                     .padding(4)
+                .help("Select wallpaper")
             }
         }
         .border(Color.accentColor, width: viewModel.imageScaleIndex == index ? 1.0 : 0)
         .onTapGesture {
-            if NSEvent.modifierFlags.contains(.command) {
-                viewModel.toggleSelection(for: wallpaper)
-            } else {
-                viewModel.clearSelection()
-                wallpaperViewModel.nextCurrentWallpaper = wallpaper
-            }
+            viewModel.selectWallpaper(
+                wallpaper,
+                from: viewModel.autoRefreshWallpapers,
+                inspectingWith: wallpaperViewModel
+            )
+        }
+        .onTapGesture(count: 2) {
+            wallpaperViewModel.inspect(wallpaper)
+            AppDelegate.shared.showWorkshopPreview(wallpaper)
         }
     }
 }
