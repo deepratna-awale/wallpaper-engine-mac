@@ -81,6 +81,9 @@ extension AppDelegate {
                     let dest = docsDir.appending(path: url.lastPathComponent)
                     if !fm.fileExists(atPath: dest.path) {
                         try? fm.copyItem(at: url, to: dest)
+                        DispatchQueue.global(qos: .utility).async {
+                            SceneShaderTranslator.translatePackageShaders(in: dest)
+                        }
                     }
                 }
                 for url in zipURLs {

@@ -371,6 +371,9 @@ class SteamCmdService: ObservableObject {
                     if !fm.fileExists(atPath: dest.path) {
                         do {
                             try fm.copyItem(at: sourcePath, to: dest)
+                            DispatchQueue.global(qos: .utility).async {
+                                SceneShaderTranslator.translatePackageShaders(in: dest)
+                            }
                         } catch {
                             self.downloadProgress[workshopId] = .failed("Copy failed: \(error.localizedDescription)")
                             return

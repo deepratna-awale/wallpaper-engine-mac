@@ -7,6 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		4923DF96305D13130038BE65 /* MetalFX.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4923DF94305D13130038BE65 /* MetalFX.framework */; };
+		4923DF97305D13130038BE65 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4923DF95305D13130038BE65 /* MetalKit.framework */; };
 		5E0700E62A859FAD00ADFE2E /* WallpaperNotFound.mp4 in Resources */ = {isa = PBXBuildFile; fileRef = 5E0700E52A859FAD00ADFE2E /* WallpaperNotFound.mp4 */; };
 		5E2F1E892A57DF2D0081D69D /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 5E2F1E882A57DF2D0081D69D /* Localizable.xcstrings */; };
 		5E32ABFE2A4D595D00A0EEEC /* FilterResults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E32ABFD2A4D595D00A0EEEC /* FilterResults.swift */; };
@@ -53,6 +55,10 @@
 		AA1B2C3D4E5F600200ABCD02 /* TEXParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD02 /* TEXParser.swift */; };
 		AA1B2C3D4E5F600200ABCD03 /* SceneModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD03 /* SceneModels.swift */; };
 		AA1B2C3D4E5F600200ABCD04 /* SceneWallpaperViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD04 /* SceneWallpaperViewModel.swift */; };
+		EE1000000000000000000001 /* AudioReactiveScriptEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000002 /* AudioReactiveScriptEngine.swift */; };
+		EE1000000000000000000003 /* SceneShaderTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000004 /* SceneShaderTranslator.swift */; };
+		EE1000000000000000000005 /* SceneUserPropertiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000006 /* SceneUserPropertiesView.swift */; };
+		EE1000000000000000000007 /* SceneInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000008 /* SceneInspectorView.swift */; };
 		AA1B2C3D4E5F600200ABCD05 /* SpriteKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */; };
 		BB0000000000000000000003 /* ObjCExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* ObjCExceptionCatcher.m */; };
 		CC0000000000000000000001 /* WallpaperDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000002 /* WallpaperDirectory.swift */; };
@@ -62,9 +68,13 @@
 		CC0000000000000000000009 /* WorkshopViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000A /* WorkshopViewModel.swift */; };
 		CC000000000000000000000B /* WorkshopView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC000000000000000000000C /* WorkshopView.swift */; };
 		DAEE29C62A9CB52100633898 /* WebWallpaperViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAEE29C52A9CB52100633898 /* WebWallpaperViewModel.swift */; };
+		DD1000000000000000000001 /* SceneMetalRenderer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000002 /* SceneMetalRenderer.swift */; };
+		DD1000000000000000000003 /* SceneShaders.metal in Sources */ = {isa = PBXBuildFile; fileRef = DD1000000000000000000004 /* SceneShaders.metal */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		4923DF94305D13130038BE65 /* MetalFX.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalFX.framework; path = System/Library/Frameworks/MetalFX.framework; sourceTree = SDKROOT; };
+		4923DF95305D13130038BE65 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		5E0700E52A859FAD00ADFE2E /* WallpaperNotFound.mp4 */ = {isa = PBXFileReference; lastKnownFileType = file; path = WallpaperNotFound.mp4; sourceTree = "<group>"; };
 		5E1670732A88EBEF00D1B199 /* change-signing-certificate.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "change-signing-certificate.png"; sourceTree = "<group>"; };
 		5E1670742A88ED8400D1B199 /* import-menu.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "import-menu.png"; sourceTree = "<group>"; };
@@ -122,6 +132,10 @@
 		AA1B2C3D4E5F600100ABCD02 /* TEXParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TEXParser.swift; sourceTree = "<group>"; };
 		AA1B2C3D4E5F600100ABCD03 /* SceneModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneModels.swift; sourceTree = "<group>"; };
 		AA1B2C3D4E5F600100ABCD04 /* SceneWallpaperViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperViewModel.swift; sourceTree = "<group>"; };
+		EE1000000000000000000002 /* AudioReactiveScriptEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioReactiveScriptEngine.swift; sourceTree = "<group>"; };
+		EE1000000000000000000004 /* SceneShaderTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneShaderTranslator.swift; sourceTree = "<group>"; };
+		EE1000000000000000000006 /* SceneUserPropertiesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneUserPropertiesView.swift; sourceTree = "<group>"; };
+		EE1000000000000000000008 /* SceneInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInspectorView.swift; sourceTree = "<group>"; };
 		AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SpriteKit.framework; path = System/Library/Frameworks/SpriteKit.framework; sourceTree = SDKROOT; };
 		B4AD1D0F2AA24E8200471AC8 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 		BB0000000000000000000001 /* ObjCExceptionCatcher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionCatcher.h; sourceTree = "<group>"; };
@@ -133,6 +147,8 @@
 		CC000000000000000000000A /* WorkshopViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkshopViewModel.swift; sourceTree = "<group>"; };
 		CC000000000000000000000C /* WorkshopView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkshopView.swift; sourceTree = "<group>"; };
 		DAEE29C52A9CB52100633898 /* WebWallpaperViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebWallpaperViewModel.swift; sourceTree = "<group>"; };
+		DD1000000000000000000002 /* SceneMetalRenderer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneMetalRenderer.swift; sourceTree = "<group>"; };
+		DD1000000000000000000004 /* SceneShaders.metal */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.metal; path = SceneShaders.metal; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -140,6 +156,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4923DF97305D13130038BE65 /* MetalKit.framework in Frameworks */,
+				4923DF96305D13130038BE65 /* MetalFX.framework in Frameworks */,
 				AA1B2C3D4E5F600200ABCD05 /* SpriteKit.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -147,6 +165,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		4923DF93305D13130038BE65 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4923DF94305D13130038BE65 /* MetalFX.framework */,
+				4923DF95305D13130038BE65 /* MetalKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		5E51A4382AA30D6A00E46E99 /* Alerts */ = {
 			isa = PBXGroup;
 			children = (
@@ -168,6 +195,8 @@
 				5E66A0DC2A8ADF7C00EE79D6 /* ExplorerTopBar.swift */,
 				5EB4DB872A980532000A1FEA /* ExplorerItem.swift */,
 				5E66A0E02A8BA18D00EE79D6 /* GifImage.swift */,
+				EE1000000000000000000006 /* SceneUserPropertiesView.swift */,
+				EE1000000000000000000008 /* SceneInspectorView.swift */,
 				5E32ABFD2A4D595D00A0EEEC /* FilterResults.swift */,
 				CC000000000000000000000C /* WorkshopView.swift */,
 			);
@@ -214,6 +243,8 @@
 				5EF28EC02A8990D90013ABBE /* VideoWallpaperViewModel.swift */,
 				DAEE29C52A9CB52100633898 /* WebWallpaperViewModel.swift */,
 				AA1B2C3D4E5F600100ABCD04 /* SceneWallpaperViewModel.swift */,
+				EE1000000000000000000002 /* AudioReactiveScriptEngine.swift */,
+				EE1000000000000000000004 /* SceneShaderTranslator.swift */,
 				5E51A43B2AA33F5500E46E99 /* GlobalSettingsService.swift */,
 				BB0000000000000000000001 /* ObjCExceptionCatcher.h */,
 				BB0000000000000000000002 /* ObjCExceptionCatcher.m */,
@@ -244,6 +275,8 @@
 				5EC47EAB2A2DB3E500120CCC /* WallpaperView.swift */,
 				5EAD1DB72A88DFB80067E1D2 /* VideoWallpaperView.swift */,
 				5EA310FB2A88E116001A65F4 /* SceneWallpaperView.swift */,
+				DD1000000000000000000002 /* SceneMetalRenderer.swift */,
+				DD1000000000000000000004 /* SceneShaders.metal */,
 				5EA310FD2A88E135001A65F4 /* WebWallpaperView.swift */,
 			);
 			path = WallpaperView;
@@ -271,6 +304,7 @@
 				5EC47E782A2DB2E600120CCC /* Open Wallpaper Engine */,
 				5EC47E772A2DB2E600120CCC /* Products */,
 				AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */,
+				4923DF93305D13130038BE65 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -465,6 +499,12 @@
 				AA1B2C3D4E5F600200ABCD02 /* TEXParser.swift in Sources */,
 				AA1B2C3D4E5F600200ABCD03 /* SceneModels.swift in Sources */,
 				AA1B2C3D4E5F600200ABCD04 /* SceneWallpaperViewModel.swift in Sources */,
+				EE1000000000000000000001 /* AudioReactiveScriptEngine.swift in Sources */,
+				EE1000000000000000000003 /* SceneShaderTranslator.swift in Sources */,
+				EE1000000000000000000005 /* SceneUserPropertiesView.swift in Sources */,
+				EE1000000000000000000007 /* SceneInspectorView.swift in Sources */,
+				DD1000000000000000000001 /* SceneMetalRenderer.swift in Sources */,
+				DD1000000000000000000003 /* SceneShaders.metal in Sources */,
 				BB0000000000000000000003 /* ObjCExceptionCatcher.m in Sources */,
 				CC0000000000000000000001 /* WallpaperDirectory.swift in Sources */,
 				CC0000000000000000000003 /* ZipImporter.swift in Sources */,

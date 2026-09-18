@@ -19,6 +19,7 @@ struct WallpaperPreview: SubviewOfContentView {
     
     @State var hoveredTag: String?
     @State var isTagsHovered = false
+    @State var isSceneInspectorPresented = false
     
     init(contentViewModel viewModel: ContentViewModel, wallpaperViewModel: WallpaperViewModel) {
         self.viewModel = viewModel
@@ -81,7 +82,8 @@ struct WallpaperPreview: SubviewOfContentView {
                             
                         }
                     }
-                    HStack {
+                        HStack {
+                            Spacer()
                         AsyncImage(url: wallpaperViewModel.inspectedAuthor?.avatarURL) { phase in
                             if case let .success(image) = phase {
                                 image.resizable()
@@ -91,9 +93,21 @@ struct WallpaperPreview: SubviewOfContentView {
                         }
                         .frame(width: 32, height: 32)
                         .clipShape(Circle())
-                        Text(wallpaperViewModel.inspectedAuthor?.personaName
-                             ?? wallpaperViewModel.inspectedWorkshopItem?.creatorId
-                             ?? "Unknown Author")
+                        let authorID = wallpaperViewModel.inspectedAuthor?.steamId ?? wallpaperViewModel.inspectedWorkshopItem?.creatorId
+                        if let authorID {
+                            Button {
+                                viewModel.topTabBarSelection = 1
+                                viewModel.workshopVM.showAuthor(authorID)
+                            } label: {
+                                Text(wallpaperViewModel.inspectedAuthor?.personaName ?? authorID)
+                                    .frame(maxWidth: .infinity, alignment: .center)
+                            }
+                            .buttonStyle(.link)
+                            .help("View this author's Workshop items")
+                        } else {
+                            Text("Unknown Author")
+                        }
+                        Spacer()
                     }
                     if let subscriptions = wallpaperViewModel.inspectedWorkshopItem?.subscriptions,
                        subscriptions > 0 {
@@ -207,7 +221,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                 .overlay(Color.accentColor)
                         }
                     }
-                    VStack(spacing: 16) {
+                    VStack(alignment: .leading, spacing: 16) {
                         VStack(alignment: .leading, spacing: 6) {
                             Menu {
                                 ForEach(WallpaperPlacement.allCases) { placement in
@@ -231,6 +245,7 @@ struct WallpaperPreview: SubviewOfContentView {
                         }
                         .opacity(0.5)
                         .disabled(true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         switch wallpaperViewModel.displayedWallpaper.project.type.lowercased() {
                         case "video":
                             HStack {
@@ -266,6 +281,15 @@ struct WallpaperPreview: SubviewOfContentView {
                             }
                         case "web":
                             EmptyView()
+                        case "scene":
+                            Button {
+                                isSceneInspectorPresented = true
+                            } label: {
+                                Label("Scene Inspector", systemImage: "square.stack.3d.up")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            SceneUserPropertiesView(wallpaper: wallpaperViewModel.displayedWallpaper)
+                                .id(wallpaperViewModel.displayedWallpaper.wallpaperDirectory)
                         default:
                             EmptyView()
                         }
@@ -335,6 +359,9 @@ struct WallpaperPreview: SubviewOfContentView {
                 }
             }
             .padding()
+        }
+        .sheet(isPresented: $isSceneInspectorPresented) {
+            SceneInspectorView(wallpaper: wallpaperViewModel.displayedWallpaper)
         }
     }
     

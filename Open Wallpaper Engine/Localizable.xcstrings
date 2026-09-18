@@ -387,6 +387,9 @@
     "Authenticating with Steam..." : {
 
     },
+    "Author Workshop" : {
+
+    },
     "Auto" : {
       "localizations" : {
         "zh-Hans" : {
@@ -524,10 +527,16 @@
     "Choose..." : {
 
     },
+    "Clear author filter" : {
+
+    },
     "Clear selection" : {
 
     },
     "Click a display to select it. Hold Shift while clicking to select multiple desktops." : {
+
+    },
+    "Close Scene Inspector" : {
 
     },
     "Close Window" : {
@@ -616,6 +625,9 @@
           }
         }
       }
+    },
+    "Decoding textures..." : {
+
     },
     "Delete All" : {
       "localizations" : {
@@ -766,6 +778,9 @@
           }
         }
       }
+    },
+    "Effects" : {
+
     },
     "Enabled" : {
       "localizations" : {
@@ -1195,6 +1210,9 @@
           }
         }
       }
+    },
+    "Material" : {
+
     },
     "Medium" : {
       "localizations" : {
@@ -1926,6 +1944,15 @@
         }
       }
     },
+    "Scene Inspector" : {
+
+    },
+    "Scene Objects" : {
+
+    },
+    "Scene Unavailable" : {
+
+    },
     "Scheme Color" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1953,6 +1980,9 @@
 
     },
     "Searching Workshop..." : {
+
+    },
+    "Select a Scene Object" : {
 
     },
     "Select All" : {
@@ -2166,6 +2196,9 @@
         }
       }
     },
+    "Text" : {
+
+    },
     "Texture Resolution" : {
       "localizations" : {
         "zh-Hans" : {
@@ -2175,6 +2208,9 @@
           }
         }
       }
+    },
+    "Texture Unavailable" : {
+
     },
     "Theme" : {
       "localizations" : {
@@ -2275,6 +2311,9 @@
           }
         }
       }
+    },
+    "Unknown Author" : {
+
     },
     "Unkown Author" : {
       "extractionState" : "stale",
@@ -2394,6 +2433,9 @@
           }
         }
       }
+    },
+    "View this author's Workshop items" : {
+
     },
     "Volume" : {
       "localizations" : {

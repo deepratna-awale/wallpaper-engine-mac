@@ -8,6 +8,7 @@
 
 import SpriteKit
 import SwiftUI
+import CoreText
 
 class SceneWallpaperViewModel: ObservableObject {
     static func log(_ msg: String) {
@@ -21,25 +22,19 @@ class SceneWallpaperViewModel: ObservableObject {
         }
     }
 
-    @Published var skScene: SKScene?
+    private(set) var metalRevision = 0
 
     private var pkgParser: PKGParser?
+    private var loadedScene: WEScene?
+    private var loadedWallpaperDirectory: URL?
 
     init(wallpaper: WEWallpaper) {
         self.currentWallpaper = wallpaper
         Self.log("init: wallpaper=\(wallpaper.project.title) dir=\(wallpaper.wallpaperDirectory.path)")
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(systemWillSleep(_:)),
-            name: NSWorkspace.screensDidSleepNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(systemDidWake(_:)),
-            name: NSWorkspace.didWakeNotification, object: nil)
         loadScene(from: wallpaper)
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
     }
 
     // MARK: - Scene Loading
@@ -80,12 +75,50 @@ class SceneWallpaperViewModel: ObservableObject {
             return
         }
 
+        prepareSceneUserPropertyDefaults(for: wallpaper, scene: scene)
         Self.log("Scene loaded: \(scene.objects.count) objects from \(sceneFile)")
-        let skScene = buildSKScene(from: scene, wallpaperDir: dir)
-        Self.log("SKScene built: \(skScene.children.count) children")
-        DispatchQueue.main.async {
-            self.skScene = skScene
+        loadedScene = scene
+        loadedWallpaperDirectory = dir
+        metalRevision &+= 1
+    }
+
+    private func prepareSceneUserPropertyDefaults(for wallpaper: WEWallpaper, scene: WEScene) {
+        guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame,
+              let data = try? Data(contentsOf: wallpaper.wallpaperDirectory.appending(path: "project.json")),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let general = root["general"] as? [String: Any],
+              let properties = general["properties"] as? [String: [String: Any]] else {
+            return
         }
+        let key = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
+        let explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
+        let defaults = UserDefaults.standard
+        var values = defaults.bool(forKey: explicitKey)
+            ? defaults.dictionary(forKey: key) as? [String: String] ?? [:]
+            : [:]
+        for (name, property) in properties where values[name] == nil {
+            if let value = property["value"] {
+                values[name] = sceneUserPropertyString(value)
+            } else if property["type"] as? String == "combo",
+                      let option = (property["options"] as? [[String: Any]])?.first?["value"] {
+                values[name] = sceneUserPropertyString(option)
+            }
+        }
+        let conditionalImages = scene.objects.filter { $0.image != nil && $0.visibleUserProperty != nil }
+        let hasSelectedVariant = conditionalImages.contains { object in
+            guard let property = object.visibleUserProperty, let selectedValue = values[property] else { return false }
+            if let condition = object.visibleCondition {
+                return normalizeVariant(condition) == normalizeVariant(selectedValue)
+            }
+            return selectedValue.caseInsensitiveCompare("true") == .orderedSame || selectedValue == "1"
+        }
+        if !conditionalImages.isEmpty, !hasSelectedVariant,
+           let fallback = conditionalImages.first(where: { $0.visible == true }) ?? conditionalImages.first,
+           let property = fallback.visibleUserProperty {
+            values[property] = fallback.visibleCondition ?? "true"
+        }
+        defaults.set(values, forKey: key)
+        AudioReactiveScriptEngine.shared.setUserProperties(values)
     }
 
     // MARK: - SpriteKit Scene Building
@@ -105,7 +138,7 @@ class SceneWallpaperViewModel: ObservableObject {
         // Preserve the source object order so foreground layers render above backgrounds.
         var hasImage = false
         for (index, obj) in scene.objects.enumerated() {
-            guard obj.visible != false, obj.image != nil else { continue }
+            guard isObjectVisible(obj), obj.image != nil else { continue }
             // Skip additive/overlay layers that look like effects
             if let node = buildImageNode(obj, wallpaperDir: wallpaperDir) {
                 if node.blendMode == .add { continue }
@@ -135,6 +168,488 @@ class SceneWallpaperViewModel: ObservableObject {
             if let image = NSImage(contentsOf: url) { return image }
         }
         return nil
+    }
+
+    func metalContent() -> SceneMetalContent? {
+        guard let scene = loadedScene, let wallpaperDir = loadedWallpaperDirectory else { return nil }
+        let sceneSize = metalSceneSize(for: scene)
+        let visibility = resolvedVisibility(for: scene)
+        var objectsByID: [Int: WESceneObject] = [:]
+        for (index, object) in scene.objects.enumerated() {
+            objectsByID[object.id ?? index] = object
+        }
+        let layers: [SceneMetalLayer] = scene.objects.compactMap { object in
+            guard visibility[String(object.id ?? -1)] ?? false else { return nil }
+            if object.textValue != nil,
+               AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(object.id ?? -1)_enabled") == "false" {
+                return nil
+            }
+            return buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
+                ?? buildMetalTextLayer(object, sceneSize: sceneSize, objectsByID: objectsByID)
+        }
+        let particleSystems: [SceneMetalParticleSystem] = scene.objects.compactMap { object in
+            guard visibility[String(object.id ?? -1)] ?? false else { return nil }
+            return buildMetalParticleSystem(object, wallpaperDir: wallpaperDir, objectsByID: objectsByID)
+        }
+        if !layers.isEmpty || !particleSystems.isEmpty {
+            let toggleableEffects = ["shake", "waterwaves", "nitro", "vhs", "pulse", "iris", "volumetricfog", "parallax"]
+            let enabledEffects = toggleableEffects.filter {
+                AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_\($0)") == "true"
+            }
+            return SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
+                                     effects: Set((scene.effects ?? []).map { $0.lowercased() }).union(enabledEffects))
+        }
+        guard let preview = loadPreviewImage(wallpaperDir: wallpaperDir) else { return nil }
+        return SceneMetalContent(size: sceneSize, layers: [SceneMetalLayer(id: "preview", name: "preview", source: .image(preview),
+            position: sceneSize / 2, size: sceneSize, scale: SIMD2<Float>(repeating: 1), scaleScript: nil, scaleAnimation: nil,
+            opacity: 1, opacityScript: nil, opacityAnimation: nil,
+            brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
+            text: nil,
+            parallaxDepth: .zero, perspective: false,
+            positionScript: nil, positionAnimation: nil, sizeScript: nil, sizeAnimation: nil,
+            rotation: 0, rotationScript: nil, rotationAnimation: nil,
+            effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
+                                          exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
+                                          transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
+            sceneEffects: [])], particleSystems: [], effects: [])
+    }
+
+    private func metalSceneSize(for scene: WEScene) -> SIMD2<Float> {
+        if let projection = scene.general.orthogonalprojection {
+            return SIMD2<Float>(Float(projection.width), Float(projection.height))
+        }
+        let imageBounds = scene.objects.compactMap { object -> SIMD2<Float>? in
+            guard let origin = object.origin?.parseVector3(), let size = object.size?.parseVector2() else { return nil }
+            return SIMD2<Float>(Float(origin.0 + size.0 / 2), Float(origin.1 + size.1 / 2))
+        }
+        guard let widest = imageBounds.map(\.x).max(), let tallest = imageBounds.map(\.y).max(),
+              widest > 0, tallest > 0 else { return SIMD2<Float>(1920, 1080) }
+        return SIMD2<Float>(widest, tallest)
+    }
+
+    /// Sums every ancestor's origin (not including the object itself), so parented objects
+    /// (e.g. an effect attached to another layer) can be positioned relative to their parent.
+    private func ancestorOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>,
+                                objectsByID: [Int: WESceneObject]) -> SIMD2<Float> {
+        var total = SIMD2<Float>.zero
+        var visited = Set<Int>()
+        var parentID = object.parent
+        while let id = parentID, visited.insert(id).inserted, let parentObject = objectsByID[id] {
+            if let origin = parentObject.origin {
+                let value = origin.parseVector3()
+                total += SIMD2<Float>(Float(value.0), Float(value.1))
+            } else if parentObject.parent == nil {
+                // A root object without an explicit origin is anchored at the canvas center.
+                total += sceneSize / 2
+            }
+            parentID = parentObject.parent
+        }
+        return total
+    }
+
+    /// An object's own origin (or canvas center if it's a root object without one) plus its ancestor chain.
+    private func effectiveOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>,
+                                 objectsByID: [Int: WESceneObject]) -> SIMD2<Float> {
+        let ownOrigin: SIMD2<Float>
+        if let origin = object.origin {
+            let value = origin.parseVector3()
+            ownOrigin = SIMD2<Float>(Float(value.0), Float(value.1))
+        } else if object.parent == nil {
+            ownOrigin = sceneSize / 2
+        } else {
+            ownOrigin = .zero
+        }
+        return ownOrigin + ancestorOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+    }
+
+    private func buildMetalLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
+                                 objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
+        guard let imagePath = object.image,
+              let model: WEModel = loadJSON(path: imagePath, wallpaperDir: wallpaperDir),
+              model.puppet == nil, // Puppet Warp rigs need mesh-based part assembly we don't support; skip rather than render the raw atlas.
+              let materialPath = model.material,
+              let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir),
+              let textureName = material.passes?.first?.textures?.first,
+              let source = loadMetalTexture(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir) else {
+            return nil
+        }
+        let size: SIMD2<Float>
+        if let sizeString = object.size {
+            let value = sizeString.parseVector2()
+            size = SIMD2<Float>(Float(value.0), Float(value.1))
+        } else {
+            switch source {
+            case let .image(image): size = SIMD2<Float>(Float(image.size.width), Float(image.size.height))
+            case let .dxt(texture): size = SIMD2<Float>(Float(texture.width), Float(texture.height))
+            case let .animated(animation):
+                guard let image = animation.images.first else { return nil }
+                size = SIMD2<Float>(Float(image.size.width), Float(image.size.height))
+            }
+        }
+        let position: SIMD2<Float> = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        let rotation = Float(object.angles?.parseVector3().2 ?? 0)
+        let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
+        let objectColor = object.color?.parseVector3() ?? (1, 1, 1)
+        let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
+        let effects = materialEffects(material.passes?.first)
+        var sceneEffects = buildSceneEffects(object.effects ?? [], wallpaperDir: wallpaperDir)
+        if object.name?.localizedCaseInsensitiveContains("cloud") == true {
+            sceneEffects.append(SceneMetalEffect(name: "volumetricfog", constants: [:], mask: nil, scripts: [:]))
+        }
+        return SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
+                       scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
+                       scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
+                       opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript,
+                       opacityAnimation: object.alphaAnimation,
+                       brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
+                       color: SIMD4<Float>(Float(objectColor.0), Float(objectColor.1), Float(objectColor.2), 1), colorScript: object.colorScript,
+                       text: nil,
+                       parallaxDepth: SIMD3<Float>(Float(parallaxValue.0), Float(parallaxValue.1), Float(parallaxValue.2)),
+                       perspective: object.perspective ?? false,
+                       positionScript: object.originScript, positionAnimation: object.originAnimation,
+                       sizeScript: object.sizeScript, sizeAnimation: nil,
+                               rotation: rotation, rotationScript: object.anglesScript,
+                               rotationAnimation: object.anglesAnimation, effects: effects, sceneEffects: sceneEffects)
+    }
+
+    private func buildMetalTextLayer(_ object: WESceneObject, sceneSize: SIMD2<Float>,
+                                     objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
+        guard let text = object.textValue, let sizeString = object.size else { return nil }
+        let sizeValue = sizeString.parseVector2()
+        let position = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        let textConfig = SceneMetalText(value: text, script: object.textScript, font: registerFont(object.font),
+                                         pointSize: CGFloat(object.pointsize ?? 24),
+                                         horizontalAlignment: object.horizontalalign,
+                                         verticalAlignment: object.verticalalign)
+        return SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
+                               source: .image(renderText(textConfig, size: CGSize(width: sizeValue.0, height: sizeValue.1))),
+                               position: position, size: SIMD2<Float>(Float(sizeValue.0), Float(sizeValue.1)),
+                               scale: SIMD2<Float>(repeating: 1), scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
+                               opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
+                               brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
+                               text: textConfig, parallaxDepth: .zero, perspective: false,
+                               positionScript: object.originScript, positionAnimation: object.originAnimation,
+                               sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
+                               rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
+                               rotationAnimation: object.anglesAnimation,
+                               effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
+                                                             exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
+                                                             transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
+                               sceneEffects: [])
+    }
+
+    private func renderText(_ text: SceneMetalText, size: CGSize) -> NSImage {
+        let image = NSImage(size: size)
+        image.lockFocus()
+        let font = NSFont(name: text.font ?? "System", size: text.pointSize) ?? NSFont.systemFont(ofSize: text.pointSize)
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = text.horizontalAlignment == "left" ? .left : text.horizontalAlignment == "right" ? .right : .center
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white, .paragraphStyle: paragraph]
+        let attributed = NSAttributedString(string: text.value, attributes: attributes)
+        let textSize = attributed.size()
+        let y: CGFloat
+        if text.verticalAlignment == "top" {
+            y = size.height - textSize.height
+        } else if text.verticalAlignment == "bottom" {
+            y = 0
+        } else {
+            y = (size.height - textSize.height) / 2
+        }
+        attributed.draw(in: NSRect(x: 0, y: max(0, y), width: size.width, height: textSize.height))
+        image.unlockFocus()
+        return image
+    }
+
+    private func registerFont(_ path: String?) -> String? {
+        guard let path,
+              let data = pkgParser?.extractFile(named: path) else { return path }
+        guard let descriptors = CTFontManagerCreateFontDescriptorsFromData(data as CFData) as? [CTFontDescriptor],
+              let descriptor = descriptors.first,
+              let name = CTFontDescriptorCopyAttribute(descriptor, kCTFontNameAttribute) as? String else {
+            return path
+        }
+        if let provider = CGDataProvider(data: data as CFData),
+           let font = CGFont(provider) {
+            var error: Unmanaged<CFError>?
+            CTFontManagerRegisterGraphicsFont(font, &error)
+        }
+        return name
+    }
+
+    private func buildSceneEffects(_ effects: [WEObjectEffect], wallpaperDir: URL) -> [SceneMetalEffect] {
+        effects.compactMap { effect in
+            guard isEffectVisible(effect),
+                  let pass = effect.passes?.first else { return nil }
+            let name = ((effect.file as NSString).deletingLastPathComponent as NSString).lastPathComponent.lowercased()
+            var constants: [String: [Float]] = [:]
+            var scripts: [String: String] = [:]
+            for (key, value) in pass.constantshadervalues ?? [:] {
+                if let script = value.script {
+                    scripts[key.lowercased()] = script
+                }
+                if let number = value.number {
+                    constants[key.lowercased()] = [Float(number)]
+                } else if let string = value.string,
+                          !string.split(separator: " ").isEmpty {
+                    constants[key.lowercased()] = string.split(separator: " ").compactMap { Float($0) }
+                }
+            }
+            let maskName = pass.textures?.compactMap { $0 }.first
+            let mask = maskName.flatMap {
+                loadMetalTexture(named: $0, materialDir: effect.file, wallpaperDir: wallpaperDir)
+            }
+            return SceneMetalEffect(name: name, constants: constants, mask: mask, scripts: scripts)
+        }
+    }
+
+    private func isObjectVisible(_ object: WESceneObject) -> Bool {
+        if let property = object.visibleUserProperty {
+            guard let selectedValue = AudioReactiveScriptEngine.shared.userPropertyString(property) else { return false }
+            if let condition = object.visibleCondition {
+                return normalizeVariant(condition) == normalizeVariant(selectedValue)
+            }
+            return selectedValue.caseInsensitiveCompare("true") == .orderedSame || selectedValue == "1"
+        }
+        return object.visible != false
+    }
+
+    private func resolvedVisibility(for scene: WEScene) -> [String: Bool] {
+        var visibility: [String: Bool] = [:]
+        var objectsByID: [Int: WESceneObject] = [:]
+        for (index, object) in scene.objects.enumerated() {
+            let id = object.id ?? index
+            objectsByID[id] = object
+            visibility[String(id)] = isObjectVisible(object)
+        }
+        visibility = AudioReactiveScriptEngine.shared.resolveLayerVisibility(scene.objects, initial: visibility)
+
+        func isVisibleWithParents(_ object: WESceneObject, visited: Set<Int> = []) -> Bool {
+            let id = object.id ?? -1
+            guard visibility[String(id)] ?? false else { return false }
+            guard let parent = object.parent, !visited.contains(parent), let parentObject = objectsByID[parent] else { return true }
+            return isVisibleWithParents(parentObject, visited: visited.union([id]))
+        }
+        for object in scene.objects {
+            visibility[String(object.id ?? -1)] = isVisibleWithParents(object)
+        }
+        return visibility
+    }
+
+    private func isEffectVisible(_ effect: WEObjectEffect) -> Bool {
+        if let property = effect.visibleUserProperty {
+            guard let selectedValue = AudioReactiveScriptEngine.shared.userPropertyString(property) else { return false }
+            if let condition = effect.visibleCondition {
+                return normalizeVariant(condition) == normalizeVariant(selectedValue)
+            }
+            return selectedValue.caseInsensitiveCompare("true") == .orderedSame || selectedValue == "1"
+        }
+        return effect.visible != false
+    }
+
+    private func normalizeVariant(_ value: String) -> String {
+        value.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    private func materialEffects(_ pass: WEMaterialPass?) -> SceneMaterialEffects {
+        let constants = pass?.constants ?? [:]
+        var scripts: [String: String] = [:]
+        func value(_ names: [String], default fallback: Float) -> Float {
+            for (key, constant) in constants where names.contains(key.lowercased()) {
+            if let script = constant.script { scripts[names[0]] = script }
+                return Float(constant.value ?? Double(fallback))
+            }
+            return fallback
+        }
+        let shader = pass?.shader?.lowercased() ?? ""
+        return SceneMaterialEffects(
+            brightness: value(["brightness", "intensity", "overbright", "gain"], default: 1),
+            contrast: value(["contrast", "contrastamount"], default: 1),
+            saturation: value(["saturation", "saturationamount"], default: 1),
+            bloom: value(["bloom", "bloomstrength", "glow", "strength"], default: shader.contains("bloom") ? 1 : 0),
+            blur: value(["blur", "bluramount", "blurradius", "radius", "sigma"], default: shader.contains("blur") ? 1 : 0),
+            exposure: value(["exposure", "exposurevalue"], default: 0),
+            gamma: value(["gamma", "gammavalue"], default: 1),
+            hue: value(["hue", "huerotation"], default: 0),
+            bloomThreshold: value(["bloomthreshold", "threshold", "glowthreshold"], default: 0.7),
+            transformAngle: value(["angle", "rotation"], default: 0),
+            transformOffset: SIMD2<Float>(value(["offsetx", "xoffset"], default: 0), value(["offsety", "yoffset"], default: 0)),
+            transformScale: SIMD2<Float>(value(["scalex", "xscale"], default: 1), value(["scaley", "yscale"], default: 1)),
+            scripts: scripts
+        )
+    }
+
+    private func loadMetalTexture(named name: String, materialDir: String, wallpaperDir: URL) -> SceneMetalTextureSource? {
+        let materialDirPath = (materialDir as NSString).deletingLastPathComponent
+        let root = materialDirPath.split(separator: "/").first.map(String.init) ?? "materials"
+        let paths = Array(Set(["\(materialDirPath)/\(name).tex", "\(root)/\(name).tex", "\(name).tex"]))
+        for path in paths {
+            let data = pkgParser?.extractFile(named: path) ?? (try? Data(contentsOf: wallpaperDir.appending(path: path)))
+            guard let data else { continue }
+            let parser = TEXParser(data: data)
+            if let animation = parser.extractAnimatedImages() { return .animated(animation) }
+            if let texture = parser.extractCompressedTexture() { return .dxt(texture) }
+        }
+        return loadTexture(named: name, materialDir: materialDir, wallpaperDir: wallpaperDir).map(SceneMetalTextureSource.image)
+    }
+
+    private func buildMetalParticleSystem(_ object: WESceneObject, wallpaperDir: URL,
+                                          objectsByID: [Int: WESceneObject]) -> SceneMetalParticleSystem? {
+        guard let particlePath = object.particle,
+              let particleSystem: WEParticleSystem = loadJSON(path: particlePath, wallpaperDir: wallpaperDir),
+              let materialPath = particleSystem.material,
+              let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir),
+              let textureName = material.passes?.first?.textures?.first else { return nil }
+        let source = loadMetalTexture(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir)
+            ?? generateProceduralTexture(named: textureName).map(SceneMetalTextureSource.image)
+        guard let source else { return nil }
+        let spriteSheet = loadSpriteSheet(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir)
+
+        let emitter = particleSystem.emitter?.first
+        let isSnowParticle = object.name?.localizedCaseInsensitiveContains("snow") == true
+        let localOrigin = (emitter?.origin ?? object.origin ?? "0 0 0").parseVector3()
+        let origin = SIMD2<Float>(Float(localOrigin.0), Float(localOrigin.1))
+            + ancestorOrigin(for: object, sceneSize: .zero, objectsByID: objectsByID)
+        let rate = Float((emitter?.rate ?? 100) * (object.instanceoverride?.rate?.value ?? 1))
+        let rateScript = object.instanceoverride?.rate?.script ?? emitter?.$rate.script
+        let radius = Float(emitter?.distancemax ?? 0)
+        var lifetime: ClosedRange<Float> = 1...1
+        var size: ClosedRange<Float> = Float(object.instanceoverride?.size ?? 1) * 20...Float(object.instanceoverride?.size ?? 1) * 20
+        var minimumVelocity = SIMD2<Float>.zero
+        var maximumVelocity = SIMD2<Float>.zero
+        var alpha: ClosedRange<Float> = 1...1
+        var minimumColor = SIMD4<Float>(repeating: 1)
+        var maximumColor = SIMD4<Float>(repeating: 1)
+        var minimumRotation: Float = 0
+        var maximumRotation: Float = 0
+        var minimumAngularVelocity: Float = 0
+        var maximumAngularVelocity: Float = 0
+        let particleRenderer = particleSystem.renderer?.first
+        for initializer in particleSystem.initializer ?? [] {
+            switch initializer.name {
+            case "lifetimerandom": lifetime = Float(initializer.min?.doubleValue ?? 1)...Float(initializer.max?.doubleValue ?? 1)
+            case "sizerandom":
+                let multiplier = Float(object.instanceoverride?.size ?? 1)
+                size = Float(initializer.min?.doubleValue ?? 20) * multiplier...Float(initializer.max?.doubleValue ?? 20) * multiplier
+            case "velocityrandom":
+                let minimum = initializer.min?.vectorValue ?? (0, 0, 0)
+                let maximum = initializer.max?.vectorValue ?? (0, 0, 0)
+                minimumVelocity = SIMD2<Float>(Float(minimum.0), Float(minimum.1))
+                maximumVelocity = SIMD2<Float>(Float(maximum.0), Float(maximum.1))
+            case "alpharandom": alpha = Float(initializer.min?.doubleValue ?? 1)...Float(initializer.max?.doubleValue ?? 1)
+            case "colorrandom":
+                if !isSnowParticle {
+                    minimumColor = normalizedParticleColor(initializer.min?.vectorValue ?? (1, 1, 1))
+                    maximumColor = normalizedParticleColor(initializer.max?.vectorValue ?? (1, 1, 1))
+                }
+            case "rotationrandom":
+                minimumRotation = Float(initializer.min?.vectorValue.2 ?? 0)
+                maximumRotation = Float(initializer.max?.vectorValue.2 ?? 0)
+            case "angularvelocityrandom":
+                minimumAngularVelocity = Float(initializer.min?.vectorValue.2 ?? 0)
+                maximumAngularVelocity = Float(initializer.max?.vectorValue.2 ?? 0)
+            default: break
+            }
+        }
+        if isSnowParticle {
+            minimumColor = SIMD4<Float>(1, 1, 1, 1)
+            maximumColor = SIMD4<Float>(1, 1, 1, 1)
+        }
+        var gravity = SIMD2<Float>.zero
+        var drag: Float = 0
+        var fadeIn: Float = 0
+        var fadeOut: Float = 1
+        var dragScript: String?
+        var fadeInScript: String?
+        var fadeOutScript: String?
+        var turbulence: Turbulence?
+        var attractor: Attractor?
+        let cursorControlPoint = particleSystem.controlpoint?.first(where: {
+            $0.locktopointer == true || (($0.flags ?? 0) & 1) != 0
+        }).map { controlPoint in
+            let offset = (controlPoint.offset ?? "0 0 0").parseVector3()
+            return CursorControlPoint(id: controlPoint.id ?? 0,
+                                      offset: SIMD2<Float>(Float(offset.0), -Float(offset.1)))
+        }
+        for `operator` in particleSystem.operator ?? [] {
+            switch `operator`.name {
+            case "movement":
+                let value = (`operator`.gravity ?? "0 0 0").parseVector3()
+                gravity = SIMD2<Float>(Float(value.0), -Float(value.2 != 0 ? value.2 : value.1))
+                drag = Float(`operator`.drag ?? 0)
+                dragScript = `operator`.$drag.script
+            case "alphafade":
+                fadeIn = Float(`operator`.fadeintime ?? 0)
+                fadeOut = Float(`operator`.fadeouttime ?? 1)
+                fadeInScript = `operator`.$fadeintime.script
+                fadeOutScript = `operator`.$fadeouttime.script
+            case "turbulence":
+                let mask = `operator`.mask?.vectorValue ?? (1, 1, 0)
+                turbulence = Turbulence(scale: Float(`operator`.scale?.doubleValue ?? 0.005),
+                                        speed: Float(`operator`.speedmin ?? 500)...Float(`operator`.speedmax ?? 1000),
+                                        timeScale: Float(`operator`.timescale ?? 0.01),
+                                        phase: Float(`operator`.phasemin ?? 0),
+                                        mask: SIMD2<Float>(Float(mask.0), -Float(mask.1)))
+            case "controlpointattract":
+                let origin = `operator`.origin?.vectorValue ?? (0, 0, 0)
+                attractor = Attractor(origin: SIMD2<Float>(Float(origin.0), -Float(origin.1)),
+                                      strength: Float(`operator`.scale?.doubleValue ?? 100),
+                                      threshold: Float(`operator`.threshold ?? 1000))
+            default: break
+            }
+        }
+        return SceneMetalParticleSystem(source: source, origin: origin, emissionRate: max(rate, 0),
+                emissionRateScript: rateScript,
+                                        maximumParticleCount: min(particleSystem.maxcount ?? 1000, 1000),
+                                        spawnRadius: radius, lifetime: lifetime, size: size,
+                                        minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity,
+                                        gravity: gravity, drag: drag, dragScript: dragScript, alpha: alpha,
+                                        minimumColor: minimumColor, maximumColor: maximumColor,
+                                        minimumRotation: minimumRotation, maximumRotation: maximumRotation,
+                                        minimumAngularVelocity: minimumAngularVelocity, maximumAngularVelocity: maximumAngularVelocity,
+                                        rendererName: particleRenderer?.name ?? "sprite",
+                                        trailLength: Float(particleRenderer?.length ?? 0.05),
+                                        trailSegments: max(2, particleRenderer?.segments ?? 4),
+                                        ropeSubdivision: max(1, particleRenderer?.subdivision ?? 4),
+                                        fadeTrailAlpha: particleRenderer?.fadealpha ?? false,
+                                        fadeTrailSize: particleRenderer?.fadesize ?? false,
+                                        turbulence: turbulence, attractor: attractor,
+                                        cursorControlPoint: cursorControlPoint,
+                                        emitterControlPoint: emitter?.controlpoint,
+                                        spriteSheet: spriteSheet,
+                                        animationMode: particleSystem.animationmode ?? "sequence",
+                                        sequenceMultiplier: Float(particleSystem.sequencemultiplier ?? 1),
+                                        fadeIn: fadeIn, fadeOut: fadeOut,
+                                        fadeInScript: fadeInScript, fadeOutScript: fadeOutScript,
+                                        blending: material.passes?.first?.blending?.lowercased() ?? "translucent")
+    }
+
+    private func loadSpriteSheet(named name: String, materialDir: String, wallpaperDir: URL) -> SpriteSheet? {
+        struct TextureMetadata: Decodable {
+            struct Sequence: Decodable { let frames: Int; let width: Double; let height: Double; let duration: Double }
+            let spritesheetsequences: [Sequence]?
+        }
+        let materialDirectory = (materialDir as NSString).deletingLastPathComponent
+        let root = materialDirectory.split(separator: "/").first.map(String.init) ?? "materials"
+        let candidates = ["\(materialDirectory)/\(name).tex-json", "\(root)/\(name).tex-json", "\(name).tex-json"]
+        for candidate in candidates {
+            let data = pkgParser?.extractFile(named: candidate) ?? (try? Data(contentsOf: wallpaperDir.appending(path: candidate)))
+            guard let data, let metadata = try? JSONDecoder().decode(TextureMetadata.self, from: data),
+                  let sequence = metadata.spritesheetsequences?.first, sequence.frames > 0,
+                  sequence.width > 0, sequence.height > 0 else { continue }
+            let columns = max(1, Int((Double(sequence.frames) * sequence.width / sequence.height).squareRoot()))
+            let rows = max(1, Int(ceil(Double(sequence.frames) / Double(columns))))
+            return SpriteSheet(columns: columns, rows: rows, frames: sequence.frames, duration: Float(sequence.duration))
+        }
+        return nil
+    }
+
+    private func normalizedParticleColor(_ color: (Double, Double, Double)) -> SIMD4<Float> {
+        guard color.0.isFinite, color.1.isFinite, color.2.isFinite,
+              max(color.0, color.1, color.2) > 0 else {
+            return SIMD4<Float>(1, 1, 1, 1)
+        }
+        let scale = max(color.0, color.1, color.2) > 1 ? 255.0 : 1.0
+        return SIMD4<Float>(Float(color.0 / scale), Float(color.1 / scale), Float(color.2 / scale), 1)
     }
 
     // MARK: - Image Objects
@@ -473,15 +988,4 @@ class SceneWallpaperViewModel: ObservableObject {
         return image
     }
 
-    // MARK: - System Events
-
-    @objc func systemWillSleep(_ notification: Notification) {
-        print("[SceneVM] System is going to sleep")
-        skScene?.isPaused = true
-    }
-
-    @objc func systemDidWake(_ notification: Notification) {
-        print("[SceneVM] System woke up")
-        skScene?.isPaused = false
-    }
 }

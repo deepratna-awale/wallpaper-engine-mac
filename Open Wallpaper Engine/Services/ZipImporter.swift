@@ -36,6 +36,9 @@ enum ZipImporter {
             if !fm.fileExists(atPath: target.path) {
                 do {
                     try fm.copyItem(at: url, to: target)
+                    DispatchQueue.global(qos: .utility).async {
+                        SceneShaderTranslator.translatePackageShaders(in: target)
+                    }
                     imported += 1
                 } catch {
                     print("ZipImporter: copy failed for \(url.lastPathComponent): \(error)")

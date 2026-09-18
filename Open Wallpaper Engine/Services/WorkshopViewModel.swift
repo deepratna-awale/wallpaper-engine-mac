@@ -5,6 +5,7 @@ import Combine
 class WorkshopViewModel: ObservableObject {
     @Published var items: [WorkshopItem] = []
     @Published var searchText = ""
+    @Published var authorId: String?
     @Published var sortOrder: WorkshopSortOrder = .trending
     @Published var isLoading = false
     @Published var errorMessage: String?
@@ -64,6 +65,16 @@ class WorkshopViewModel: ObservableObject {
     func search() async {
         isLoading = true
         errorMessage = nil
+        if let authorId {
+            do {
+                items = try await api.getAuthorWorkshopItems(steamId: authorId)
+                preloadThumbnails(items)
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+            isLoading = false
+            return
+        }
         let searchKey = "\(searchText)|\(sortOrder.rawValue)|\(selectedTags.sorted().joined(separator: ","))|\(hideDownloaded)"
 
         if cachedSearchKey != searchKey {
@@ -92,6 +103,21 @@ class WorkshopViewModel: ObservableObject {
             subscriptions: item.subscriptions,
             fileSize: item.fileSize
         )
+    }
+
+    func showAuthor(_ steamId: String) {
+        authorId = steamId
+        searchText = ""
+        currentPage = 1
+        cachedPages.removeAll()
+        Task { @MainActor in await search() }
+    }
+
+    func clearAuthorFilter() {
+        authorId = nil
+        currentPage = 1
+        cachedPages.removeAll()
+        Task { @MainActor in await search() }
     }
 
     func downloadSelectedItems() {

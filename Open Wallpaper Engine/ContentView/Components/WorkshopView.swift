@@ -224,6 +224,17 @@ private struct WorkshopBrowserView: View {
         VStack(spacing: 8) {
             // Search bar
             HStack {
+                if viewModel.authorId != nil {
+                    Label("Author Workshop", systemImage: "person.fill")
+                        .foregroundStyle(.secondary)
+                    Button {
+                        viewModel.clearAuthorFilter()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Clear author filter")
+                }
                 Image(systemName: "magnifyingglass")
                     .foregroundStyle(.secondary)
                 TextField("Search wallpapers...", text: $viewModel.searchText)

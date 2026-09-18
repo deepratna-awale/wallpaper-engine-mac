@@ -73,24 +73,36 @@ Scene wallpapers (the most common type on Steam Workshop) were completely unimpl
 
 **New implementation includes:**
 - **PKG parser** — Reads Wallpaper Engine's PKGV archive format to extract scene.json, models, materials, and textures
-- **TEX parser** — Reads TEXV0005 texture containers, extracts embedded JPEG/PNG image data from TEXI/TEXB sections
+- **TEX parser** — Reads TEXV0005 texture containers, extracts embedded JPEG/PNG image data, and reads DXT1/DXT3/DXT5 mipmaps
 - **Scene JSON decoder** — Parses scene.json with flexible decoding that handles Wallpaper Engine's polymorphic fields (values can be plain types or `{"script":..,"value":..}` objects)
-- **SpriteKit renderer** — Renders scene image layers as SKSpriteNodes with correct positioning, sizing, alpha, color tinting, and blend modes
+- **Metal renderer** — Renders scene image layers with GPU texture compositing and a foundation for future shader effects
+- **GPU DXT decode** — Expands DXT1 (TEXI 7), DXT3 (TEXI 6), and DXT5 (TEXI 4) textures through a Metal compute shader when the scene loads
+- **Sprite particles** — Renders common `sphererandom` sprite emitters with randomized lifetime, size, velocity, alpha, color, rotation, angular velocity, gravity, drag, and alpha fades
+- **Advanced particles** — Supports rotation, color variation, turbulence, static and cursor-linked control points, connected rope segments, trails, and `.tex-json` spritesheet frame animation
+- **TEXS animation** — Decodes TEXS0001/0002/0003 timelines, including single-atlas frame rectangles and multi-image texture sequences
+- **Scene timelines** — Interpolates object alpha, origin, scale, and angles keyframes at 60 FPS
+- **SceneScript runtime** — Evaluates expression and `export function update(value)` property scripts against ScreenCaptureKit system audio. `thisScene` timing, `thisLayer.value`, `engine`, input cursor, `audio(low, high)`, real `fft(index)`, property lookup, and persistent globals drive image transforms, alpha, and particle emission rates.
+- **Persistent SceneScript lifecycle** — Reuses per-layer script contexts, calls `init()` once, and calls `update()` across frames with shared `dt`, frame, mouse, button, modifier, cursor, audio, FFT, property, and layer state.
+- **Scripted particle operators** — Supports scripts for particle emission rate, movement drag, and alpha fade timing, with flexible numeric/string particle fields.
+- **Mouse tracking and parallax** — Applies cursor-relative translation and optional perspective scaling to layers with authored `parallaxDepth` metadata; cursor-linked particles use the same scene-space cursor.
+- **Scripted visual properties** — Supports scripted object brightness/RGB color, material effect constants, scalar/vector transforms, and effect threshold overrides.
+- **User properties** — Exposes documented slider, checkbox, combo, text, and color project settings in the scene sidebar and makes numeric and boolean values available to SceneScript
+- **Built-in scene effects** — Executes authored `pulse`, `shake`, `iris`, and `waterwaves` effect graph entries in the Metal renderer
+- **Semantic material effects** — Maps common material constants and scripts for brightness, contrast, saturation, exposure, gamma, hue, bloom threshold, bloom, and blur to native Metal effects
+- **GLSL shader translation** — Converts packaged Wallpaper Engine GLSL shaders to SPIR-V and MSL at import time with `glslangValidator` and SPIRV-Cross; generated MSL is cached under `.open-wallpaper-engine/shaders` in the wallpaper directory
 - **Preview fallback** — Falls back to preview.jpg/png/gif when textures can't be extracted
-- **TEXI format detection** — Quickly identifies and skips DXT-compressed textures that can't be decoded
 
 ### Import — Fixed folder import
 The import panel now correctly handles both individual wallpaper folders and parent directories containing multiple wallpapers.
 
 ## Current Limitations
 
-- **DXT textures** — Wallpapers using DXT1/DXT5 compressed textures (TEXI format 4/7/8) cannot be rendered. These are GPU-native compressed formats that require either a software decompressor or Metal-based rendering. The app falls back to the preview image for these wallpapers.
-- **Particle effects** — Scene particle systems (rain, snow, sparkles) are parsed but disabled in rendering to avoid visual artifacts. The particle mapping code exists but needs refinement.
-- **Audio-reactive scripts** — Wallpaper Engine's JavaScript-based audio visualization scripts are not executed. Properties with scripts fall back to their static `value`.
-- **Shader effects** — Custom GLSL shaders (bloom, blur, color correction) are not applied.
-- **Camera parallax** — Mouse-tracking camera movement is not implemented.
-- **Animated scenes** — Sprite animations and timeline-based object animations are not supported.
-- **Some JPEG thumbnails** — A small number of TEXB format 1 files contain non-standard JPEG data that macOS cannot decode. These are typically DXT-compressed textures misidentified as format 1.
+- **Effect-schema coverage** — Cross-layer `thisScene.getLayer(idOrName)` mutation and supported scripted material constants are implemented. Unknown custom uniform names and arbitrary effect parameter schemas remain unsupported.
+- **Custom GLSL shader binding** — Converted MSL is cached at import time, but shaders that depend on Wallpaper Engine-specific attributes, uniforms, texture chains, or unsupported includes are not yet bound into the runtime Metal render pipeline. Common bloom, blur, color-correction, and transform parameters use native Metal mappings.
+- **SceneScript parity** — The runtime does not yet reproduce every proprietary Wallpaper Engine event name, input callback, lifecycle edge case, or exact timing semantic.
+- **Particle operator coverage** — Common scripted rate, drag, and alpha-fade operators are supported; less common operator scripts, custom particle modules, and arbitrary operator schemas remain partial.
+- **External asset recovery** — Some Workshop packages reference shared TEX assets that are absent from the downloaded package and require the original asset source.
+- **Some JPEG thumbnails** — A small number of TEXB format 1 files contain non-standard JPEG data that macOS cannot decode.
 
 ## Supported Wallpaper Types
 
@@ -98,9 +110,11 @@ The import panel now correctly handles both individual wallpaper folders and par
 |------|--------|
 | Video (.mp4, .webm) | Working (original) |
 | Web (HTML/WebGL) | Working (patched) |
-| Scene (static images) | Working (new) |
-| Scene (particles) | Partial (disabled) |
-| Scene (DXT textures) | Preview fallback |
+| Scene (static images) | Working (Metal) |
+| Scene (sprite particles) | Working (common emitters) |
+| Scene (advanced particles) | Partial — includes scripted rate/drag/fade support |
+| Scene (TEXS sprites / alpha timelines) | Working |
+| Scene (DXT1/DXT3/DXT5 textures) | Working (Metal GPU decode) |
 | Application | Not supported |
 
 ## Build from Source

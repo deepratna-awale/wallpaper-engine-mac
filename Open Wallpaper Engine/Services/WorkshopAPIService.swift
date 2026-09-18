@@ -24,6 +24,7 @@ final class WorkshopMetadataStore {
 
     private let storageKey = "WorkshopMetadataById"
     private var metadata: [String: WorkshopItem]
+    private let lock = NSLock()
 
     private init() {
         guard let data = Self.storedData(forKey: storageKey),
@@ -35,10 +36,14 @@ final class WorkshopMetadataStore {
     }
 
     func item(for workshopId: String) -> WorkshopItem? {
-        metadata[workshopId]
+        lock.lock()
+        defer { lock.unlock() }
+        return metadata[workshopId]
     }
 
     func save(_ item: WorkshopItem) {
+        lock.lock()
+        defer { lock.unlock() }
         metadata[item.id] = item
         if let data = try? JSONEncoder().encode(metadata) {
             UserDefaults.standard.set(data, forKey: storageKey)
@@ -56,6 +61,7 @@ final class SteamPlayerStore {
 
     private let storageKey = "SteamPlayersById"
     private var players: [String: SteamPlayer]
+    private let lock = NSLock()
 
     private init() {
         guard let data = Self.storedData(forKey: storageKey),
@@ -67,10 +73,14 @@ final class SteamPlayerStore {
     }
 
     func player(for steamId: String) -> SteamPlayer? {
-        players[steamId]
+        lock.lock()
+        defer { lock.unlock() }
+        return players[steamId]
     }
 
     func save(_ player: SteamPlayer) {
+        lock.lock()
+        defer { lock.unlock() }
         players[player.steamId] = player
         if let data = try? JSONEncoder().encode(players) {
             UserDefaults.standard.set(data, forKey: storageKey)
@@ -224,6 +234,30 @@ class WorkshopAPIService {
         let items = try parseFileDetailsResponse(data)
         items.forEach { WorkshopMetadataStore.shared.save($0) }
         return items
+    }
+
+    func getAuthorWorkshopItems(steamId: String) async throws -> [WorkshopItem] {
+        var components = URLComponents(string: "https://steamcommunity.com/profiles/\(steamId)/myworkshopfiles/")!
+        components.queryItems = [
+            URLQueryItem(name: "appid", value: "\(Self.wallpaperEngineAppId)"),
+            URLQueryItem(name: "numperpage", value: "30")
+        ]
+        guard let url = components.url else { throw WorkshopAPIError.invalidURL }
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+              let html = String(data: data, encoding: .utf8) else {
+            throw WorkshopAPIError.requestFailed
+        }
+        let pattern = #"sharedfiles/filedetails/\?id=(\d+)"#
+        let regex = try NSRegularExpression(pattern: pattern)
+        let range = NSRange(html.startIndex..<html.endIndex, in: html)
+        var ids: [String] = []
+        for match in regex.matches(in: html, range: range) {
+            guard let idRange = Range(match.range(at: 1), in: html) else { continue }
+            let id = String(html[idRange])
+            if !ids.contains(id) { ids.append(id) }
+        }
+        return try await getItemDetails(workshopIds: ids)
     }
 
     func getPlayerSummary(steamId: String) async throws -> SteamPlayer? {

@@ -355,9 +355,9 @@ class WallpaperViewModel: ObservableObject {
             self.enabledScreens = Set(NSScreen.screens.map { Self.screenId(for: $0) })
         }
 
-        // Default selected screen to main
+        // Default the active screen to main while assigning wallpapers to all desktops.
         self.selectedScreenId = Self.mainScreenId()
-        self.selectedScreenIds = [selectedScreenId]
+        self.selectedScreenIds = Set(NSScreen.screens.map { Self.screenId(for: $0) })
 
         // Load recent wallpapers
         loadRecents()

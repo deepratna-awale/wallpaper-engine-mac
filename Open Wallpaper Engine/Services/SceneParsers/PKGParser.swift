@@ -19,68 +19,57 @@ struct PKGEntry {
 class PKGParser {
     private let data: Data
     private let entries: [PKGEntry]
+    private let entriesByPath: [String: PKGEntry]
     private let dataBaseOffset: Int
 
     init(data: Data) throws {
         self.data = data
+        let (parsedEntries, baseOffset): ([PKGEntry], Int) = try data.withUnsafeBytes { rawBuffer in
+            let bytes = rawBuffer.bindMemory(to: UInt8.self)
+            var cursor = 0
 
-        // Copy data into contiguous array for safe, aligned reads
-        let bytes = [UInt8](data)
-        var cursor = 0
-
-        func readUInt32() throws -> UInt32 {
-            guard cursor + 4 <= bytes.count else {
-                throw PKGError.unexpectedEndOfFile
+            func readUInt32() throws -> UInt32 {
+                guard cursor + 4 <= bytes.count else { throw PKGError.unexpectedEndOfFile }
+                defer { cursor += 4 }
+                return UInt32(bytes[cursor])
+                    | (UInt32(bytes[cursor + 1]) << 8)
+                    | (UInt32(bytes[cursor + 2]) << 16)
+                    | (UInt32(bytes[cursor + 3]) << 24)
             }
-            let value = UInt32(bytes[cursor])
-                | (UInt32(bytes[cursor+1]) << 8)
-                | (UInt32(bytes[cursor+2]) << 16)
-                | (UInt32(bytes[cursor+3]) << 24)
-            cursor += 4
-            return value
-        }
 
-        func readString(length: Int) throws -> String {
-            guard length >= 0, cursor + length <= bytes.count else {
-                throw PKGError.unexpectedEndOfFile
+            func readString(length: Int) throws -> String {
+                guard length >= 0, cursor + length <= bytes.count else { throw PKGError.unexpectedEndOfFile }
+                defer { cursor += length }
+                let slice = bytes[cursor..<(cursor + length)]
+                return String(bytes: slice, encoding: .utf8)
+                    ?? String(bytes: slice, encoding: .isoLatin1)
+                    ?? ""
             }
-            let slice = bytes[cursor..<cursor+length]
-            cursor += length
-            return String(bytes: slice, encoding: .utf8)
-                ?? String(bytes: slice, encoding: .isoLatin1)
-                ?? ""
+
+            let headerLength = try readUInt32()
+            guard headerLength < 100 else { throw PKGError.invalidMagic("(header too long: \(headerLength))") }
+            let header = try readString(length: Int(headerLength))
+            guard header.hasPrefix("PKGV") else { throw PKGError.invalidMagic(header) }
+
+            let entryCount = try readUInt32()
+            guard entryCount < 100_000 else { throw PKGError.unexpectedEndOfFile }
+            var entries: [PKGEntry] = []
+            entries.reserveCapacity(Int(entryCount))
+            for _ in 0..<entryCount {
+                let pathLength = try readUInt32()
+                guard pathLength < 10_000 else { throw PKGError.unexpectedEndOfFile }
+                entries.append(PKGEntry(path: try readString(length: Int(pathLength)),
+                                        offset: try readUInt32(), length: try readUInt32()))
+            }
+            return (entries, cursor)
         }
-
-        // Read header string (e.g. "PKGV0013")
-        let headerLen = try readUInt32()
-        guard headerLen < 100 else { throw PKGError.invalidMagic("(header too long: \(headerLen))") }
-        let header = try readString(length: Int(headerLen))
-        guard header.hasPrefix("PKGV") else {
-            throw PKGError.invalidMagic(header)
-        }
-
-        // Read entry count
-        let entryCount = try readUInt32()
-        guard entryCount < 100_000 else { throw PKGError.unexpectedEndOfFile }
-
-        // Read file table
-        var parsedEntries: [PKGEntry] = []
-        parsedEntries.reserveCapacity(Int(entryCount))
-        for _ in 0..<entryCount {
-            let pathLen = try readUInt32()
-            guard pathLen < 10_000 else { throw PKGError.unexpectedEndOfFile }
-            let path = try readString(length: Int(pathLen))
-            let offset = try readUInt32()
-            let length = try readUInt32()
-            parsedEntries.append(PKGEntry(path: path, offset: offset, length: length))
-        }
-
         self.entries = parsedEntries
-        self.dataBaseOffset = cursor
+        self.entriesByPath = Dictionary(parsedEntries.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
+        self.dataBaseOffset = baseOffset
     }
 
     convenience init(url: URL) throws {
-        let data = try Data(contentsOf: url)
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
         try self.init(data: data)
     }
 
@@ -89,9 +78,7 @@ class PKGParser {
     }
 
     func extractFile(named name: String) -> Data? {
-        guard let entry = entries.first(where: { $0.path == name }) else {
-            return nil
-        }
+        guard let entry = entriesByPath[name] else { return nil }
         let start = dataBaseOffset + Int(entry.offset)
         let end = start + Int(entry.length)
         guard end <= data.count else { return nil }

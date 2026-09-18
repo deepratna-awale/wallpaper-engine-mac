@@ -49,10 +49,10 @@ struct ExplorerItem: SubviewOfContentView {
 //                    }
 //                }
         }
-        .selected(wallpaper.wallpaperDirectory == wallpaperViewModel.currentWallpaper.wallpaperDirectory)
+        .selected(wallpaper.wallpaperDirectory == wallpaperViewModel.displayedWallpaper.wallpaperDirectory)
         .overlay(
             RoundedRectangle(cornerRadius: 2)
-                .stroke(Color.blue, lineWidth: viewModel.isSelected(wallpaper) ? 3 : 0)
+            .stroke(Color.blue, lineWidth: wallpaper.wallpaperDirectory == wallpaperViewModel.displayedWallpaper.wallpaperDirectory ? 3 : 0)
         )
         .overlay(alignment: .topLeading) {
             if !viewModel.selectedWallpapers.isEmpty {
@@ -75,6 +75,7 @@ struct ExplorerItem: SubviewOfContentView {
                 from: viewModel.autoRefreshWallpapers,
                 inspectingWith: wallpaperViewModel
             )
+            wallpaperViewModel.inspect(wallpaper)
         }
         .onTapGesture(count: 2) {
             wallpaperViewModel.inspect(wallpaper)

@@ -7,7 +7,7 @@
 
 import Cocoa
 import SwiftUI
-import SpriteKit
+import MetalKit
 
 struct SceneWallpaperView: NSViewRepresentable {
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
@@ -20,24 +20,25 @@ struct SceneWallpaperView: NSViewRepresentable {
         self._viewModel = StateObject(wrappedValue: SceneWallpaperViewModel(wallpaper: wallpaperViewModel.wallpaper(for: screenId)))
     }
 
-    func makeNSView(context: Context) -> SKView {
-        let skView = SKView(frame: .zero)
-        skView.ignoresSiblingOrder = false
-        skView.allowsTransparency = false
-        skView.isPaused = false
-        skView.scene?.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
-        skView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
-        if let scene = viewModel.skScene {
-            skView.presentScene(scene)
-            scene.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
-            skView.setNeedsDisplay(skView.bounds)
+    func makeNSView(context: Context) -> MTKView {
+        let metalView = MTKView(frame: .zero)
+        context.coordinator.renderer = SceneMetalRenderer(view: metalView)
+        context.coordinator.propertyObserver = NotificationCenter.default.addObserver(
+            forName: .sceneUserPropertiesDidChange, object: nil, queue: .main
+        ) { [weak renderer = context.coordinator.renderer, weak sceneViewModel = viewModel] _ in
+            renderer?.setContent(sceneViewModel?.metalContent())
+            sceneViewModel.map { context.coordinator.metalRevision = $0.metalRevision }
         }
-
-        return skView
+        context.coordinator.renderer?.setPlacement(wallpaperViewModel.wallpaperPlacement)
+        context.coordinator.renderer?.setContent(viewModel.metalContent())
+        context.coordinator.metalRevision = viewModel.metalRevision
+        metalView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
+        return metalView
     }
 
-    func updateNSView(_ skView: SKView, context: Context) {
+    func updateNSView(_ metalView: MTKView, context: Context) {
         let selectedWallpaper = wallpaperViewModel.wallpaper(for: screenId)
         let currentWallpaper = viewModel.currentWallpaper
 
@@ -47,29 +48,24 @@ struct SceneWallpaperView: NSViewRepresentable {
             viewModel.currentWallpaper = selectedWallpaper
         }
 
-        // Present scene if available and not already presented
-        if let scene = viewModel.skScene, skView.scene !== scene {
-            skView.presentScene(scene)
-            scene.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
-            skView.setNeedsDisplay(skView.bounds)
+        if context.coordinator.metalRevision != viewModel.metalRevision {
+            context.coordinator.renderer?.setContent(viewModel.metalContent())
+            context.coordinator.metalRevision = viewModel.metalRevision
         }
-
-        // Update FPS
-        skView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
-        skView.scene?.scaleMode = sceneScaleMode(for: wallpaperViewModel.wallpaperPlacement)
-
-        // Pause/resume based on play rate
-        skView.isPaused = wallpaperViewModel.playRate == 0
+        context.coordinator.renderer?.setPlacement(wallpaperViewModel.wallpaperPlacement)
+        metalView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
+        metalView.isPaused = wallpaperViewModel.playRate == 0
     }
 
-    private func sceneScaleMode(for placement: WallpaperPlacement) -> SKSceneScaleMode {
-        switch placement {
-        case .stretch:
-            return .resizeFill
-        case .fill, .zoom:
-            return .aspectFill
-        case .fit, .center:
-            return .aspectFit
+    final class Coordinator {
+        var renderer: SceneMetalRenderer?
+        var metalRevision = -1
+        var propertyObserver: NSObjectProtocol?
+
+        deinit {
+            if let propertyObserver {
+                NotificationCenter.default.removeObserver(propertyObserver)
+            }
         }
     }
 }
