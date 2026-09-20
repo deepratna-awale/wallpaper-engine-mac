@@ -11,6 +11,15 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     static let shared = AudioReactiveScriptEngine()
     private static let screenCapturePromptedKey = "ScreenCapturePermissionPrompted"
 
+    /// WE scripts are authored as ES modules (`export function update`, `export let __workshopId`, etc.),
+    /// but JSContext.evaluateScript runs plain (non-module) scripts, where `export` is a syntax error that
+    /// silently aborts the whole script under our exception handler. Strip every export keyword so the
+    /// declarations still run as ordinary top-level statements.
+    private static func stripESModuleExports(_ script: String) -> String {
+        script.replacingOccurrences(of: #"(^|\n)\s*export\s+(function|let|const|var|class|default)"#,
+                                    with: "$1$2", options: .regularExpression)
+    }
+
     private let levelLock = NSLock()
     private var level: Double = 0
     private var spectrum = [Double](repeating: 0, count: 64)
@@ -20,6 +29,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     private var layerStates: [String: [String: Any]] = [:]
     private var layerAliases: [String: String] = [:]
     private var scriptContexts: [String: JSContext] = [:]
+    private var returnFunctions: [String: JSValue] = [:]
     private var initializedScripts = Set<String>()
     private let scriptLock = NSLock()
     private var sceneDeltaTime: Double = 1.0 / 60.0
@@ -37,6 +47,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         levelLock.unlock()
         scriptLock.lock()
         scriptContexts.removeAll()
+        returnFunctions.removeAll()
         initializedScripts.removeAll()
         scriptLock.unlock()
     }
@@ -107,7 +118,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
             let id = String(object.id ?? index)
             guard let layer = context.objectForKeyedSubscript("__layers")?.forProperty(id) else { continue }
             context.setObject(layer, forKeyedSubscript: "thisLayer" as NSString)
-            context.evaluateScript(script.replacingOccurrences(of: "export function", with: "function"))
+            context.evaluateScript(Self.stripESModuleExports(script))
             let fallback = initial[id] ?? false
             _ = context.objectForKeyedSubscript("init")?.call(withArguments: [fallback])
             if let result = context.objectForKeyedSubscript("update")?.call(withArguments: [fallback]), !result.isUndefined {
@@ -230,20 +241,34 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
                     "leftDown": (mouseButtons & 1) != 0, "rightDown": (mouseButtons & 2) != 0],
                    forKeyedSubscript: "input" as NSString)
 
-        let moduleSource = script.replacingOccurrences(of: "export function update", with: "function update")
-        let result = context?.evaluateScript(moduleSource)
         let value: JSValue?
         scriptLock.lock()
         let needsInitialization = !initializedScripts.contains(contextKey)
         if needsInitialization { initializedScripts.insert(contextKey) }
         scriptLock.unlock()
+        let moduleSource = Self.stripESModuleExports(script)
+        let result = needsInitialization ? context?.evaluateScript(moduleSource) : nil
         if needsInitialization, context?.objectForKeyedSubscript("init")?.isObject == true {
             _ = context?.objectForKeyedSubscript("init")?.call(withArguments: [input])
         }
         if context?.objectForKeyedSubscript("update")?.isObject == true {
             value = context?.objectForKeyedSubscript("update")?.call(withArguments: [input])
         } else if script.contains("return") {
-            value = context?.evaluateScript("(function(value) { \(moduleSource) })(value)")
+            let function: JSValue?
+            scriptLock.lock()
+            function = returnFunctions[contextKey]
+            scriptLock.unlock()
+            if let function {
+                value = function.call(withArguments: [input])
+            } else {
+                let compiled = context?.evaluateScript("(function(value) { \(moduleSource) })")
+                if let compiled {
+                    scriptLock.lock()
+                    returnFunctions[contextKey] = compiled
+                    scriptLock.unlock()
+                }
+                value = compiled?.call(withArguments: [input])
+            }
         } else {
             value = result
         }

@@ -27,6 +27,8 @@ class SceneWallpaperViewModel: ObservableObject {
     private var pkgParser: PKGParser?
     private var loadedScene: WEScene?
     private var loadedWallpaperDirectory: URL?
+    private var assetDataCache: [String: Data] = [:]
+    private var metalTextureCache: [String: SceneMetalTextureSource] = [:]
 
     init(wallpaper: WEWallpaper) {
         self.currentWallpaper = wallpaper
@@ -40,6 +42,11 @@ class SceneWallpaperViewModel: ObservableObject {
     // MARK: - Scene Loading
 
     func loadScene(from wallpaper: WEWallpaper) {
+        assetDataCache.removeAll(keepingCapacity: true)
+        metalTextureCache.removeAll(keepingCapacity: true)
+        // Symlink in any already-installed cross-workshop-item asset dependencies before parsing,
+        // so paths like "effects/workshop/<id>/name/effect.json" resolve as ordinary loose files.
+        WorkshopDependencyResolver.linkInstalledDependencies(for: wallpaper)
         let dir = wallpaper.wallpaperDirectory
         let sceneFile = wallpaper.project.file  // e.g. "scene.json" or "gifscene.json"
 
@@ -186,6 +193,7 @@ class SceneWallpaperViewModel: ObservableObject {
             }
             return buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildMetalTextLayer(object, sceneSize: sceneSize, objectsByID: objectsByID)
+                ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
         }
         let particleSystems: [SceneMetalParticleSystem] = scene.objects.compactMap { object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
@@ -197,7 +205,8 @@ class SceneWallpaperViewModel: ObservableObject {
                 AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_\($0)") == "true"
             }
             return SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
-                                     effects: Set((scene.effects ?? []).map { $0.lowercased() }).union(enabledEffects))
+                                     effects: Set((scene.effects ?? []).map { $0.lowercased() }).union(enabledEffects),
+                                     bloom: bloomSettings(for: scene.general))
         }
         guard let preview = loadPreviewImage(wallpaperDir: wallpaperDir) else { return nil }
         return SceneMetalContent(size: sceneSize, layers: [SceneMetalLayer(id: "preview", name: "preview", source: .image(preview),
@@ -211,7 +220,16 @@ class SceneWallpaperViewModel: ObservableObject {
             effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                           exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                           transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
-            sceneEffects: [])], particleSystems: [], effects: [])
+            sceneEffects: [])], particleSystems: [], effects: [],
+            bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1)))
+    }
+
+    private func bloomSettings(for general: WESceneGeneral) -> SceneBloomSettings {
+        let tint = (general.bloomtint ?? "1 1 1").parseVector3()
+        return SceneBloomSettings(enabled: general.bloom ?? false,
+                                  strength: Float(general.bloomstrength ?? 1),
+                                  threshold: Float(general.bloomthreshold ?? 0.7),
+                                  tint: SIMD3<Float>(Float(tint.0), Float(tint.1), Float(tint.2)))
     }
 
     private func metalSceneSize(for scene: WEScene) -> SIMD2<Float> {
@@ -336,6 +354,48 @@ class SceneWallpaperViewModel: ObservableObject {
                                                              exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                                              transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
                                sceneEffects: [])
+    }
+
+    /// Standalone "shape" objects (e.g. a DIRECTDRAW light-shaft quad) have no image/particle of their own;
+    /// they exist purely to host a procedural effect, so give them a full-scene solid layer to render onto.
+    private func buildShapeLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
+                                 objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
+        guard object.shape != nil, let effects = object.effects, !effects.isEmpty else { return nil }
+        let sceneEffects = buildSceneEffects(effects, wallpaperDir: wallpaperDir)
+        guard !sceneEffects.isEmpty else { return nil }
+        let position = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        let size: SIMD2<Float>
+        if let sizeString = object.size {
+            let value = sizeString.parseVector2()
+            size = SIMD2<Float>(Float(value.0), Float(value.1))
+        } else {
+            size = sceneSize
+        }
+        return SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
+                       source: .image(transparentPlaceholderImage), position: position, size: size,
+                       scale: SIMD2<Float>(repeating: 1), scaleScript: nil, scaleAnimation: nil,
+                       opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
+                       brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
+                       text: nil, parallaxDepth: .zero, perspective: false,
+                       positionScript: object.originScript, positionAnimation: object.originAnimation,
+                       sizeScript: nil, sizeAnimation: nil,
+                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
+                       rotationAnimation: object.anglesAnimation,
+                       effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
+                                                     exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
+                                                     transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
+                       sceneEffects: sceneEffects)
+    }
+
+    /// A fully transparent 1x1 placeholder texture for procedural shape layers (e.g. light shafts) that
+    /// have no authored image of their own; only the effect's computed alpha should ever become visible.
+    private var transparentPlaceholderImage: NSImage {
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.lockFocus()
+        NSColor.white.withAlphaComponent(0).setFill()
+        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
+        image.unlockFocus()
+        return image
     }
 
     private func renderText(_ text: SceneMetalText, size: CGSize) -> NSImage {
@@ -479,17 +539,31 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func loadMetalTexture(named name: String, materialDir: String, wallpaperDir: URL) -> SceneMetalTextureSource? {
+        let cacheKey = "\(materialDir)|\(name)"
+        if let cached = metalTextureCache[cacheKey] { return cached }
+
         let materialDirPath = (materialDir as NSString).deletingLastPathComponent
         let root = materialDirPath.split(separator: "/").first.map(String.init) ?? "materials"
         let paths = Array(Set(["\(materialDirPath)/\(name).tex", "\(root)/\(name).tex", "\(name).tex"]))
         for path in paths {
-            let data = pkgParser?.extractFile(named: path) ?? (try? Data(contentsOf: wallpaperDir.appending(path: path)))
+            let data = assetData(named: path, wallpaperDir: wallpaperDir)
             guard let data else { continue }
             let parser = TEXParser(data: data)
-            if let animation = parser.extractAnimatedImages() { return .animated(animation) }
-            if let texture = parser.extractCompressedTexture() { return .dxt(texture) }
+            if let animation = parser.extractAnimatedImages() {
+                let source = SceneMetalTextureSource.animated(animation)
+                metalTextureCache[cacheKey] = source
+                return source
+            }
+            if let texture = parser.extractCompressedTexture() {
+                let source = SceneMetalTextureSource.dxt(texture)
+                metalTextureCache[cacheKey] = source
+                return source
+            }
         }
-        return loadTexture(named: name, materialDir: materialDir, wallpaperDir: wallpaperDir).map(SceneMetalTextureSource.image)
+        guard let image = loadTexture(named: name, materialDir: materialDir, wallpaperDir: wallpaperDir) else { return nil }
+        let source = SceneMetalTextureSource.image(image)
+        metalTextureCache[cacheKey] = source
+        return source
     }
 
     private func buildMetalParticleSystem(_ object: WESceneObject, wallpaperDir: URL,
@@ -590,8 +664,11 @@ class SceneWallpaperViewModel: ObservableObject {
                                         phase: Float(`operator`.phasemin ?? 0),
                                         mask: SIMD2<Float>(Float(mask.0), -Float(mask.1)))
             case "controlpointattract":
-                let origin = `operator`.origin?.vectorValue ?? (0, 0, 0)
-                attractor = Attractor(origin: SIMD2<Float>(Float(origin.0), -Float(origin.1)),
+                // The operator's own "origin" is a local offset from the emitter, not an absolute scene
+                // position; adding the system's own `origin` was previously shadowed by this `let origin`,
+                // which pinned every attractor to the canvas corner (0,0) instead of the emitter itself.
+                let attractOffset = `operator`.origin?.vectorValue ?? (0, 0, 0)
+                attractor = Attractor(origin: origin + SIMD2<Float>(Float(attractOffset.0), -Float(attractOffset.1)),
                                       strength: Float(`operator`.scale?.doubleValue ?? 100),
                                       threshold: Float(`operator`.threshold ?? 1000))
             default: break
@@ -632,7 +709,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let root = materialDirectory.split(separator: "/").first.map(String.init) ?? "materials"
         let candidates = ["\(materialDirectory)/\(name).tex-json", "\(root)/\(name).tex-json", "\(name).tex-json"]
         for candidate in candidates {
-            let data = pkgParser?.extractFile(named: candidate) ?? (try? Data(contentsOf: wallpaperDir.appending(path: candidate)))
+            let data = assetData(named: candidate, wallpaperDir: wallpaperDir)
             guard let data, let metadata = try? JSONDecoder().decode(TextureMetadata.self, from: data),
                   let sequence = metadata.spritesheetsequences?.first, sequence.frames > 0,
                   sequence.width > 0, sequence.height > 0 else { continue }
@@ -882,14 +959,15 @@ class SceneWallpaperViewModel: ObservableObject {
     // MARK: - Asset Loading
 
     private func loadJSON<T: Decodable>(path: String, wallpaperDir: URL) -> T? {
-        // Try PKG first
-        if let parser = pkgParser, let data = parser.extractFile(named: path) {
-            return try? JSONDecoder().decode(T.self, from: data)
-        }
-        // Fall back to loose file
-        let url = wallpaperDir.appending(path: path)
-        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let data = assetData(named: path, wallpaperDir: wallpaperDir) else { return nil }
         return try? JSONDecoder().decode(T.self, from: data)
+    }
+
+    private func assetData(named path: String, wallpaperDir: URL) -> Data? {
+        if let cached = assetDataCache[path] { return cached }
+        let data = pkgParser?.extractFile(named: path) ?? (try? Data(contentsOf: wallpaperDir.appending(path: path)))
+        if let data { assetDataCache[path] = data }
+        return data
     }
 
     private func loadTexture(named name: String, materialDir: String, wallpaperDir: URL) -> NSImage? {
@@ -909,7 +987,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
         for texPath in texPaths {
             // Try .tex from PKG
-            if let parser = pkgParser, let texData = parser.extractFile(named: texPath) {
+            if let texData = assetData(named: texPath, wallpaperDir: wallpaperDir) {
                 Self.log("  TEX from PKG '\(texPath)' size=\(texData.count)")
                 let texParser = TEXParser(data: Data(texData))  // Copy to reset indices
                 if let image = texParser.extractImage() {
@@ -917,25 +995,14 @@ class SceneWallpaperViewModel: ObservableObject {
                 }
                 Self.log("  TEXParser.extractImage() returned nil for '\(texPath)'")
             }
-
-            // Try .tex from loose file
-            let texURL = wallpaperDir.appending(path: texPath)
-            if let texData = try? Data(contentsOf: texURL) {
-                let texParser = TEXParser(data: texData)
-                if let image = texParser.extractImage() {
-                    return image
-                }
-            }
         }
 
         // Try common image formats directly
         for ext in ["png", "jpg", "jpeg", "gif"] {
             let imgPath = materialDirPath.isEmpty ? "\(name).\(ext)" : "\(materialDirPath)/\(name).\(ext)"
-            if let parser = pkgParser, let imgData = parser.extractFile(named: imgPath) {
+            if let imgData = assetData(named: imgPath, wallpaperDir: wallpaperDir) {
                 if let image = NSImage(data: imgData) { return image }
             }
-            let imgURL = wallpaperDir.appending(path: imgPath)
-            if let image = NSImage(contentsOf: imgURL) { return image }
         }
 
         Self.log("  No texture found for '\(name)'")

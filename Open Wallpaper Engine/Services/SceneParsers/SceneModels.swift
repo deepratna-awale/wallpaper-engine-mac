@@ -39,6 +39,10 @@ struct WESceneGeneral: Codable {
     var orthogonalprojection: WEOrthogonalProjection?
     var ambientcolor: String?
     var skylightcolor: String?
+    var bloom: Bool?
+    var bloomstrength: Double?
+    var bloomthreshold: Double?
+    var bloomtint: String?
 
     // These fields can be Bool, Int, or an object {"user":..,"value":..} in different wallpapers.
     // We only need the String fields above for rendering, so skip strict decoding of the rest.
@@ -50,10 +54,15 @@ struct WESceneGeneral: Codable {
         orthogonalprojection = try? container.decodeIfPresent(WEOrthogonalProjection.self, forKey: .orthogonalprojection)
         ambientcolor = try? container.decodeIfPresent(String.self, forKey: .ambientcolor)
         skylightcolor = try? container.decodeIfPresent(String.self, forKey: .skylightcolor)
+        bloom = try? container.decodeIfPresent(Bool.self, forKey: .bloom)
+        bloomstrength = try? container.decodeIfPresent(Double.self, forKey: .bloomstrength)
+        bloomthreshold = try? container.decodeIfPresent(Double.self, forKey: .bloomthreshold)
+        bloomtint = try? container.decodeIfPresent(String.self, forKey: .bloomtint)
     }
 
     enum CodingKeys: String, CodingKey {
         case clearcolor, orthogonalprojection, ambientcolor, skylightcolor
+        case bloom, bloomstrength, bloomthreshold, bloomtint
     }
 }
 
@@ -89,6 +98,7 @@ struct WESceneObject: Decodable {
     var visibleUserProperty: String?
     var visibleScript: String?
     var effects: [WEObjectEffect]?
+    var shape: String?
 
     // Text objects
     var textValue: String?
@@ -123,7 +133,7 @@ struct WESceneObject: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case id, parent, name, origin, scale, angles, visible, effects, text, font, pointsize, horizontalalign, verticalalign
-        case image, alpha, brightness, color, colorBlendMode, size, alignment
+        case image, alpha, brightness, color, colorBlendMode, size, alignment, shape
         case solid, copybackground, parallaxDepth, perspective
         case particle, instanceoverride
     }
@@ -138,6 +148,7 @@ struct WESceneObject: Decodable {
         particle = try? c.decodeIfPresent(String.self, forKey: .particle)
         instanceoverride = try? c.decodeIfPresent(WEInstanceOverride.self, forKey: .instanceoverride)
         effects = try? c.decodeIfPresent([WEObjectEffect].self, forKey: .effects)
+        shape = try? c.decodeIfPresent(String.self, forKey: .shape)
             if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {
             textValue = scriptedText.stringValue
             textScript = scriptedText.script
@@ -292,8 +303,9 @@ struct WEKeyframeAnimation: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        keyframes = (try? container.decode([WEKeyframe].self, forKey: .keyframes))
-            ?? (try? container.decode([WEKeyframe].self, forKey: .frames)) ?? []
+        keyframes = ((try? container.decode([WEKeyframe].self, forKey: .keyframes))
+            ?? (try? container.decode([WEKeyframe].self, forKey: .frames)) ?? [])
+            .sorted { $0.frame < $1.frame }
     }
 }
 
@@ -317,8 +329,9 @@ struct WEVectorKeyframeAnimation: Decodable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        keyframes = (try? container.decode([WEVectorKeyframe].self, forKey: .keyframes))
-            ?? (try? container.decode([WEVectorKeyframe].self, forKey: .frames)) ?? []
+        keyframes = ((try? container.decode([WEVectorKeyframe].self, forKey: .keyframes))
+            ?? (try? container.decode([WEVectorKeyframe].self, forKey: .frames)) ?? [])
+            .sorted { $0.frame < $1.frame }
     }
 }
 

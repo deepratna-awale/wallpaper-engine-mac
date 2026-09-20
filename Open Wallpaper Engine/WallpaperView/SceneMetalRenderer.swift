@@ -136,11 +136,19 @@ struct SpriteSheet {
     let duration: Float
 }
 
+struct SceneBloomSettings {
+    let enabled: Bool
+    let strength: Float
+    let threshold: Float
+    let tint: SIMD3<Float>
+}
+
 struct SceneMetalContent {
     let size: SIMD2<Float>
     let layers: [SceneMetalLayer]
     let particleSystems: [SceneMetalParticleSystem]
     let effects: Set<String>
+    let bloom: SceneBloomSettings
 }
 
 private struct LayerUniform {
@@ -158,6 +166,7 @@ private struct LayerUniform {
     var colorEffects: SIMD4<Float>
     var transform: SIMD4<Float>
     var transformScaleY: Float
+    var bloomTint: SIMD4<Float> = SIMD4<Float>(repeating: 1)
 }
 
 private struct DXTDecodeUniform {
@@ -177,17 +186,22 @@ private struct EffectDescriptorGPU {
     var maskIndex: UInt32
     var values: SIMD4<Float>
     var extra: SIMD4<Float>
+    var extra2: SIMD4<Float> = .zero
+    var extra3: SIMD4<Float> = .zero
 }
 
 private struct EffectStack {
     let descriptors: [EffectDescriptorGPU]
 
-    init(effects: [SceneMetalEffect], globalNames: Set<String>, sceneSize: SIMD2<Float>, audioLevel: Float) {
+    /// maskSlots maps each entry in `effects` to the bound mask texture slot (0...3) prepared for this
+    /// layer, or nil if it has no mask. Pass an empty array to render every effect unmasked.
+    init(effects: [SceneMetalEffect], maskSlots: [Int?] = [], globalNames: Set<String>, sceneSize: SIMD2<Float>, audioLevel: Float) {
         var descriptors: [EffectDescriptorGPU] = []
         var names = Set<String>()
         for (index, effect) in effects.enumerated() {
             guard Self.isEnabled(effect.name) else { continue }
-            let maskIndex = effect.mask == nil ? UInt32.max : UInt32(index)
+            let slot = index < maskSlots.count ? maskSlots[index] : nil
+            let maskIndex = slot.map(UInt32.init) ?? UInt32.max
             guard let descriptor = Self.descriptor(for: effect, maskIndex: maskIndex, sceneSize: sceneSize, audioLevel: audioLevel) else { continue }
             descriptors.append(descriptor)
             names.insert(effect.name)
@@ -240,8 +254,12 @@ private struct EffectStack {
             let speeds = vector("speed", SIMD4(-0.1, 0.7, 0.1, -0.5))
             let scales = vector("scale", SIMD4(1, 2, 0, 0))
             let bounds = vector("bounds", SIMD4(0.3, 0.25, 0, 0))
+            let colorStart = vector("colorstart", SIMD4(0.247, 0.478, 0.682, 0))
+            let colorEnd = vector("colorend", SIMD4(0.376, 0.568, 0.745, 0))
             return EffectDescriptorGPU(kind: 3, maskIndex: maskIndex,
-                                       values: SIMD4(value("multiply", 1), speeds.x, speeds.y, speeds.z), extra: SIMD4(speeds.w, scales.x, scales.y, bounds.x))
+                                       values: SIMD4(value("multiply", 1), speeds.x, speeds.y, speeds.z), extra: SIMD4(speeds.w, scales.x, scales.y, bounds.x),
+                                       extra2: SIMD4(colorStart.x, colorStart.y, colorStart.z, value("smoothness", 1)),
+                                       extra3: SIMD4(colorEnd.x, colorEnd.y, colorEnd.z, bounds.y))
         case "vhs":
             return EffectDescriptorGPU(kind: 4, maskIndex: maskIndex,
                                        values: SIMD4(value("strength", 1.2), value("chromatic", 0.1), value("artifacts", 0.5), value("distortionstrength", 1)),
@@ -254,6 +272,25 @@ private struct EffectStack {
             return EffectDescriptorGPU(kind: 7, maskIndex: maskIndex,
                                        values: SIMD4(value("density", 0.65), value("drift", 0.035), 0.12, 0.8),
                                        extra: SIMD4(value("near", 0.45), value("far", 0.85), 0, 0))
+        case "foliagesway":
+            return EffectDescriptorGPU(kind: 8, maskIndex: maskIndex,
+                                       values: SIMD4(value("strength", 0.4), value("scale", 0.05), value("speeduv", 5), value("phase", 0)),
+                                       extra: SIMD4(value("power", 1), value("ratio", 0.3), 0, 0))
+        case "waterripple":
+            return EffectDescriptorGPU(kind: 9, maskIndex: maskIndex,
+                                       values: SIMD4(value("ripplestrength", 0.06), value("scale", 0.58), value("animationspeed", 0.15), value("scrolldirection", 0)),
+                                       extra: SIMD4(value("scrollspeed", 0), value("ratio", 0.63), 0, 0))
+        case "godrays":
+            let center = vector("center", SIMD4(0.5, 0.5, 0, 0))
+            return EffectDescriptorGPU(kind: 10, maskIndex: maskIndex,
+                                       values: SIMD4(value("raythreshold", 0.86), value("rayintensity", 0.77), value("raylength", 0.49), value("noisespeed", 0.15)),
+                                       extra: SIMD4(value("noiseamount", 0.91), value("noisescale", 3), center.x, center.y))
+        case "lightshafts":
+            let colorEnd = vector("colorend", SIMD4(1, 1, 1, 0))
+            return EffectDescriptorGPU(kind: 11, maskIndex: maskIndex,
+                                       values: SIMD4(value("rayradius", 0.15), value("rayspeed", 0.39), value("raysmoothness", 0.54), value("noiseamount", 0.33)),
+                                       extra: SIMD4(value("noisescale", 0.85), value("colorwintensity", 0.45), 0, 0),
+                                       extra2: SIMD4(colorEnd.x, colorEnd.y, colorEnd.z, 0))
         default:
             return nil
         }
@@ -262,8 +299,12 @@ private struct EffectStack {
 
 private struct PreparedLayer {
     let frames: [RenderTextureFrame]
+    let frameDuration: Float
     let layer: SceneMetalLayer
-    let effectMasks: [MTLTexture?]
+    // At most 4 mask textures can be bound per draw; effectMaskSlots maps each sceneEffects
+    // position to its bound slot (0...3) in effectMasks, or nil if it has no mask / didn't fit.
+    let effectMasks: [MTLTexture]
+    let effectMaskSlots: [Int?]
 }
 
 private struct RenderTextureFrame {
@@ -285,6 +326,7 @@ private struct Particle {
     let angularVelocity: Float
     let color: SIMD4<Float>
     var history: [SIMD2<Float>]
+    var historyStart: Int
 }
 
 private final class ParticleSystemRuntime {
@@ -293,10 +335,14 @@ private final class ParticleSystemRuntime {
     var particles: [Particle] = []
     var emissionRemainder: Float = 0
     var elapsedTime: Float = 0
+    var fadeIn: Float
+    var fadeOut: Float
 
     init(texture: MTLTexture, configuration: SceneMetalParticleSystem) {
         self.texture = texture
         self.configuration = configuration
+        self.fadeIn = configuration.fadeIn
+        self.fadeOut = configuration.fadeOut
     }
 }
 
@@ -316,8 +362,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var lastFrameTime = CACurrentMediaTime()
     private var placement: WallpaperPlacement = .fill
     private var effects = Set<String>()
+    private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     private var sceneRenderTarget: MTLTexture?
     private var sceneRenderTargetSize = SIMD2<Float>.zero
+    private var textFrameCache: [String: RenderTextureFrame] = [:]
 
     init?(view: MTKView) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -376,16 +424,22 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard let content else {
             layers = []
             particleSystems = []
+            textFrameCache.removeAll(keepingCapacity: true)
             return
         }
         contentQueue.async { [weak self] in
             guard let self, self.isCurrentContentGeneration(generation) else { return }
             let preparedLayers: [PreparedLayer] = content.layers.compactMap { layer in
                 guard let frames = self.makeTextureFrames(from: layer.source), !frames.isEmpty else { return nil }
-                let effectMasks = layer.sceneEffects.map { effect in
-                    effect.mask.flatMap { self.makeTextureFrames(from: $0)?.first?.texture }
+                var effectMasks: [MTLTexture] = []
+                let effectMaskSlots: [Int?] = layer.sceneEffects.map { effect in
+                    guard let mask = effect.mask, let texture = self.makeTextureFrames(from: mask)?.first?.texture else { return nil }
+                    guard effectMasks.count < 4 else { return nil }
+                    effectMasks.append(texture)
+                    return effectMasks.count - 1
                 }
-                return PreparedLayer(frames: frames, layer: layer, effectMasks: effectMasks)
+                return PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration },
+                                     layer: layer, effectMasks: effectMasks, effectMaskSlots: effectMaskSlots)
             }
             let preparedParticleSystems: [ParticleSystemRuntime] = content.particleSystems.compactMap { system in
                 guard let texture = self.makeTextureFrames(from: system.source)?.first?.texture else { return nil }
@@ -396,8 +450,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 guard let self, self.isCurrentContentGeneration(generation) else { return }
                 self.sceneSize = content.size
                 self.effects = Set(content.effects.map { $0.lowercased() })
+                self.bloom = content.bloom
                 self.layers = preparedLayers
                 self.particleSystems = preparedParticleSystems
+                self.textFrameCache.removeAll(keepingCapacity: true)
                 var scriptLayers: [String: [String: Any]] = [:]
                 var layerAliases: [String: String] = [:]
                 for entry in preparedLayers {
@@ -455,12 +511,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let cursor = sceneCursor(in: view, drawableSize: realDrawableSize)
         let cursorDelta = (cursor - sceneSize / 2) / sceneSize
         let parallaxEnabled = AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") != "false"
+        let parallaxAmount = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
         for (layerIndex, entry) in layers.enumerated() {
             var effectUniform = EffectUniform(time: time,
                                               pulse: effects.contains("pulse") ? Float(audioLevel) : 0)
             encoder.setVertexBytes(&effectUniform, length: MemoryLayout<EffectUniform>.stride, index: 1)
             encoder.setFragmentBytes(&effectUniform, length: MemoryLayout<EffectUniform>.stride, index: 1)
-            let effectStack = EffectStack(effects: entry.layer.sceneEffects, globalNames: effects,
+            let effectStack = EffectStack(effects: entry.layer.sceneEffects, maskSlots: entry.effectMaskSlots, globalNames: effects,
                                           sceneSize: sceneSize, audioLevel: Float(audioLevel))
             effectStack.bind(to: encoder)
             let opacity = entry.layer.opacityScript.map {
@@ -483,11 +540,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 ? entry.layer.parallaxDepth
                 : SIMD3<Float>(repeating: fallbackDepth)
             let parallaxOffset = parallaxEnabled
-                ? SIMD2<Float>(parallaxDepth.x * cursorDelta.x * sceneSize.x * 0.1,
-                               parallaxDepth.y * cursorDelta.y * sceneSize.y * 0.1)
+                ? SIMD2<Float>(parallaxDepth.x * cursorDelta.x * sceneSize.x * 0.18 * parallaxAmount,
+                               parallaxDepth.y * cursorDelta.y * sceneSize.y * 0.18 * parallaxAmount)
                 : .zero
             let perspectiveScale = parallaxEnabled && entry.layer.perspective
-                ? 1 + parallaxDepth.z * simd_length(cursorDelta) * 0.1
+                ? 1 + parallaxDepth.z * simd_length(cursorDelta) * 0.18 * parallaxAmount
                 : 1
             let size = baseSize * scale * perspectiveScale
             let unclampedPosition = position + parallaxOffset
@@ -543,7 +600,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     AudioReactiveScriptEngine.shared.evaluateString($0, fallback: text.value,
                                                                       layerId: entry.layer.id, time: Double(time))
                 } ?? text.value
-                textureFrame = makeTextFrame(text, value: value, size: size, layerID: entry.layer.id) ?? self.textureFrame(for: entry, time: time)
+                textureFrame = makeTextFrame(text, value: value, size: size, layerID: entry.layer.id)
+                    ?? self.textureFrame(for: entry, time: time)
             } else {
                 textureFrame = self.textureFrame(for: entry, time: time)
             }
@@ -572,7 +630,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 }
                 var uniform = layerUniform(position: particle.position,
                                            size: SIMD2<Float>(repeating: particle.size),
-                                           opacity: particleOpacity(particle, in: system.configuration, time: system.elapsedTime),
+                                           opacity: particleOpacity(particle, in: system),
                                            drawableSize: drawableSize)
                 uniform.rotation = particle.rotation
                 uniform.color = particle.color
@@ -601,7 +659,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let neutralEffectStack = EffectStack(effects: [], globalNames: [], sceneSize: sceneSize, audioLevel: 0)
         neutralEffectStack.bind(to: compositeEncoder)
         var compositeUniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize)
-        compositeUniform.effects = SIMD4<Float>(1, 1, 1, 0)
+        let bloomMultiplier = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1)
+        let bloomStrength = bloom.enabled ? bloom.strength * bloomMultiplier : 0
+        compositeUniform.effects = SIMD4<Float>(1, 1, 1, max(bloomStrength, 0))
+        compositeUniform.colorEffects.w = bloom.threshold
+        compositeUniform.bloomTint = SIMD4<Float>(bloom.tint.x, bloom.tint.y, bloom.tint.z, 1)
+        // "_owe_blur" defaults to 1 (no extra blur); raising it above 1 blurs the whole composited scene,
+        // independent of any per-layer material blur, so the slider is guaranteed to have an effect.
+        let userBlur = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_blur", fallback: 1)
+        compositeUniform.blur = max(userBlur - 1, 0) * 4
         compositeEncoder.setVertexBytes(&compositeUniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
         compositeEncoder.setFragmentBytes(&compositeUniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
         compositeEncoder.setFragmentTexture(sceneTexture, index: 0)
@@ -635,19 +701,22 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func makeTextFrame(_ text: SceneMetalText, value: String, size: SIMD2<Float>, layerID: String) -> RenderTextureFrame? {
-        let image = NSImage(size: NSSize(width: CGFloat(max(size.x, 1)), height: CGFloat(max(size.y, 1))))
-        image.lockFocus()
         let fontName = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_font") ?? ""
         let sizeValue = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(layerID)_size", fallback: Float(text.pointSize))
-        var font = NSFont(name: fontName.isEmpty ? (text.font ?? "System") : fontName, size: CGFloat(sizeValue))
-            ?? NSFont.systemFont(ofSize: CGFloat(sizeValue))
         let bold = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_bold") == "true"
         let italic = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_italic") == "true"
+        let colorValue = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_color") ?? "1 1 1"
+        let cacheKey = "\(layerID)|\(value)|\(size.x)|\(size.y)|\(fontName)|\(sizeValue)|\(bold)|\(italic)|\(colorValue)"
+        if let cached = textFrameCache[cacheKey] { return cached }
+
+        let image = NSImage(size: NSSize(width: CGFloat(max(size.x, 1)), height: CGFloat(max(size.y, 1))))
+        image.lockFocus()
+        var font = NSFont(name: fontName.isEmpty ? (text.font ?? "System") : fontName, size: CGFloat(sizeValue))
+            ?? NSFont.systemFont(ofSize: CGFloat(sizeValue))
         if bold { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
         if italic { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = text.horizontalAlignment == "left" ? .left : text.horizontalAlignment == "right" ? .right : .center
-        let colorValue = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_color") ?? "1 1 1"
         let rgb = colorValue.parseVector3()
         let color = NSColor(calibratedRed: CGFloat(rgb.0), green: CGFloat(rgb.1), blue: CGFloat(rgb.2), alpha: 1)
         let attributed = NSAttributedString(string: value, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
@@ -656,7 +725,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             : text.verticalAlignment == "bottom" ? 0 : (image.size.height - textSize.height) / 2
         attributed.draw(in: NSRect(x: 0, y: max(0, y), width: image.size.width, height: textSize.height))
         image.unlockFocus()
-        return makeTextureFrames(from: .image(image))?.first
+        guard let frame = makeTextureFrames(from: .image(image))?.first else { return nil }
+        textFrameCache[cacheKey] = frame
+        return frame
     }
 
     private func layerUniform(position: SIMD2<Float>, size: SIMD2<Float>, opacity: Float,
@@ -739,7 +810,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     private func textureFrame(for entry: PreparedLayer, time: Float) -> RenderTextureFrame {
         guard entry.frames.count > 1 else { return entry.frames[0] }
-        let duration = entry.frames.map(\.duration).reduce(0, +)
+        let duration = entry.frameDuration
         guard duration > 0 else { return entry.frames[0] }
         var frameTime = time.truncatingRemainder(dividingBy: duration)
         for frame in entry.frames {
@@ -750,7 +821,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func timelineValue(_ animation: WEKeyframeAnimation?, at time: Float, fallback: Float) -> Float {
-        guard let keyframes = animation?.keyframes.sorted(by: { $0.frame < $1.frame }), !keyframes.isEmpty else { return fallback }
+        guard let keyframes = animation?.keyframes, !keyframes.isEmpty else { return fallback }
         let frame = Double(time * 60)
         guard let next = keyframes.first(where: { $0.frame >= frame }) else { return Float(keyframes.last!.value) }
         guard let previous = keyframes.last(where: { $0.frame <= frame }), previous.frame != next.frame else { return Float(next.value) }
@@ -760,7 +831,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     private func timelineVector3(_ animation: WEVectorKeyframeAnimation?, at time: Float,
                                  fallback: SIMD3<Float>) -> SIMD3<Float> {
-        guard let keyframes = animation?.keyframes.sorted(by: { $0.frame < $1.frame }), !keyframes.isEmpty else { return fallback }
+        guard let keyframes = animation?.keyframes, !keyframes.isEmpty else { return fallback }
         let frame = Double(time * 60)
         guard let next = keyframes.first(where: { $0.frame >= frame }) else {
             let value = keyframes.last!.value.vectorValue
@@ -839,6 +910,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             let drag = configuration.dragScript.map {
                 AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.drag, time: Double(system.elapsedTime))
             } ?? configuration.drag
+            system.fadeIn = configuration.fadeInScript.map {
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeIn, time: Double(system.elapsedTime))
+            } ?? configuration.fadeIn
+            system.fadeOut = configuration.fadeOutScript.map {
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeOut, time: Double(system.elapsedTime))
+            } ?? configuration.fadeOut
             system.emissionRemainder += max(emissionRate, 0) * deltaTime
             let emissionCount = min(Int(system.emissionRemainder), configuration.maximumParticleCount - system.particles.count)
             system.emissionRemainder -= Float(emissionCount)
@@ -865,7 +942,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     color: SIMD4<Float>(Float.random(in: min(configuration.minimumColor.x, configuration.maximumColor.x)...max(configuration.minimumColor.x, configuration.maximumColor.x)),
                                         Float.random(in: min(configuration.minimumColor.y, configuration.maximumColor.y)...max(configuration.minimumColor.y, configuration.maximumColor.y)),
                                         Float.random(in: min(configuration.minimumColor.z, configuration.maximumColor.z)...max(configuration.minimumColor.z, configuration.maximumColor.z)), 1),
-                    history: []))
+                    history: [], historyStart: 0))
             }
             for index in system.particles.indices {
                 system.particles[index].position += system.particles[index].velocity * deltaTime
@@ -888,9 +965,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 system.particles[index].velocity *= max(0, 1 - drag * deltaTime)
                 system.particles[index].age += deltaTime
                 system.particles[index].rotation += system.particles[index].angularVelocity * deltaTime
-                system.particles[index].history.append(system.particles[index].position)
-                if system.particles[index].history.count > configuration.trailSegments {
-                    system.particles[index].history.removeFirst()
+                let historyLimit = max(configuration.trailSegments, 1)
+                if system.particles[index].history.count < historyLimit {
+                    system.particles[index].history.append(system.particles[index].position)
+                } else {
+                    let historyStart = system.particles[index].historyStart
+                    system.particles[index].history[historyStart] = system.particles[index].position
+                    system.particles[index].historyStart = (historyStart + 1) % historyLimit
                 }
             }
             system.particles.removeAll { $0.age >= $0.lifetime }
@@ -901,9 +982,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                    drawableSize: SIMD2<Float>, encoder: MTLRenderCommandEncoder) {
         let history = particle.history
         guard history.count > 1 else { return }
-        for (index, position) in history.enumerated() {
+        for index in 0..<history.count {
+            let historyIndex = (particle.historyStart + index) % history.count
+            let position = history[historyIndex]
             let progress = Float(index) / Float(history.count)
-            let opacity = particleOpacity(particle, in: system.configuration, time: system.elapsedTime)
+            let opacity = particleOpacity(particle, in: system)
                 * (system.configuration.fadeTrailAlpha ? progress : 1)
             let size = particle.size * (system.configuration.fadeTrailSize ? max(progress, 0.15) : 1)
             var uniform = layerUniform(position: position, size: SIMD2<Float>(repeating: size),
@@ -933,12 +1016,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 spline.append((catmullRom(previous.position, start.position, end.position, following.position, t),
                                start.size + (end.size - start.size) * t,
                                simd_mix(start.color, end.color, SIMD4<Float>(repeating: t)),
-                               particleOpacity(start, in: system.configuration, time: system.elapsedTime)
-                                   + (particleOpacity(end, in: system.configuration, time: system.elapsedTime) - particleOpacity(start, in: system.configuration, time: system.elapsedTime)) * t))
+                               particleOpacity(start, in: system)
+                                   + (particleOpacity(end, in: system) - particleOpacity(start, in: system)) * t))
             }
         }
         if let last = particles.last {
-            spline.append((last.position, last.size, last.color, particleOpacity(last, in: system.configuration, time: system.elapsedTime)))
+            spline.append((last.position, last.size, last.color, particleOpacity(last, in: system)))
         }
         for index in 0..<(spline.count - 1) {
             let start = spline[index]
@@ -969,16 +1052,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             + (-previous + 3 * start - 3 * end + following) * t3)
     }
 
-    private func particleOpacity(_ particle: Particle, in configuration: SceneMetalParticleSystem, time: Float) -> Float {
+    private func particleOpacity(_ particle: Particle, in system: ParticleSystemRuntime) -> Float {
         let progress = particle.age / particle.lifetime
-        let fadeInValue = configuration.fadeInScript.map {
-            AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeIn, time: Double(time))
-        } ?? configuration.fadeIn
-        let fadeOutValue = configuration.fadeOutScript.map {
-            AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeOut, time: Double(time))
-        } ?? configuration.fadeOut
-        let fadeIn = fadeInValue > 0 ? min(progress / fadeInValue, 1) : 1
-        let fadeOut = fadeOutValue < 1 ? min((1 - progress) / (1 - fadeOutValue), 1) : 1
+        let fadeIn = system.fadeIn > 0 ? min(progress / system.fadeIn, 1) : 1
+        let fadeOut = system.fadeOut < 1 ? min((1 - progress) / (1 - system.fadeOut), 1) : 1
         return particle.alpha * fadeIn * fadeOut
     }
 }
