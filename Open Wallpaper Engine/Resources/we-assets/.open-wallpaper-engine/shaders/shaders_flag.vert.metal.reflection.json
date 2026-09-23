@@ -1,0 +1,1 @@
+{"uniforms": [{"name": "g_ModelViewProjectionMatrix", "type": "mat4", "semantic": null}, {"name": "g_Time", "type": "float", "semantic": null}, {"name": "g_WaveSpeed", "type": "float", "semantic": "{\"material\":\"Speed\",\"default\":0.4}"}], "textures": [], "combos": {}}

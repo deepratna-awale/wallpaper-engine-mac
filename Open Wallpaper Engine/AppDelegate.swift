@@ -44,7 +44,7 @@ private struct WorkshopPreviewContent: View {
             .id(wallpaperViewModel.currentWallpaper.wallpaperDirectory)
 
             HStack(spacing: 10) {
-                if wallpaperViewModel.currentWallpaper.project.type.lowercased() == "video" {
+                if SceneWallpaperViewModel.isVideoType(wallpaperViewModel.currentWallpaper.project.type) {
                     Button {
                         wallpaperViewModel.playRate = wallpaperViewModel.playRate == 0
                             ? max(wallpaperViewModel.lastPlayRate, 0.1)
@@ -55,8 +55,9 @@ private struct WorkshopPreviewContent: View {
                     .buttonStyle(.bordered)
                     .help(wallpaperViewModel.playRate == 0 ? "Play" : "Pause")
 
-                    Slider(value: $wallpaperViewModel.playVolume, in: 0...1)
-                        .frame(width: 110)
+                    NumericSliderInput(value: $wallpaperViewModel.playVolume, range: 0...1,
+                                       defaultValue: 1, displayScale: 100, suffix: "%",
+                                       fractionDigits: 0, sliderWidth: 110, fieldWidth: 36)
                 }
 
                 Button("Set Wallpaper") {
@@ -80,6 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var wallpaperWindows: [String: NSWindow] = [:]
     private var workshopPreviewWindow: NSWindow?
     private var workshopPreviewViewModel: WallpaperViewModel?
+    var sceneInspectorWindow: NSWindow?
     
     var contentViewModel = ContentViewModel()
     var wallpaperViewModel = WallpaperViewModel()
@@ -88,10 +90,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var importOpenPanel: NSOpenPanel!
     
     var eventHandler: Any?
+    private var didShowAudioPermissionPrompt = false
     
     static var shared = AppDelegate()
     
     func applicationWillFinishLaunching(_ notification: Notification) {
+        // Must run before any wallpaper reads its saved per-effect settings.
+        SceneEffectNameMigration.run()
+
         // 创建设置视窗
         setSettingsWindow()
         
@@ -102,6 +108,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(screensChanged),
             name: NSApplication.didChangeScreenParametersNotification, object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(audioCapturePermissionMissing),
+            name: .audioCapturePermissionMissing, object: nil
         )
         
         // 创建化左上角菜单栏
@@ -136,6 +146,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         if globalSettingsViewModel.isFirstLaunch {
             self.mainWindowController.window.center()
             self.mainWindowController.window.makeKeyAndOrderFront(nil)
+        }
+
+        DispatchQueue.global(qos: .utility).async {
+            WallpaperPackageConverter.convertInstalledLibrary()
+            if UserDefaults.standard.bool(forKey: "ReclaimOriginalPackages") {
+                WallpaperPackageConverter.reclaimEligibleSources()
+            }
         }
     }
     
@@ -197,7 +214,37 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @MainActor @objc func toggleFilter() {
         self.contentViewModel.isFilterReveal.toggle()
     }
-    
+
+    @objc func audioCapturePermissionMissing() {
+        guard !didShowAudioPermissionPrompt else { return }
+        guard !UserDefaults.standard.bool(forKey: "SuppressAudioPermissionPrompt") else { return }
+        didShowAudioPermissionPrompt = true
+        let alert = NSAlert()
+        alert.messageText = "Audio Visualizers Need Permission"
+        alert.informativeText = """
+        Open Wallpaper Engine needs Screen & System Audio Recording permission to read system audio \
+        for audio bars and other audio-reactive wallpapers.
+
+        Locally built copies are signed ad-hoc, so macOS treats every rebuild as a new app and \
+        clears this permission. Remove the old entry in Privacy & Security before re-adding it.
+        """
+        alert.addButton(withTitle: "Open Privacy Settings")
+        alert.addButton(withTitle: "Open Permissions Page")
+        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "Don't Ask Again")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            PermissionHelper.openScreenRecordingSettings()
+        case .alertSecondButtonReturn:
+            globalSettingsViewModel.selection = 3
+            openSettingsWindow()
+        case .alertThirdButtonReturn:
+            break
+        default:
+            UserDefaults.standard.set(true, forKey: "SuppressAudioPermissionPrompt")
+        }
+    }
+
 // MARK: Set Settings Window
     func setSettingsWindow() {
         self.settingsWindow = NSWindow(
@@ -248,7 +295,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     /// Rebuild wallpaper windows without changing enabled state.
     func rebuildWallpaperWindows() {
-        for (_, window) in wallpaperWindows { window.close() }
+        for (_, window) in wallpaperWindows {
+            // `isReleasedWhenClosed` is false, so the hosting view (and the video players inside
+            // it) survives a plain close and keeps playing.
+            window.contentView = nil
+            window.close()
+        }
         wallpaperWindows.removeAll()
         setWallpaperWindows()
         for (_, window) in wallpaperWindows { window.orderFront(nil) }
@@ -279,7 +331,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         )
         window.isReleasedWhenClosed = false
         window.onDismiss = { [weak self] in
-            self?.workshopPreviewViewModel?.playRate = 0
+            // Hiding the window leaves its wallpaper view — and that view's video players — alive,
+            // so the preview has to be torn down rather than just paused.
+            guard let self else { return }
+            self.workshopPreviewViewModel?.playRate = 0
+            self.workshopPreviewViewModel?.playVolume = 0
+            self.workshopPreviewWindow?.contentView = nil
+            self.workshopPreviewWindow = nil
+            self.workshopPreviewViewModel = nil
         }
         window.title = wallpaper.project.title
         window.contentView = NSHostingView(rootView: WorkshopPreviewContent(
@@ -409,5 +468,7 @@ enum SettingsToolbarIdentifiers {
     static let performance = NSToolbarItem.Identifier(rawValue: "performance")
     static let general = NSToolbarItem.Identifier(rawValue: "general")
     static let plugins = NSToolbarItem.Identifier(rawValue: "plugins")
+    static let permissions = NSToolbarItem.Identifier(rawValue: "permissions")
+    static let diagnostics = NSToolbarItem.Identifier(rawValue: "diagnostics")
     static let about = NSToolbarItem.Identifier(rawValue: "about")
 }

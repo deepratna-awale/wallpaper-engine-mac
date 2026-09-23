@@ -95,6 +95,19 @@ struct WEProject: Codable, Equatable, Hashable {
                               preview: "",
                               title: "Error",
                               type: "video")
+    
+    var inferredContentRating: String? {
+        let ratings = ["everyone", "questionable", "mature"]
+        return tags?.first { tag in
+            ratings.contains(tag.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines).capitalized }
+    }
+    
+    mutating func applyTaggedContentRating() {
+        if let rating = inferredContentRating {
+            contentrating = rating
+        }
+    }
 }
 
 struct WEWallpaper: Codable, RawRepresentable, Identifiable {
@@ -112,6 +125,21 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable {
     
     var wallpaperDirectory: URL
     var project: WEProject
+
+    /// A remote wallpaper stores an absolute URL in `project.file`; everything else stores a path
+    /// relative to its folder.
+    var mediaURL: URL {
+        if let remote = URL(string: project.file), let scheme = remote.scheme?.lowercased(),
+           scheme == "http" || scheme == "https" {
+            return remote
+        }
+        return wallpaperDirectory.appending(path: project.file)
+    }
+
+    var isRemoteMedia: Bool {
+        guard let scheme = URL(string: project.file)?.scheme?.lowercased() else { return false }
+        return scheme == "http" || scheme == "https"
+    }
     
     var wallpaperSize: Int {
         guard let sizeBytes = try? self.wallpaperDirectory.directoryTotalAllocatedSize(includingSubfolders: true)
@@ -151,6 +179,18 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable {
         } else {
             return nil
         }
+    }
+
+    var isMobileCompatible: Bool {
+        (project.tags ?? []).contains { $0.localizedCaseInsensitiveContains("mobile") }
+    }
+
+    var isAudioResponsive: Bool {
+        (project.tags ?? []).contains { $0.localizedCaseInsensitiveContains("audio") }
+    }
+
+    var hasCustomizableProperties: Bool {
+        projectHasCustomizableProperties(at: wallpaperDirectory)
     }
 }
 

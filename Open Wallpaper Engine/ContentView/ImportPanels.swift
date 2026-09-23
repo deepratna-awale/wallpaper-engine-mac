@@ -82,6 +82,7 @@ extension AppDelegate {
                     if !fm.fileExists(atPath: dest.path) {
                         try? fm.copyItem(at: url, to: dest)
                         DispatchQueue.global(qos: .utility).async {
+                            WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: dest)
                             SceneShaderTranslator.translatePackageShaders(in: dest)
                         }
                     }
@@ -89,6 +90,20 @@ extension AppDelegate {
                 for url in zipURLs {
                     ZipImporter.importZip(at: url)
                 }
+            }
+        }
+    }
+
+    @objc func openImportVideoPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.mpeg4Movie, .quickTimeMovie, .movie]
+        panel.beginSheetModal(for: self.mainWindowController.window) { [weak self] response in
+            guard response == .OK else { return }
+            for url in panel.urls {
+                self?.wallpaperViewModel.importVideoWallpaper(from: url)
             }
         }
     }

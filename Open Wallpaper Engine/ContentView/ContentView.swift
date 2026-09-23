@@ -29,6 +29,7 @@ struct ContentView: View {
     @State var project: WEProject!
     @State var projectUrl: URL!
     @State var greet: String = "Hello, world!"
+    @State private var isRemoteWallpaperSheetPresented = false
     
     var body: some View {
         ZStack {
@@ -61,6 +62,8 @@ struct ContentView: View {
                             WorkshopView(contentViewModel: viewModel)
                         case 2:
                             DownloadsView(steamCmd: viewModel.steamCmd)
+                        case 3:
+                            PlaylistView(wallpaperViewModel: wallpaperViewModel)
                         default:
                             fatalError()
                         }
@@ -71,6 +74,16 @@ struct ContentView: View {
                                 } label: {
                                     Label("Open Wallpaper", systemImage: "arrow.up.bin.fill")
                                         .frame(width: 220)
+                                }
+                                Button {
+                                    AppDelegate.shared.openImportVideoPanel()
+                                } label: {
+                                    Label("Add Video Wallpaper", systemImage: "film.stack")
+                                }
+                                Button {
+                                    isRemoteWallpaperSheetPresented = true
+                                } label: {
+                                    Label("Add Video/Image URL", systemImage: "link")
                                 }
                                 Spacer()
                             }
@@ -172,7 +185,47 @@ struct ContentView: View {
             UnsafeWallpaper(wallpaper: wallpaperViewModel.nextCurrentWallpaper)
                 .frame(width: 600, height: 300)
         }
+        .sheet(isPresented: $isRemoteWallpaperSheetPresented) {
+            RemoteWallpaperURLSheet(wallpaperViewModel: wallpaperViewModel)
+                .frame(width: 500, height: 180)
+        }
         .frame(minWidth: 1000, minHeight: 640, idealHeight: 800)
+    }
+}
+
+private struct RemoteWallpaperURLSheet: View {
+    @ObservedObject var wallpaperViewModel: WallpaperViewModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var urlString = ""
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add Video/Image URL").font(.headline)
+            TextField("https://example.com/wallpaper.mp4", text: $urlString)
+                .textFieldStyle(.roundedBorder)
+            if let error { Text(error).foregroundStyle(.red).font(.caption) }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Add") {
+                    guard let url = URL(string: urlString),
+                          ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                        error = "Enter a valid HTTP or HTTPS image/video URL."
+                        return
+                    }
+                    let extensionName = url.pathExtension.lowercased()
+                    guard ["jpg", "jpeg", "png", "gif", "webp", "heic", "mp4", "mov", "m4v", "webm"].contains(extensionName) else {
+                        error = "The URL must end in a supported image or video extension."
+                        return
+                    }
+                    wallpaperViewModel.addRemoteWallpaper(from: url)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(20)
     }
 }
 

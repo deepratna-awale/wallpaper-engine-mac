@@ -9,20 +9,52 @@ import Cocoa
 import SwiftUI
 import AVKit
 
+enum VideoMusicSyncSettings {
+    static func key(_ wallpaper: WEWallpaper, _ name: String) -> String {
+        "VideoMusicSync.\(wallpaper.wallpaperDirectory.path).\(name)"
+    }
+
+    static func bool(_ wallpaper: WEWallpaper, _ name: String) -> Bool {
+        UserDefaults.standard.bool(forKey: key(wallpaper, name))
+    }
+
+    static func double(_ wallpaper: WEWallpaper, _ name: String, default defaultValue: Double = 0) -> Double {
+        let key = key(wallpaper, name)
+        return UserDefaults.standard.object(forKey: key) == nil ? defaultValue : UserDefaults.standard.double(forKey: key)
+    }
+}
+
+/// UserDefaults is invisible to SwiftUI and to the Metal renderer, which bakes the zoom/tilt/
+/// saturation amounts into a layer at build time. Routing writes through here gives both a change
+/// signal, so the controls redraw and the wallpaper picks the new values up immediately.
+final class VideoMusicSyncStore: ObservableObject {
+    static let shared = VideoMusicSyncStore()
+
+    @Published private(set) var revision = 0
+
+    private init() {}
+
+    func set(_ value: Bool, _ wallpaper: WEWallpaper, _ name: String) {
+        UserDefaults.standard.set(value, forKey: VideoMusicSyncSettings.key(wallpaper, name))
+        didChange(wallpaper)
+    }
+
+    func set(_ value: Double, _ wallpaper: WEWallpaper, _ name: String) {
+        UserDefaults.standard.set(value, forKey: VideoMusicSyncSettings.key(wallpaper, name))
+        didChange(wallpaper)
+    }
+
+    private func didChange(_ wallpaper: WEWallpaper) {
+        revision &+= 1
+        NotificationCenter.default.post(name: .videoMusicSyncSettingsDidChange, object: nil,
+                                        userInfo: ["path": wallpaper.wallpaperDirectory.path])
+    }
+}
+
 struct VideoWallpaperView: NSViewRepresentable {
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
-    @StateObject var viewModel: VideoWallpaperViewModel
+    @ObservedObject var viewModel: VideoWallpaperViewModel
     let screenId: String
-
-    init(wallpaperViewModel: WallpaperViewModel, screenId: String) {
-        self.wallpaperViewModel = wallpaperViewModel
-        self.screenId = screenId
-        self._viewModel = StateObject(wrappedValue: VideoWallpaperViewModel(
-            wallpaper: wallpaperViewModel.wallpaper(for: screenId),
-            playsAudio: wallpaperViewModel.shouldPlayAudio(on: screenId),
-            wallpaperViewModel: wallpaperViewModel
-        ))
-    }
 
     func makeNSView(context: Context) -> AVPlayerView {
         let view = AVPlayerView()
@@ -67,6 +99,48 @@ struct VideoWallpaperView: NSViewRepresentable {
             return .resizeAspectFill
         case .fit, .center:
             return .resizeAspect
+        }
+    }
+}
+
+struct AudioReactiveVideoWallpaperView: View {
+    @ObservedObject var wallpaperViewModel: WallpaperViewModel
+    @StateObject private var viewModel: VideoWallpaperViewModel
+    let screenId: String
+
+    init(wallpaperViewModel: WallpaperViewModel, screenId: String) {
+        self.wallpaperViewModel = wallpaperViewModel
+        self.screenId = screenId
+        self._viewModel = StateObject(wrappedValue: VideoWallpaperViewModel(
+            wallpaper: wallpaperViewModel.wallpaper(for: screenId),
+            playsAudio: wallpaperViewModel.shouldPlayAudio(on: screenId),
+            wallpaperViewModel: wallpaperViewModel
+        ))
+    }
+
+    var body: some View {
+        TimelineView(.animation) { _ in
+            let wallpaper = wallpaperViewModel.wallpaper(for: screenId)
+            let audioLevel = viewModel.musicSyncLevel
+            let zoom = VideoMusicSyncSettings.bool(wallpaper, "zoomEnabled")
+                ? 1 + audioLevel * VideoMusicSyncSettings.double(wallpaper, "zoomAmount", default: 0.08)
+                : 1
+            let tilt = VideoMusicSyncSettings.bool(wallpaper, "tiltEnabled")
+                ? audioLevel * VideoMusicSyncSettings.double(wallpaper, "tiltAmount", default: 3)
+                : 0
+            let saturation = VideoMusicSyncSettings.bool(wallpaper, "saturationEnabled")
+                ? 1 + audioLevel * VideoMusicSyncSettings.double(wallpaper, "saturationAmount", default: 0.6)
+                : 1
+            VideoWallpaperView(wallpaperViewModel: wallpaperViewModel, viewModel: viewModel, screenId: screenId)
+                .scaleEffect(max(0.1, zoom))
+                .rotationEffect(.degrees(tilt))
+                .saturation(max(0, saturation))
+                .onChange(of: audioLevel) { _, newValue in
+                    NotificationCenter.default.post(name: .videoMusicSyncAudioLevelDidChange,
+                                                    object: nil,
+                                                    userInfo: ["level": newValue])
+                }
+                .clipped()
         }
     }
 }

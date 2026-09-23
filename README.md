@@ -22,10 +22,75 @@ This project is built on top of the work of:
 - **[1ris_W](https://github.com/Erica-Iris)** — Chinese i18n translation
 - **[Klaus Zhu](https://github.com/klauszhu1105)** — App logo icons
 - **[Chen Chia Yang](https://github.com/Unayung)** — Scene wallpaper rendering, web wallpaper fixes, Steam Workshop integration, multi-display support, zip import
+- **[Deepratna Awale](https://github.com/deepratna-awale)** — Metal scene renderer and effect pipeline, GLSL→MSL shader translation and caching, SceneScript runtime, audio-reactive rendering, Workshop/Downloads overhaul, placement and performance settings
 
 Licensed under [GPL-3.0](LICENSE), same as the original project.
 
-## What's New in 0.8.0
+## What 0.8.1 Supports
+
+### Wallpaper playback
+- **Scene wallpapers** rendered natively with Metal — image layers, transforms, keyframe timelines, depth ordering, and camera/projection data from `scene.json`.
+- **Video wallpapers** (`.mp4`, `.webm`) with playback rate, volume, audio/video speed linking, and optional music-synced zoom/tilt/saturation.
+- **Web wallpapers** (HTML/WebGL) with local file access enabled so WebGL textures and assets load correctly, plus external embeds (YouTube/Vimeo).
+- **Placement modes** — Fill, Fit, Center, Stretch, Zoom.
+- **Multi-display** — a different wallpaper per monitor, per-screen enable/disable, visual monitor layout, and auto-detection of newly connected displays.
+- **Multi-desktop (Spaces)** — continuous playback across all desktops, including an `All Desktops` assignment option.
+- **Playback rules** — keep running, mute, pause, or stop when another app is focused; correct behaviour on sleep/wake and desktop switches.
+
+### Scene format support
+- **PKG parser** for Wallpaper Engine `PKGV` archives (scene.json, materials, textures, shaders).
+- **TEX parser** for `TEXV0005` containers: embedded JPEG/PNG, mipmapped DXT1/DXT3/DXT5 decoded on the GPU via a Metal compute shader.
+- **TEXS sprite timelines** (0001/0002/0003), including single-atlas frame rectangles and multi-image sequences.
+- **Flexible scene.json decoding** that handles Wallpaper Engine's polymorphic fields (plain values or `{"script":…,"value":…}`).
+- **Preview fallback** to `preview.jpg/png/gif` when textures can't be extracted.
+
+### Effects and shaders
+- **~48 native Metal effects** covering distortion, blur (standard/precise/radial/motion), bloom, godrays and light shafts, water waves/ripples/caustics/flow, clouds and fog, film grain, glitch/VHS, chromatic aberration, colour key, transform/skew/spin/twirl/perspective, reflection, refraction, shine/shimmer/glitter, edge detection, and more.
+- **Audio-reactive effects** — pulse, audio bars, audio-synced hue shift, and hyperdrive driven by live system-audio spectrum data.
+- **Semantic material effects** — brightness, contrast, saturation, exposure, gamma, hue, bloom threshold, bloom, and blur mapped to native Metal passes.
+- **GLSL → SPIR-V → MSL translation** at import time via `glslangValidator` and SPIRV-Cross, with COMBO defines, include resolution, and Metal buffer-slot renumbering.
+- **Precompiled shader cache** — translated `.metal`, compiled `.metallib`, and `.reflection.json` sidecars are cached under `.open-wallpaper-engine/shaders`, hash-gated so only changed shaders are retranslated, and compiled in the background so rendering is never blocked.
+- **Dynamic effect catalog** read from the Wallpaper Engine `assets/effects/*/effect.json` manifests, including multi-pass effects and reflected uniform bindings.
+- **Effect masking** (up to 4 mask textures per layer), additive and alpha blending, and a pooled render-target system.
+
+### Particles
+- Sprite emitters with randomized lifetime, size, velocity, colour, rotation, angular velocity, gravity, drag, and alpha fades.
+- Advanced behaviour — turbulence, attractors, vortex and boid motion, static and cursor-linked control points, connected rope segments, and trails with alpha/size fade.
+- Spritesheet frame animation via `.tex-json` sequences.
+- Scripted operators for emission rate, drag, and alpha-fade timing.
+
+### SceneScript runtime
+- Persistent per-layer script contexts with `init()` called once and `update(value)` called every frame.
+- Globals: `thisScene`, `thisLayer`, `engine`, `input`, `audio(low, high)`, real `fft(index)`, `setTimeout`/`setInterval`, and persistent script globals.
+- Full `Vec2`/`Vec3`/`Vec4`/`Mat3`/`Mat4` math library plus `WEMath`, `WEVector`, and `WEColor` helpers.
+- Wallpaper Engine runtime JS modules loaded from `assets/scripts/jsmodules` and `jsclasses`.
+- Cursor events (`cursorMove`/`Down`/`Up`/`Click`/`Enter`/`Leave`) and `resizeScreen`.
+- Scripts can drive layer alpha, origin, size, scale, angles, brightness/colour, material constants, effect thresholds, and particle rates.
+- Deduplicated script exception logging with repeat counts.
+
+### Audio
+- System audio capture via ScreenCaptureKit feeding a smoothed 16-band spectrum, waveform, and bass/mid/treble levels.
+- Per-property **music sync** — any user property can be modulated by audio level with a configurable amount.
+
+### User properties & inspector
+- Slider, checkbox, combo, text, and colour project settings exposed in the scene sidebar, live-applied, and readable from SceneScript.
+- Mouse tracking and parallax for layers with authored `parallaxDepth`.
+
+### Steam Workshop
+- Browse, search, and filter by content rating, type, and genre tags, with Trending / Most Recent / Most Popular / Most Subscribed sorting and numbered pagination.
+- Preview windows with set-wallpaper, playback, and volume controls, backed by a bounded cache; applied previews are promoted to the library without re-downloading.
+- SteamCMD integration with auto-detection, password / Steam Guard / cached-session login, a dedicated Downloads tab, queued and retryable downloads, and live progress.
+- Multi-selection, range selection, confirmation-gated bulk downloads and deletions, persisted downloaded IDs, and `Date Downloaded` sorting.
+
+### Library & settings
+- Import from folders, from `.zip` packages, or by drag-and-drop.
+- Configurable wallpaper storage location with migration of an existing library.
+- Recent wallpapers menu in the status bar.
+- Performance settings — quality, anti-aliasing, post-processing, and focus-loss playback behaviour.
+- Diagnostics — resolved shader toolchain paths, shader cache statistics, and a cache invalidation action.
+
+<details>
+<summary>Previously in 0.8.0</summary>
 
 ### Multi-Display Support
 Assign different wallpapers to each connected monitor with per-screen enable/disable control.
@@ -61,7 +126,10 @@ Cmd+click to select multiple wallpapers, then right-click to batch unsubscribe.
 ### Wallpaper Storage Isolation
 Wallpapers are now stored in `~/Documents/Open Wallpaper Engine/` instead of the raw Documents directory, preventing "error" wallpapers when cloning the repo on a fresh machine.
 
-## What's Patched
+</details>
+
+<details>
+<summary>What's patched relative to upstream</summary>
 
 ### Web Wallpapers — Fixed gray/blank rendering
 WebGL-based wallpapers rendered as gray rectangles because `WKWebView` blocked local file access for textures and assets.
@@ -95,27 +163,86 @@ Scene wallpapers (the most common type on Steam Workshop) were completely unimpl
 ### Import — Fixed folder import
 The import panel now correctly handles both individual wallpaper folders and parent directories containing multiple wallpapers.
 
+</details>
+
 ## Current Limitations
 
-- **Effect-schema coverage** — Cross-layer `thisScene.getLayer(idOrName)` mutation and supported scripted material constants are implemented. Unknown custom uniform names and arbitrary effect parameter schemas remain unsupported.
-- **Custom GLSL shader binding** — Converted MSL is cached at import time, but shaders that depend on Wallpaper Engine-specific attributes, uniforms, texture chains, or unsupported includes are not yet bound into the runtime Metal render pipeline. Common bloom, blur, color-correction, and transform parameters use native Metal mappings.
-- **SceneScript parity** — The runtime does not yet reproduce every proprietary Wallpaper Engine event name, input callback, lifecycle edge case, or exact timing semantic.
-- **Particle operator coverage** — Common scripted rate, drag, and alpha-fade operators are supported; less common operator scripts, custom particle modules, and arbitrary operator schemas remain partial.
-- **External asset recovery** — Some Workshop packages reference shared TEX assets that are absent from the downloaded package and require the original asset source.
+- **Application wallpapers** — `type: "application"` wallpapers are not supported and will not run.
+- **3D models and rigging** — Bone transforms, blend shapes, attachments, and puppet-warp rigs (`.mdl`) are stubbed; affected layers render as flat atlases.
+- **Material script functions** — `getMaterial()`, `getMaterialCount()`, `setMaterialProperty()`, and `executeMaterialFunction()` are stubs that no-op or return empty values.
+- **Custom GLSL shader binding** — Converted MSL is cached at import time, but shaders depending on Wallpaper Engine-specific attributes, texture chains, or unsupported includes are not bound into the runtime Metal pipeline. Common bloom, blur, colour-correction, and transform parameters fall back to native Metal mappings.
+- **Metal buffer limit** — Shaders needing more than Metal's 31 buffer slots cannot be translated and are permanently marked unsupported for the current pipeline revision.
+- **HLSL shaders** — Direct3D-only shaders shipped alongside the GLSL sources are skipped entirely.
+- **Effect-schema coverage** — Unknown custom uniform names and arbitrary effect parameter schemas remain unsupported.
+- **SceneScript parity** — Not every proprietary event name, input callback, lifecycle edge case, or exact timing semantic is reproduced.
+- **Particle operator coverage** — Common scripted rate, drag, and alpha-fade operators work; uncommon operator scripts, custom particle modules, and arbitrary operator schemas are partial.
+- **External asset recovery** — Some Workshop packages reference shared TEX assets absent from the downloaded package and need the original Wallpaper Engine install.
 - **Some JPEG thumbnails** — A small number of TEXB format 1 files contain non-standard JPEG data that macOS cannot decode.
+- **Performance settings scope** — Quality, anti-aliasing, and post-processing options are designed for scene wallpapers and have limited effect on video and web wallpapers.
+- **Audio features require permission** — Without Screen Recording permission, audio visualizers and audio-reactive SceneScript receive silence.
 
 ## Supported Wallpaper Types
 
 | Type | Status |
 |------|--------|
-| Video (.mp4, .webm) | Working (original) |
-| Web (HTML/WebGL) | Working (patched) |
-| Scene (static images) | Working (Metal) |
-| Scene (sprite particles) | Working (common emitters) |
-| Scene (advanced particles) | Partial — includes scripted rate/drag/fade support |
-| Scene (TEXS sprites / alpha timelines) | Working |
-| Scene (DXT1/DXT3/DXT5 textures) | Working (Metal GPU decode) |
+| Video (.mp4, .webm) | Working |
+| Web (HTML/WebGL) | Working |
+| Scene — image layers & timelines | Working (Metal) |
+| Scene — DXT1/DXT3/DXT5 textures | Working (Metal GPU decode) |
+| Scene — TEXS sprites / alpha timelines | Working |
+| Scene — sprite particles | Working |
+| Scene — advanced particles | Partial (scripted rate/drag/fade supported) |
+| Scene — native Metal effects | Working (~48 effects) |
+| Scene — translated Workshop GLSL effects | Partial (see Limitations) |
+| Scene — SceneScript | Partial (see Limitations) |
+| Scene — 3D models / rigging / puppet warp | Not supported |
 | Application | Not supported |
+
+## Requirements
+
+### Required
+- **macOS 13.0 or later** (Ventura). ScreenCaptureKit audio capture and Metal scene rendering both depend on it.
+
+### Optional — needed for specific features
+
+| Feature | Requirement | Install |
+|---------|-------------|---------|
+| Workshop scene effects (blur, bloom, caustics, light shafts…) | `glslang` + `spirv-cross` | `brew install glslang spirv-cross` |
+| Browsing / downloading from Steam Workshop | `steamcmd` | `brew install steamcmd` |
+| Scene effect library | A Wallpaper Engine `assets/` folder | See below |
+| Audio visualizers & audio-reactive SceneScript | Screen Recording permission | Settings → Permissions |
+
+#### Shader toolchain (`glslang` + `spirv-cross`)
+
+Wallpaper Engine ships its effects as GLSL. They are translated to Metal (GLSL → SPIR-V → MSL) the first time an assets folder or wallpaper is loaded, then cached on disk and reused until the source changes.
+
+```sh
+brew install glslang spirv-cross
+```
+
+The app searches its own bundle, `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `/usr/bin`, and then your `PATH`. Without these tools the app still runs, but Workshop effects fall back to the built-in native Metal effects only. The resolved paths are logged at launch:
+
+```
+[ShaderTranslator] Shader toolchain: /opt/homebrew/bin/glslangValidator + /opt/homebrew/bin/spirv-cross
+```
+
+#### Wallpaper Engine assets folder
+
+Scene effects are defined by the effect manifests, materials, and shaders that ship with the Windows build of Wallpaper Engine. They are not redistributed here — point the app at an existing install via **Settings → General → Wallpaper Engine Assets Directory**.
+
+Select the `wallpaper_engine` folder (or its `assets` subfolder), typically:
+
+```
+…/Steam/steamapps/common/wallpaper_engine
+```
+
+This works with a Steam install running under CrossOver, Parallels, Whisky, or a copy taken from a Windows machine. On success the launch log reports the catalog:
+
+```
+[ShaderTranslator] Effect catalog: 45 definitions, 81 complete passes, 1 missing shader pairs
+```
+
+Without it, video and web wallpapers still work, and scene wallpapers render — but object effects are unavailable.
 
 ## Build from Source
 
@@ -123,6 +250,7 @@ The import panel now correctly handles both individual wallpaper folders and par
 - macOS >= 13.0
 - Xcode >= 14.4
 - Xcode Command Line Tools
+- `glslang` and `spirv-cross` (see [Requirements](#requirements)) if you are working on scene effects
 
 ### Steps
 ```sh
@@ -148,22 +276,16 @@ In Xcode, change the signing certificate to your own or select "Sign to Run Loca
 - **Zip:** File > Import or drag-and-drop a `.zip` file containing wallpaper packages
 - **Manual:** Copy wallpaper folders directly into `~/Documents/Open Wallpaper Engine/`
 
-## Files Changed (vs upstream)
+## Project Layout
 
-**Modified:**
-- `WebWallpaperView.swift` — WKWebView file access configuration
-- `WallpaperView.swift` — Scene wallpaper dispatch
-- `SceneWallpaperView.swift` — Rewritten as SpriteKit NSViewRepresentable
-- `ImportPanels.swift` — Folder import logic fix
-
-**Added:**
-- `Services/SceneParsers/PKGParser.swift` — PKGV archive parser
-- `Services/SceneParsers/TEXParser.swift` — TEXV texture parser
-- `Services/SceneParsers/SceneModels.swift` — Scene JSON data models
-- `Services/SceneWallpaperViewModel.swift` — Scene loading and SpriteKit rendering
-- `Services/SteamCmdService.swift` — steamcmd detection, login, and workshop download
-- `Services/WorkshopAPIService.swift` — Steam Web API client for workshop browsing
-- `Services/WorkshopViewModel.swift` — Workshop browser state management
-- `Services/WallpaperDirectory.swift` — Centralized wallpaper storage path
-- `Services/ZipImporter.swift` — Zip file extraction and import
-- `ContentView/Components/WorkshopView.swift` — Workshop browser UI
+- `Open Wallpaper Engine/Services/SceneParsers/` — PKG, TEX/TEXS, and scene.json parsers and models
+- `Open Wallpaper Engine/Services/SceneEffects/` — dynamic effect catalog and authored effect parameter ranges
+- `Open Wallpaper Engine/Services/SceneShaderTranslator.swift` — GLSL → SPIR-V → MSL translation, `.metallib` compilation, and caching
+- `Open Wallpaper Engine/Services/AudioReactiveScriptEngine.swift` — SceneScript runtime and audio/FFT bindings
+- `Open Wallpaper Engine/Services/AudioLevelTap.swift` — ScreenCaptureKit system audio capture
+- `Open Wallpaper Engine/WallpaperView/SceneMetalRenderer.swift`, `SceneShaders.metal` — the Metal scene renderer and shader library
+- `Open Wallpaper Engine/Services/SteamCmdService.swift`, `WorkshopAPIService.swift`, `WorkshopViewModel.swift` — Steam Workshop browsing and downloads
+- `Open Wallpaper Engine/Services/WallpaperDirectory.swift`, `ZipImporter.swift`, `WallpaperPackageConverter.swift` — library storage, import, and package conversion
+- `Scripts/vendor-shader-tools.sh` — vendors `glslang` and `spirv-cross` into the app bundle
+- `Scripts/vendor-we-assets.sh` — vendors translated effect shaders and manifests into `we-assets/`
+- `Scripts/scene-api-coverage.py` — reports which SceneScript APIs installed wallpapers use versus what is implemented

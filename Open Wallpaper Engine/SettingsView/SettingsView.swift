@@ -26,9 +26,17 @@ extension AppDelegate {
     @objc func jumpToPlugins() {
         self.globalSettingsViewModel.selection = 2
     }
+
+    @objc func jumpToPermissions() {
+        self.globalSettingsViewModel.selection = 3
+    }
+
+    @objc func jumpToDiagnostics() {
+        self.globalSettingsViewModel.selection = 4
+    }
     
     @objc func jumpToAbout() {
-        self.globalSettingsViewModel.selection = 3
+        self.globalSettingsViewModel.selection = 5
     }
 }
 
@@ -46,6 +54,10 @@ struct SettingsView: View {
                 case 2:
                     PluginsPage(globalSettings: viewModel)
                 case 3:
+                    PermissionsPage(globalSettings: viewModel)
+                case 4:
+                    DiagnosticsPage(globalSettings: viewModel)
+                case 5:
                     AboutUsView()
                 default:
                     fatalError()
@@ -87,15 +99,15 @@ struct SettingsView: View {
 
 extension AppDelegate: NSToolbarDelegate {
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [SettingsToolbarIdentifiers.performance, SettingsToolbarIdentifiers.general, SettingsToolbarIdentifiers.plugins, SettingsToolbarIdentifiers.about]
+        [SettingsToolbarIdentifiers.performance, SettingsToolbarIdentifiers.general, SettingsToolbarIdentifiers.plugins, SettingsToolbarIdentifiers.permissions, SettingsToolbarIdentifiers.diagnostics, SettingsToolbarIdentifiers.about]
     }
         
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [SettingsToolbarIdentifiers.performance, SettingsToolbarIdentifiers.general, SettingsToolbarIdentifiers.plugins, SettingsToolbarIdentifiers.about]
+        [SettingsToolbarIdentifiers.performance, SettingsToolbarIdentifiers.general, SettingsToolbarIdentifiers.plugins, SettingsToolbarIdentifiers.permissions, SettingsToolbarIdentifiers.diagnostics, SettingsToolbarIdentifiers.about]
     }
     
     func toolbarSelectableItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [SettingsToolbarIdentifiers.performance, SettingsToolbarIdentifiers.general, SettingsToolbarIdentifiers.plugins, SettingsToolbarIdentifiers.about]
+        [SettingsToolbarIdentifiers.performance, SettingsToolbarIdentifiers.general, SettingsToolbarIdentifiers.plugins, SettingsToolbarIdentifiers.permissions, SettingsToolbarIdentifiers.about]
     }
     
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
@@ -116,6 +128,16 @@ extension AppDelegate: NSToolbarDelegate {
             toolbarItem.action = #selector(jumpToPlugins)
             toolbarItem.image = NSImage(systemSymbolName: "puzzlepiece.extension", accessibilityDescription: nil)
             toolbarItem.label = String(localized: "Plugins")
+
+        case SettingsToolbarIdentifiers.permissions:
+            toolbarItem.action = #selector(jumpToPermissions)
+            toolbarItem.image = NSImage(systemSymbolName: "lock.shield", accessibilityDescription: nil)
+            toolbarItem.label = String(localized: "Permissions")
+
+        case SettingsToolbarIdentifiers.diagnostics:
+            toolbarItem.action = #selector(jumpToDiagnostics)
+            toolbarItem.image = NSImage(systemSymbolName: "stethoscope", accessibilityDescription: nil)
+            toolbarItem.label = String(localized: "Diagnostics")
             
         case SettingsToolbarIdentifiers.about:
             toolbarItem.action = #selector(jumpToAbout)

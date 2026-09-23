@@ -11,7 +11,6 @@ class WorkshopViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var currentPage = 1
     @Published var selectedTags: [String] = ["Everyone"]
-    @AppStorage("WorkshopHideDownloaded") var hideDownloaded = false
     @Published private(set) var hasNextPage = false
     @Published var selectedItemIds = Set<String>()
     @Published var isBatchDownloadConfirming = false
@@ -53,9 +52,6 @@ class WorkshopViewModel: ObservableObject {
         self.downloadedIndexCancellable = DownloadedWallpaperIndex.shared.objectWillChange.sink { [weak self] _ in
             DispatchQueue.main.async {
                 self?.cachedPages.removeAll()
-                if self?.hideDownloaded == true {
-                    Task { await self?.search() }
-                }
                 self?.objectWillChange.send()
             }
         }
@@ -75,7 +71,7 @@ class WorkshopViewModel: ObservableObject {
             isLoading = false
             return
         }
-        let searchKey = "\(searchText)|\(sortOrder.rawValue)|\(selectedTags.sorted().joined(separator: ","))|\(hideDownloaded)"
+        let searchKey = "\(searchText)|\(sortOrder.rawValue)|\(selectedTags.sorted().joined(separator: ","))"
 
         if cachedSearchKey != searchKey {
             cachedPages.removeAll()
@@ -127,6 +123,26 @@ class WorkshopViewModel: ObservableObject {
         clearSelection()
     }
 
+    /// Downloads the item, then adds it to the given playlist once steamcmd finishes copying it into the library.
+    func downloadAndAddToPlaylist(_ item: WorkshopItem, playlistID: UUID, wallpaperViewModel: WallpaperViewModel) {
+        steamCmd.downloadWorkshopItem(
+            workshopId: item.id,
+            title: item.title,
+            previewURL: item.previewImageURL,
+            creatorId: item.creatorId,
+            subscriptions: item.subscriptions,
+            fileSize: item.fileSize
+        ) { destination in
+            guard let destination,
+                  let data = try? Data(contentsOf: destination.appending(path: "project.json")),
+                  let project = try? JSONDecoder().decode(WEProject.self, from: data) else { return }
+            // steamcmd invokes this completion off the main thread.
+            DispatchQueue.main.async {
+                wallpaperViewModel.addToPlaylist(WEWallpaper(using: project, where: destination), playlistID: playlistID)
+            }
+        }
+    }
+
     func preview(item: WorkshopItem) {
         steamCmd.previewWorkshopItem(workshopId: item.id)
     }
@@ -139,11 +155,22 @@ class WorkshopViewModel: ObservableObject {
     }
 
     var visibleItems: [WorkshopItem] {
-        hideDownloaded ? items.filter { !isDownloaded($0) } : items
+        items
     }
 
     func isDownloaded(_ item: WorkshopItem) -> Bool {
         DownloadedWallpaperIndex.shared.contains(item.id)
+    }
+
+    /// Key namespace for Workshop items (as opposed to local wallpapers) in `FavoritesStore`.
+    func favoriteKey(for item: WorkshopItem) -> String { "workshop-\(item.id)" }
+
+    func toggleFavorite(_ item: WorkshopItem) {
+        FavoritesStore.shared.toggle(favoriteKey(for: item))
+    }
+
+    func isFavorite(_ item: WorkshopItem) -> Bool {
+        FavoritesStore.shared.contains(favoriteKey(for: item))
     }
 
     func isPreviewLoading(_ item: WorkshopItem) -> Bool {
@@ -238,7 +265,7 @@ class WorkshopViewModel: ObservableObject {
             )
             guard !sourceItems.isEmpty else { break }
 
-            for item in sourceItems where !hideDownloaded || !isDownloaded(item) {
+            for item in sourceItems {
                 if skippedItems > 0 {
                     skippedItems -= 1
                 } else {

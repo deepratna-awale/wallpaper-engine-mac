@@ -27,8 +27,8 @@ struct ExplorerItem: SubviewOfContentView {
                 return Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!
             }(wallpaper.wallpaperDirectory), animates: animates && viewModel.isApplicationActive)
             .resizable()
-            .scaleEffect(viewModel.imageScaleIndex == index ? 1.2 : 1.0)
-            .aspectRatio(1.0, contentMode: .fit)
+            .scaleEffect((viewModel.imageScaleIndex == index ? 1.2 : 1.0) * 1.08)
+            .aspectRatio(1.0, contentMode: .fill)
             .clipped()
             
             Text(wallpaper.project.title)

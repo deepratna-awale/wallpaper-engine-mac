@@ -276,7 +276,11 @@ private struct WorkshopBrowserView: View {
 
                 if !viewModel.selectedItemIds.isEmpty {
                     Button {
-                        viewModel.isBatchDownloadConfirming = true
+                        if viewModel.selectedItemIds.count > 1 {
+                            viewModel.isBatchDownloadConfirming = true
+                        } else {
+                            viewModel.downloadSelectedItems()
+                        }
                     } label: {
                         Label("Download Selected (\(viewModel.selectedItemIds.count))", systemImage: "arrow.down.circle")
                     }
@@ -377,6 +381,14 @@ private struct WorkshopBrowserView: View {
                             )
                         }
                     }
+                    .onChange(of: contentViewModel.explorerIconSize) {
+                        Task {
+                            await viewModel.updateItemsPerPage(
+                                for: CGSize(width: geometry.size.width, height: max(geometry.size.height - 44, 1)),
+                                itemSize: contentViewModel.explorerIconSize - 5
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -450,13 +462,6 @@ private struct WorkshopFiltersSidebar: View {
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-
-                Toggle("Hide Downloaded", isOn: $viewModel.hideDownloaded)
-                    .toggleStyle(.checkbox)
-                    .onChange(of: viewModel.hideDownloaded) {
-                        viewModel.currentPage = 1
-                        Task { await viewModel.search() }
-                    }
 
                 filterSection("Rating", tags: WorkshopViewModel.contentRatingTags)
                 filterSection("Type", tags: WorkshopViewModel.typeTags)
@@ -540,6 +545,9 @@ private struct WorkshopItemCard: View {
         .border(Color(nsColor: .separatorColor), width: 1)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .contextMenu {
+            WorkshopItemMenu(item: item, viewModel: viewModel)
+        }
         .onTapGesture {
             viewModel.selectItem(item)
         }
@@ -592,6 +600,45 @@ private struct WorkshopItemCard: View {
         Rectangle()
             .fill(Color(nsColor: .separatorColor))
             .aspectRatio(1, contentMode: .fit)
+    }
+}
+
+// MARK: - Workshop Item Context Menu
+
+private struct WorkshopItemMenu: View {
+    let item: WorkshopItem
+    @ObservedObject var viewModel: WorkshopViewModel
+
+    var body: some View {
+        Button {
+            viewModel.download(item: item)
+        } label: {
+            Label("Download", systemImage: "arrow.down.circle")
+        }
+        .disabled(!viewModel.steamCmd.isLoggedIn || viewModel.isDownloaded(item))
+
+        Menu("Add to Playlist") {
+            let playlists = AppDelegate.shared.wallpaperViewModel.playlists
+            if playlists.isEmpty {
+                Text("Create a playlist first")
+            } else {
+                ForEach(playlists) { playlist in
+                    Button {
+                        viewModel.downloadAndAddToPlaylist(item, playlistID: playlist.id, wallpaperViewModel: AppDelegate.shared.wallpaperViewModel)
+                    } label: {
+                        Label(playlist.name, systemImage: "rectangle.stack")
+                    }
+                }
+            }
+        }
+        .disabled(!viewModel.steamCmd.isLoggedIn)
+
+        Button {
+            viewModel.toggleFavorite(item)
+        } label: {
+            Label(viewModel.isFavorite(item) ? "Remove from Favorites" : "Add to Favorites",
+                  systemImage: viewModel.isFavorite(item) ? "heart.slash" : "heart.fill")
+        }
     }
 }
 

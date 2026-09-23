@@ -10,8 +10,6 @@ import SwiftUI
 struct PerformancePage: SettingsPage {
     @ObservedObject var viewModel: GlobalSettingsViewModel
     
-    @State private var isEditingFPS = false
-    
     init(globalSettings viewModel: GlobalSettingsViewModel) {
         self.viewModel = viewModel
     }
@@ -137,49 +135,21 @@ struct PerformancePage: SettingsPage {
                 HStack {
                     Text("FPS")
                     Spacer()
-                    Slider(value: $viewModel.settings.fps, in: 10...120)
-                        .frame(width: 150)
-                    if isEditingFPS {
-                        TextField("FPS", text: Binding<String>(get: {
-                            String(format: "%.00f", viewModel.settings.fps)
-                        }, set: {
-                            if let newValue = Double($0) {
-                                if newValue > 120 {
-                                    viewModel.settings.fps = 120
-                                } else if newValue < 10 {
-                                    viewModel.settings.fps = 10
-                                } else {
-                                    viewModel.settings.fps = newValue
-                                }
-                            }
-                        }))
-                        .textFieldStyle(.roundedBorder)
-                        .labelsHidden()
-                        .frame(width: 50, height: 20)
-                        .onSubmit {
-                            isEditingFPS = false
-                        }
-                    } else {
-                        Text(String(format: "%.00f", viewModel.settings.fps))
-                            .frame(width: 25)
-                            .onTapGesture(count: 2) {
-                                isEditingFPS = true
-                            }
-                    }
+                    NumericSliderInput(value: $viewModel.settings.fps, range: 10...120,
+                                       defaultValue: 30, step: 1, fractionDigits: 0,
+                                       sliderWidth: 150, fieldWidth: 44)
                 }
                 .overlay {
                     HStack {
                         Spacer(); Spacer()
-                        if !isEditingFPS {
-                            if viewModel.settings.fps > 60 {
+                        if viewModel.settings.fps > 60 {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(.red)
                                     .help("High FPS may slow down your PC! We're serious, this is too much 🔥.")
-                            } else if viewModel.settings.fps > 30 {
+                        } else if viewModel.settings.fps > 30 {
                                 Image(systemName: "exclamationmark.triangle.fill")
                                     .foregroundStyle(.yellow)
                                     .help("High FPS may slow down your PC!")
-                            }
                         }
                         Spacer()
                     }

@@ -1,0 +1,1 @@
+{"uniforms":[{"type":"sampler2D","name":"g_Texture0","semantic":"{\"material\":\"Framebuffer\",\"hidden\":true}\r"}],"textures":["g_Texture0"],"combos":{"CLAMP":"CLAMP"}}

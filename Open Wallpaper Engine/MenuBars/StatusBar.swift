@@ -119,9 +119,10 @@ extension AppDelegate {
         self.statusItem.menu = menu
 
         if let button = self.statusItem.button {
-            if let image = NSImage(named: "we.logo") {
-                image.isTemplate = true
+            if let image = NSImage(named: "OWEStatusIcon") {
+                image.isTemplate = false
                 button.image = image
+                button.imageScaling = .scaleProportionallyDown
             } else {
                 button.image = NSImage(systemSymbolName: "play.desktopcomputer", accessibilityDescription: nil)
             }

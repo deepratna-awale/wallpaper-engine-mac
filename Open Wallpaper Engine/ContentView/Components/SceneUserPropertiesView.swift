@@ -1,5 +1,25 @@
 import SwiftUI
 
+/// Wallpaper Engine authors often put a localization key in a property's `text` field rather than
+/// a label. The translations live inside Wallpaper Engine's compiled binaries, so the key is turned
+/// into readable words here instead of being shown raw.
+private func sceneUserPropertyTitle(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespaces)
+    // Authors write these keys inconsistently — ui_browse_ vs ui_browser_, property vs properties,
+    // and stray hyphens — so the prefix is matched loosely rather than from a fixed list.
+    guard let range = trimmed.range(of: #"(?i)^ui[_-][a-z]+[_-]propert(y|ies)[_-]"#,
+                                    options: .regularExpression) else { return trimmed }
+    let stripped = trimmed[range.upperBound...].replacingOccurrences(of: "-", with: "_")
+    // Spelled as scheme_color, schemecolor and scheme_-color in the wild; all mean the same thing.
+    if stripped.replacingOccurrences(of: "_", with: "").lowercased().hasPrefix("schemecolor") {
+        return "Scheme"
+    }
+    let words = stripped.split(separator: "_").filter { !$0.isEmpty }.map { word -> String in
+        word.count <= 2 ? word.uppercased() : word.prefix(1).uppercased() + word.dropFirst()
+    }
+    return words.isEmpty ? trimmed : words.joined(separator: " ")
+}
+
 private struct SceneUserProperty: Identifiable {
     let id: String
     let title: String
@@ -22,8 +42,10 @@ private final class SceneUserPropertiesModel: ObservableObject {
     @Published var properties: [SceneUserProperty] = []
     @Published var values: [String: String] = [:]
     @Published var textObjects: [SceneTextControl] = []
+    @Published var authoredPropertyIDs: Set<String> = []
     private let storageKey: String
     private let explicitKey: String
+    private var pendingSave: DispatchWorkItem?
 
     init(wallpaper: WEWallpaper) {
         storageKey = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
@@ -32,78 +54,107 @@ private final class SceneUserPropertiesModel: ObservableObject {
     }
 
     func set(_ value: String, for property: SceneUserProperty) {
-        values[property.id] = value
-        UserDefaults.standard.set(values, forKey: storageKey)
-        UserDefaults.standard.set(true, forKey: explicitKey)
+        set(value, forID: property.id)
+    }
+
+    func set(_ value: String, forID id: String) {
+        values[id] = value
         AudioReactiveScriptEngine.shared.setUserProperties(values)
+        pendingSave?.cancel()
+        let snapshot = values
+        let work = DispatchWorkItem { [storageKey, explicitKey] in
+            UserDefaults.standard.set(snapshot, forKey: storageKey)
+            UserDefaults.standard.set(true, forKey: explicitKey)
+        }
+        pendingSave = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+    }
+
+    private func trailingOrder(offset: Int, index: Int) -> Int {
+        Int.max - max(0, offset - index)
     }
 
     private func load(_ wallpaper: WEWallpaper) {
           guard let data = try? Data(contentsOf: wallpaper.wallpaperDirectory.appending(path: "project.json")),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
           let rawProperties = ((root["general"] as? [String: Any])?["properties"] as? [String: [String: Any]]) ?? [:]
+                authoredPropertyIDs = Set(rawProperties.keys)
         properties = rawProperties.compactMap { (key: String, raw: [String: Any]) -> SceneUserProperty? in
             guard let title = raw["text"] as? String, let type = raw["type"] as? String else { return nil }
             let options = (raw["options"] as? [[String: Any]] ?? []).compactMap { option -> (String, String)? in
                 guard let label = option["label"] as? String, let optionValue = option["value"] else { return nil }
-                return (label, sceneUserPropertyString(optionValue))
+                return (sceneUserPropertyTitle(label), sceneUserPropertyString(optionValue))
             }
             let defaultValue = raw["value"].map(sceneUserPropertyString)
                 ?? (type == "combo" ? options.first?.1 : nil)
                 ?? (type == "bool" ? "false" : "")
-            return SceneUserProperty(id: key, title: title, type: type,
+            return SceneUserProperty(id: key, title: sceneUserPropertyTitle(title), type: type,
                                      order: (raw["order"] as? NSNumber)?.intValue ?? Int.max,
                                      defaultValue: defaultValue, options: options,
                                      minimum: (raw["min"] as? NSNumber)?.doubleValue ?? 0,
                                      maximum: (raw["max"] as? NSNumber)?.doubleValue ?? 1)
         }
         .sorted { ($0.order, $0.id) < ($1.order, $1.id) }
-        if wallpaper.project.type.lowercased() == "scene" {
-            let authoredEffects = authoredEffectNames(for: wallpaper)
-            let effectNames = ["shake", "waterwaves", "nitro", "vhs", "pulse", "iris", "volumetricfog", "parallax"]
+        let wallpaperType = wallpaper.project.type.lowercased()
+        let isScene = wallpaperType == "scene"
+        // Video goes through the same Metal scene renderer when that framework is selected, so it
+        // gets the same adjustments and effect stack. Controls that need scene.json — layer
+        // visibility and text layers — stay scene-only.
+        let usesSceneRenderer: Bool
+        if isScene {
+            usesSceneRenderer = true
+        } else if wallpaperType == "video" || wallpaperType == "remote-video" {
+            // Read the persisted blob rather than the main-actor view model: this loader is nonisolated.
+            let stored = UserDefaults.standard.data(forKey: "GlobalSettings")
+                .flatMap { try? JSONDecoder().decode(GlobalSettings.self, from: $0) }
+            usesSceneRenderer = (stored ?? GlobalSettings()).videoFramework == .metal
+        } else {
+            usesSceneRenderer = false
+        }
+        if usesSceneRenderer {
+            let visibilityProperties = isScene
+                ? undeclaredVisibilityToggles(for: wallpaper, excluding: Set(properties.map(\.id)))
+                : []
+            authoredPropertyIDs.formUnion(visibilityProperties.filter { $0.id == "hyperdrive" }.map(\.id))
             properties.append(contentsOf: [
                 SceneUserProperty(id: "_owe_hue", title: "Hue", type: "slider", order: Int.max - 5, defaultValue: "0", options: [], minimum: -Double.pi, maximum: Double.pi),
                 SceneUserProperty(id: "_owe_saturation", title: "Saturation", type: "slider", order: Int.max - 4, defaultValue: "1", options: [], minimum: 0, maximum: 2),
                 SceneUserProperty(id: "_owe_bloom", title: "Bloom", type: "slider", order: Int.max - 3, defaultValue: "1", options: [], minimum: 0, maximum: 2),
                 SceneUserProperty(id: "_owe_blur", title: "Blur", type: "slider", order: Int.max - 2, defaultValue: "1", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_speed", title: "Animation Speed", type: "slider", order: Int.max - 1, defaultValue: "1", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_effect_shake_strength", title: "Shake Strength", type: "slider", order: Int.max - 10, defaultValue: "0.072", options: [], minimum: 0, maximum: 1),
-                SceneUserProperty(id: "_owe_effect_shake_speed", title: "Shake Speed", type: "slider", order: Int.max - 11, defaultValue: "2", options: [], minimum: 0, maximum: 10),
-                SceneUserProperty(id: "_owe_effect_shake_friction", title: "Shake Friction", type: "slider", order: Int.max - 12, defaultValue: "1", options: [], minimum: 0, maximum: 10),
-                SceneUserProperty(id: "_owe_effect_waterwaves_strength", title: "Water Waves Strength", type: "slider", order: Int.max - 9, defaultValue: "0.03", options: [], minimum: 0, maximum: 1),
-                SceneUserProperty(id: "_owe_effect_waterwaves_speed", title: "Water Waves Speed", type: "slider", order: Int.max - 13, defaultValue: "3", options: [], minimum: 0, maximum: 50),
-                SceneUserProperty(id: "_owe_effect_waterwaves_scale", title: "Water Waves Scale", type: "slider", order: Int.max - 8, defaultValue: "25", options: [], minimum: 1, maximum: 100),
-                SceneUserProperty(id: "_owe_effect_waterwaves_exponent", title: "Water Waves Exponent", type: "slider", order: Int.max - 14, defaultValue: "1", options: [], minimum: 0.5, maximum: 4),
-                SceneUserProperty(id: "_owe_effect_waterwaves_direction", title: "Water Waves Direction", type: "slider", order: Int.max - 15, defaultValue: "0", options: [], minimum: -Double.pi, maximum: Double.pi),
-                SceneUserProperty(id: "_owe_effect_nitro_multiply", title: "Nitro Intensity", type: "slider", order: Int.max - 7, defaultValue: "0.75", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_effect_vhs_strength", title: "VHS Strength", type: "slider", order: Int.max - 6, defaultValue: "1.2", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_effect_vhs_chromatic", title: "VHS Chromatic", type: "slider", order: Int.max - 5, defaultValue: "0.1", options: [], minimum: 0, maximum: 1),
-                SceneUserProperty(id: "_owe_effect_vhs_artifacts", title: "VHS Artifacts", type: "slider", order: Int.max - 4, defaultValue: "0.5", options: [], minimum: 0, maximum: 1),
-                SceneUserProperty(id: "_owe_effect_vhs_distortionstrength", title: "VHS Distortion", type: "slider", order: Int.max - 16, defaultValue: "1", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_effect_vhs_distortionspeed", title: "VHS Distortion Speed", type: "slider", order: Int.max - 17, defaultValue: "1", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_effect_vhs_distortionwidth", title: "VHS Distortion Width", type: "slider", order: Int.max - 18, defaultValue: "1", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_effect_volumetricfog_density", title: "Fog Density", type: "slider", order: Int.max - 19, defaultValue: "0.65", options: [], minimum: 0, maximum: 2),
-                SceneUserProperty(id: "_owe_effect_volumetricfog_drift", title: "Fog Drift", type: "slider", order: Int.max - 20, defaultValue: "0.035", options: [], minimum: 0, maximum: 1),
-                SceneUserProperty(id: "_owe_effect_volumetricfog_near", title: "Fog Near", type: "slider", order: Int.max - 21, defaultValue: "0.45", options: [], minimum: 0, maximum: 1),
-                SceneUserProperty(id: "_owe_effect_volumetricfog_far", title: "Fog Far", type: "slider", order: Int.max - 22, defaultValue: "0.85", options: [], minimum: 0, maximum: 1)
+                SceneUserProperty(id: "_owe_speed", title: "Animation Speed", type: "slider", order: Int.max - 1, defaultValue: "1", options: [], minimum: 0, maximum: 2)
             ])
-            properties.append(contentsOf: effectNames.enumerated().map { index, name in
-                SceneUserProperty(id: "_owe_effect_enabled_\(name)", title: name.capitalized, type: "bool",
-                                  order: Int.max - 30 + index, defaultValue: authoredEffects.contains(name) ? "true" : "false",
+            // Every supported effect's controls are driven by SceneEffectRegistry, so adding a new
+            // effect kind to the renderer only requires one entry there, not manual UI wiring here.
+            for definition in SceneEffectRegistry.all {
+                properties.append(contentsOf: SceneEffectRegistry.controls(forEffect: definition.name).map { parameter in
+                    SceneUserProperty(id: "_owe_effect_\(definition.name)_\(parameter.key)", title: parameter.title,
+                                      type: "slider", order: Int.max - 40, defaultValue: parameter.normalizedDefaultValue, options: [],
+                                      minimum: parameter.normalizedMinimum, maximum: parameter.normalizedMaximum)
+                })
+            }
+            properties.append(contentsOf: SceneEffectRegistry.all.enumerated().map { index, definition in
+                SceneUserProperty(id: "_owe_effect_enabled_\(definition.name)", title: definition.title, type: "bool",
+                                  order: trailingOrder(offset: 30, index: index), defaultValue: definition.name == "audiobars" ? "true" : "false",
                                   options: [], minimum: 0, maximum: 1)
             })
-            let textLayers = textObjectsInScene(for: wallpaper)
+            // Some scenes gate a layer's visibility on a user property (e.g. a "dark"/"colored" variant
+            // toggle) that the author forgot to declare in project.json; expose the simple on/off ones
+            // anyway since the renderer already honors any visibleUserProperty by name.
+            authoredPropertyIDs.formUnion(visibilityProperties.map(\.id))
+            properties.append(contentsOf: visibilityProperties)
+            let textLayers = isScene ? textObjectsInScene(for: wallpaper) : []
             textObjects = textLayers
             for (index, textLayer) in textLayers.enumerated() {
                 let prefix = "_owe_text_\(textLayer.id)_"
                 properties.append(contentsOf: [
-                    SceneUserProperty(id: prefix + "enabled", title: "Enabled", type: "bool", order: Int.max - 110 + index, defaultValue: "true", options: [], minimum: 0, maximum: 1),
-                    SceneUserProperty(id: prefix + "font", title: "Font", type: "textinput", order: Int.max - 100 + index, defaultValue: textLayer.font, options: [], minimum: 0, maximum: 1),
-                    SceneUserProperty(id: prefix + "size", title: "Font Size", type: "slider", order: Int.max - 90 + index, defaultValue: String(textLayer.size), options: [], minimum: 1, maximum: 256),
-                    SceneUserProperty(id: prefix + "bold", title: "Bold", type: "bool", order: Int.max - 80 + index, defaultValue: "false", options: [], minimum: 0, maximum: 1),
-                    SceneUserProperty(id: prefix + "italic", title: "Italic", type: "bool", order: Int.max - 70 + index, defaultValue: "false", options: [], minimum: 0, maximum: 1),
-                    SceneUserProperty(id: prefix + "color", title: "Color", type: "color", order: Int.max - 60 + index, defaultValue: "1 1 1", options: [], minimum: 0, maximum: 1),
-                    SceneUserProperty(id: prefix + "opacity", title: "Transparency", type: "slider", order: Int.max - 50 + index, defaultValue: "1", options: [], minimum: 0, maximum: 1)
+                    // Title is empty: the checkbox sits next to the text layer's own name, so "Enabled" would be redundant.
+                    SceneUserProperty(id: prefix + "enabled", title: "", type: "bool", order: trailingOrder(offset: 110, index: index), defaultValue: "true", options: [], minimum: 0, maximum: 1),
+                    SceneUserProperty(id: prefix + "font", title: "Font", type: "textinput", order: trailingOrder(offset: 100, index: index), defaultValue: textLayer.font, options: [], minimum: 0, maximum: 1),
+                    SceneUserProperty(id: prefix + "size", title: "Font Size", type: "slider", order: trailingOrder(offset: 90, index: index), defaultValue: String(textLayer.size), options: [], minimum: 1, maximum: 256),
+                    SceneUserProperty(id: prefix + "bold", title: "Bold", type: "bool", order: trailingOrder(offset: 80, index: index), defaultValue: "false", options: [], minimum: 0, maximum: 1),
+                    SceneUserProperty(id: prefix + "italic", title: "Italic", type: "bool", order: trailingOrder(offset: 70, index: index), defaultValue: "false", options: [], minimum: 0, maximum: 1),
+                    SceneUserProperty(id: prefix + "color", title: "Color", type: "color", order: trailingOrder(offset: 60, index: index), defaultValue: "1 1 1", options: [], minimum: 0, maximum: 1),
+                    SceneUserProperty(id: prefix + "opacity", title: "Transparency", type: "slider", order: trailingOrder(offset: 50, index: index), defaultValue: "1", options: [], minimum: 0, maximum: 1)
                 ])
             }
         }
@@ -111,7 +162,50 @@ private final class SceneUserPropertiesModel: ObservableObject {
         for property in properties where values[property.id] == nil {
             values[property.id] = property.defaultValue
         }
+        let additionalControlsVersionKey = "SceneAdditionalControlsVersion.\(wallpaper.wallpaperDirectory.path)"
+        if UserDefaults.standard.integer(forKey: additionalControlsVersionKey) < 1 {
+            for key in values.keys where key.hasPrefix("_owe_effect_enabled_")
+                || (key.hasPrefix("_owe_text_") && key.hasSuffix("_enabled") && values[key] == "false") {
+                values[key] = "false"
+            }
+            UserDefaults.standard.set(values, forKey: storageKey)
+            UserDefaults.standard.set(1, forKey: additionalControlsVersionKey)
+        }
+        if UserDefaults.standard.integer(forKey: additionalControlsVersionKey) < 2 {
+            for key in values.keys where key.hasPrefix("_owe_text_") && key.hasSuffix("_enabled") {
+                values[key] = "true"
+            }
+            UserDefaults.standard.set(values, forKey: storageKey)
+            UserDefaults.standard.set(2, forKey: additionalControlsVersionKey)
+        }
         AudioReactiveScriptEngine.shared.setUserProperties(values)
+    }
+
+    /// Simple on/off `visibleUserProperty` gates (no string variant condition) that the author never
+    /// declared in project.json. Condition-based "pick one of N" gates are skipped since we have no
+    /// authored labels for their valid values.
+    private func undeclaredVisibilityToggles(for wallpaper: WEWallpaper,
+                                             excluding declaredIds: Set<String>) -> [SceneUserProperty] {
+        let sceneFile = wallpaper.project.file
+        let packageURL = wallpaper.wallpaperDirectory.appending(path: (sceneFile as NSString).deletingPathExtension + ".pkg")
+        guard let package = try? PKGParser(url: packageURL),
+              let scene = try? package.extractJSON(named: sceneFile, as: WEScene.self) else { return [] }
+
+        var defaults: [String: String] = [:]
+        func record(property: String?, value: Bool?, condition: String?) {
+            guard let property, condition == nil, !declaredIds.contains(property), defaults[property] == nil else { return }
+            defaults[property] = (value ?? true) ? "true" : "false"
+        }
+        for object in scene.objects {
+            record(property: object.visibleUserProperty, value: object.visible, condition: object.visibleCondition)
+            for effect in object.effects ?? [] {
+                record(property: effect.visibleUserProperty, value: effect.visible, condition: effect.visibleCondition)
+            }
+        }
+        return defaults.enumerated().map { index, entry in
+            SceneUserProperty(id: entry.key, title: entry.key.capitalized, type: "bool",
+                              order: trailingOrder(offset: 45, index: index), defaultValue: entry.value, options: [], minimum: 0, maximum: 1)
+        }
     }
 
     private func authoredEffectNames(for wallpaper: WEWallpaper) -> Set<String> {
@@ -146,51 +240,91 @@ private final class SceneUserPropertiesModel: ObservableObject {
 
 struct SceneUserPropertiesView: View {
     @StateObject private var model: SceneUserPropertiesModel
+    @ObservedObject private var musicSync = VideoMusicSyncStore.shared
+    private let wallpaper: WEWallpaper
 
     init(wallpaper: WEWallpaper) {
+        self.wallpaper = wallpaper
         _model = StateObject(wrappedValue: SceneUserPropertiesModel(wallpaper: wallpaper))
     }
 
+    private var isVideo: Bool { SceneWallpaperViewModel.isVideoType(wallpaper.project.type) }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(model.properties.filter { !isEffectProperty($0) }) { property in
-                if !isTextProperty(property) {
-                    propertyView(property)
-                }
-            }
-            if !model.properties.filter(isEffectProperty).isEmpty {
-                DisclosureGroup("Effects") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        ForEach(effectNames, id: \.self) { effectName in
-                            effectGroup(effectName)
+        VStack(alignment: .leading, spacing: 16) {
+            let wallpaperProperties = model.properties.filter { model.authoredPropertyIDs.contains($0.id) }
+            if !wallpaperProperties.isEmpty {
+                CollapsibleSection(title: "Wallpaper Settings") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(wallpaperProperties) { property in
+                            propertyView(property)
                         }
                     }
-                    .padding(.top, 6)
                 }
             }
-            if !model.textObjects.isEmpty {
-                DisclosureGroup("Text") {
+            let adjustmentProperties = model.properties.filter { property in
+                property.id.hasPrefix("_owe_") && !isEffectProperty(property) && !isTextProperty(property)
+            }
+            let effectProperties = model.properties.filter(isEffectProperty)
+            if !adjustmentProperties.isEmpty || !effectProperties.isEmpty || isVideo {
+                CollapsibleSection(title: "User Scene Settings") {
                     VStack(alignment: .leading, spacing: 12) {
-                        ForEach(model.textObjects, id: \.id) { textObject in
-                            DisclosureGroup {
+                        if isVideo {
+                            videoMusicSyncControls
+                        }
+                        if !adjustmentProperties.isEmpty {
+                            DisclosureGroup("User Adjustments") {
                                 VStack(alignment: .leading, spacing: 8) {
-                                    ForEach(model.properties.filter { $0.id.hasPrefix("_owe_text_\(textObject.id)_") }) { property in
+                                    ForEach(adjustmentProperties) { property in
                                         propertyView(property)
                                     }
                                 }
                                 .padding(.top, 4)
-                            } label: {
-                                HStack {
-                                    if let enabled = model.properties.first(where: { $0.id == "_owe_text_\(textObject.id)_enabled" }) {
-                                        propertyView(enabled)
+                            }
+                        }
+                        if !effectProperties.isEmpty {
+                            DisclosureGroup("User Effects") {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(SceneEffectRegistry.grouped(), id: \.title) { group in
+                                        DisclosureGroup(group.title) {
+                                            VStack(alignment: .leading, spacing: 12) {
+                                                ForEach(group.effects, id: \.name) { definition in
+                                                    effectGroup(definition)
+                                                }
+                                            }
+                                            .padding(.top, 6)
+                                        }
                                     }
-                                    Text(textObject.title)
-                                    Spacer()
                                 }
+                                .padding(.top, 6)
+                            }
+                        }
+                        if !model.textObjects.isEmpty {
+                            DisclosureGroup("Our Text") {
+                                VStack(alignment: .leading, spacing: 12) {
+                                    ForEach(model.textObjects, id: \.id) { textObject in
+                                        DisclosureGroup {
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                ForEach(model.properties.filter { $0.id.hasPrefix("_owe_text_\(textObject.id)_") }) { property in
+                                                    propertyView(property)
+                                                }
+                                            }
+                                            .padding(.top, 4)
+                                        } label: {
+                                            HStack {
+                                                if let enabled = model.properties.first(where: { $0.id == "_owe_text_\(textObject.id)_enabled" }) {
+                                                    propertyView(enabled)
+                                                }
+                                                Text(textObject.title)
+                                                Spacer()
+                                            }
+                                        }
+                                    }
+                                }
+                                .padding(.top, 6)
                             }
                         }
                     }
-                    .padding(.top, 6)
                 }
             }
         }
@@ -198,29 +332,70 @@ struct SceneUserPropertiesView: View {
     }
 
     private func isEffectProperty(_ property: SceneUserProperty) -> Bool {
-        property.id == "vhs" || property.id == "eyenitro" || property.id.hasPrefix("_owe_effect_")
+        property.id.hasPrefix("_owe_effect_")
+    }
+
+    @ViewBuilder
+    private var videoMusicSyncControls: some View {
+        DisclosureGroup("Sync Video to Music") {
+            VStack(alignment: .leading, spacing: 10) {
+                videoMusicSyncRow(title: "Zoom", enabledKey: "zoomEnabled", amountKey: "zoomAmount",
+                                  range: 0...0.5, defaultAmount: 0.08, suffix: "x")
+                videoMusicSyncRow(title: "Pace", enabledKey: "paceEnabled", amountKey: "paceAmount",
+                                  range: -1...1, defaultAmount: 0.25, suffix: "x")
+                videoMusicSyncRow(title: "Tilt", enabledKey: "tiltEnabled", amountKey: "tiltAmount",
+                                  range: -15...15, defaultAmount: 3, suffix: "deg")
+                videoMusicSyncRow(title: "Saturation", enabledKey: "saturationEnabled", amountKey: "saturationAmount",
+                                  range: -1...2, defaultAmount: 0.6, suffix: "x")
+            }
+            .padding(.top, 6)
+        }
+    }
+
+    private func videoMusicSyncRow(title: String, enabledKey: String, amountKey: String,
+                                   range: ClosedRange<Double>, defaultAmount: Double, suffix: String) -> some View {
+        let wallpaper = self.wallpaper
+        let isEnabled = Binding<Bool>(
+            get: { VideoMusicSyncSettings.bool(wallpaper, enabledKey) },
+            set: { VideoMusicSyncStore.shared.set($0, wallpaper, enabledKey) }
+        )
+        let amount = Binding<Double>(
+            get: { VideoMusicSyncSettings.double(wallpaper, amountKey, default: defaultAmount) },
+            set: { VideoMusicSyncStore.shared.set($0, wallpaper, amountKey) }
+        )
+        return VStack(alignment: .leading, spacing: 4) {
+            Toggle("Sync \(title)", isOn: isEnabled)
+                .toggleStyle(.checkbox)
+            if isEnabled.wrappedValue {
+                HStack {
+                    Text("Amount")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    NumericSliderInput(value: amount, range: range,
+                                       defaultValue: defaultAmount,
+                                       suffix: suffix,
+                                       fractionDigits: 3,
+                                       sliderWidth: 100,
+                                       fieldWidth: 64)
+                }
+            }
+        }
     }
 
     private func isTextProperty(_ property: SceneUserProperty) -> Bool {
         property.id.hasPrefix("_owe_text_")
     }
 
-    private var effectNames: [String] {
-        ["shake", "waterwaves", "nitro", "vhs", "pulse", "iris", "volumetricfog", "parallax"]
-    }
-
     @ViewBuilder
-    private func effectGroup(_ name: String) -> some View {
-        let enabledID = "_owe_effect_enabled_\(name)"
+    private func effectGroup(_ definition: SceneEffectDefinition) -> some View {
+        let enabledID = "_owe_effect_enabled_\(definition.name)"
         let controls = model.properties.filter { property in
-            property.id == enabledID || property.id.hasPrefix("_owe_effect_\(name)_")
-                || (name == "vhs" && property.id == "vhs")
-                || (name == "nitro" && property.id == "eyenitro")
+            property.id == enabledID || property.id.hasPrefix("_owe_effect_\(definition.name)_")
         }
         if !controls.isEmpty {
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(controls.filter { $0.id != enabledID && $0.id != name && $0.id != "vhs" && $0.id != "eyenitro" }) { property in
+                    ForEach(controls.filter { $0.id != enabledID }) { property in
                         propertyView(property)
                     }
                 }
@@ -229,10 +404,8 @@ struct SceneUserPropertiesView: View {
                 HStack {
                     if let enabled = controls.first(where: { $0.id == enabledID }) {
                         propertyView(enabled)
-                    } else if let authored = controls.first(where: { $0.id == name || (name == "nitro" && $0.id == "eyenitro") }) {
-                        propertyView(authored)
                     } else {
-                        Text(name.capitalized)
+                        Text(definition.title)
                     }
                     Spacer()
                 }
@@ -249,30 +422,127 @@ struct SceneUserPropertiesView: View {
                     Divider()
                 }
             case "slider":
-                let value = Binding<Double>(get: { Double(model.values[property.id] ?? property.defaultValue) ?? property.minimum },
-                                            set: { model.set(String($0), for: property) })
+                let usesDegrees = property.id.hasSuffix("_direction")
+                let rawValue = Binding<Double>(
+                    get: { Double(model.values[property.id] ?? property.defaultValue) ?? property.minimum },
+                    set: { model.set(String($0), for: property) }
+                )
+                let value = Binding<Double>(
+                    get: { usesDegrees ? rawValue.wrappedValue * 180 / .pi : rawValue.wrappedValue },
+                    set: { rawValue.wrappedValue = usesDegrees ? $0 * .pi / 180 : $0 }
+                )
+                let minimum = usesDegrees ? property.minimum * 180 / .pi : property.minimum
+                let maximum = usesDegrees ? property.maximum * 180 / .pi : property.maximum
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack { Text(property.title); Spacer(); Text(String(format: "%.2f", value.wrappedValue)).foregroundStyle(.secondary) }
-                    Slider(value: value, in: property.minimum...max(property.maximum, property.minimum + 0.001))
+                    parameterLabel(property.title + (usesDegrees ? " (degrees)" : ""), help: parameterHelp(property))
+                    NumericSliderInput(value: value, range: minimum...max(maximum, minimum + 0.001),
+                                       defaultValue: usesDegrees
+                                           ? (Double(property.defaultValue) ?? property.minimum) * 180 / .pi
+                                           : Double(property.defaultValue) ?? property.minimum,
+                                       fractionDigits: 3, fieldWidth: 76)
+                    musicSyncControls(for: property, usesDegrees: usesDegrees)
                 }
             case "bool":
-                Toggle(property.title, isOn: Binding(get: { (model.values[property.id] ?? property.defaultValue).lowercased() == "true" },
-                                                      set: { model.set($0 ? "true" : "false", for: property) }))
+                HStack {
+                    Toggle(property.title, isOn: Binding(get: { (model.values[property.id] ?? property.defaultValue).lowercased() == "true" },
+                                                          set: { model.set($0 ? "true" : "false", for: property) }))
+                    infoButton(parameterHelp(property))
+                }
                     .toggleStyle(.checkbox)
             case "combo":
-                Picker(property.title, selection: Binding(get: { model.values[property.id] ?? property.defaultValue },
-                                                          set: { model.set($0, for: property) })) {
+                Picker(selection: Binding(get: { model.values[property.id] ?? property.defaultValue },
+                                          set: { model.set($0, for: property) })) {
                     ForEach(property.options, id: \.value) { option in Text(option.title).tag(option.value) }
+                } label: {
+                    parameterLabel(property.title, help: parameterHelp(property))
                 }
             case "textinput":
-                TextField(property.title, text: Binding(get: { model.values[property.id] ?? property.defaultValue },
-                                                        set: { model.set($0, for: property) }))
+                HStack {
+                    TextField(property.title, text: Binding(get: { model.values[property.id] ?? property.defaultValue },
+                                                            set: { model.set($0, for: property) }))
+                    infoButton(parameterHelp(property))
+                }
             case "color":
-                TextField(property.title, text: Binding(get: { model.values[property.id] ?? property.defaultValue },
-                                                        set: { model.set($0, for: property) }))
-                    .textFieldStyle(.roundedBorder)
+                ColorPicker(selection: Binding(
+                    get: { colorValue(model.values[property.id] ?? property.defaultValue) },
+                    set: { model.set(colorString($0), for: property) }
+                ), supportsOpacity: false) {
+                    parameterLabel(property.title, help: parameterHelp(property))
+                }
+                .anchorsColorPanel()
             default:
                 EmptyView()
             }
+    }
+
+    @ViewBuilder
+    private func musicSyncControls(for property: SceneUserProperty, usesDegrees: Bool) -> some View {
+        let syncID = "\(property.id)_musicSync"
+        let amountID = "\(property.id)_musicAmount"
+        let isEnabled = Binding<Bool>(
+            get: { (model.values[syncID] ?? "false").lowercased() == "true" },
+            set: { model.set($0 ? "true" : "false", forID: syncID) }
+        )
+        Toggle("Sync to Music", isOn: isEnabled)
+            .toggleStyle(.checkbox)
+            .font(.caption)
+        if isEnabled.wrappedValue {
+            let rawSpan = max(property.maximum - property.minimum, 0.001)
+            let displaySpan = usesDegrees ? rawSpan * 180 / .pi : rawSpan
+            let amount = Binding<Double>(
+                get: {
+                    let raw = Double(model.values[amountID] ?? "0") ?? 0
+                    return usesDegrees ? raw * 180 / .pi : raw
+                },
+                set: { value in
+                    model.set(String(usesDegrees ? value * .pi / 180 : value), forID: amountID)
+                }
+            )
+            HStack {
+                Text("Music Amount")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                NumericSliderInput(value: amount, range: -displaySpan...displaySpan,
+                                   defaultValue: 0, fractionDigits: 3,
+                                   sliderWidth: 100, fieldWidth: 64)
+            }
+        }
+    }
+
+    private func parameterLabel(_ title: String, help: String) -> some View {
+        HStack(spacing: 5) {
+            Text(title)
+            infoButton(help)
+        }
+    }
+
+    private func infoButton(_ help: String) -> some View {
+        Image(systemName: "info.circle")
+            .foregroundStyle(.secondary)
+            .help(help)
+    }
+
+    private func parameterHelp(_ property: SceneUserProperty) -> String {
+        let key = property.id.lowercased()
+        if key.contains("color") || property.type == "color" { return "Choose the color used by this parameter." }
+        if key.contains("opacity") || key.contains("alpha") { return "Controls the transparency of this parameter." }
+        if key.contains("speed") || key.contains("frequency") { return "Controls how quickly this effect changes over time." }
+        if key.contains("strength") || key.contains("intensity") || key.contains("amount") { return "Controls the strength or intensity of this effect." }
+        if key.contains("size") || key.contains("scale") || key.contains("radius") { return "Controls the size or spatial scale of this effect." }
+        if key.contains("direction") || key.contains("angle") { return "Controls the direction or angle, in degrees." }
+        return property.title.isEmpty ? "Adjust this wallpaper parameter." : "Adjusts \(property.title.lowercased())."
+    }
+
+    private func colorValue(_ value: String) -> Color {
+        let components = value.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Double($0) }
+        let scale = components.max() ?? 1 > 1 ? 255.0 : 1.0
+        return Color(red: (components.indices.contains(0) ? components[0] : 1) / scale,
+                 green: (components.indices.contains(1) ? components[1] : 1) / scale,
+                 blue: (components.indices.contains(2) ? components[2] : 1) / scale)
+    }
+
+    private func colorString(_ color: Color) -> String {
+        let nsColor = NSColor(color).usingColorSpace(.deviceRGB) ?? .white
+        return "\(nsColor.redComponent) \(nsColor.greenComponent) \(nsColor.blueComponent)"
     }
 }

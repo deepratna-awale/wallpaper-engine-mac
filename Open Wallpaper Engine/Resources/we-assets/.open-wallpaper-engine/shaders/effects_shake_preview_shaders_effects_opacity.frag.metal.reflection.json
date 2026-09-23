@@ -1,0 +1,1 @@
+{"uniforms":[{"semantic":"{\"material\":\"Framebuffer\",\"hidden\":true}\r","type":"sampler2D","name":"g_Texture0"},{"semantic":"{\"material\":\"Mask\",\"mode\":\"opacitymask\",\"default\":\"util\/white\"}\r","type":"sampler2D","name":"g_Texture1"}],"combos":{},"textures":["g_Texture0","g_Texture1"]}

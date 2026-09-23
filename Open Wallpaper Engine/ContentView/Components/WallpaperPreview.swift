@@ -18,9 +18,12 @@ struct WallpaperPreview: SubviewOfContentView {
     @State var newTag = ""
     
     @State var hoveredTag: String?
+    /// SwiftUI cannot observe UserDefaults, so this store is what re-renders the music controls
+    /// after their bindings write.
+    @ObservedObject private var musicSync = VideoMusicSyncStore.shared
+    @ObservedObject private var favorites = FavoritesStore.shared
     @State var isTagsHovered = false
-    @State var isSceneInspectorPresented = false
-    
+
     init(contentViewModel viewModel: ContentViewModel, wallpaperViewModel: WallpaperViewModel) {
         self.viewModel = viewModel
         self.wallpaperViewModel = wallpaperViewModel
@@ -38,6 +41,9 @@ struct WallpaperPreview: SubviewOfContentView {
         VStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    Text("Details")
+                        .font(.title3.bold())
+                        .frame(maxWidth: .infinity, alignment: .center)
                     VStack(spacing: 10) {
                         GifImage(contentsOf: { (url: URL) in
                             if let selectedProject = try? JSONDecoder()
@@ -109,24 +115,7 @@ struct WallpaperPreview: SubviewOfContentView {
                         }
                         Spacer()
                     }
-                    if let subscriptions = wallpaperViewModel.inspectedWorkshopItem?.subscriptions,
-                       subscriptions > 0 {
-                        Label("\(formatCount(subscriptions))", systemImage: "heart")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        if let item = wallpaperViewModel.inspectedWorkshopItem {
-                            Label("\(item.votesUp)", systemImage: "hand.thumbsup")
-                                .foregroundStyle(.green)
-                            Label("\(item.votesDown)", systemImage: "hand.thumbsdown")
-                                .foregroundStyle(.red)
-                        } else {
-                            Text("Rating unavailable")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    .font(.caption)
+                    favoriteControl
                     HStack {
                         Text(wallpaperViewModel.displayedWallpaper.project.type)
                         Text(wallpaperSize)
@@ -198,102 +187,84 @@ struct WallpaperPreview: SubviewOfContentView {
                             .buttonStyle(.bordered)
                             .help("Delete wallpaper")
                         }
-                        HStack(spacing: 3) {
-                            Button { } label: {
-                                Label("Comment", systemImage: "text.badge.star")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            Button { } label: {
-                                Image(systemName: "doc.on.doc.fill")
-                            }
-                            Button { } label: {
-                                Image(systemName: "exclamationmark.triangle.fill")
-                            }
+                        Button {
+                            AppDelegate.shared.showSceneInspector(for: wallpaperViewModel.displayedWallpaper)
+                        } label: {
+                            Label("Scene Inspector", systemImage: "square.stack.3d.up")
+                                .frame(maxWidth: .infinity)
                         }
-                        .disabled(true)
                     }
                     // MARK: Properties
-                    HStack(spacing: 3) {
-                        Text("Properties")
-                        VStack {
-                            Divider()
-                                .frame(height: 1)
-                                .overlay(Color.accentColor)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Menu {
-                                ForEach(WallpaperPlacement.allCases) { placement in
-                                    Button(placement.rawValue) {
-                                        wallpaperViewModel.wallpaperPlacement = placement
+                    CollapsibleSection(title: "Properties") {
+                        VStack(alignment: .leading, spacing: 16) {
+                            if wallpaperViewModel.displayedWallpaper.project.workshopid == nil {
+                                Picker("Age Rating", selection: Binding(
+                                    get: { wallpaperViewModel.displayedWallpaper.project.contentrating ?? "Everyone" },
+                                    set: { wallpaperViewModel.setContentRating($0, for: wallpaperViewModel.displayedWallpaper) }
+                                )) {
+                                    Text("Everyone").tag("Everyone")
+                                    Text("Questionable").tag("Questionable")
+                                    Text("Mature").tag("Mature")
+                                }
+                                .pickerStyle(.menu)
+                            }
+                            HStack {
+                                Label("Placement", systemImage: "arrow.up.left.and.arrow.down.right")
+                                Spacer()
+                                Picker("", selection: $wallpaperViewModel.wallpaperPlacement) {
+                                    ForEach(WallpaperPlacement.allCases) { placement in
+                                        Text(placement.rawValue).tag(placement)
                                     }
                                 }
-                            } label: {
-                                Label(
-                                    "Placement: \(wallpaperViewModel.wallpaperPlacement.rawValue)",
-                                    systemImage: "arrow.up.left.and.arrow.down.right"
-                                )
+                                .labelsHidden()
+                                .pickerStyle(.menu)
+                                .frame(width: 120)
                             }
-                            .menuStyle(.borderedButton)
-                        }
-                        ColorPicker(selection: .constant(.red), supportsOpacity: true) {
-                            HStack {
-                                Label("Scheme Color", systemImage: "paintpalette.fill")
-                                Spacer()
-                            }
-                        }
-                        .opacity(0.5)
-                        .disabled(true)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        switch wallpaperViewModel.displayedWallpaper.project.type.lowercased() {
-                        case "video":
-                            HStack {
-                                Label("Volume", systemImage: "speaker.wave.3.fill")
-                                Spacer()
-                                Slider(value: $wallpaperViewModel.playVolume, in: 0...1).frame(width: 100)
-                                Text(String(format: "%.0f", wallpaperViewModel.playVolume * 100) + "%")
-                                    .frame(width: 35)
-                            }
-                            HStack {
-                                Label("Video Speed", systemImage: "play.fill")
-                                Spacer()
-                                Slider(value: $wallpaperViewModel.playRate, in: 0...2, step: 0.1).frame(width: 100)
-                                Text(String(format: "%.01fx", wallpaperViewModel.playRate))
-                                    .frame(width: 35)
-                            }
-                            HStack {
-                                Label("Audio Speed", systemImage: "waveform")
-                                Spacer()
-                                Button {
-                                    wallpaperViewModel.arePlaybackRatesLinked.toggle()
-                                } label: {
-                                    Image(systemName: "link")
-                                        .foregroundStyle(wallpaperViewModel.arePlaybackRatesLinked ? Color.primary : .gray)
+                            switch wallpaperViewModel.displayedWallpaper.project.type.lowercased() {
+                            case "video", "remote-video":
+                                HStack {
+                                    Label("Volume", systemImage: "speaker.wave.3.fill")
+                                    Spacer()
+                                    NumericSliderInput(value: $wallpaperViewModel.playVolume, range: 0...1,
+                                                       defaultValue: 1, displayScale: 100, suffix: "%",
+                                                       fractionDigits: 0, sliderWidth: 100, fieldWidth: 36)
                                 }
-                                .buttonStyle(.plain)
-                                .help(wallpaperViewModel.arePlaybackRatesLinked ? "Unlink audio speed" : "Link audio speed")
-                                Slider(value: $wallpaperViewModel.audioPlayRate, in: 0...2, step: 0.1)
-                                    .frame(width: 76)
-                                    .disabled(wallpaperViewModel.arePlaybackRatesLinked)
-                                Text(String(format: "%.01fx", wallpaperViewModel.audioPlayRate))
-                                    .frame(width: 35)
+                                HStack {
+                                    Label("Video Speed", systemImage: "play.fill")
+                                    Spacer()
+                                    NumericSliderInput(value: $wallpaperViewModel.playRate, range: 0...2,
+                                                       defaultValue: 1, step: 0.1, suffix: "x",
+                                                       fractionDigits: 2, sliderWidth: 100, fieldWidth: 42)
+                                }
+                                HStack {
+                                    Label("Audio Speed", systemImage: "waveform")
+                                    Spacer()
+                                    Button {
+                                        wallpaperViewModel.arePlaybackRatesLinked.toggle()
+                                    } label: {
+                                        Image(systemName: "link")
+                                            .foregroundStyle(wallpaperViewModel.arePlaybackRatesLinked ? Color.primary : .gray)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help(wallpaperViewModel.arePlaybackRatesLinked ? "Unlink audio speed" : "Link audio speed")
+                                    NumericSliderInput(value: $wallpaperViewModel.audioPlayRate, range: 0...2,
+                                                       defaultValue: 1, step: 0.1, suffix: "x",
+                                                       fractionDigits: 2, sliderWidth: 76, fieldWidth: 42)
+                                        .disabled(wallpaperViewModel.arePlaybackRatesLinked)
+                                }
+                            case "scene":
+                                MissingWorkshopDependenciesBanner(steamCmd: viewModel.steamCmd, wallpaper: wallpaperViewModel.displayedWallpaper)
+                                    .id(wallpaperViewModel.displayedWallpaper.wallpaperDirectory)
+                                if wallpaperHasSceneAudio(wallpaperViewModel.displayedWallpaper) {
+                                    sceneMusicControls(for: wallpaperViewModel.displayedWallpaper)
+                                }
+                            default:
+                                EmptyView()
                             }
-                        case "web":
-                            EmptyView()
-                        case "scene":
-                            Button {
-                                isSceneInspectorPresented = true
-                            } label: {
-                                Label("Scene Inspector", systemImage: "square.stack.3d.up")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            SceneUserPropertiesView(wallpaper: wallpaperViewModel.displayedWallpaper)
-                                .id(wallpaperViewModel.displayedWallpaper.wallpaperDirectory)
-                        default:
-                            EmptyView()
                         }
                     }
+                    SceneUserPropertiesView(wallpaper: wallpaperViewModel.displayedWallpaper)
+                        .id(wallpaperViewModel.displayedWallpaper.wallpaperDirectory)
                     VStack(spacing: 3) {
                         HStack(spacing: 3) {
                             Text("Your Presets")
@@ -360,8 +331,91 @@ struct WallpaperPreview: SubviewOfContentView {
             }
             .padding()
         }
-        .sheet(isPresented: $isSceneInspectorPresented) {
-            SceneInspectorView(wallpaper: wallpaperViewModel.displayedWallpaper)
+    }
+
+    private static var sceneAudioPresenceCache: [String: Bool] = [:]
+
+    private func wallpaperHasSceneAudio(_ wallpaper: WEWallpaper) -> Bool {
+        let key = wallpaper.wallpaperDirectory.path
+        if let cached = Self.sceneAudioPresenceCache[key] { return cached }
+        let extensions: Set<String> = ["mp3", "ogg", "wav", "m4a", "flac"]
+        let fm = FileManager.default
+        var found = false
+        if let enumerator = fm.enumerator(at: wallpaper.wallpaperDirectory, includingPropertiesForKeys: nil) {
+            for case let url as URL in enumerator {
+                if extensions.contains(url.pathExtension.lowercased()) {
+                    found = true
+                    break
+                }
+                if url.pathExtension.lowercased() == "pkg",
+                   let data = try? Data(contentsOf: url),
+                   let parser = try? PKGParser(data: data),
+                   parser.fileList.contains(where: { extensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) }) {
+                    found = true
+                    break
+                }
+            }
+        }
+        Self.sceneAudioPresenceCache[key] = found
+        return found
+    }
+
+    private var favoriteControl: some View {
+        let wallpaper = wallpaperViewModel.displayedWallpaper
+        let isFavorite = favorites.contains(wallpaper)
+        let subscriptions = wallpaperViewModel.inspectedWorkshopItem?.subscriptions ?? 0
+        return Button {
+            favorites.toggle(wallpaper)
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isFavorite ? "heart.fill" : "heart")
+                    .font(.title3)
+                    .foregroundStyle(isFavorite ? Color.red : Color.secondary)
+                if subscriptions > 0 {
+                    Text(formatCount(subscriptions))
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isFavorite ? "Remove from Favorites" : "Add to Favorites")
+    }
+
+    private func sceneMusicControls(for wallpaper: WEWallpaper) -> some View {
+        let enabledKey = "SceneMusicEnabled.\(wallpaper.wallpaperDirectory.path)"
+        let volumeKey = "SceneMusicVolume.\(wallpaper.wallpaperDirectory.path)"
+        let enabled = Binding<Bool>(
+            get: { UserDefaults.standard.object(forKey: enabledKey) == nil ? true : UserDefaults.standard.bool(forKey: enabledKey) },
+            set: {
+                UserDefaults.standard.set($0, forKey: enabledKey)
+                musicSync.objectWillChange.send()
+                NotificationCenter.default.post(name: .sceneMusicSettingsDidChange, object: nil,
+                                                userInfo: ["path": wallpaper.wallpaperDirectory.path])
+            }
+        )
+        let volume = Binding<Double>(
+            get: { UserDefaults.standard.object(forKey: volumeKey) == nil ? 1 : UserDefaults.standard.double(forKey: volumeKey) },
+            set: {
+                UserDefaults.standard.set($0, forKey: volumeKey)
+                musicSync.objectWillChange.send()
+                NotificationCenter.default.post(name: .sceneMusicSettingsDidChange, object: nil,
+                                                userInfo: ["path": wallpaper.wallpaperDirectory.path])
+            }
+        )
+        return VStack(alignment: .leading, spacing: 8) {
+            Toggle("Scene Music", isOn: enabled)
+                .toggleStyle(.checkbox)
+            if enabled.wrappedValue {
+                HStack {
+                    Label("Scene Music Volume", systemImage: "music.note")
+                    Spacer()
+                    NumericSliderInput(value: volume, range: 0...1,
+                                       defaultValue: 1, displayScale: 100, suffix: "%",
+                                       fractionDigits: 0, sliderWidth: 100, fieldWidth: 36)
+                }
+            }
         }
     }
     
@@ -437,6 +491,74 @@ struct WallpaperPreview: SubviewOfContentView {
 
     private func formatCount(_ count: Int) -> String {
         count >= 1_000 ? String(format: "%.1fK", Double(count) / 1_000) : "\(count)"
+    }
+}
+
+/// Shows when a scene wallpaper references effects/materials that live in another Steam Workshop
+/// item that isn't installed locally, and lets the user download + link them in.
+private struct MissingWorkshopDependenciesBanner: View {
+    @ObservedObject var steamCmd: SteamCmdService
+    let wallpaper: WEWallpaper
+
+    @State private var missingIds: [String] = []
+
+    var body: some View {
+        Group {
+            if !missingIds.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Label("This wallpaper needs \(missingIds.count) other Workshop item\(missingIds.count == 1 ? "" : "s") to render correctly.",
+                          systemImage: "shippingbox")
+                        .font(.footnote)
+                    ForEach(missingIds, id: \.self) { workshopId in
+                        HStack {
+                            Text(workshopId).font(.footnote).foregroundStyle(.secondary)
+                            Spacer()
+                            statusView(for: workshopId)
+                        }
+                    }
+                    if !steamCmd.isInstalled || !steamCmd.isLoggedIn {
+                        Text("Log in on the Workshop tab to download these.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button("Download All") {
+                            for workshopId in missingIds {
+                                steamCmd.downloadWorkshopItem(workshopId: workshopId)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding(10)
+                .background(Color(nsColor: .controlBackgroundColor))
+                .cornerRadius(8)
+            }
+        }
+        .onAppear { refresh() }
+        .onChange(of: steamCmd.downloadProgress) { _ in
+            for workshopId in missingIds where steamCmd.downloadProgress[workshopId] == .completed {
+                WorkshopDependencyResolver.linkInstalledDependencies(for: wallpaper)
+            }
+            refresh()
+        }
+    }
+
+    @ViewBuilder
+    private func statusView(for workshopId: String) -> some View {
+        switch steamCmd.downloadProgress[workshopId] {
+        case .downloading(let status):
+            Text(status).font(.caption).foregroundStyle(.secondary)
+        case .completed:
+            Label("Linked", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+        case .failed(let message):
+            Text(message).font(.caption).foregroundStyle(.red)
+        case nil:
+            EmptyView()
+        }
+    }
+
+    private func refresh() {
+        missingIds = Array(WorkshopDependencyResolver.missingWorkshopIds(for: wallpaper)).sorted()
     }
 }
 

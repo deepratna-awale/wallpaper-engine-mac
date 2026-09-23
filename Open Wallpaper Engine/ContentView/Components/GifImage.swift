@@ -7,8 +7,10 @@
 
 import Cocoa
 import SwiftUI
+import ImageIO
 
 struct GifImage: NSViewRepresentable {
+    private static let imageCache = NSCache<NSString, NSImage>()
     
     var gifName: String?
     var gifUrl: URL?
@@ -20,6 +22,7 @@ struct GifImage: NSViewRepresentable {
 
     final class Coordinator {
         var loadedSource: String?
+        var loadingSource: String?
     }
     
     init(_ gifName: String, animates: Bool = true) {
@@ -67,17 +70,63 @@ struct GifImage: NSViewRepresentable {
         let source = gifUrl?.path ?? gifName
         guard coordinator.loadedSource != source else { return }
         let url = gifUrl ?? gifName.flatMap { Bundle.main.url(forResource: $0, withExtension: "gif") }
-        guard let url, let image = NSImage(contentsOf: url) else { return }
-        (image.representations.first as? NSBitmapImageRep)?.setProperty(.loopCount, withValue: 0)
-        nsView.image = image
-        coordinator.loadedSource = source
+        guard let url, let source else { return }
+        if let cached = Self.imageCache.object(forKey: source as NSString) {
+            nsView.image = cached
+            coordinator.loadedSource = source
+            return
+        }
+        guard coordinator.loadingSource != source else { return }
+        coordinator.loadingSource = source
+        let shouldAnimate = animates
+        DispatchQueue.global(qos: .userInitiated).async {
+            let image: NSImage?
+            if shouldAnimate {
+                image = NSImage(contentsOf: url)
+            } else {
+                image = Self.downsampledImage(at: url, maxPixelSize: 512)
+            }
+            guard let image else { return }
+            let prepared = self.contentMode == .fill ? self.centeredSquareCrop(image) : image
+            Self.imageCache.setObject(prepared, forKey: source as NSString)
+            DispatchQueue.main.async {
+                guard coordinator.loadingSource == source else { return }
+                nsView.image = prepared
+                coordinator.loadedSource = source
+                coordinator.loadingSource = nil
+            }
+        }
+    }
+
+    private static func downsampledImage(at url: URL, maxPixelSize: Int) -> NSImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                kCGImageSourceCreateThumbnailWithTransform: true
+              ] as CFDictionary) else { return nil }
+        return NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
+    }
+
+    private func centeredSquareCrop(_ image: NSImage) -> NSImage {
+        let width = image.size.width
+        let height = image.size.height
+        guard width > height, height > 0 else { return image }
+        let cropRect = NSRect(x: (width - height) / 2, y: 0, width: height, height: height)
+        let cropped = NSImage(size: NSSize(width: height, height: height))
+        cropped.lockFocus()
+        image.draw(in: NSRect(origin: .zero, size: cropped.size),
+                   from: cropRect, operation: .copy, fraction: 1)
+        cropped.unlockFocus()
+        return cropped
     }
 
     private func updateModifiers(_ nsView: NSImageView) {
         if self.isResizable {
             switch self.contentMode {
             case .fill:
-                nsView.imageScaling = .scaleAxesIndependently
+                // Keep the source aspect ratio; the containing view handles the crop.
+                nsView.imageScaling = .scaleProportionallyUpOrDown
             case .fit:
                 nsView.imageScaling = .scaleProportionallyUpOrDown
             }

@@ -10,6 +10,10 @@ import Combine
 import SwiftUI
 import ServiceManagement
 
+extension Notification.Name {
+    static let wallpaperEngineAssetsDirectoryDidChange = Notification.Name("WallpaperEngineAssetsDirectoryDidChange")
+}
+
 enum GSQuality {
     case low, medium, high, ultra
 }
@@ -47,6 +51,9 @@ enum GSLocalization: String, CaseIterable, Identifiable, Codable {
 enum GSVideoFramework: String, CaseIterable, Identifiable, Codable {
     var id: Self { self }
     case avkit
+    /// Draws video through the scene renderer so the effect stack applies to it, the way
+    /// Wallpaper Engine does. Still experimental; avkit remains the default.
+    case metal
 }
 
 enum GSProcessPiority: String, CaseIterable, Identifiable, Codable {
@@ -105,13 +112,22 @@ struct GlobalSettings: Codable, Equatable {
     
     // MARK: Misc
     var autoRefresh = true
+
+    // MARK: Scene Assets
+    var wallpaperEngineAssetsDirectory: String?
 }
 
 @MainActor
 class GlobalSettingsViewModel: ObservableObject {
+    private static let wallpaperEngineAssetsDirectoryKey = "WallpaperEngineAssetsDirectory"
+
     @Published var settings: GlobalSettings
     {
-        didSet { save(); validate() }
+        didSet {
+            save()
+            validate()
+            OWELog.apply(logLevel: settings.logLevel)
+        }
     }
     
     @Published var selection = 0
@@ -131,7 +147,10 @@ class GlobalSettingsViewModel: ObservableObject {
         } else {
             self.settings = GlobalSettings()
         }
-        
+        UserDefaults.standard.set(settings.wallpaperEngineAssetsDirectory,
+                                  forKey: Self.wallpaperEngineAssetsDirectoryKey)
+        OWELog.apply(logLevel: settings.logLevel)
+
         // Add observers
         self.didFinishLaunchingNotificationCancellable =
         NotificationCenter.default.publisher(for: NSApplication.didFinishLaunchingNotification)
@@ -220,6 +239,14 @@ class GlobalSettingsViewModel: ObservableObject {
         let data = try! JSONEncoder().encode(settings)
         print(String(describing: String(data: data, encoding: .utf8)))
         UserDefaults.standard.set(data, forKey: "GlobalSettings")
+    }
+
+    func setWallpaperEngineAssetsDirectory(_ directory: URL?) {
+        settings.wallpaperEngineAssetsDirectory = directory?.standardizedFileURL.path
+        UserDefaults.standard.set(settings.wallpaperEngineAssetsDirectory,
+                                  forKey: Self.wallpaperEngineAssetsDirectoryKey)
+        SceneDynamicEffectCatalog.invalidateSharedCache()
+        NotificationCenter.default.post(name: .wallpaperEngineAssetsDirectoryDidChange, object: nil)
     }
     
     func setQuality(_ quality: GSQuality) {

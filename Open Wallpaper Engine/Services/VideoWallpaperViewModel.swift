@@ -14,18 +14,15 @@ class VideoWallpaperViewModel: ObservableObject {
     private let playsAudio: Bool
     private let wallpaperViewModel: WallpaperViewModel
 
-    var currentWallpaper: WEWallpaper {
+    @Published var currentWallpaper: WEWallpaper {
         didSet {
-            if let oldItem = self.player.currentItem {
-                NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: oldItem)
-            }
             replacePlayers(with: currentWallpaper)
         }
     }
 
     var playRate: Float = 0 {
         didSet {
-            self.player.rate = playRate
+            updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
         }
     }
 
@@ -38,7 +35,19 @@ class VideoWallpaperViewModel: ObservableObject {
 
     var player = AVPlayer()
     private var audioPlayer = AVPlayer()
+    private let ownAudioTap = AudioLevelTap()
     private var cancellables = Set<AnyCancellable>()
+    private var itemEndObserver: NSObjectProtocol?
+    private var sleepObserver: NSObjectProtocol?
+    private var wakeObserver: NSObjectProtocol?
+    private var musicSyncObserver: NSObjectProtocol?
+
+    /// Rates last handed to AVFoundation, so redundant assignments can be skipped.
+    private var appliedVideoRate: Float?
+    private var appliedAudioRate: Float?
+    private var smoothedAudioLevel: Double = 0
+    private static let rateEpsilon: Float = 0.01
+    private static let audioSmoothing = 0.25
 
     init(
         wallpaper currentWallpaper: WEWallpaper,
@@ -48,14 +57,24 @@ class VideoWallpaperViewModel: ObservableObject {
         self.currentWallpaper = currentWallpaper
         self.playsAudio = playsAudio
         self.wallpaperViewModel = wallpaperViewModel
-        self.player = AVPlayer(url: currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file))
-        self.audioPlayer = AVPlayer(url: currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file))
+        self.player = AVPlayer(url: currentWallpaper.mediaURL)
+        self.audioPlayer = AVPlayer(url: currentWallpaper.mediaURL)
         self.player.isMuted = true
         self.audioPlayer.currentItem?.audioTimePitchAlgorithm = .timeDomain
         self.audioPlayer.isMuted = !playsAudio
-        NotificationCenter.default.addObserver(self, selector: #selector(playerDidFinishPlaying(_:)), name: .AVPlayerItemDidPlayToEndTime, object: self.player.currentItem)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemWillSleep(_:)), name: NSWorkspace.screensDidSleepNotification, object: nil)
-        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemDidWake(_:)), name: NSWorkspace.didWakeNotification, object: nil)
+        if let audioItem = self.audioPlayer.currentItem { ownAudioTap.attach(to: audioItem) }
+        observeItemEnd(of: self.player.currentItem)
+        // Block-based observers with a weak target, so this instance can still deinit (and stop
+        // playback) when the wallpaper view is torn down instead of being kept alive forever.
+        sleepObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.screensDidSleepNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.systemWillSleep()
+        }
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.systemDidWake()
+        }
+        musicSyncObserver = NotificationCenter.default.addObserver(forName: .videoMusicSyncAudioLevelDidChange, object: nil, queue: .main) { [weak self] notification in
+            self?.videoMusicSyncAudioLevelDidChange(notification)
+        }
 
         wallpaperViewModel.$playRate
             .receive(on: DispatchQueue.main)
@@ -65,8 +84,9 @@ class VideoWallpaperViewModel: ObservableObject {
             .store(in: &cancellables)
         wallpaperViewModel.$audioPlayRate
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] rate in
-                self?.audioPlayer.rate = self?.playsAudio == true ? rate : 0
+            .sink { [weak self] _ in
+                // Assigning the rate directly here used to restart audio even while paused.
+                self?.updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
             }
             .store(in: &cancellables)
         wallpaperViewModel.$playVolume
@@ -78,40 +98,95 @@ class VideoWallpaperViewModel: ObservableObject {
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
-        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        player.pause()
+        audioPlayer.pause()
+        if let itemEndObserver { NotificationCenter.default.removeObserver(itemEndObserver) }
+        if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
+        if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
+        if let musicSyncObserver { NotificationCenter.default.removeObserver(musicSyncObserver) }
     }
 
     func setAudioEnabled(_ enabled: Bool) {
         player.isMuted = true
         audioPlayer.isMuted = !enabled
-        audioPlayer.rate = enabled ? wallpaperViewModel.audioPlayRate : 0
+        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
     }
 
-    @objc private func playerDidFinishPlaying(_ notification: Notification) {
+    /// The wallpaper's own soundtrack drives music sync whenever you can actually hear it;
+    /// otherwise sync follows whatever else is playing on the system.
+    var musicSyncLevel: Double {
+        !audioPlayer.isMuted && audioPlayer.volume > 0
+            ? ownAudioTap.level
+            : AudioReactiveScriptEngine.shared.audioLevel
+    }
+
+    func updatePlaybackRates(audioLevel: Double) {
+        let paceAmount = VideoMusicSyncSettings.bool(currentWallpaper, "paceEnabled")
+            ? VideoMusicSyncSettings.double(currentWallpaper, "paceAmount", default: 0.25)
+            : 0
+        // The raw level is per-sample noisy; pacing straight off it reads as stutter rather than
+        // a pulse. Smoothing is skipped when pacing is off so play/pause stays instant.
+        let level = musicSyncLevel
+        if paceAmount > 0 {
+            smoothedAudioLevel += (level - smoothedAudioLevel) * Self.audioSmoothing
+        } else {
+            smoothedAudioLevel = level
+        }
+        setVideoRate(max(0, playRate + Float(smoothedAudioLevel * paceAmount)))
+        // Audio runs on a second player, so a paused wallpaper keeps playing sound unless the
+        // pause is applied here too.
+        setAudioRate(playsAudio && !audioPlayer.isMuted && playRate > 0 ? wallpaperViewModel.audioPlayRate : 0)
+    }
+
+    /// Assigning `AVPlayer.rate` restarts the timebase, so doing it on every audio sample stutters
+    /// the video and pitches the audio. Only meaningful changes are forwarded.
+    private func setVideoRate(_ rate: Float) {
+        if let applied = appliedVideoRate, abs(rate - applied) <= Self.rateEpsilon { return }
+        appliedVideoRate = rate
+        player.rate = rate
+    }
+
+    private func setAudioRate(_ rate: Float) {
+        if let applied = appliedAudioRate, abs(rate - applied) <= Self.rateEpsilon { return }
+        appliedAudioRate = rate
+        audioPlayer.rate = rate
+    }
+
+    private func playerDidFinishPlaying(_ notification: Notification) {
+        wallpaperViewModel.advancePlaylistIfVideoEnds(currentWallpaper)
         self.player.seek(to: CMTime.zero)
         self.audioPlayer.seek(to: CMTime.zero)
-        self.player.rate = self.playRate
-        self.audioPlayer.rate = playsAudio ? wallpaperViewModel.audioPlayRate : 0
+        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
     }
 
-    @objc private func playerDidStopPlaying(_ notification: Notification) {
-        // Resume playback
-        self.player.rate = self.playRate
+    private func systemWillSleep() {
+        setVideoRate(0)
+        setAudioRate(0)
     }
 
-    @objc func systemWillSleep(_ notification: Notification) {
-        self.player.rate = 0
-        self.audioPlayer.rate = 0
+    private func systemDidWake() {
+        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
     }
 
-    @objc func systemDidWake(_ notification: Notification) {
-        self.player.rate = self.playRate
-        self.audioPlayer.rate = playsAudio ? wallpaperViewModel.audioPlayRate : 0
+    private func videoMusicSyncAudioLevelDidChange(_ notification: Notification) {
+        let level = notification.userInfo?["level"] as? Double ?? AudioReactiveScriptEngine.shared.audioLevel
+        updatePlaybackRates(audioLevel: level)
+    }
+
+    private func observeItemEnd(of item: AVPlayerItem?) {
+        if let itemEndObserver {
+            NotificationCenter.default.removeObserver(itemEndObserver)
+        }
+        itemEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] notification in
+            self?.playerDidFinishPlaying(notification)
+        }
     }
 
     private func replacePlayers(with wallpaper: WEWallpaper) {
-        let url = wallpaper.wallpaperDirectory.appending(path: wallpaper.project.file)
+        // New AVPlayers start at rate 0, so the cached values no longer describe them.
+        appliedVideoRate = nil
+        appliedAudioRate = nil
+        let url = wallpaper.mediaURL
         let videoItem = AVPlayerItem(url: url)
         let audioItem = AVPlayerItem(url: url)
         audioItem.audioTimePitchAlgorithm = .timeDomain
@@ -120,13 +195,8 @@ class VideoWallpaperViewModel: ObservableObject {
         audioPlayer.replaceCurrentItem(with: audioItem)
         player.isMuted = true
         audioPlayer.isMuted = !playsAudio
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(playerDidFinishPlaying(_:)),
-            name: .AVPlayerItemDidPlayToEndTime,
-            object: videoItem
-        )
-        player.rate = playRate
-        audioPlayer.rate = playsAudio ? wallpaperViewModel.audioPlayRate : 0
+        ownAudioTap.attach(to: audioItem)
+        observeItemEnd(of: videoItem)
+        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
     }
 }

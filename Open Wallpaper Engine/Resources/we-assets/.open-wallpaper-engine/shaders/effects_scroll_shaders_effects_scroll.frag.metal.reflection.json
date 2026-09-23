@@ -1,0 +1,1 @@
+{"uniforms":[{"name":"g_Texture0","semantic":"{\"hidden\":true}\r","type":"sampler2D"},{"name":"g_Scale","semantic":"{\"material\":\"repeat\",\"label\":\"ui_editor_properties_repeat\",\"default\":\"1 1\",\"linked\":true,\"range\":[0.01, 10.0]}\r","type":"vec2"}],"textures":["g_Texture0"],"combos":{}}

@@ -9,7 +9,7 @@ import WebKit
 import SwiftUI
 
 class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
-    var currentWallpaper: WEWallpaper
+    @Published var currentWallpaper: WEWallpaper
     
     var fileUrl: URL {
         currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file)

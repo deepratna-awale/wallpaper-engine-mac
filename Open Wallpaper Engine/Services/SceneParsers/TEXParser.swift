@@ -8,6 +8,7 @@
 //
 
 import Cocoa
+import Compression
 import Foundation
 import AVFoundation
 
@@ -45,12 +46,15 @@ struct TEXCompressedTexture {
 class TEXParser {
     private let data: Data
 
+    /// Callers try several extract* methods on the same parser, so materialise the byte view once
+    /// rather than copying the whole file per attempt.
+    private lazy var bytes: [UInt8] = [UInt8](data)
+
     init(data: Data) {
         self.data = data
     }
 
     func extractAnimatedImages() -> TEXAnimatedImages? {
-        let bytes = [UInt8](data)
         var cursor = 0
         guard readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXV0005",
               readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXI0001",
@@ -178,13 +182,12 @@ class TEXParser {
     }
 
     func extractCompressedTexture() -> TEXCompressedTexture? {
-        let bytes = [UInt8](data)
         var cursor = 0
 
         guard readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXV0005",
               readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXI0001",
               let format = readUInt32(from: bytes, cursor: &cursor),
-              [UInt32(4), 6, 7].contains(format),
+              [UInt32(4), 6, 7, 12].contains(format),
               readUInt32(from: bytes, cursor: &cursor) != nil,
               readUInt32(from: bytes, cursor: &cursor) != nil,
               readUInt32(from: bytes, cursor: &cursor) != nil,
@@ -299,7 +302,6 @@ class TEXParser {
     // MARK: - Private
 
     private func extractContainerImage() -> NSImage? {
-        let bytes = [UInt8](data)
         var cursor = 0
 
         guard readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXV0005",
@@ -399,31 +401,136 @@ class TEXParser {
     private func rawChannelImage(_ bytes: [UInt8], format: UInt32, width: Int, height: Int,
                                  visibleWidth: Int, visibleHeight: Int) -> NSImage? {
         switch format {
+        case 1:
+            guard bytes.count >= width * height * 3 else { return nil }
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            for pixel in 0..<(width * height) {
+                rgba[pixel * 4] = bytes[pixel * 3]
+                rgba[pixel * 4 + 1] = bytes[pixel * 3 + 1]
+                rgba[pixel * 4 + 2] = bytes[pixel * 3 + 2]
+            }
+            return rawRGBAImage(rgba, width: width, height: height,
+                                visibleWidth: visibleWidth, visibleHeight: visibleHeight)
+        case 2:
+            guard bytes.count >= width * height * 2 else { return nil }
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            for pixel in 0..<(width * height) {
+                let offset = pixel * 2
+                let packed = UInt16(bytes[offset]) | UInt16(bytes[offset + 1]) << 8
+                rgba[pixel * 4] = UInt8((packed >> 11) * 255 / 31)
+                rgba[pixel * 4 + 1] = UInt8(((packed >> 5) & 63) * 255 / 63)
+                rgba[pixel * 4 + 2] = UInt8((packed & 31) * 255 / 31)
+            }
+            return rawRGBAImage(rgba, width: width, height: height,
+                                visibleWidth: visibleWidth, visibleHeight: visibleHeight)
         case 8:
             guard bytes.count >= width * height * 2 else { return nil }
             var rgba = [UInt8](repeating: 0, count: width * height * 4)
             for pixel in 0..<(width * height) {
-                rgba[pixel * 4] = bytes[pixel * 2]
-                rgba[pixel * 4 + 1] = bytes[pixel * 2 + 1]
-                rgba[pixel * 4 + 3] = 255
+                let luminance = bytes[pixel * 2]
+                rgba[pixel * 4] = luminance
+                rgba[pixel * 4 + 1] = luminance
+                rgba[pixel * 4 + 2] = luminance
+                rgba[pixel * 4 + 3] = bytes[pixel * 2 + 1]
             }
             return rawRGBAImage(rgba, width: width, height: height, visibleWidth: visibleWidth, visibleHeight: visibleHeight)
         case 9:
             guard width > 0, height > 0, visibleWidth > 0, visibleHeight > 0,
-                  bytes.count >= width * height,
-                  let provider = CGDataProvider(data: Data(bytes) as CFData),
-                  let image = CGImage(width: visibleWidth, height: visibleHeight, bitsPerComponent: 8,
-                                      bitsPerPixel: 8, bytesPerRow: width,
-                                      space: CGColorSpaceCreateDeviceGray(),
-                                      bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
-                                      provider: provider, decode: nil, shouldInterpolate: true,
-                                      intent: .defaultIntent) else {
-                return nil
+                  bytes.count >= width * height else { return nil }
+            // R8 particle textures are coverage masks: the channel is alpha,
+            // while the visible particle color is supplied by the particle system.
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            for pixel in 0..<(width * height) {
+                rgba[pixel * 4 + 3] = bytes[pixel]
             }
-            return NSImage(cgImage: image, size: NSSize(width: visibleWidth, height: visibleHeight))
+            return rawRGBAImage(rgba, width: width, height: height,
+                                visibleWidth: visibleWidth, visibleHeight: visibleHeight)
+        case 10:
+            guard bytes.count >= width * height * 4 else { return nil }
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            for pixel in 0..<(width * height) {
+                let offset = pixel * 4
+                let red = Self.halfToFloat(UInt16(bytes[offset]) | UInt16(bytes[offset + 1]) << 8)
+                let green = Self.halfToFloat(UInt16(bytes[offset + 2]) | UInt16(bytes[offset + 3]) << 8)
+                rgba[pixel * 4] = Self.floatToByte(red)
+                rgba[pixel * 4 + 1] = Self.floatToByte(green)
+                rgba[pixel * 4 + 2] = 0
+            }
+            return rawRGBAImage(rgba, width: width, height: height,
+                                visibleWidth: visibleWidth, visibleHeight: visibleHeight)
+        case 11:
+            guard bytes.count >= width * height * 2 else { return nil }
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            for pixel in 0..<(width * height) {
+                let offset = pixel * 2
+                let value = Self.halfToFloat(UInt16(bytes[offset]) | UInt16(bytes[offset + 1]) << 8)
+                let channel = Self.floatToByte(value)
+                rgba[pixel * 4] = channel; rgba[pixel * 4 + 1] = channel; rgba[pixel * 4 + 2] = channel
+            }
+            return rawRGBAImage(rgba, width: width, height: height,
+                                visibleWidth: visibleWidth, visibleHeight: visibleHeight)
+        case 13:
+            guard bytes.count >= width * height * 4 else { return nil }
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            for pixel in 0..<(width * height) {
+                let offset = pixel * 4
+                let packed = UInt32(bytes[offset]) | UInt32(bytes[offset + 1]) << 8
+                    | UInt32(bytes[offset + 2]) << 16 | UInt32(bytes[offset + 3]) << 24
+                rgba[pixel * 4] = UInt8((packed & 1023) * 255 / 1023)
+                rgba[pixel * 4 + 1] = UInt8(((packed >> 10) & 1023) * 255 / 1023)
+                rgba[pixel * 4 + 2] = UInt8(((packed >> 20) & 1023) * 255 / 1023)
+                rgba[pixel * 4 + 3] = UInt8(((packed >> 30) & 3) * 255 / 3)
+            }
+            return rawRGBAImage(rgba, width: width, height: height,
+                                visibleWidth: visibleWidth, visibleHeight: visibleHeight)
+        case 14:
+            guard bytes.count >= width * height * 8 else { return nil }
+            return float16RGBAImage(bytes, width: width, height: height,
+                                         visibleWidth: visibleWidth, visibleHeight: visibleHeight)
+        case 15:
+            guard bytes.count >= width * height * 6 else { return nil }
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            for pixel in 0..<(width * height) {
+                let offset = pixel * 6
+                for component in 0..<3 {
+                    let value = Self.halfToFloat(UInt16(bytes[offset + component * 2])
+                        | UInt16(bytes[offset + component * 2 + 1]) << 8)
+                    rgba[pixel * 4 + component] = Self.floatToByte(value)
+                }
+            }
+            return rawRGBAImage(rgba, width: width, height: height,
+                                visibleWidth: visibleWidth, visibleHeight: visibleHeight)
         default:
             return nil
         }
+    }
+
+    private static func floatToByte(_ value: Float) -> UInt8 {
+        UInt8(max(0, min(255, Int((value.isFinite ? value : 0) * 255))))
+    }
+
+    private func float16RGBAImage(_ bytes: [UInt8], width: Int, height: Int,
+                                         visibleWidth: Int, visibleHeight: Int) -> NSImage? {
+        var rgba = [UInt8](repeating: 255, count: width * height * 4)
+        for pixel in 0..<(width * height) {
+            let offset = pixel * 8
+            for component in 0..<4 {
+                let value = Self.halfToFloat(UInt16(bytes[offset + component * 2])
+                    | UInt16(bytes[offset + component * 2 + 1]) << 8)
+                    rgba[pixel * 4 + component] = Self.floatToByte(value)
+            }
+        }
+        return rawRGBAImage(rgba, width: width, height: height,
+                            visibleWidth: visibleWidth, visibleHeight: visibleHeight)
+    }
+
+    private static func halfToFloat(_ bits: UInt16) -> Float {
+        let sign = (bits & 0x8000) == 0 ? Float(1) : -Float(1)
+        let exponent = Int((bits >> 10) & 0x1f)
+        let fraction = Float(bits & 0x03ff) / 1024
+        if exponent == 0 { return sign * fraction * powf(2, -14) }
+        if exponent == 31 { return fraction == 0 ? sign * Float.infinity : Float.nan }
+        return sign * (1 + fraction) * powf(2, Float(exponent - 15))
     }
 
     /// Decodes an uncompressed RGBA8888 mipmap (TEXI format 0); these carry no image container header.
@@ -481,7 +588,25 @@ class TEXParser {
         return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
     }
 
+    /// Wallpaper Engine stores raw LZ4 blocks, which the Compression framework decodes with a
+    /// SIMD implementation. The hand-rolled decoder stays as a fallback for anything it rejects.
     private func decompressLZ4(_ input: [UInt8], uncompressedSize: Int) -> [UInt8] {
+        guard uncompressedSize > 0, !input.isEmpty else { return [] }
+        var output = [UInt8](repeating: 0, count: uncompressedSize)
+        let written = input.withUnsafeBufferPointer { source -> Int in
+            guard let sourceBase = source.baseAddress else { return 0 }
+            return output.withUnsafeMutableBufferPointer { destination -> Int in
+                guard let destinationBase = destination.baseAddress else { return 0 }
+                return compression_decode_buffer(destinationBase, uncompressedSize,
+                                                 sourceBase, input.count,
+                                                 nil, COMPRESSION_LZ4_RAW)
+            }
+        }
+        if written == uncompressedSize { return output }
+        return decompressLZ4Scalar(input, uncompressedSize: uncompressedSize)
+    }
+
+    private func decompressLZ4Scalar(_ input: [UInt8], uncompressedSize: Int) -> [UInt8] {
         guard uncompressedSize > 0 else { return [] }
         var output = [UInt8](repeating: 0, count: uncompressedSize)
         var source = 0

@@ -533,6 +533,9 @@
     "Clear selection" : {
 
     },
+    "Clear Wallpaper Engine Assets Location" : {
+
+    },
     "Click a display to select it. Hold Shift while clicking to select multiple desktops." : {
 
     },
@@ -735,6 +738,9 @@
 
     },
     "Download %lld Wallpapers" : {
+
+    },
+    "Download All" : {
 
     },
     "Download Selected (%lld)" : {
@@ -1130,6 +1136,9 @@
     "Link audio speed" : {
 
     },
+    "Linked" : {
+
+    },
     "Load" : {
       "localizations" : {
         "zh-Hans" : {
@@ -1152,6 +1161,9 @@
       }
     },
     "Log In" : {
+
+    },
+    "Log in on the Workshop tab to download these." : {
 
     },
     "Log in to download" : {
@@ -1998,6 +2010,9 @@
     "Select item" : {
 
     },
+    "Select the assets folder from a Wallpaper Engine installation. Its shared textures and presets will be used when a wallpaper does not include them." : {
+
+    },
     "Select wallpaper" : {
 
     },
@@ -2227,6 +2242,16 @@
     },
     "This plugin enables animation of GIF thumbnail images in wallpaper explorer" : {
 
+    },
+    "This wallpaper needs %lld other Workshop item%@ to render correctly." : {
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This wallpaper needs %1$lld other Workshop item%2$@ to render correctly."
+          }
+        }
+      }
     },
     "Those all settings above don't have to be saved for taking effect." : {
 
@@ -2460,6 +2485,9 @@
           }
         }
       }
+    },
+    "Wallpaper Engine Assets" : {
+
     },
     "Wallpaper Engine for Mac" : {
       "localizations" : {

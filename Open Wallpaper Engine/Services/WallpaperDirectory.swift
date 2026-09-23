@@ -138,6 +138,66 @@ final class DownloadedWallpaperIndex: ObservableObject {
     }
 }
 
+/// Tracks favorited wallpapers, keyed by an arbitrary caller-chosen ID (local wallpaper directory
+/// path, or "workshop-<id>" for not-yet-downloaded Workshop items).
+final class FavoritesStore: ObservableObject {
+    static let shared = FavoritesStore()
+
+    @Published private(set) var ids: Set<String>
+    private let storageKey = "FavoriteWallpaperIds"
+
+    private init() {
+        ids = Set(UserDefaults.standard.stringArray(forKey: storageKey) ?? [])
+    }
+
+    func contains(_ id: String) -> Bool {
+        ids.contains(id)
+    }
+
+    func toggle(_ id: String) {
+        if ids.contains(id) {
+            ids.remove(id)
+        } else {
+            ids.insert(id)
+        }
+        UserDefaults.standard.set(ids.sorted(), forKey: storageKey)
+    }
+
+    /// A Workshop wallpaper keeps one identity whether or not it is installed, so favouriting it in
+    /// the Workshop tab and in the local library refer to the same entry.
+    static func key(for wallpaper: WEWallpaper) -> String {
+        if let id = wallpaper.project.workshopid?.rawValue, !id.isEmpty, id.allSatisfy(\.isNumber) {
+            return "workshop-\(id)"
+        }
+        let folder = wallpaper.wallpaperDirectory.lastPathComponent
+        if !folder.isEmpty, folder.allSatisfy(\.isNumber) { return "workshop-\(folder)" }
+        return wallpaper.wallpaperDirectory.path
+    }
+
+    func contains(_ wallpaper: WEWallpaper) -> Bool {
+        ids.contains(Self.key(for: wallpaper)) || ids.contains(wallpaper.wallpaperDirectory.path)
+    }
+
+    func toggle(_ wallpaper: WEWallpaper) {
+        if contains(wallpaper) {
+            // Older builds keyed local copies by path; drop both so it cannot stay half-favourited.
+            ids.remove(Self.key(for: wallpaper))
+            ids.remove(wallpaper.wallpaperDirectory.path)
+        } else {
+            ids.insert(Self.key(for: wallpaper))
+        }
+        UserDefaults.standard.set(ids.sorted(), forKey: storageKey)
+    }
+}
+
+/// Whether a wallpaper's project.json declares any user-editable properties beyond the default color scheme.
+func projectHasCustomizableProperties(at wallpaperDirectory: URL) -> Bool {
+    guard let data = try? Data(contentsOf: wallpaperDirectory.appending(path: "project.json")),
+          let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let properties = (root["general"] as? [String: Any])?["properties"] as? [String: Any] else { return false }
+    return properties.keys.contains { $0 != "schemecolor" }
+}
+
 extension FileManager {
     /// The configured directory for storing wallpaper packages.
     var wallpapersDirectory: URL {

@@ -11,7 +11,8 @@ struct ExplorerItemMenu: SubviewOfContentView {
     
     @ObservedObject var viewModel: ContentViewModel
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
-    
+    @ObservedObject private var favorites = FavoritesStore.shared
+
     var hoveredWallpaper: WEWallpaper
     
     init(contentViewModel viewModel: ContentViewModel, wallpaperViewModel: WallpaperViewModel, current hoveredWallpaper: WEWallpaper) {
@@ -23,6 +24,21 @@ struct ExplorerItemMenu: SubviewOfContentView {
     var body: some View {
         Group {
             Section {
+                Menu("Add to Playlist") {
+                    if wallpaperViewModel.playlists.isEmpty {
+                        Text("Create a playlist first")
+                    } else {
+                        ForEach(wallpaperViewModel.playlists) { playlist in
+                            Button {
+                                let selected = viewModel.selectedWallpaperItems()
+                                let wallpapers = selected.isEmpty ? [hoveredWallpaper] : selected
+                                wallpaperViewModel.addToPlaylist(wallpapers, playlistID: playlist.id)
+                            } label: {
+                                Label(playlist.name, systemImage: playlist.id == wallpaperViewModel.activePlaylistID ? "checkmark" : "rectangle.stack")
+                            }
+                        }
+                    }
+                }
                 Button {
                     viewModel.hoveredWallpaper = hoveredWallpaper
                     viewModel.isUnsubscribeConfirming = true
@@ -37,10 +53,11 @@ struct ExplorerItemMenu: SubviewOfContentView {
                     }
                 }
                 Button {
-                    
+                    favorites.toggle(hoveredWallpaper)
                 } label: {
-                    Label("Add to Favorites", systemImage: "heart.fill")
-                }.disabled(true)
+                    Label(favorites.contains(hoveredWallpaper) ? "Remove from Favorites" : "Add to Favorites",
+                          systemImage: favorites.contains(hoveredWallpaper) ? "heart.slash" : "heart.fill")
+                }
             }
             
             Section {

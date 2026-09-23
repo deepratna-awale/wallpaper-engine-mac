@@ -242,17 +242,25 @@ class SteamCmdService: ObservableObject {
         }
     }
 
-    /// Download a workshop item by its ID.
+    /// Download a workshop item by its ID. `onCompleted` fires on the main thread with the wallpaper's
+    /// destination directory on success, or `nil` if the download was skipped or failed.
     func downloadWorkshopItem(
         workshopId: String,
         title: String? = nil,
         previewURL: URL? = nil,
         creatorId: String? = nil,
         subscriptions: Int = 0,
-        fileSize: Int = 0
+        fileSize: Int = 0,
+        onCompleted: ((URL?) -> Void)? = nil
     ) {
-        guard let cmdPath = steamCmdPath, isLoggedIn else { return }
-        guard !queuedDownloadIds.contains(workshopId), activeDownloadId != workshopId else { return }
+        guard let cmdPath = steamCmdPath, isLoggedIn else {
+            onCompleted?(nil)
+            return
+        }
+        guard !queuedDownloadIds.contains(workshopId), activeDownloadId != workshopId else {
+            onCompleted?(nil)
+            return
+        }
 
         if let title {
             downloadTitles[workshopId] = title
@@ -296,6 +304,7 @@ class SteamCmdService: ObservableObject {
             } catch {
                 DispatchQueue.main.async {
                     self.downloadProgress[workshopId] = .failed("Could not prepare download directory: \(error.localizedDescription)")
+                    onCompleted?(nil)
                 }
                 return
             }
@@ -345,6 +354,7 @@ class SteamCmdService: ObservableObject {
                 handle.readabilityHandler = nil
                 DispatchQueue.main.async {
                     self.downloadProgress[workshopId] = .failed("steamcmd failed to run: \(error.localizedDescription)")
+                    onCompleted?(nil)
                 }
                 return
             }
@@ -372,15 +382,18 @@ class SteamCmdService: ObservableObject {
                         do {
                             try fm.copyItem(at: sourcePath, to: dest)
                             DispatchQueue.global(qos: .utility).async {
+                                WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: dest)
                                 SceneShaderTranslator.translatePackageShaders(in: dest)
                             }
                         } catch {
                             self.downloadProgress[workshopId] = .failed("Copy failed: \(error.localizedDescription)")
+                            onCompleted?(nil)
                             return
                         }
                     }
                     self.downloadProgress[workshopId] = .completed
                     DownloadedWallpaperIndex.shared.insert(workshopId)
+                    onCompleted?(dest)
                     return
                 }
 
@@ -394,6 +407,7 @@ class SteamCmdService: ObservableObject {
                 } else {
                     self.downloadProgress[workshopId] = .failed("Files not found at expected path")
                 }
+                onCompleted?(nil)
             }
         }
     }

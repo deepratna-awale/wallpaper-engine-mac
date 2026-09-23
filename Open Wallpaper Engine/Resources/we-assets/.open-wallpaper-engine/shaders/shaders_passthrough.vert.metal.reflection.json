@@ -1,0 +1,1 @@
+{"uniforms": [{"name": "g_ModelViewProjectionMatrix", "type": "mat4", "semantic": null}, {"name": "g_Texture0Rotation", "type": "vec4", "semantic": null}, {"name": "g_Texture0Translation", "type": "vec2", "semantic": null}], "textures": [], "combos": {}}

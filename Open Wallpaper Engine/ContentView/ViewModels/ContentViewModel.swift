@@ -133,7 +133,8 @@ class ContentViewModel: ObservableObject, DropDelegate {
     /// Show all the wallpaper inside application wallpaper directory, without being filtered
     private var allWallpapers: [WEWallpaper] {
         self.urls.map({ url in
-            if let data = try? Data(contentsOf: url.appending(path: "project.json")), let project = try? JSONDecoder().decode(WEProject.self, from: data) {
+            if let data = try? Data(contentsOf: url.appending(path: "project.json")), var project = try? JSONDecoder().decode(WEProject.self, from: data) {
+                project.applyTaggedContentRating()
                 return WEWallpaper(using: project, where: url)
             } else {
                 return WEWallpaper(using: .invalid, where: url)
@@ -179,6 +180,10 @@ class ContentViewModel: ObservableObject, DropDelegate {
             // Show Only
             var showOnly = FRShowOnly.none
             if let approved = wallpaper.project.approved, approved { showOnly.insert(.approved) }
+            if FavoritesStore.shared.contains(wallpaper) { showOnly.insert(.myFavourites) }
+            if wallpaper.isMobileCompatible { showOnly.insert(.mobileCompatible) }
+            if wallpaper.isAudioResponsive { showOnly.insert(.audioResponsive) }
+            if wallpaper.hasCustomizableProperties { showOnly.insert(.customizable) }
             guard self.showOnly.isEmpty || !self.showOnly.intersection(showOnly).isEmpty else { return false }
             
             // Type
@@ -406,44 +411,10 @@ class ContentViewModel: ObservableObject, DropDelegate {
                         self?.alertImportModal(which: .doesNotContainWallpaper)
                     }
                 }
-            } else if wallpaper.isRegularFile { // hello.mp4
-                guard let filename = wallpaper.filename, [".mp4", ".mov"].contains(filename.suffix(4).lowercased()) else { return }
-                
-                let wallpaperDirectoryWrapper = FileWrapper(directoryWithFileWrappers: [filename: wallpaper])
-                
-                let projectData = WEProject(file: filename,
-                                            preview: "preview.jpg",
-                                            title: String(filename.prefix(filename.count - 4)),
-                                            type: "video")
-                
-                // Generate a thumbnail (preview) image for importing video wallpaper
-                let asset = AVAsset(url: url)
-                let imageGenerator = AVAssetImageGenerator(asset: asset)
-                imageGenerator.appliesPreferredTrackTransform = true
-                let time = CMTimeMake(value: 1, timescale: 1) // 第一帧的时间
-                imageGenerator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) { (_, cgImage, _, _, error) in
-                    if let error = error {
-                        print(error)
-                    } else if let cgImage = cgImage {
-                        if let data = NSBitmapImageRep(cgImage: cgImage).representation(using: NSBitmapImageRep.FileType.jpeg, properties: [:]) {
-                            wallpaperDirectoryWrapper.addRegularFile(withContents: data, preferredFilename: "preview.jpg")
-                            
-                            wallpaperDirectoryWrapper.addRegularFile(withContents: try! JSONEncoder().encode(projectData), preferredFilename: "project.json")
-                            
-                            // Write to Work Directory
-                            DispatchQueue.main.async {
-                                do {
-                                    try wallpaperDirectoryWrapper.write(
-                                        to: FileManager.default.wallpapersDirectory.appending(path: String(filename.prefix(filename.count - 4))),
-                                        originalContentsURL: nil)
-                                } catch {
-                                    print(error)
-                                    return
-                                }
-                            }
-                        }
-                    }
-                }
+            } else if wallpaper.isRegularFile {
+                guard wallpaper.filename != nil,
+                      ["mp4", "mov", "m4v"].contains(url.pathExtension.lowercased()) else { return }
+                AppDelegate.shared.wallpaperViewModel.importVideoWallpaper(from: url)
             }
         }
         return true

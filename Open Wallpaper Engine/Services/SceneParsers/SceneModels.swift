@@ -18,6 +18,66 @@ func sceneUserPropertyString(_ value: Any) -> String {
     return String(describing: value)
 }
 
+func sceneAuthoredEffectOverrideKey(objectID: Int, effectIndex: Int, parameter: String) -> String {
+    "_owe_authored_effect_\(objectID)_\(effectIndex)_\(parameter.lowercased())"
+}
+
+func sceneAuthoredEffectEnabledKey(objectID: Int, effectIndex: Int) -> String {
+    "_owe_authored_effect_\(objectID)_\(effectIndex)_enabled"
+}
+
+/// How much work a changed user-property key actually requires from the renderer.
+/// Most sliders are sampled live every frame and need no rebuild at all; only overrides that are
+/// baked into the decoded scene JSON justify re-parsing the package.
+enum SceneChangeImpact: Int, Comparable {
+    case none = 0
+    case rebuildContent = 1
+    case reloadScene = 2
+
+    static func < (lhs: SceneChangeImpact, rhs: SceneChangeImpact) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+
+    static func impact(of key: String) -> SceneChangeImpact {
+        // Music-sync companions only modulate values that are already sampled live.
+        if key.hasSuffix("_musicSync") || key.hasSuffix("_musicAmount") { return .none }
+
+        if key.hasPrefix("_owe_scene_object_") {
+            // Visibility is resolved while building content; JSON/origin edits are baked in decodeScene.
+            return key.hasSuffix("_visible") ? .rebuildContent : .reloadScene
+        }
+        if key.hasPrefix("_owe_scene_asset_") { return .reloadScene }
+
+        if key.hasPrefix("_owe_authored_effect_") {
+            // Per-object constants are captured when effects are built.
+            return .rebuildContent
+        }
+        if key.hasPrefix("_owe_effect_enabled_") { return .rebuildContent }
+        if key.hasPrefix("_owe_effect_") { return .none }
+
+        if key.hasPrefix("_owe_text_") {
+            // Font, size, style, colour and opacity are all resampled per frame.
+            return key.hasSuffix("_enabled") ? .rebuildContent : .none
+        }
+
+        switch key {
+        case "_owe_hue", "_owe_saturation", "_owe_bloom", "_owe_blur", "_owe_speed":
+            return .none
+        default:
+            // Authored properties can gate layer/effect visibility, so rebuild to be safe.
+            return .rebuildContent
+        }
+    }
+
+    static func aggregate(_ keys: [String]) -> SceneChangeImpact {
+        keys.reduce(.none) { Swift.max($0, impact(of: $1)) }
+    }
+}
+
+func sceneObjectVisibilityKey(objectID: Int) -> String {
+    "_owe_scene_object_\(objectID)_visible"
+}
+
 // MARK: - Top-level Scene
 
 struct WEScene: Decodable {
@@ -25,6 +85,7 @@ struct WEScene: Decodable {
     var general: WESceneGeneral
     var objects: [WESceneObject]
     var effects: [String]?
+    var script: String?
     var version: Int?
 }
 
@@ -43,6 +104,10 @@ struct WESceneGeneral: Codable {
     var bloomstrength: Double?
     var bloomthreshold: Double?
     var bloomtint: String?
+    var fov: Double?
+    var nearz: Double?
+    var farz: Double?
+    var zoom: Double?
 
     // These fields can be Bool, Int, or an object {"user":..,"value":..} in different wallpapers.
     // We only need the String fields above for rendering, so skip strict decoding of the rest.
@@ -58,11 +123,16 @@ struct WESceneGeneral: Codable {
         bloomstrength = try? container.decodeIfPresent(Double.self, forKey: .bloomstrength)
         bloomthreshold = try? container.decodeIfPresent(Double.self, forKey: .bloomthreshold)
         bloomtint = try? container.decodeIfPresent(String.self, forKey: .bloomtint)
+        fov = try? container.decodeIfPresent(Double.self, forKey: .fov)
+        nearz = try? container.decodeIfPresent(Double.self, forKey: .nearz)
+        farz = try? container.decodeIfPresent(Double.self, forKey: .farz)
+        zoom = try? container.decodeIfPresent(Double.self, forKey: .zoom)
     }
 
     enum CodingKeys: String, CodingKey {
         case clearcolor, orthogonalprojection, ambientcolor, skylightcolor
         case bloom, bloomstrength, bloomthreshold, bloomtint
+        case fov, nearz, farz, zoom
     }
 }
 
@@ -86,6 +156,7 @@ struct WESceneObject: Decodable {
     var name: String?
     var origin: String?
     var originScript: String?
+    var originScriptProperties: [String: String] = [:]
     var originAnimation: WEVectorKeyframeAnimation?
     var scale: String?
     var scaleScript: String?
@@ -103,10 +174,18 @@ struct WESceneObject: Decodable {
     // Text objects
     var textValue: String?
     var textScript: String?
+    var textScriptProperties: [String: String] = [:]
     var font: String?
     var pointsize: Double?
     var horizontalalign: String?
     var verticalalign: String?
+    /// Authored as either a scalar ("32") or a pair ("32 32").
+    var padding: String?
+    var maxwidth: Double?
+    var maxrows: Int?
+    var limitwidth: Bool?
+    var limitrows: Bool?
+    var limituseellipsis: Bool?
 
     // Image objects
     var image: String?       // path to model JSON
@@ -133,6 +212,7 @@ struct WESceneObject: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case id, parent, name, origin, scale, angles, visible, effects, text, font, pointsize, horizontalalign, verticalalign
+        case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis
         case image, alpha, brightness, color, colorBlendMode, size, alignment, shape
         case solid, copybackground, parallaxDepth, perspective
         case particle, instanceoverride
@@ -152,6 +232,7 @@ struct WESceneObject: Decodable {
             if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {
             textValue = scriptedText.stringValue
             textScript = scriptedText.script
+            textScriptProperties = scriptedText.scriptProperties
         } else {
             textValue = try? c.decodeIfPresent(String.self, forKey: .text)
             textScript = nil
@@ -160,11 +241,19 @@ struct WESceneObject: Decodable {
         pointsize = try? c.decodeIfPresent(Double.self, forKey: .pointsize)
         horizontalalign = try? c.decodeIfPresent(String.self, forKey: .horizontalalign)
         verticalalign = try? c.decodeIfPresent(String.self, forKey: .verticalalign)
+        padding = (try? c.decodeIfPresent(String.self, forKey: .padding))
+            ?? (try? c.decodeIfPresent(Double.self, forKey: .padding)).map { String($0) } ?? nil
+        maxwidth = try? c.decodeIfPresent(Double.self, forKey: .maxwidth)
+        maxrows = try? c.decodeIfPresent(Int.self, forKey: .maxrows)
+        limitwidth = try? c.decodeIfPresent(Bool.self, forKey: .limitwidth)
+        limitrows = try? c.decodeIfPresent(Bool.self, forKey: .limitrows)
+        limituseellipsis = try? c.decodeIfPresent(Bool.self, forKey: .limituseellipsis)
 
         // Fields that may be simple values or {"script":..,"value":..} objects
         let scriptedOrigin = try? c.decode(WEScriptedProperty.self, forKey: .origin)
         origin = (try? c.decodeIfPresent(String.self, forKey: .origin)) ?? scriptedOrigin?.stringValue
         originScript = scriptedOrigin?.script
+        originScriptProperties = scriptedOrigin?.scriptProperties ?? [:]
         originAnimation = scriptedOrigin?.vectorAnimation
         let scriptedScale = try? c.decode(WEScriptedProperty.self, forKey: .scale)
         scale = (try? c.decodeIfPresent(String.self, forKey: .scale)) ?? scriptedScale?.stringValue
@@ -249,6 +338,7 @@ struct WEObjectEffect: Decodable {
 struct WEObjectEffectPass: Decodable {
     let constantshadervalues: [String: WEEffectConstant]?
     let textures: [String?]?
+    let combos: [String: Int]?
 }
 
 struct WEEffectConstant: Decodable {
@@ -298,53 +388,91 @@ private struct WEConditionalBool: Decodable {
 
 struct WEKeyframeAnimation: Decodable {
     let keyframes: [WEKeyframe]
+    let mode: String?
+    let duration: Double?
+    let startPaused: Bool?
+    let wrapLoop: Bool?
 
-    enum CodingKeys: String, CodingKey { case keyframes, frames }
+    enum CodingKeys: String, CodingKey { case keyframes, frames, mode, seconds, duration, startPaused, startpaused, wrapLoop, wraploop }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         keyframes = ((try? container.decode([WEKeyframe].self, forKey: .keyframes))
             ?? (try? container.decode([WEKeyframe].self, forKey: .frames)) ?? [])
             .sorted { $0.frame < $1.frame }
+        mode = try? container.decodeIfPresent(String.self, forKey: .mode)
+        duration = (try? container.decodeIfPresent(Double.self, forKey: .seconds))
+            ?? (try? container.decodeIfPresent(Double.self, forKey: .duration))
+        startPaused = (try? container.decodeIfPresent(Bool.self, forKey: .startPaused))
+            ?? (try? container.decodeIfPresent(Bool.self, forKey: .startpaused))
+        wrapLoop = (try? container.decodeIfPresent(Bool.self, forKey: .wrapLoop))
+            ?? (try? container.decodeIfPresent(Bool.self, forKey: .wraploop))
     }
 }
 
 struct WEKeyframe: Decodable {
     let frame: Double
     let value: Double
+    let easing: String?
+    let bezier: [Double]?
+    let inTangent: Double?
+    let outTangent: Double?
 
-    enum CodingKeys: String, CodingKey { case frame, value }
+    enum CodingKeys: String, CodingKey { case frame, value, easing, interpolation, bezier, curve, inTangent, outTangent, intangent, outtangent }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         frame = try container.decode(WEFlexibleDouble.self, forKey: .frame).wrappedValue ?? 0
         value = try container.decode(WEFlexibleDouble.self, forKey: .value).wrappedValue ?? 0
+        easing = (try? container.decodeIfPresent(String.self, forKey: .easing)) ?? (try? container.decodeIfPresent(String.self, forKey: .interpolation))
+        bezier = (try? container.decodeIfPresent([Double].self, forKey: .bezier)) ?? (try? container.decodeIfPresent([Double].self, forKey: .curve))
+        inTangent = (try? container.decodeIfPresent(Double.self, forKey: .inTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .intangent))
+        outTangent = (try? container.decodeIfPresent(Double.self, forKey: .outTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .outtangent))
     }
 }
 
 struct WEVectorKeyframeAnimation: Decodable {
     let keyframes: [WEVectorKeyframe]
+    let mode: String?
+    let duration: Double?
+    let startPaused: Bool?
+    let wrapLoop: Bool?
 
-    enum CodingKeys: String, CodingKey { case keyframes, frames }
+    enum CodingKeys: String, CodingKey { case keyframes, frames, mode, seconds, duration, startPaused, startpaused, wrapLoop, wraploop }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         keyframes = ((try? container.decode([WEVectorKeyframe].self, forKey: .keyframes))
             ?? (try? container.decode([WEVectorKeyframe].self, forKey: .frames)) ?? [])
             .sorted { $0.frame < $1.frame }
+        mode = try? container.decodeIfPresent(String.self, forKey: .mode)
+        duration = (try? container.decodeIfPresent(Double.self, forKey: .seconds))
+            ?? (try? container.decodeIfPresent(Double.self, forKey: .duration))
+        startPaused = (try? container.decodeIfPresent(Bool.self, forKey: .startPaused))
+            ?? (try? container.decodeIfPresent(Bool.self, forKey: .startpaused))
+        wrapLoop = (try? container.decodeIfPresent(Bool.self, forKey: .wrapLoop))
+            ?? (try? container.decodeIfPresent(Bool.self, forKey: .wraploop))
     }
 }
 
 struct WEVectorKeyframe: Decodable {
     let frame: Double
     let value: WEFlexValue
+    let easing: String?
+    let bezier: [Double]?
+    let inTangent: Double?
+    let outTangent: Double?
 
-    enum CodingKeys: String, CodingKey { case frame, value }
+    enum CodingKeys: String, CodingKey { case frame, value, easing, interpolation, bezier, curve, inTangent, outTangent, intangent, outtangent }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         frame = try container.decode(WEFlexibleDouble.self, forKey: .frame).wrappedValue ?? 0
         value = try container.decode(WEFlexValue.self, forKey: .value)
+        easing = (try? container.decodeIfPresent(String.self, forKey: .easing)) ?? (try? container.decodeIfPresent(String.self, forKey: .interpolation))
+        bezier = (try? container.decodeIfPresent([Double].self, forKey: .bezier)) ?? (try? container.decodeIfPresent([Double].self, forKey: .curve))
+        inTangent = (try? container.decodeIfPresent(Double.self, forKey: .inTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .intangent))
+        outTangent = (try? container.decodeIfPresent(Double.self, forKey: .outTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .outtangent))
     }
 }
 
@@ -354,17 +482,32 @@ private struct WEAnimatedScalar: Decodable {
     let animation: WEKeyframeAnimation?
 }
 
+private struct FlexibleScriptValue: Decodable {
+    let stringValue: String
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let string = try? container.decode(String.self) { stringValue = string }
+        else if let number = try? container.decode(Double.self) { stringValue = String(number) }
+        else if let bool = try? container.decode(Bool.self) { stringValue = bool ? "true" : "false" }
+        else { stringValue = "" }
+    }
+}
+
 private struct WEScriptedProperty: Decodable {
     let script: String?
     let stringValue: String?
     let vectorAnimation: WEVectorKeyframeAnimation?
+    let scriptProperties: [String: String]
 
-    enum CodingKeys: String, CodingKey { case script, value, animation }
+    enum CodingKeys: String, CodingKey { case script, value, animation, scriptproperties }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         script = try container.decodeIfPresent(String.self, forKey: .script)
         vectorAnimation = try? container.decodeIfPresent(WEVectorKeyframeAnimation.self, forKey: .animation)
+        scriptProperties = (try? container.decode([String: FlexibleScriptValue].self, forKey: .scriptproperties))?
+            .mapValues(\.stringValue) ?? [:]
         if let string = try? container.decode(String.self, forKey: .value) {
             stringValue = string
         } else if let number = try? container.decode(Double.self, forKey: .value) {
@@ -418,11 +561,11 @@ struct WEModel: Codable {
     var puppet: String?      // path to a Puppet Warp rig (.mdl); unsupported, rendered as a flat atlas otherwise
 }
 
-struct WEMaterial: Codable {
+struct WEMaterial: Decodable {
     var passes: [WEMaterialPass]?
 }
 
-struct WEMaterialPass: Codable {
+struct WEMaterialPass: Decodable {
     var blending: String?    // "translucent", "additive"
     var shader: String?
     var textures: [String]?
@@ -430,6 +573,22 @@ struct WEMaterialPass: Codable {
     var depthtest: String?
     var depthwrite: String?
     var constants: [String: WEScriptValue]?
+
+    enum CodingKeys: String, CodingKey {
+        case blending, shader, textures, cullmode, depthtest, depthwrite, constants, constantshadervalues
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        blending = try container.decodeIfPresent(String.self, forKey: .blending)
+        shader = try container.decodeIfPresent(String.self, forKey: .shader)
+        textures = try container.decodeIfPresent([String].self, forKey: .textures)
+        cullmode = try container.decodeIfPresent(String.self, forKey: .cullmode)
+        depthtest = try container.decodeIfPresent(String.self, forKey: .depthtest)
+        depthwrite = try container.decodeIfPresent(String.self, forKey: .depthwrite)
+        constants = try container.decodeIfPresent([String: WEScriptValue].self, forKey: .constants)
+            ?? container.decodeIfPresent([String: WEScriptValue].self, forKey: .constantshadervalues)
+    }
 }
 
 // MARK: - Particle System
@@ -521,8 +680,8 @@ struct WEParticleEmitter: Codable {
     @WEFlexibleDouble var rate: Double?
     var origin: String?
     var directions: String?
-    @WEFlexibleDouble var distancemax: Double?
-    @WEFlexibleDouble var distancemin: Double?
+    var distancemax: WEFlexValue?
+    var distancemin: WEFlexValue?
     @WEFlexibleDouble var speedmax: Double?
     @WEFlexibleDouble var speedmin: Double?
     @WEFlexibleInt var controlpoint: Int?
@@ -533,6 +692,7 @@ struct WEParticleControlPoint: Codable {
     @WEFlexibleInt var flags: Int?
     var offset: String?
     var locktopointer: Bool?
+    @WEFlexibleInt var parentcontrolpoint: Int?
 }
 
 struct WEParticleInitializer: Codable {
@@ -540,6 +700,22 @@ struct WEParticleInitializer: Codable {
     var name: String?
     var min: WEFlexValue?
     var max: WEFlexValue?
+    @WEFlexibleInt var flags: Int?
+    @WEFlexibleDouble var count: Double?
+    @WEFlexibleDouble var arcamount: Double?
+    var limitbehavior: String?
+    var axis: String?
+    var bounds: String?
+    @WEFlexibleInt var controlpoint0: Int?
+    @WEFlexibleInt var controlpoint1: Int?
+    var speedmin: WEFlexValue?
+    var speedmax: WEFlexValue?
+    var input: String?
+    var output: String?
+    var operation: String?
+    @WEFlexibleInt var inputcontrolpoint0: Int?
+    @WEFlexibleDouble var inputrangemin: Double?
+    @WEFlexibleDouble var inputrangemax: Double?
 }
 
 /// A value that can be either a number or a string (e.g. "0 -3000 0")
@@ -598,6 +774,39 @@ struct WEParticleOperator: Codable {
     @WEFlexibleInt var controlpoint: Int?
     var origin: WEFlexValue?
     @WEFlexibleDouble var threshold: Double?
+    @WEFlexibleDouble var starttime: Double?
+    @WEFlexibleDouble var endtime: Double?
+    var startvalue: WEFlexValue?
+    var endvalue: WEFlexValue?
+    var force: String?
+    var axis: String?
+    @WEFlexibleDouble var distanceinner: Double?
+    @WEFlexibleDouble var distanceouter: Double?
+    @WEFlexibleDouble var speedinner: Double?
+    @WEFlexibleDouble var speedouter: Double?
+    @WEFlexibleDouble var maxspeed: Double?
+    @WEFlexibleDouble var ringradius: Double?
+    @WEFlexibleDouble var ringwidth: Double?
+    @WEFlexibleDouble var ringpulldistance: Double?
+    @WEFlexibleDouble var alignmentfactor: Double?
+    @WEFlexibleDouble var cohesionfactor: Double?
+    @WEFlexibleDouble var separationfactor: Double?
+    @WEFlexibleDouble var neighborthreshold: Double?
+    @WEFlexibleDouble var frequencymin: Double?
+    @WEFlexibleDouble var frequencymax: Double?
+    @WEFlexibleDouble var scalemin: Double?
+    @WEFlexibleDouble var scalemax: Double?
+    @WEFlexibleDouble var reductioninner: Double?
+    @WEFlexibleDouble var variablestrength: Double?
+    var input: String?
+    var output: String?
+    var operation: String?
+    var transformfunction: String?
+    @WEFlexibleDouble var transforminputscale: Double?
+    var outputrangemin: WEFlexValue?
+    var outputrangemax: WEFlexValue?
+    @WEFlexibleInt var controlpoint0: Int?
+    @WEFlexibleInt var controlpoint1: Int?
 }
 
 struct WEParticleRenderer: Codable {

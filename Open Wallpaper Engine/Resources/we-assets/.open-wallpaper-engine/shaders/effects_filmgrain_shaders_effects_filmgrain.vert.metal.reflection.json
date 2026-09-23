@@ -1,0 +1,1 @@
+{"textures":[],"uniforms":[{"type":"mat4","name":"g_ModelViewProjectionMatrix"},{"type":"vec4","name":"g_Texture0Resolution"},{"type":"vec4","name":"g_Texture2Resolution"},{"type":"float","name":"g_Time"},{"semantic":"{\"material\":\"scale\",\"label\":\"ui_editor_properties_scale\",\"default\":10,\"range\":[0.0, 20.0]}\r","type":"float","name":"g_NoiseScale"}],"combos":{}}

@@ -14,6 +14,7 @@
 		5E32ABFE2A4D595D00A0EEEC /* FilterResults.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E32ABFD2A4D595D00A0EEEC /* FilterResults.swift */; };
 		5E51A43A2AA30D8B00E46E99 /* UnsafeWallpaper.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E51A4392AA30D8B00E46E99 /* UnsafeWallpaper.swift */; };
 		5E51A43C2AA33F5500E46E99 /* GlobalSettingsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E51A43B2AA33F5500E46E99 /* GlobalSettingsService.swift */; };
+		5E51A4402AA33F5500E46E99 /* OWEPerf.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E51A43F2AA33F5500E46E99 /* OWEPerf.swift */; };
 		5E615E222A7D2F9700A37EB8 /* ImportPanels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E615E212A7D2F9700A37EB8 /* ImportPanels.swift */; };
 		5E66A0DA2A8ADECC00EE79D6 /* TopTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E66A0D92A8ADECC00EE79D6 /* TopTabBar.swift */; };
 		5E66A0DD2A8ADF7C00EE79D6 /* ExplorerTopBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E66A0DC2A8ADF7C00EE79D6 /* ExplorerTopBar.swift */; };
@@ -37,14 +38,17 @@
 		5EAF3F702A870DEC00F85685 /* PerformancePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EAF3F6F2A870DEC00F85685 /* PerformancePage.swift */; };
 		5EAF3F722A870ED400F85685 /* GeneralPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EAF3F712A870ED400F85685 /* GeneralPage.swift */; };
 		5EAF3F742A87110700F85685 /* PluginsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EAF3F732A87110700F85685 /* PluginsPage.swift */; };
+		5EAF3F762A87110800F85685 /* PermissionsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EAF3F752A87110800F85685 /* PermissionsPage.swift */; };
 		5EB152A12A82ADEB007EA845 /* Open_Wallpaper_Engine.docc in Sources */ = {isa = PBXBuildFile; fileRef = 5EB152A02A82ADEB007EA845 /* Open_Wallpaper_Engine.docc */; };
 		5EB4DB882A98055E000A1FEA /* ExplorerItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EB4DB872A980532000A1FEA /* ExplorerItem.swift */; };
 		5EC47E7E2A2DB2E700120CCC /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5EC47E7D2A2DB2E700120CCC /* Assets.xcassets */; };
+		EE1000000000000000000403 /* we-assets in Resources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000404 /* we-assets */; };
 		5EC47E812A2DB2E700120CCC /* Preview Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5EC47E802A2DB2E700120CCC /* Preview Assets.xcassets */; };
 		5EC47EAA2A2DB32900120CCC /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC47EA92A2DB32900120CCC /* ContentView.swift */; };
 		5EC47EAC2A2DB3E500120CCC /* WallpaperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EC47EAB2A2DB3E500120CCC /* WallpaperView.swift */; };
 		5EDEBA5E2A2E2A7B003470CB /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDEBA5D2A2E2A7B003470CB /* SettingsView.swift */; };
 		5EDF1E142A93B06B006617EA /* WorkingInProgress.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDF1E132A93B06B006617EA /* WorkingInProgress.swift */; };
+		EE1000000000000000000B07 /* ColorPanelAnchor.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000B08 /* ColorPanelAnchor.swift */; };
 		5EDF1E162A93B4B6006617EA /* WallpaperDiscover.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EDF1E152A93B4B6006617EA /* WallpaperDiscover.swift */; };
 		5EF28EBF2A8986AC0013ABBE /* WallpaperViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EF28EBE2A8986AC0013ABBE /* WallpaperViewModel.swift */; };
 		5EF28EC12A8990D90013ABBE /* VideoWallpaperViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EF28EC02A8990D90013ABBE /* VideoWallpaperViewModel.swift */; };
@@ -57,8 +61,19 @@
 		AA1B2C3D4E5F600200ABCD04 /* SceneWallpaperViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD04 /* SceneWallpaperViewModel.swift */; };
 		EE1000000000000000000001 /* AudioReactiveScriptEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000002 /* AudioReactiveScriptEngine.swift */; };
 		EE1000000000000000000003 /* SceneShaderTranslator.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000004 /* SceneShaderTranslator.swift */; };
+		EE1000000000000000000103 /* WallpaperPackageConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000104 /* WallpaperPackageConverter.swift */; };
+		EE1000000000000000000303 /* WallpaperEngineAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000304 /* WallpaperEngineAssets.swift */; };
+		EE1000000000000000000603 /* SceneCamera.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000604 /* SceneCamera.swift */; };
+		EE1000000000000000000703 /* VideoTextureStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000704 /* VideoTextureStream.swift */; };
+		EE1000000000000000000903 /* AudioLevelTap.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000904 /* AudioLevelTap.swift */; };
+		EE1000000000000000000803 /* DiagnosticsPage.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000804 /* DiagnosticsPage.swift */; };
+		EE1000000000000000000503 /* SceneAuthoredEffectRanges.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000504 /* SceneAuthoredEffectRanges.swift */; };
 		EE1000000000000000000005 /* SceneUserPropertiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000006 /* SceneUserPropertiesView.swift */; };
 		EE1000000000000000000007 /* SceneInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000008 /* SceneInspectorView.swift */; };
+		EE1000000000000000000A07 /* CollapsibleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000A08 /* CollapsibleSection.swift */; };
+		EE1000000000000000000009 /* SceneEffectDefinitions.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100000000000000000000A /* SceneEffectDefinitions.swift */; };
+		EE100000000000000000000D /* SceneDynamicEffectCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100000000000000000000E /* SceneDynamicEffectCatalog.swift */; };
+		EE100000000000000000000B /* WorkshopDependencyResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100000000000000000000C /* WorkshopDependencyResolver.swift */; };
 		AA1B2C3D4E5F600200ABCD05 /* SpriteKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */; };
 		BB0000000000000000000003 /* ObjCExceptionCatcher.m in Sources */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* ObjCExceptionCatcher.m */; };
 		CC0000000000000000000001 /* WallpaperDirectory.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC0000000000000000000002 /* WallpaperDirectory.swift */; };
@@ -83,6 +98,7 @@
 		5E32ABFD2A4D595D00A0EEEC /* FilterResults.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterResults.swift; sourceTree = "<group>"; };
 		5E51A4392AA30D8B00E46E99 /* UnsafeWallpaper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnsafeWallpaper.swift; sourceTree = "<group>"; };
 		5E51A43B2AA33F5500E46E99 /* GlobalSettingsService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalSettingsService.swift; sourceTree = "<group>"; };
+		5E51A43F2AA33F5500E46E99 /* OWEPerf.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OWEPerf.swift; sourceTree = "<group>"; };
 		5E5460C62A83026D00655D85 /* wallpaper-with-windows.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "wallpaper-with-windows.png"; sourceTree = "<group>"; };
 		5E5460C72A83027400655D85 /* wallpaper.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = wallpaper.png; sourceTree = "<group>"; };
 		5E6091F12A83E85D00D4C36C /* AUTHORS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AUTHORS.md; sourceTree = "<group>"; };
@@ -109,16 +125,19 @@
 		5EAF3F6F2A870DEC00F85685 /* PerformancePage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformancePage.swift; sourceTree = "<group>"; };
 		5EAF3F712A870ED400F85685 /* GeneralPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GeneralPage.swift; sourceTree = "<group>"; };
 		5EAF3F732A87110700F85685 /* PluginsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginsPage.swift; sourceTree = "<group>"; };
+		5EAF3F752A87110800F85685 /* PermissionsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionsPage.swift; sourceTree = "<group>"; };
 		5EB152A02A82ADEB007EA845 /* Open_Wallpaper_Engine.docc */ = {isa = PBXFileReference; lastKnownFileType = folder.documentationcatalog; path = Open_Wallpaper_Engine.docc; sourceTree = "<group>"; };
 		5EB4DB872A980532000A1FEA /* ExplorerItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExplorerItem.swift; sourceTree = "<group>"; };
 		5EC47E762A2DB2E600120CCC /* Open Wallpaper Engine.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Open Wallpaper Engine.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		5EC47E7D2A2DB2E700120CCC /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		EE1000000000000000000404 /* we-assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "we-assets"; sourceTree = "<group>"; };
 		5EC47E802A2DB2E700120CCC /* Preview Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Preview Assets.xcassets"; sourceTree = "<group>"; };
 		5EC47E872A2DB2E700120CCC /* Open_Wallpaper_Engine.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Open_Wallpaper_Engine.entitlements; sourceTree = "<group>"; };
 		5EC47EA92A2DB32900120CCC /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		5EC47EAB2A2DB3E500120CCC /* WallpaperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperView.swift; sourceTree = "<group>"; };
 		5EDEBA5D2A2E2A7B003470CB /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		5EDF1E132A93B06B006617EA /* WorkingInProgress.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkingInProgress.swift; sourceTree = "<group>"; };
+		EE1000000000000000000B08 /* ColorPanelAnchor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ColorPanelAnchor.swift; sourceTree = "<group>"; };
 		5EDF1E152A93B4B6006617EA /* WallpaperDiscover.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperDiscover.swift; sourceTree = "<group>"; };
 		5EF28EBE2A8986AC0013ABBE /* WallpaperViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperViewModel.swift; sourceTree = "<group>"; };
 		5EF28EC02A8990D90013ABBE /* VideoWallpaperViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoWallpaperViewModel.swift; sourceTree = "<group>"; };
@@ -134,8 +153,19 @@
 		AA1B2C3D4E5F600100ABCD04 /* SceneWallpaperViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneWallpaperViewModel.swift; sourceTree = "<group>"; };
 		EE1000000000000000000002 /* AudioReactiveScriptEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioReactiveScriptEngine.swift; sourceTree = "<group>"; };
 		EE1000000000000000000004 /* SceneShaderTranslator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneShaderTranslator.swift; sourceTree = "<group>"; };
+		EE1000000000000000000104 /* WallpaperPackageConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperPackageConverter.swift; sourceTree = "<group>"; };
+		EE1000000000000000000304 /* WallpaperEngineAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WallpaperEngineAssets.swift; sourceTree = "<group>"; };
+		EE1000000000000000000604 /* SceneCamera.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneCamera.swift; sourceTree = "<group>"; };
+		EE1000000000000000000704 /* VideoTextureStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VideoTextureStream.swift; sourceTree = "<group>"; };
+		EE1000000000000000000904 /* AudioLevelTap.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioLevelTap.swift; sourceTree = "<group>"; };
+		EE1000000000000000000804 /* DiagnosticsPage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiagnosticsPage.swift; sourceTree = "<group>"; };
 		EE1000000000000000000006 /* SceneUserPropertiesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneUserPropertiesView.swift; sourceTree = "<group>"; };
 		EE1000000000000000000008 /* SceneInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInspectorView.swift; sourceTree = "<group>"; };
+		EE1000000000000000000A08 /* CollapsibleSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollapsibleSection.swift; sourceTree = "<group>"; };
+		EE100000000000000000000A /* SceneEffectDefinitions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEffectDefinitions.swift; sourceTree = "<group>"; };
+		EE100000000000000000000C /* WorkshopDependencyResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkshopDependencyResolver.swift; sourceTree = "<group>"; };
+		EE100000000000000000000E /* SceneDynamicEffectCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDynamicEffectCatalog.swift; sourceTree = "<group>"; };
+		EE1000000000000000000504 /* SceneAuthoredEffectRanges.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneAuthoredEffectRanges.swift; sourceTree = "<group>"; };
 		AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SpriteKit.framework; path = System/Library/Frameworks/SpriteKit.framework; sourceTree = SDKROOT; };
 		B4AD1D0F2AA24E8200471AC8 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
 		BB0000000000000000000001 /* ObjCExceptionCatcher.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = ObjCExceptionCatcher.h; sourceTree = "<group>"; };
@@ -197,6 +227,8 @@
 				5E66A0E02A8BA18D00EE79D6 /* GifImage.swift */,
 				EE1000000000000000000006 /* SceneUserPropertiesView.swift */,
 				EE1000000000000000000008 /* SceneInspectorView.swift */,
+				EE1000000000000000000A08 /* CollapsibleSection.swift */,
+				EE100000000000000000000A /* SceneEffectDefinitions.swift */,
 				5E32ABFD2A4D595D00A0EEEC /* FilterResults.swift */,
 				CC000000000000000000000C /* WorkshopView.swift */,
 			);
@@ -238,6 +270,7 @@
 			isa = PBXGroup;
 			children = (
 				AA1B2C3D4E5F600300ABCD01 /* SceneParsers */,
+				EE100000000000000000000F /* SceneEffects */,
 				5E7665252A2DC30D00E0E4B4 /* WEProject.swift */,
 				5EF28EBE2A8986AC0013ABBE /* WallpaperViewModel.swift */,
 				5EF28EC02A8990D90013ABBE /* VideoWallpaperViewModel.swift */,
@@ -245,7 +278,14 @@
 				AA1B2C3D4E5F600100ABCD04 /* SceneWallpaperViewModel.swift */,
 				EE1000000000000000000002 /* AudioReactiveScriptEngine.swift */,
 				EE1000000000000000000004 /* SceneShaderTranslator.swift */,
+				EE1000000000000000000104 /* WallpaperPackageConverter.swift */,
+				EE1000000000000000000304 /* WallpaperEngineAssets.swift */,
+				EE1000000000000000000604 /* SceneCamera.swift */,
+				EE1000000000000000000704 /* VideoTextureStream.swift */,
+				EE1000000000000000000904 /* AudioLevelTap.swift */,
+				EE100000000000000000000C /* WorkshopDependencyResolver.swift */,
 				5E51A43B2AA33F5500E46E99 /* GlobalSettingsService.swift */,
+				5E51A43F2AA33F5500E46E99 /* OWEPerf.swift */,
 				BB0000000000000000000001 /* ObjCExceptionCatcher.h */,
 				BB0000000000000000000002 /* ObjCExceptionCatcher.m */,
 				CC0000000000000000000002 /* WallpaperDirectory.swift */,
@@ -257,6 +297,15 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
+		EE100000000000000000000F /* SceneEffects */ = {
+			isa = PBXGroup;
+			children = (
+				EE100000000000000000000E /* SceneDynamicEffectCatalog.swift */,
+				EE1000000000000000000504 /* SceneAuthoredEffectRanges.swift */,
+			);
+			path = SceneEffects;
+			sourceTree = "<group>";
+		};
 		5E98F6CA2A826E8B00C12E34 /* SettingsView */ = {
 			isa = PBXGroup;
 			children = (
@@ -264,6 +313,8 @@
 				5EAF3F6F2A870DEC00F85685 /* PerformancePage.swift */,
 				5EAF3F712A870ED400F85685 /* GeneralPage.swift */,
 				5EAF3F732A87110700F85685 /* PluginsPage.swift */,
+				5EAF3F752A87110800F85685 /* PermissionsPage.swift */,
+				EE1000000000000000000804 /* DiagnosticsPage.swift */,
 				5E7665292A2E231400E0E4B4 /* AboutUsView.swift */,
 			);
 			path = SettingsView;
@@ -288,6 +339,7 @@
 				5E7A89BF2AAB9D4E00192EB0 /* maxwell-cat.gif */,
 				5E0700E52A859FAD00ADFE2E /* WallpaperNotFound.mp4 */,
 				5EC47E7D2A2DB2E700120CCC /* Assets.xcassets */,
+				EE1000000000000000000404 /* we-assets */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -348,6 +400,7 @@
 			isa = PBXGroup;
 			children = (
 				5EDF1E132A93B06B006617EA /* WorkingInProgress.swift */,
+				EE1000000000000000000B08 /* ColorPanelAnchor.swift */,
 			);
 			path = GlobalComponents;
 			sourceTree = "<group>";
@@ -393,6 +446,7 @@
 				5EC47E722A2DB2E600120CCC /* Sources */,
 				5EC47E732A2DB2E600120CCC /* Frameworks */,
 				5EC47E742A2DB2E600120CCC /* Resources */,
+				EE1000000000000000000200 /* Vendor Shader Tools */,
 			);
 			buildRules = (
 			);
@@ -437,8 +491,29 @@
 		};
 /* End PBXProject section */
 
-/* Begin PBXResourcesBuildPhase section */
-		5EC47E742A2DB2E600120CCC /* Resources */ = {
+/* Begin PBXShellScriptBuildPhase section */
+		EE1000000000000000000200 /* Vendor Shader Tools */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Vendor Shader Tools";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/Scripts/vendor-shader-tools.sh\" \"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXResourcesBuildPhase section */		5EC47E742A2DB2E600120CCC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -447,6 +522,7 @@
 				5E2F1E892A57DF2D0081D69D /* Localizable.xcstrings in Resources */,
 				5E0700E62A859FAD00ADFE2E /* WallpaperNotFound.mp4 in Resources */,
 				5EC47E7E2A2DB2E700120CCC /* Assets.xcassets in Resources */,
+				EE1000000000000000000403 /* we-assets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -460,8 +536,10 @@
 				5E8C82032A9E15D0009E291B /* ExplorerItemMenu.swift in Sources */,
 				5E66A0EA2A8BAA5400EE79D6 /* ExplorerGlobalMenu.swift in Sources */,
 				5E51A43C2AA33F5500E46E99 /* GlobalSettingsService.swift in Sources */,
+				5E51A4402AA33F5500E46E99 /* OWEPerf.swift in Sources */,
 				5E9D40442A2EC68600AB8A0C /* AppDelegate.swift in Sources */,
 				5EDF1E142A93B06B006617EA /* WorkingInProgress.swift in Sources */,
+				EE1000000000000000000B07 /* ColorPanelAnchor.swift in Sources */,
 				5EB152A12A82ADEB007EA845 /* Open_Wallpaper_Engine.docc in Sources */,
 				5EFBB0BB2A2F10EA00E39BEC /* main.swift in Sources */,
 				5E7665262A2DC30E00E0E4B4 /* WEProject.swift in Sources */,
@@ -489,6 +567,7 @@
 				5EDF1E162A93B4B6006617EA /* WallpaperDiscover.swift in Sources */,
 				5E66A0DD2A8ADF7C00EE79D6 /* ExplorerTopBar.swift in Sources */,
 				5EAF3F742A87110700F85685 /* PluginsPage.swift in Sources */,
+				5EAF3F762A87110800F85685 /* PermissionsPage.swift in Sources */,
 				5EDEBA5E2A2E2A7B003470CB /* SettingsView.swift in Sources */,
 				5E66A0DA2A8ADECC00EE79D6 /* TopTabBar.swift in Sources */,
 				5E76652A2A2E231400E0E4B4 /* AboutUsView.swift in Sources */,
@@ -501,8 +580,19 @@
 				AA1B2C3D4E5F600200ABCD04 /* SceneWallpaperViewModel.swift in Sources */,
 				EE1000000000000000000001 /* AudioReactiveScriptEngine.swift in Sources */,
 				EE1000000000000000000003 /* SceneShaderTranslator.swift in Sources */,
+				EE1000000000000000000103 /* WallpaperPackageConverter.swift in Sources */,
+				EE1000000000000000000303 /* WallpaperEngineAssets.swift in Sources */,
+				EE1000000000000000000603 /* SceneCamera.swift in Sources */,
+				EE1000000000000000000703 /* VideoTextureStream.swift in Sources */,
+				EE1000000000000000000903 /* AudioLevelTap.swift in Sources */,
+				EE1000000000000000000803 /* DiagnosticsPage.swift in Sources */,
+				EE1000000000000000000503 /* SceneAuthoredEffectRanges.swift in Sources */,
 				EE1000000000000000000005 /* SceneUserPropertiesView.swift in Sources */,
 				EE1000000000000000000007 /* SceneInspectorView.swift in Sources */,
+				EE1000000000000000000A07 /* CollapsibleSection.swift in Sources */,
+				EE1000000000000000000009 /* SceneEffectDefinitions.swift in Sources */,
+				EE100000000000000000000D /* SceneDynamicEffectCatalog.swift in Sources */,
+				EE100000000000000000000B /* WorkshopDependencyResolver.swift in Sources */,
 				DD1000000000000000000001 /* SceneMetalRenderer.swift in Sources */,
 				DD1000000000000000000003 /* SceneShaders.metal in Sources */,
 				BB0000000000000000000003 /* ObjCExceptionCatcher.m in Sources */,
@@ -558,7 +648,7 @@
 				DEVELOPMENT_TEAM = 35BWY46G6T;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -624,7 +714,7 @@
 				DEVELOPMENT_TEAM = 35BWY46G6T;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -662,7 +752,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Open-Wallpaper-Engine-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Wallpaper Engine";
+				INFOPLIST_KEY_CFBundleDisplayName = "Open Wallpaper Engine";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = NO;
@@ -701,7 +791,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "Open-Wallpaper-Engine-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "Wallpaper Engine";
+				INFOPLIST_KEY_CFBundleDisplayName = "Open Wallpaper Engine";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_LSUIElement = NO;

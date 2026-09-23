@@ -13,7 +13,17 @@ struct GeneralPage: SettingsPage {
     @State private var pendingStorageDirectory: URL?
     @State private var isStorageMoveConfirming = false
     @State private var storageError: String?
-    
+    @AppStorage("ReclaimOriginalPackages") private var reclaimOriginalPackages = false
+    @State private var reclaimableBytes: Int64 = 0
+    @State private var reclaimedCount: Int?
+    @State private var isReclaiming = false
+
+    private var reclaimableDescription: String {
+        guard reclaimableBytes > 0 else { return "No originals ready to remove" }
+        let formatted = ByteCountFormatter.string(fromByteCount: reclaimableBytes, countStyle: .file)
+        return "\(formatted) of originals can be removed"
+    }
+
     init(globalSettings viewModel: GlobalSettingsViewModel) {
         self.viewModel = viewModel
     }
@@ -63,6 +73,57 @@ struct GeneralPage: SettingsPage {
             } footer: {
                 Text("Choose a folder for downloaded and imported wallpapers. You can move the current library to the new location.")
             }
+            Section {
+                HStack {
+                    Text(viewModel.settings.wallpaperEngineAssetsDirectory ?? "Using built-in assets")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Choose...") {
+                        chooseWallpaperEngineAssetsDirectory()
+                    }
+                }
+                if viewModel.settings.wallpaperEngineAssetsDirectory != nil {
+                    Button("Use Built-in Assets") {
+                        viewModel.setWallpaperEngineAssetsDirectory(nil)
+                    }
+                }
+            } header: {
+                Label("Wallpaper Engine Assets", systemImage: "shippingbox")
+            } footer: {
+                Text("Shared textures, effects and presets ship with the app, so this is optional. Point it at the assets folder of a Wallpaper Engine installation to use that copy instead \u{2014} useful if it is newer than the bundled one.")
+            }
+            Section {
+                Toggle("Remove original packages after conversion", isOn: $reclaimOriginalPackages)
+                HStack {
+                    Text(reclaimableDescription)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Reclaim Now") {
+                        isReclaiming = true
+                        DispatchQueue.global(qos: .utility).async {
+                            let removed = WallpaperPackageConverter.reclaimEligibleSources()
+                            let remaining = WallpaperPackageConverter.reclaimableBytes()
+                            DispatchQueue.main.async {
+                                reclaimedCount = removed
+                                reclaimableBytes = remaining
+                                isReclaiming = false
+                            }
+                        }
+                    }
+                    .disabled(isReclaiming || reclaimableBytes == 0)
+                }
+                if let reclaimedCount {
+                    Text("Removed \(reclaimedCount) original package\(reclaimedCount == 1 ? "" : "s").")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Label("Converted Wallpapers", systemImage: "arrow.triangle.2.circlepath")
+            } footer: {
+                Text("Wallpapers are unpacked into plain files when imported. The original package is kept until the wallpaper has rendered from those files, reported no conversion warnings, and no other wallpaper depends on it.")
+            }
             // MARK: macOS
             Section {
                 Toggle("Adjust Menu Bar Color", isOn: $viewModel.settings.adjustMenuBarTint)
@@ -94,9 +155,13 @@ struct GeneralPage: SettingsPage {
             Section {
                 Picker("Video Framework", selection: $viewModel.settings.videoFramework) {
                     Text("Apple AVKit").tag(GSVideoFramework.avkit)
+                    Text("Metal (effects apply to video)").tag(GSVideoFramework.metal)
                 }
             } header: {
                 Label("Video", systemImage: "film")
+            } footer: {
+                Text("Metal draws video through the scene renderer so effects and music sync apply "
+                     + "to it, the way Wallpaper Engine does. Experimental.")
             }
             // MARK: Advanced
             Section {
@@ -137,6 +202,12 @@ struct GeneralPage: SettingsPage {
             }
         }
         .formStyle(.grouped)
+        .onAppear {
+            DispatchQueue.global(qos: .utility).async {
+                let bytes = WallpaperPackageConverter.reclaimableBytes()
+                DispatchQueue.main.async { reclaimableBytes = bytes }
+            }
+        }
         .confirmationDialog(
             "Move Current Wallpapers?",
             isPresented: $isStorageMoveConfirming,
@@ -165,6 +236,17 @@ struct GeneralPage: SettingsPage {
         if panel.runModal() == .OK, let directory = panel.url {
             pendingStorageDirectory = directory
             isStorageMoveConfirming = true
+        }
+    }
+
+    private func chooseWallpaperEngineAssetsDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose Wallpaper Engine assets folder"
+        if panel.runModal() == .OK, let directory = panel.url {
+            viewModel.setWallpaperEngineAssetsDirectory(directory)
         }
     }
 

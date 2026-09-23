@@ -1,0 +1,1 @@
+{"uniforms":[{"semantic":"{\"hidden\":true}\r","name":"g_Texture0","type":"sampler2D"},{"name":"g_Texture0Resolution","type":"vec4"},{"semantic":"{\"material\":\"depth\",\"label\":\"ui_editor_properties_depth\",\"default\":0.5,\"range\":[0,1],\"group\":\"ui_editor_properties_material\"}\r","name":"u_Depth","type":"float"}],"textures":["g_Texture0"],"combos":{}}

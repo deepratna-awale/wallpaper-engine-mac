@@ -1,0 +1,1 @@
+{"textures":["g_Texture0","g_Texture1"],"uniforms":[{"semantic":"{\"material\":\"Framebuffer\",\"hidden\":true}\r","type":"sampler2D","name":"g_Texture0"},{"semantic":"{\"material\":\"Mask\",\"mode\":\"opacitymask\",\"combo\":\"MASK\",\"default\":\"util\/black\"}\r","type":"sampler2D","name":"g_Texture1"}],"combos":{"CLAMP":"CLAMP","MASK":"MASK"}}
