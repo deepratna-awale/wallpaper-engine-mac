@@ -27,9 +27,13 @@ final class ParticleMaterialPerformanceTests: XCTestCase {
         }()))
 
         // 200 trails of 10 segments: 2 000 segments across the scene.
-        let particles: [Particle] = (0..<200).map { index in
-            let x = Float(index % 20) * 96 + 48, y = Float(index / 20) * 108 + 54
-            let history = (1...10).map { SIMD2(x - Float($0) * 8, y + Float($0 % 2) * 6) }
+        let particles: [Particle] = (0..<200).map { (index: Int) -> Particle in
+            let x: Float = Float(index % 20) * 96 + 48
+            let y: Float = Float(index / 20) * 108 + 54
+            let history: [SIMD2<Float>] = (1...10).map { (step: Int) -> SIMD2<Float> in
+                let offset = Float(step)
+                return SIMD2<Float>(x - offset * 8, y + Float(step % 2) * 6)
+            }
             return Particle(position: SIMD2(x, y), velocity: .zero, age: 0, lifetime: 10, size: 6, baseSize: 6,
                             alpha: 1, baseAlpha: 1, rotation: 0, angularVelocity: 0, color: SIMD4(repeating: 1),
                             baseColor: SIMD4(repeating: 1), spriteFrame: 0, history: history, historyStart: 0)
