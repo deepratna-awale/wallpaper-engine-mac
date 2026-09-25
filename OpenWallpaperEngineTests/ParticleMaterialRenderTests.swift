@@ -247,17 +247,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
     }
 
     func testFailedPipelineFallsBackToTheBuiltInDraw() throws {
-        let good = try plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
-        let stage = try XCTUnwrap(good.stages.first)
-        let broken = ParticleMaterialPlan.Stage(
-            geometry: stage.geometry,
-            variant: TranslatedShaderVariant(vertexMSL: "not metal", fragmentMSL: stage.variant.fragmentMSL,
-                                             uniforms: stage.variant.uniforms, textureSlots: stage.variant.textureSlots,
-                                             attributes: stage.variant.attributes, combos: stage.variant.combos),
-            variantKey: "broken", textures: stage.textures, constants: stage.constants)
-        let plan = ParticleMaterialPlan(materialPath: good.materialPath, shader: good.shader, format: good.format,
-                                        blending: good.blending, stages: [broken], trailLengths: good.trailLengths,
-                                        spriteSheet: nil)
+        let (plan, broken) = try brokenPlan()
         let system = ParticleSystemRuntime(texture: white, configuration: Self.configuration(plan: plan))
         XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: .rgba8Unorm))
         XCTAssertNotNil(renderer.pipelineFailure(broken, plan: plan, pixelFormat: .rgba8Unorm))
@@ -484,6 +474,23 @@ final class ParticleMaterialRenderTests: XCTestCase {
         return ParticleMaterialPlan(materialPath: plan.materialPath, shader: plan.shader, format: plan.format,
                                     blending: plan.blending, stages: stages, trailLengths: plan.trailLengths,
                                     spriteSheet: plan.spriteSheet)
+    }
+
+    /// A sprite plan whose only stage's vertex MSL is deliberately not Metal. It keeps a material
+    /// path of its own, so its logged pipeline failure isn't mistaken for a real material's.
+    private func brokenPlan() throws -> (plan: ParticleMaterialPlan, stage: ParticleMaterialPlan.Stage) {
+        let good = try plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        let stage = try XCTUnwrap(good.stages.first)
+        let broken = ParticleMaterialPlan.Stage(
+            geometry: stage.geometry,
+            variant: TranslatedShaderVariant(vertexMSL: "not metal", fragmentMSL: stage.variant.fragmentMSL,
+                                             uniforms: stage.variant.uniforms, textureSlots: stage.variant.textureSlots,
+                                             attributes: stage.variant.attributes, combos: stage.variant.combos),
+            variantKey: "broken", textures: stage.textures, constants: stage.constants)
+        let plan = ParticleMaterialPlan(materialPath: "tests/deliberately-broken-vertex-stage.json", shader: good.shader,
+                                        format: good.format, blending: good.blending, stages: [broken],
+                                        trailLengths: good.trailLengths, spriteSheet: nil)
+        return (plan, broken)
     }
 
     private func particle(at position: SIMD2<Float>, size: Float) -> Particle {
