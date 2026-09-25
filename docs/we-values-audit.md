@@ -23,7 +23,8 @@ Where WE authors nothing, we use WE's own default and cite where it comes from.
 - **`wallpaper64.exe`** (the local install, disassembled to `we64.asm` in the session scratchpad):
   - the scene-settings constructor at 0x140186f84…0x1401870e3
   - the property table that maps `general` field names to offsets, at 0x14019a…0x14019b2a0
-  - the camera-parallax update at 0x140189b0f…0x140189cc6
+  - the camera-parallax update at 0x140189b0f…0x140189cc6, the per-object displacement at 0x14018b062…0x14018b14e, and the load-time reset of an orthographic camera at 0x14018866b
+  - the camera-shake routine at 0x140199580…0x14019977c
 - **`bin/wallpaperui.exe`**: the editor's shader-annotation parser at 0x14046cdc9…0x14046d0bf (`range`, `linked`, `position`, `int`, `direction`, `nobindings`, `conversion`).
 - **`ui/dist/scripts/scripts.js`**: WE's browse sidebar and the property editor.
   - The slider row uses `step:property.step||1, precision:property.precision||1`.
@@ -64,7 +65,7 @@ Where WE authors nothing, we use WE's own default and cite where it comes from.
 
 Parsing moved to `UserPropertyDefinition`, which has unit tests. It is also checked against every library project.json.
 
-## 3. scene.json `general` — fixed defaults, runtime handoff
+## 3. scene.json `general` — fixed defaults and runtime
 
 | Field | Was | WE's default (`wallpaper64.exe` constructor) | Verdict |
 |---|---|---|---|
@@ -72,27 +73,37 @@ Parsing moved to `UserPropertyDefinition`, which has unit tests. It is also chec
 | `bloomthreshold` | 0.7 | 0.65 (0x3c0) | fixed |
 | `bloomtint` | 1 1 1 | 1 1 1 (0x3d8…0x3e0) | kept |
 | `bloomhdrstrength` / `threshold` / `feather` / `scatter` / `iterations` | not read | 2.0 / 1.0 / 0.1 / 1.619 / 8 (0x3c4…0x3d4) | unknown: the HDR chain isn't implemented (roadmap 5.4) |
-| `camerashakespeed` / `amplitude` / `roughness` | 0 | 3.0 / 0.5 / 1.0 (0x328 / 0x32c / 0x330) | fixed default; the values are still **unused**, see below |
-| `cameraparallaxamount` / `delay` / `mouseinfluence` | 0 | 0.5 / 0.1 / 0.5 (0x334 / 0x338 / 0x33c) | fixed default |
+| `camerashakespeed` / `amplitude` / `roughness` | 0 | 3.0 / 0.5 / 1.0 (0x328 / 0x32c / 0x330) | fixed default; the renderer now uses them (`SceneCameraShake`, below) |
+| `cameraparallaxamount` / `delay` / `mouseinfluence` | 0 | 0.5 / 0.1 / 0.5 (0x334 / 0x338 / 0x33c) | fixed default; the renderer now uses them (`SceneCameraParallax`, below) |
 | `gravitydirection`, `winddirection`, `windstrength` | not read | (0, −1, 0); (0.707, 0.707, 0); 1.0 | unknown: no consumer yet |
 | fog fields | not read | distance 1…5, height 1…−3, densities 1 | unknown: no consumer yet |
 | `SceneMetalRenderer` composite bloom threshold without WE bloom | 0.55 | WE's default 0.65 | fixed |
 | `SceneMetalRenderer` `userBloom × 1.2`, `userBlur × 4` | app constants | `_owe_bloom` / `_owe_blur` are app extras | keep |
 
-**Handoff to the depth-parallax/shine agent (`SceneMetalRenderer`):**
+**Camera parallax — fixed** (`SceneCameraParallax`, roadmap 8.16). The invented `0.18 × depth × cursorDelta × sceneSize × amount × influence` model and its `perspective` zoom are gone. WE's model, from `wallpaper64.exe`:
+1. The scene update (0x140189b0f…0x140189cc6) runs it while flag 0x100 (`cameraparallax`) is set. The influence is `cameraparallaxmouseinfluence`; WE uses 0 while its input flags 0x200200 are set, which we don't model.
+2. `cursor = clamp((x, 1 − y), 0, 1)`; our cursor is already y-up.
+3. `target = eye.xy + size · (cursor · influence + 0.5 · (1 − influence))`. An orthographic scene without camera paths has its authored eye reset to 0 at load (0x14018866b), so `eye` is only the camera shake, applied just before.
+4. With `delay > 0`: `pos += (target − pos) · min(1, (1 − delay / 3) · 10 · dt)`. Otherwise `pos = target`. At load `pos` is the scene centre (0x140188715).
+5. `g_ParallaxPosition = clamp(pos / size, 0, 1)`, and (0.5, 0.5) until parallax runs (0x1401886ea). A flag at 0x800 mirrors x; we don't model it.
+6. When flags 0x108 are both set (parallax on, orthographic scene), the render loop (0x14018b062…0x14018b14e) translates every object by `amount · (root.origin.xy − pos) · root.parallaxDepth.xy`. `root` is the object's topmost ancestor (the parent chain at +0x180), so a child moves with its root. The mouse hit test at 0x14018a0b3 uses the same offset. A perspective scene isn't displaced.
 
-**Camera parallax** (roadmap 8.16): our model is `0.18 × depth × cursorDelta × sceneSize × amount × influence`, which is not WE's. From `wallpaper64.exe` 0x140189b0f…0x140189cc6, `g_ParallaxPosition` works like this:
-1. The flag bit 0x100 enables it. The influence is `cameraparallaxmouseinfluence` (0 while input is off).
-2. `cursor = clamp((x, 1 − y), 0, 1)`.
-3. `target = size · (cursor · influence + 0.5 · (1 − influence))`.
-4. When `delay > 0`, the position eases toward the target: `pos += (target − pos) · min(1, (1 − delay / 3) · 10 · dt)`. Otherwise `pos = target`.
-5. `g_ParallaxPosition = clamp(pos / size, 0, 1)`.
+The app's `_owe_effect_enabled_parallax` toggle and `_owe_effect_parallax_amount` (default 1, a multiplier on WE's amount) are kept as app extras. Tests: `SceneCameraMotionTests` checks the formulas against hand-derived values and a rendered frame.
 
-Per object, 0x14018a0b3 displaces by `amount · depth.xy · (objectPosition − pos)`. This is a lead; confirm it before use.
+**Camera shake — fixed** (`SceneCameraShake`). The invented `47.3 / 71.9 / 53.1 / 83.7` Hz sines are gone. WE's routine is 0x140199580, called by the scene update while flag 0x80 (`camerashake`) is set:
+1. `t = speed² · g_Time`. The time is the scene clock at +0x130 of the render context, which the particle oscillate operators also read.
+2. `v = (cos t, sin(1.333 t), sin t)`. An orthographic scene zeroes z.
+3. With `r = roughness³` above 0.001 and not 1: `v = v / |v| · |v|^r`.
+4. `v` is scaled by `amplitude · 0.1`, and in an orthographic scene also by `0.1 · projection height`.
+5. The eye and centre both move by `v`, so the scene moves by `−v`. The parallax target includes the shaken eye.
 
-**Camera shake:** the `47.3 / 71.9 / 53.1 / 83.7` Hz sines and the 0.004 / 0.002 × scene-size amplitude are invented. The authored speed, amplitude and roughness are ignored. WE's shake routine hasn't been found yet. The runtime readers of 0x328…0x330 are around 0x140192487 and 0x140195cba (unverified). **unknown**
+**Text and shape layers — fixed.** Both now read their object's `parallaxDepth`, with WE's default 1 1 (`SceneWallpaperViewModel.parallaxDepth(of:)`). Previously both were built with `.zero`. The preview and video layers stay at 0: they aren't WE objects, and their content has no camera.
 
-**Text layers** are built with `parallaxDepth: .zero` (`SceneWallpaperViewModel.buildMetalTextLayer`), so text never follows parallax. 13 of the 75 corpus text objects author a depth. **fix**, owned by the parallax work.
+**Still open:**
+- Particle systems aren't moved by parallax or shake. They should be, since WE's render loop displaces every object, and the shake moves the camera. This belongs to the particle agent's files.
+- Camera paths (`camera.paths`) aren't implemented, so the eye is always 0 in an orthographic scene.
+- A perspective scene's `g_ParallaxPosition` uses our 1920×1080 stand-in size. **unknown**
+- A layer's `perspective` flag is carried but unused now that the invented zoom is gone. WE uses it for its perspective draw, not for parallax.
 
 ## 4. SceneScript `createScriptProperties` — fixed
 
@@ -105,7 +116,7 @@ Per object, 0x14018a0b3 displaces by `amount · depth.xy · (objectPosition − 
 
 | Location | Value | Verdict |
 |---|---|---|
-| `SceneWallpaperViewModel.materialEffects` | reads material constants by name (`brightness`/`intensity`/`gain`, `strength`/`glow`, `radius`/`sigma`, `threshold` → 0.7…) into the native image draw; bloom and blur default to 1 when the shader *name* contains "bloom"/"blur" | **fix**: this is a rule-1 native approximation. It only affects layers that don't draw through their WE material. Remove it once the base image material covers every layer (roadmap 1.3). It was not changed here because the parallax agent is editing that file |
+| `SceneWallpaperViewModel.materialEffects` | read material constants by name (`brightness`/`intensity`/`gain`, `strength`/`glow`, `radius`/`sigma`, `threshold` → 0.7…) into the native image draw; bloom and blur defaulted to 1 when the shader *name* contained "bloom"/"blur" | **fixed**: removed. Every layer gets `SceneMaterialEffects.identity`, and material constants reach WE's own shader through `ImageMaterialPlan`. No library image layer matched a guessed name, so nothing regresses: the image material sweep is unchanged. Test: `SceneLayerKindTests.testMaterialConstantsAreNotGuessedIntoNativeAdjustments`. Follow-up: `SceneMaterialEffects` is now constant and can be deleted, along with the native shader's adjustment uniforms |
 | `SceneWallpaperViewModel.buildMetalTextLayer` | `pointsize ?? 24`, `padding ?? 0` | unknown: every corpus text object authors both. WE's text defaults weren't located (the text property table is at 0x14025…, and the pointsize offset isn't mapped yet) |
 | `SceneUserPropertiesView` text extras | size 1…256, colour `1 1 1` tint, opacity 1 | keep: app extras, multiplicative identity at their defaults |
 | `SceneInspectorView` move / scale | 0.05…5×, 1/10/50 px steps | keep: app editing tools, not a WE value |
@@ -201,6 +212,7 @@ Loader-side fixes are the particle agent's, because they share the particle file
   - the default against the constant the renderer resolves
   - every combo's default and options against its `[COMBO]` annotation
 - `testEveryLibraryPropertyIsAuthoredValue` checks every library project.json property: min, max, step, precision, value and option labels.
+- `SceneCameraMotionTests` checks camera parallax (target, delay easing, `g_ParallaxPosition`, per-object offset) and camera shake against values worked out from `wallpaper64.exe`, and checks a rendered frame's parallax displacement.
 - Unit tests cover:
   - project.json parsing (WE's defaults when a field is absent)
   - WE's label table
