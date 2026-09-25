@@ -14,6 +14,25 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 - Phase 5: parent transforms, image alignment, WE text layout and colour.
 - M8: library sweep passes (44 wallpapers, 0 failures).
 
+## Work queue (autonomous loop, from 2026-09-25 night)
+
+Each step: research → parallel agents by file ownership + tester → fix the tester's findings → full suite and sweeps on a clean HEAD → push → optimise → next.
+
+1. Finish in flight: the depth-parallax and shine bug (3802047741); the particle finish (child control points, per-instance ropes, non-uniform scale, particle uniform arena, test cleanup).
+2. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise.
+3. Area 3 Timeline animations → tester → optimise.
+4. Area 5 Lighting and reflections → tester → optimise.
+5. Area 6 3D models (with particle collisionmodel) → tester → optimise.
+6. Area 7 Puppet warp → tester → optimise.
+7. Gaps queue, worked in alongside when their files are free:
+   - A shader-compiler helper process (hung compile with no Homebrew fallback).
+   - Music-sync settings keyed by stable identity, not the path.
+   - Text with effects, blend modes or emoji through WE's font path.
+   - Anything the testers find.
+8. After each area: a performance pass (frame time, load time, memory) on the library, and bug fixes.
+
+Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs WE ground truth".
+
 ## Next, in order
 
 ### 1. Shader programming (mostly implemented)
