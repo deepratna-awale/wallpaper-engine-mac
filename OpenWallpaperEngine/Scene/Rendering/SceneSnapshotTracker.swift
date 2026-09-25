@@ -42,23 +42,36 @@ struct SceneSnapshotTracker {
     /// The target pixels `quad` covers (scene units, y up), padded and clamped to the target; nil
     /// when it covers none (off-screen, zero, NaN or infinite).
     static func pixelRect(of quad: SceneQuadGeometry, sceneSize: SIMD2<Float>, targetSize: SIMD2<Int>) -> Rect? {
-        let scale = SIMD2<Float>(Float(targetSize.x), Float(targetSize.y)) / simd_max(sceneSize, SIMD2(1, 1))
-        let halfX = quad.axisX / 2, halfY = quad.axisY / 2
-        let corners = [quad.center - halfX - halfY, quad.center + halfX - halfY,
-                       quad.center - halfX + halfY, quad.center + halfX + halfY]
-            .map { SIMD2($0.x * scale.x, Float(targetSize.y) - $0.y * scale.y) }
-        var low = corners[0], high = corners[0]
+        let targetWidth = Float(targetSize.x)
+        let targetHeight = Float(targetSize.y)
+        let scale: SIMD2<Float> = SIMD2<Float>(targetWidth, targetHeight) / simd_max(sceneSize, SIMD2<Float>(1, 1))
+        let halfX: SIMD2<Float> = quad.axisX / 2
+        let halfY: SIMD2<Float> = quad.axisY / 2
+        let center: SIMD2<Float> = quad.center
+        let sceneCorners: [SIMD2<Float>] = [center - halfX - halfY, center + halfX - halfY,
+                                            center - halfX + halfY, center + halfX + halfY]
+        let corners: [SIMD2<Float>] = sceneCorners.map { (corner: SIMD2<Float>) -> SIMD2<Float> in
+            SIMD2<Float>(corner.x * scale.x, targetHeight - corner.y * scale.y)
+        }
+        var low: SIMD2<Float> = corners[0]
+        var high: SIMD2<Float> = corners[0]
         for corner in corners.dropFirst() {
             low = simd_min(low, corner)
             high = simd_max(high, corner)
         }
         guard low.x.isFinite, low.y.isFinite, high.x.isFinite, high.y.isFinite else { return nil }
         let pad = Float(padding)
-        let size = SIMD2<Float>(Float(targetSize.x), Float(targetSize.y))
+        let size = SIMD2<Float>(targetWidth, targetHeight)
+        let zero = SIMD2<Float>(0, 0)
         // Clamped before converting: a far off-screen corner must not overflow `Int`.
-        let lowPixel = simd_clamp((low - pad).rounded(.down), SIMD2(0, 0), size)
-        let highPixel = simd_clamp((high + pad).rounded(.up), SIMD2(0, 0), size)
-        let left = Int(lowPixel.x), top = Int(lowPixel.y), right = Int(highPixel.x), bottom = Int(highPixel.y)
+        let lowRounded: SIMD2<Float> = (low - pad).rounded(FloatingPointRoundingRule.down)
+        let highRounded: SIMD2<Float> = (high + pad).rounded(FloatingPointRoundingRule.up)
+        let lowPixel: SIMD2<Float> = simd_clamp(lowRounded, zero, size)
+        let highPixel: SIMD2<Float> = simd_clamp(highRounded, zero, size)
+        let left: Int = Int(lowPixel.x)
+        let top: Int = Int(lowPixel.y)
+        let right: Int = Int(highPixel.x)
+        let bottom: Int = Int(highPixel.y)
         guard right > left, bottom > top else { return nil }
         return Rect(x: left, y: top, width: right - left, height: bottom - top)
     }

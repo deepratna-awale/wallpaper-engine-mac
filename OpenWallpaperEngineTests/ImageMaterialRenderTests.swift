@@ -338,7 +338,12 @@ final class ImageMaterialRenderTests: XCTestCase {
         }
         var differing = 0
         for index in stride(from: 0, to: plain.count, by: 4) {
-            let delta = (0..<4).map { abs(Int(plain[index + $0]) - Int(viaEffect[index + $0])) }.max() ?? 0
+            var delta = 0
+            for channel in 0..<4 {
+                let a = Int(plain[index + channel])
+                let b = Int(viaEffect[index + channel])
+                delta = max(delta, abs(a - b))
+            }
             if delta > 2 { differing += 1 }
         }
         XCTAssertEqual(differing, 0, "\(differing) pixels differ with a pass-through effect")
