@@ -70,6 +70,9 @@ final class SceneScriptObjectTable {
         self.dirty = dirty
     }
 
+    /// The buffers scripts can reach, for `SceneScriptRuntime.watch(_:)`.
+    var sharedBuffers: [SceneScriptDetachable] { [values, dirty] }
+
     /// Index of `field` of `slot` in `values`.
     static func index(slot: Int, field: Int) -> Int { slot * Layout.stride + field }
 

@@ -18,16 +18,34 @@ struct SceneScriptEvent {
         static let resize = Kind(rawValue: "resize")
     }
 
+    /// What the inbox may do with an undrained event once it is full (frames stopped: paused,
+    /// occluded, display asleep). Never applied while the runtime keeps up.
+    enum Coalescing {
+        /// A whole state (media parts, a resize, a cursor move): only the newest event of the same
+        /// kind and target is kept.
+        case latest
+        /// A partial dictionary of changes (user properties, general settings): the events of the
+        /// kind become one, later keys winning, so no change is lost.
+        case merge
+        /// A discrete event that must not be merged (a click). Dropped oldest first, and only when
+        /// coalescing everything else did not make room.
+        case keep
+    }
+
     var kind: Kind
     /// A JavaScript-convertible value: dictionaries, arrays, strings, numbers, booleans, NSNull.
     var payload: Any
     /// The object slot the event is for (cursor events), or nil for every script.
     var target: Int?
+    var coalescing: Coalescing
 
-    init(kind: Kind, payload: Any, target: Int? = nil) {
+    /// `coalescing` defaults to `.merge` for user properties and general settings and to
+    /// `.latest` for every other kind: events are states unless their poster says otherwise.
+    init(kind: Kind, payload: Any, target: Int? = nil, coalescing: Coalescing? = nil) {
         self.kind = kind
         self.payload = payload
         self.target = target
+        self.coalescing = coalescing ?? (kind == .userProperties || kind == .generalSettings ? .merge : .latest)
     }
 
     /// The object `__rt.frame` receives.

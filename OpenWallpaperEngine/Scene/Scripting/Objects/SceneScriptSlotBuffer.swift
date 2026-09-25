@@ -21,6 +21,9 @@ final class SceneScriptSlotBuffer {
         self.dirty = dirty
     }
 
+    /// The buffers scripts can reach, for `SceneScriptRuntime.watch(_:)`.
+    var sharedBuffers: [SceneScriptDetachable] { [values, dirty] }
+
     subscript(slot: Int, offset: Int) -> Float {
         get { values[slot * stride + offset] }
         set { values[slot * stride + offset] = newValue }

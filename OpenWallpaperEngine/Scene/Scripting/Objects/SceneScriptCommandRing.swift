@@ -58,6 +58,9 @@ final class SceneScriptCommandRing {
         rt.invokeMethod("attachRing", withArguments: [header.value, records.value, numbers.value, Layout.recordStride])
     }
 
+    /// The buffers scripts can reach (`__rt.ring`), for `SceneScriptRuntime.watch(_:)`.
+    var sharedBuffers: [SceneScriptDetachable] { [header, records, numbers] }
+
     /// Registers the native side of `opcode`. One handler per opcode.
     func register(_ opcode: Opcode, handler: @escaping Handler) {
         precondition(handlers[opcode] == nil, "SceneScript opcode \(opcode.rawValue) registered twice")

@@ -44,6 +44,7 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
         }
         self.store = store
         self.runtime = runtime
+        store.sharedBuffers.forEach(runtime.watch)
         store.table.install(on: runtime.rt)
         registerCommands(on: runtime.commandRing)
 
@@ -70,7 +71,8 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
 
     /// Sets what `thisObject` is for `scriptID` (and which property `getAnimation()` defaults to).
     /// Call before the `load` that defines the script. Without a binding, `thisObject` is the
-    /// script's layer, or the scene for scripts without one.
+    /// script's layer, or the scene for scripts without one. `SceneScriptInstance.binding` does the
+    /// same when the instance is added; it wins over this.
     func bind(scriptID: String, to binding: SceneScriptObjectBinding) {
         guard let objects = runtime?.rt.forProperty("objects") else { return }
         objects.invokeMethod("bind", withArguments: [scriptID, binding.javaScriptObject])

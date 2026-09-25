@@ -24,12 +24,20 @@
         phase: 'idle',
         // The id of the record whose code is running; read by the native side after the watchdog fires.
         current: null,
+        // The exported callback that is running ('update', 'cursorClick', …), or null outside one
+        // (module bodies, timers). WE keeps the same index while it calls a callback.
+        callback: null,
         // Set once the watchdog stopped script code: like WE, no script code runs again (§1.9 P5).
         halted: false,
         EVENT_ORDER: EVENT_ORDER,
         records: [],
         byId: new Map(),
         errors: [],
+        // Ids of records removed since the native side last drained them (`drainRemoved`), so it
+        // learns about removals scripts made (`destroyLayer`).
+        removed: [],
+        // Set once the first load finished: records defined afterwards are runtime-created.
+        loadedOnce: false,
         frameIndex: 0,
         deltaTime: 0,
         native: {},
@@ -52,20 +60,62 @@
         ring: null,
     };
 
-    function describe(error) {
-        if (error !== null && typeof error === 'object') {
-            return {
-                message: String(error.message !== undefined ? error.message : error),
-                name: error.name !== undefined ? String(error.name) : 'Error',
-                line: typeof error.line === 'number' ? error.line : -1,
-                column: typeof error.column === 'number' ? error.column : -1,
-            };
+    // The position in the script at `url` that `error` came from: the first stack frame in that
+    // script, so an error a runtime or extension helper built (`registerAudioBuffers can only be
+    // called from global scope.`) names the script's line that called the helper, not the
+    // helper's own. JavaScriptCore writes frames as `name@url:line:column`.
+    function scriptPosition(error, url) {
+        let stack;
+        try {
+            stack = error.stack;
+        } catch (e) {
+            stack = undefined;
         }
-        return { message: String(error), name: 'Error', line: -1, column: -1 };
+        if (typeof stack === 'string' && typeof url === 'string' && url !== '') {
+            const frames = stack.split('\n');
+            for (let i = 0; i < frames.length; i++) {
+                const match = /:(\d+):(\d+)$/.exec(frames[i]);
+                if (match === null) continue;
+                const location = frames[i].slice(0, match.index);
+                if (location === url || location.endsWith('@' + url)) {
+                    return { line: Number(match[1]), column: Number(match[2]) };
+                }
+            }
+        }
+        if (url && error.sourceURL === url && typeof error.line === 'number') {
+            return { line: error.line, column: typeof error.column === 'number' ? error.column : -1 };
+        }
+        // Runtime code, or no frame of the script (an error object made elsewhere and rethrown).
+        if (!url && typeof error.line === 'number') {
+            return { line: error.line, column: typeof error.column === 'number' ? error.column : -1 };
+        }
+        return { line: -1, column: -1 };
+    }
+
+    function describe(error, url) {
+        if (error !== null && typeof error === 'object') {
+            const position = scriptPosition(error, url);
+            let message, name;
+            try {
+                message = String(error.message !== undefined ? error.message : error);
+                name = error.name !== undefined ? String(error.name) : 'Error';
+            } catch (e) {
+                message = Object.prototype.toString.call(error);
+                name = 'Error';
+            }
+            return { message: message, name: name, line: position.line, column: position.column };
+        }
+        let message;
+        try {
+            message = String(error);
+        } catch (e) {
+            message = typeof error;
+        }
+        return { message: message, name: 'Error', line: -1, column: -1 };
     }
 
     rt.reportError = function (record, callback, error) {
-        const info = describe(error);
+        const info = describe(error, record ? record.url : '');
         rt.errors.push({ id: record ? record.id : '', callback: callback, name: info.name,
             message: info.message, line: info.line, column: info.column });
     };
@@ -78,9 +128,10 @@
 
     function run(record, label, phase, fn, args, callback) {
         if (!record.enabled || rt.halted) return undefined;
-        const previousPhase = rt.phase, previousCurrent = rt.current;
+        const previousPhase = rt.phase, previousCurrent = rt.current, previousCallback = rt.callback;
         rt.phase = phase;
         rt.current = record.id;
+        rt.callback = callback;
         let result;
         try {
             result = fn.apply(undefined, args);
@@ -92,6 +143,7 @@
         }
         rt.phase = previousPhase;
         rt.current = previousCurrent;
+        rt.callback = previousCallback;
         return result;
     }
 
@@ -163,12 +215,15 @@
 
     // MARK: records
 
-    // `slot` is the object-table slot of the object the script belongs to, or -1.
-    rt.define = function (id, factory, value, scriptProperties, slot) {
+    // `slot` is the object-table slot of the object the script belongs to, or -1; `url` the
+    // script's sourceURL (error positions); `binding` what `thisObject` is (the object model's
+    // SceneScriptObjectBinding), or null.
+    rt.define = function (id, factory, value, scriptProperties, slot, url, binding) {
         if (rt.byId.has(id)) throw new Error('Duplicate script id ' + id);
         const record = { id: id, factory: factory, exports: null, value: value, enabled: true,
             state: DEFINED, scriptProperties: scriptProperties, slot: slot, pendingDestroy: false,
-            failed: {} };
+            destroyed: false, failed: {}, url: typeof url === 'string' ? url : '',
+            binding: binding === undefined ? null : binding, late: rt.loadedOnce };
         rt.records.push(record);
         rt.byId.set(id, record);
     };
@@ -188,9 +243,18 @@
         return record ? record.value : undefined;
     };
 
+    // Marks a script for removal after this frame's updates; false when there is no such script.
     rt.remove = function (id) {
         const record = rt.byId.get(id);
-        if (record) record.pendingDestroy = true;
+        if (!record) return false;
+        record.pendingDestroy = true;
+        return true;
+    };
+
+    rt.drainRemoved = function () {
+        const drained = rt.removed;
+        rt.removed = [];
+        return drained;
     };
 
     // MARK: load (plan §4.4)
@@ -230,7 +294,9 @@
     // Module bodies, script properties, `init` (each followed by `hooks.initialized`), then
     // `applyUserProperties(all)` and `applyGeneralSettings`, each step over every record in order
     // (§1.9 P8). Each record advances through the states once, so records added after a load go
-    // through the same steps on the next one.
+    // through the same steps on the next one, except `applyUserProperties`: P8's best guess is
+    // that WE never sends it to scripts created at runtime, which see the current values through
+    // `engine.userProperties` instead.
     rt.load = function (userProperties, generalSettings) {
         if (rt.halted) return rt.errors.length;
         const records = rt.records;
@@ -258,7 +324,7 @@
         for (let i = 0; i < records.length; i++) {
             const record = records[i];
             if (record.enabled && record.state === INITIALIZED) {
-                rt.invoke(record, 'applyUserProperties', [converted]);
+                if (!record.late) rt.invoke(record, 'applyUserProperties', [converted]);
                 record.state = PROPERTIES_APPLIED;
             }
         }
@@ -269,6 +335,7 @@
                 record.state = READY;
             }
         }
+        rt.loadedOnce = true;
         return rt.errors.length;
     };
 
@@ -314,10 +381,17 @@
         rt.broadcast('applyGeneralSettings', [event.payload]);
     });
     // Where WE handles a resolution change within the frame is not known; first is a best guess.
+    // `Vec2` is baseclasses.js's class: a global lexical binding, not a property of `global`.
+    // Every script gets its own Vec2, so one that changes it can't change the next one's (S14).
     rt.addEventHandler('resize', EVENT_ORDER.resize, function (event) {
         const size = event.payload;
-        const value = typeof global.Vec2 === 'function' ? new global.Vec2(size.x, size.y) : { x: size.x, y: size.y };
-        rt.broadcast('resizeScreen', [value]);
+        const records = rt.records;
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (!record.enabled || record.state !== READY) continue;
+            const value = typeof Vec2 === 'function' ? new Vec2(size.x, size.y) : { x: size.x, y: size.y };
+            rt.invoke(record, 'resizeScreen', [value]);
+        }
     });
 
     function dispatch(events) {
@@ -340,18 +414,29 @@
         }
     }
 
-    function destroyPending() {
-        const records = rt.records;
-        let removed = false;
-        for (let i = 0; i < records.length; i++) {
-            const record = records[i];
-            if (!record.pendingDestroy) continue;
-            if (record.state === READY) rt.invoke(record, 'destroy', []);
-            rt.byId.delete(record.id);
-            removed = true;
+    // Calls `destroy()` on every record marked for removal and drops them, until none is left: a
+    // `destroy()` may remove other scripts (earlier or later ones), and each of those gets its own
+    // `destroy()` too (SF2). Ids go to `removed` for the native side. The object model calls this
+    // inside its deferred step, while the destroyed layers are still attached (SF11).
+    rt.destroyPending = function () {
+        let any = false;
+        for (;;) {
+            const doomed = rt.records.filter(function (record) { return record.pendingDestroy && !record.destroyed; });
+            if (doomed.length === 0) break;
+            any = true;
+            for (let i = 0; i < doomed.length; i++) {
+                doomed[i].destroyed = true;
+                if (doomed[i].state === READY) rt.invoke(doomed[i], 'destroy', []);
+            }
         }
-        if (removed) rt.records = records.filter(function (record) { return !record.pendingDestroy; });
-    }
+        if (!any) return;
+        rt.records = rt.records.filter(function (record) {
+            if (!record.destroyed) return true;
+            if (rt.byId.get(record.id) === record) rt.byId.delete(record.id);
+            rt.removed.push(record.id);
+            return false;
+        });
+    };
 
     // WE's frame (§1.9 P1): input and property events, media events, timeline animations and
     // `animationEvent`, then the engine tick (audio buffers, timers), then every `update`.
@@ -371,14 +456,18 @@
             }
         }
         runPhase('deferred', dt);
-        destroyPending();
+        rt.destroyPending();
         return rt.errors.length;
     };
 
+    // Every script's `destroy()`, in order, then no records. A `destroy()` that removes another
+    // script changes nothing here: every record gets exactly one `destroy()`.
     rt.teardown = function () {
-        const records = rt.records;
+        const records = rt.records.slice();
         for (let i = 0; i < records.length && !rt.halted; i++) {
             const record = records[i];
+            if (record.destroyed) continue;
+            record.destroyed = true;
             if (record.state === READY) rt.invoke(record, 'destroy', []);
         }
         rt.records = [];

@@ -5,6 +5,10 @@ import Foundation
 /// Swift files, its JS resource files and its data source; whoever builds the runtime (the
 /// renderer, from WP11) passes the list.
 ///
+/// Buffers an extension shares with scripts should be `SceneScriptSharedBuffer`s passed to
+/// `runtime.watch(_:)` in `install`, so a script that detaches one stops the wallpaper's scripts
+/// instead of silently desynchronizing them.
+///
 /// Order at runtime creation: `runtime.js`, then for each extension in list order `install(into:)`
 /// followed by its `scriptResources`, then WE's jsmodules. Inside its JS an extension registers with
 /// `__rt.addPhaseHandler('frameGlobals' | 'timers' | 'deferred', fn)`,
@@ -22,6 +26,12 @@ protocol SceneScriptRuntimeExtension: AnyObject {
 
     /// After the frame and the command ring drain: read back what scripts wrote.
     func didRunFrame(_ runtime: SceneScriptRuntime)
+
+    /// Once, when the runtime is torn down: after every script's `destroy()` ran (none when the
+    /// watchdog halted the runtime) and the commands they issued were executed. Flush storage,
+    /// cancel work, unsubscribe from sources. No script code runs afterwards. On the runtime's
+    /// thread, like every other call.
+    func tearDown(_ runtime: SceneScriptRuntime)
 }
 
 extension SceneScriptRuntimeExtension {
@@ -29,4 +39,5 @@ extension SceneScriptRuntimeExtension {
     func install(into runtime: SceneScriptRuntime) throws {}
     func willRunFrame(_ runtime: SceneScriptRuntime, deltaTime: Double) {}
     func didRunFrame(_ runtime: SceneScriptRuntime) {}
+    func tearDown(_ runtime: SceneScriptRuntime) {}
 }

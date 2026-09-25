@@ -14,14 +14,18 @@ struct SceneScriptInstance {
     var scriptPropertiesJSON: String?
     /// The object the script belongs to in the object table (WP7), or nil for scene-level scripts.
     var objectSlot: Int?
+    /// The property the script is bound to, which makes `thisObject` that property's owner (an
+    /// effect, a material, the scene; plan §1.3, P9). Nil: the layer, or the scene without a slot.
+    var binding: SceneScriptObjectBinding?
 
     init(id: String, source: String, initialValue: Any = NSNull(), scriptPropertiesJSON: String? = nil,
-         objectSlot: Int? = nil) {
+         objectSlot: Int? = nil, binding: SceneScriptObjectBinding? = nil) {
         self.id = id
         self.source = source
         self.initialValue = initialValue
         self.scriptPropertiesJSON = scriptPropertiesJSON
         self.objectSlot = objectSlot
+        self.binding = binding
     }
 
     /// The URL JavaScriptCore reports in errors and stacks.

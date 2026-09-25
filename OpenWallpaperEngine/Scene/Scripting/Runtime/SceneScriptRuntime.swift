@@ -5,8 +5,13 @@ import JavaScriptCore
 /// `JSVirtualMachine` and one `JSContext`, WE's prelude, every script of the scene as a record in
 /// `runtime.js`, and the load and frame drivers. Two displays get two runtimes that share nothing.
 ///
-/// Confined to the thread that renders the instance. Other threads talk to it only through
-/// `inbox` (`userPropertiesDidChange`, `screenDidResize`, and the events extensions post).
+/// Threading (S19): confined to one `SceneScriptThread`, a serial queue off the main thread, so a
+/// script that hangs until the watchdog fires stalls only its wallpaper's scripts, never the UI.
+/// The owner creates the runtime inside `thread.sync` and calls it only on that queue (frames via
+/// `thread.asyncFrame`); every entry checks this. Other threads talk to it only through `inbox`
+/// (`userPropertiesDidChange`, `screenDidResize`, and the events extensions post). Without a
+/// thread (tests) the caller's thread is the runtime's; on the main thread that logs once.
+/// Releasing the last reference on another thread still runs `destroy()` on the runtime's thread.
 ///
 /// Each native→JS entry (`load`, `frame`, `tearDown`) is one call into `runtime.js` under the
 /// watchdog. Script errors are isolated per callback in JS and reach Swift through one error
@@ -57,11 +62,17 @@ final class SceneScriptRuntime {
     private var errorLog: SceneScriptErrorLog
     private var pending: [SceneScriptInstance] = []
     private var instanceIDs = Set<String>()
+    /// The shared buffers scripts can reach; a detached one halts the runtime (SF3).
+    private var watched: [SceneScriptDetachable] = []
+    /// The queue this runtime is confined to, or nil for the creating thread.
+    let thread: SceneScriptThread?
 
     private static let recentErrorLimit = 256
 
     init(host: SceneScriptHost, compiler: SceneScriptModuleCompiling,
-         extensions: [SceneScriptRuntimeExtension] = [], configuration: Configuration = .standard) throws {
+         extensions: [SceneScriptRuntimeExtension] = [], configuration: Configuration = .standard,
+         thread: SceneScriptThread? = nil) throws {
+        if let thread { dispatchPrecondition(condition: .onQueue(thread.queue)) }
         guard let virtualMachine = JSVirtualMachine(),
               let context = JSContext(virtualMachine: virtualMachine) else {
             throw CreationError(description: "JavaScriptCore could not create a context")
@@ -108,6 +119,12 @@ final class SceneScriptRuntime {
         self.uncaught = uncaught
         self.watchdog = SceneScriptWatchdog(context: context)
         self.errorLog = SceneScriptErrorLog(prefix: identity.wallpaperID)
+        self.thread = thread
+        watched = ring.sharedBuffers
+
+        if thread == nil && Thread.isMainThread {
+            OWELog.info(.script, "\(identity.wallpaperID): SceneScript runs on the main thread; a hung script freezes the app")
+        }
 
         if watchdog == nil {
             OWELog.info(.script, "JavaScriptCore has no execution time limit; a hung script stalls its wallpaper")
@@ -121,14 +138,32 @@ final class SceneScriptRuntime {
         registerPreludeModules(prelude.modules)
     }
 
+    /// `destroy()` callbacks run on the runtime's thread even when the last reference goes away
+    /// elsewhere (the owner should call `tearDown()` there first; this is the safety net).
     deinit {
-        tearDown()
+        guard state != .tornDown else { return }
+        if let thread, !thread.isCurrent {
+            thread.sync { tearDown() }
+        } else {
+            tearDown()
+        }
+    }
+
+    /// Checks that a buffer scripts can reach is still attached after every entry (SF3). Call
+    /// from `install` for each `SceneScriptSharedBuffer` an extension hands to JavaScript.
+    func watch(_ buffer: SceneScriptDetachable) {
+        watched.append(buffer)
+    }
+
+    private func assertConfined() {
+        if let thread { dispatchPrecondition(condition: .onQueue(thread.queue)) }
     }
 
     // MARK: - Instances and loading
 
     /// Queues a script for the next `load`. Ids must be unique within the runtime.
     func add(_ instance: SceneScriptInstance) {
+        assertConfined()
         guard state != .tornDown else { return }
         guard instanceIDs.insert(instance.id).inserted else {
             report(SceneScriptError(kind: .internal, scriptID: instance.id, callback: "add",
@@ -140,47 +175,69 @@ final class SceneScriptRuntime {
 
     /// Compiles the queued scripts and runs the load phase for them: module bodies, script
     /// properties, `init`, then `applyUserProperties(userProperties)` and
-    /// `applyGeneralSettings(generalSettings)`. Callable again for scripts added later.
+    /// `applyGeneralSettings(generalSettings)`. Callable again for scripts added later; those get
+    /// no `applyUserProperties` (P8's best guess for runtime-created scripts). Commands issued
+    /// while loading (`createLayer`, `sortLayer`, `play` in `init`) run before it returns, so they
+    /// take effect before the first frame (SF5).
     func load(userProperties: [String: Any] = [:], generalSettings: [String: Any] = ["language": "en-us"]) {
+        assertConfined()
         guard state == .created || state == .loaded else { return }
         compilePending()
         let entry = enter(limit: configuration.loadTimeLimit, label: "load") {
             rt.invokeMethod("load", withArguments: [userProperties, generalSettings])
         }
-        if !entry.terminated { state = .loaded }
+        guard !entry.terminated, state != .halted else { return }
+        state = .loaded
+        commandRing.drain()
     }
 
     /// Runs one frame: extension buffers, then `__rt.frame` (events, timers, every `update`,
     /// deferred structure changes, `destroy`), then the command ring and extension read-back.
     func frame(deltaTime: Double) {
+        assertConfined()
         guard state == .loaded else { return }
         for scriptExtension in extensions { scriptExtension.willRunFrame(self, deltaTime: deltaTime) }
         let events = inbox.drain().map { $0.javaScriptObject }
         enter(limit: configuration.frameTimeLimit, label: "frame") {
             rt.invokeMethod("frame", withArguments: [deltaTime, events])
         }
+        guard state == .loaded else { return }
         commandRing.drain()
         for scriptExtension in extensions { scriptExtension.didRunFrame(self) }
     }
 
-    /// Calls `destroy()` on every loaded script, in order, and stops the runtime. A halted runtime
-    /// calls nothing.
+    /// Calls `destroy()` on every loaded script, in order, executes the commands they issued,
+    /// tells every extension (`tearDown(_:)`), and stops the runtime. A halted runtime calls no
+    /// script, but its extensions still clean up.
     func tearDown() {
+        assertConfined()
         guard state != .tornDown else { return }
         if state == .loaded {
             enter(limit: configuration.loadTimeLimit, label: "teardown") {
                 rt.invokeMethod("teardown", withArguments: [])
             }
+            if state == .loaded { commandRing.drain() }
         }
         state = .tornDown
         pending.removeAll()
+        instanceIDs.removeAll()
+        for scriptExtension in extensions { scriptExtension.tearDown(self) }
     }
 
-    /// Removes a script after the next frame's updates, calling its `destroy()`.
+    /// Removes a script after the next frame's updates, calling its `destroy()`. Its id is free
+    /// again once that `destroy()` ran.
     func remove(scriptID: String) {
-        guard instanceIDs.remove(scriptID) != nil else { return }
-        pending.removeAll { $0.id == scriptID }
-        rt.invokeMethod("remove", withArguments: [scriptID])
+        assertConfined()
+        guard instanceIDs.contains(scriptID) else { return }
+        if let index = pending.firstIndex(where: { $0.id == scriptID }) {
+            pending.remove(at: index)
+            instanceIDs.remove(scriptID)
+            return
+        }
+        // A script that never reached JS (a compile error) has nothing to destroy.
+        if rt.invokeMethod("remove", withArguments: [scriptID])?.toBool() != true {
+            instanceIDs.remove(scriptID)
+        }
     }
 
     // MARK: - Inbox shortcuts (any thread)
@@ -233,7 +290,28 @@ final class SceneScriptRuntime {
         }
         let pendingErrors = rt.forProperty("errors")?.forProperty("length")?.toInt32() ?? 0
         if pendingErrors > 0 { drainErrors() }
+        if (rt.forProperty("removed")?.forProperty("length")?.toInt32() ?? 0) > 0 { drainRemoved() }
+        if !terminated, state != .halted, watched.contains(where: { $0.isDetached }) { handleDetachment(label: label) }
         return Entry(value: value, terminated: terminated)
+    }
+
+    /// Scripts removed from JS (`destroyLayer`, a `destroy()` removing another script) free their
+    /// ids here, so a re-created object's scripts can use them again (SF12).
+    private func drainRemoved() {
+        guard let removed = rt.invokeMethod("drainRemoved", withArguments: [])?.toArray() else { return }
+        for case let id as String in removed { instanceIDs.remove(id) }
+    }
+
+    /// A script detached a buffer the runtime shares with scripts (`buffer.transfer()`): the
+    /// memory is still safe (Swift owns it), but JavaScript no longer sees it, so scripts and
+    /// renderer would silently disagree from now on. Stop every script, like the watchdog does.
+    private func handleDetachment(label: String) {
+        state = .halted
+        let current = rt.invokeMethod("halt", withArguments: [])
+        report(SceneScriptError(kind: .internal, scriptID: current?.isString == true ? current?.toString() ?? "" : "",
+                                callback: label,
+                                message: "a script detached a buffer shared with the engine; scripts are stopped",
+                                line: nil))
     }
 
     /// WE stops every script of the wallpaper after its watchdog fired, not only the one that hung
@@ -253,7 +331,7 @@ final class SceneScriptRuntime {
             let scriptID = entry["id"] as? String ?? ""
             let name = entry["name"] as? String ?? "Error"
             let message = entry["message"] as? String ?? ""
-            let line = (entry["line"] as? NSNumber)?.intValue ?? -1
+            let line = (entry["line"] as? NSNumber).flatMap { SceneScriptNumber.index($0.doubleValue, in: 1...Int(Int32.max)) } ?? -1
             report(SceneScriptError(kind: scriptID.isEmpty ? .internal : .runtime, scriptID: scriptID,
                                     callback: entry["callback"] as? String ?? "",
                                     message: "\(name): \(message)", line: line > 0 ? line : nil))
@@ -282,8 +360,10 @@ final class SceneScriptRuntime {
             let properties: Any
             if let json = instance.scriptPropertiesJSON { properties = json } else { properties = NSNull() }
             _ = uncaught.take()
+            let binding: Any = instance.binding?.javaScriptObject ?? NSNull()
             rt.invokeMethod("define", withArguments: [instance.id, factory, instance.initialValue, properties,
-                                                      instance.objectSlot ?? -1])
+                                                      instance.objectSlot ?? -1,
+                                                      instance.sourceURL?.absoluteString ?? "", binding])
             if let exception = uncaught.take() {
                 report(SceneScriptError(kind: .internal, scriptID: instance.id, callback: "define",
                                         message: Self.message(of: exception), line: nil))
