@@ -25,8 +25,8 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 
 ### 2. Particle systems (largely implemented)
 
-1. Instance overrides (rate, count, size, alpha, speed, lifetime, color), which Phase 4 is adding.
-2. Child particle systems (`children`).
+1. ~~Instance overrides (rate, count, size, alpha, speed, lifetime, color)~~: done; user-bound fields resolve every frame, and `controlpoint<n>` places control points. A property change still triggers a content rebuild, which restarts the particles.
+2. ~~Child particle systems (`children`)~~: done. Static children and event children (`eventfollow`, `eventspawn`, `eventdeath`) with probability, instance budget (`maxcount`), nesting and `inherit…fromevent`, on the GPU (events never leave it) and the CPU. Open: link flag 1 (child control points from the parent's particles) and a rope renderer per instance are reported, not implemented.
 3. Audio-reactive particle properties and collision operators.
 4. Particles through WE's `genericparticle` shaders and materials: blend modes, sprite and trail material options, refraction.
 5. ~~Effects on particle systems~~: WE has no per-particle-system effects; wallpapers use composition layers, which already work.
@@ -84,7 +84,7 @@ Ranked; the area each item belongs to is in brackets.
 9. Name heuristics left: `isSnowParticle`, the "4k" particle scale, parallax `fallbackDepth`. [2]
 10. Effect `visible` bound to a missing user property hides the effect (objects default to visible). [4]
 11. Inspector effect overrides are baked in as literals, so music sync on effect parameters is probably lost. [4]
-12. Particles ignore parent scale, rotation and animation after load; image children of particle systems use the authored transform. [2]
+12. ~~Particles ignore parent scale, rotation and animation after load; image children of particle systems use the authored transform.~~ Done: emitters follow their live parents (scripts, timeline), particles live in the emitter's space unless `worldspace`, and groups and particle systems parent other objects live. [2]
 13. Text `size`: a non-stub size is a fixed box, and the stub test (≤ 2 inside the padding) is a guess. `anchor` and `blockalign` are not applied. [new, Phase 5]
 14. Unsupported `_rt_*` inputs (composite, half/quarter buffers) leave the slot unbound. [1/5]
 15. Built-ins never set: `g_PointerPositionLast`, `g_PointerState`, `g_ParallaxPosition`; `g_Texture*Resolution` reports the allocated size; spritesheet effect textures don't animate. [1]
