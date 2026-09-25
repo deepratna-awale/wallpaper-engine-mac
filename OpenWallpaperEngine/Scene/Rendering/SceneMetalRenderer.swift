@@ -862,23 +862,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return copy
     }
 
-    /// The scene under a scene-input layer, as that layer's base image: the snapshot resampled
-    /// through the layer's world-space quad (parents, scripts, animation, rotation and shear
-    /// included), so each texel of the result is the scene pixel it covers on screen. Parts of
-    /// the quad outside the scene clamp to the scene's edge. A quad that is exactly the scene
-    /// (composition and fullscreen layers) uses the snapshot as is.
+    /// The scene under a scene-input layer, as that layer's base image (`SceneRegionResample`).
+    /// A quad that is exactly the scene (composition and fullscreen layers) uses the snapshot as is.
     private func sceneRegion(of snapshot: MTLTexture, under quad: SceneQuadGeometry,
                              commandBuffer: MTLCommandBuffer) -> MTLTexture? {
-        let mapping = quad.snapshotUV(sceneSize: sceneSize)
-        let tolerance: Float = 1e-4
-        if simd_length(mapping.origin) < tolerance, simd_length(mapping.axisX - SIMD2(1, 0)) < tolerance,
-           simd_length(mapping.axisY - SIMD2(0, 1)) < tolerance {
-            return snapshot
-        }
-        let pixels = (quad.extent * renderPixelsPerUnit).rounded(.up)
-        guard pixels.x.isFinite, pixels.y.isFinite, pixels.x >= 1, pixels.y >= 1 else { return nil }
-        let width = min(Int(pixels.x), 16_384), height = min(Int(pixels.y), 16_384)
-        guard let region = renderTargetPool.texture(width: width, height: height,
+        if SceneRegionResample.coversWholeScene(quad, sceneSize: sceneSize) { return snapshot }
+        guard let size = SceneRegionResample.targetSize(quad, pixelsPerUnit: renderPixelsPerUnit),
+              let region = renderTargetPool.texture(width: size.x, height: size.y,
                                                     pixelFormat: snapshot.pixelFormat, avoiding: snapshot) else { return nil }
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = region
@@ -886,12 +876,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
-        // A quad covering the whole region target, its corners reading the snapshot at the layer's corners.
-        var uniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1,
-                                   drawableSize: SIMD2(Float(width), Float(height)), placement: .stretch)
-        uniform.uvOrigin = mapping.origin
-        uniform.uvAxisX = mapping.axisX
-        uniform.uvAxisY = mapping.axisY
+        var uniform = SceneRegionResample.uniform(quad, sceneSize: sceneSize, targetSize: size)
         encoder.setRenderPipelineState(copyPipeline)
         encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
         encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
