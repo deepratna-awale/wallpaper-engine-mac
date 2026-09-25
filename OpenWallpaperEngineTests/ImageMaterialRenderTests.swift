@@ -176,7 +176,6 @@ final class ImageMaterialRenderTests: XCTestCase {
             let layer = Layer(center: Self.sceneSize / 2, size: Self.sceneSize, rotation: 0)
             XCTAssertTrue(self.drawMaterial(plan, layer, texture: white, snapshot: snapshot, encoder: encoder, format: format))
         }
-        XCTExpectFailure("ShaderPrelude defines HLSL (as 0), so WE's `#ifdef HLSL` screen-space flip runs on top of the GL row convention")
         XCTAssertEqual(Self.pixel(pixels, x: 128, y: 8).red, 1, accuracy: 2 / 255, "top of the scene")
     }
 
