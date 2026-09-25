@@ -61,9 +61,7 @@ final class ParticleChildrenTests: XCTestCase {
         let directory = Fixtures.url("Scenes/particle-children")
         let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/particle-children/project.json"))
         addTeardownBlock {
-            for prefix in ["SceneUserProperties.", "SceneUserPropertiesExplicit.", "SceneAdditionalControlsVersion."] {
-                UserDefaults.standard.removeObject(forKey: prefix + directory.path)
-            }
+            Fixtures.removeStoredSettings(for: directory)
         }
         return try XCTUnwrap(SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory)).metalContent())
     }
