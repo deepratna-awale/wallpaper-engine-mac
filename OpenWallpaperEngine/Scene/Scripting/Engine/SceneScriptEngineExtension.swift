@@ -5,15 +5,18 @@ import JavaScriptCore
 /// `engine.setTimeout`/`setInterval`, `engine.openUserShortcut` and the conversion of user
 /// properties through WE's `_Internal.convertUserProperties`.
 ///
-/// Per-frame numbers (`frametime`, `runtime`, `timeOfDay`, sizes, the cursor) sit in one shared
+/// Per-frame numbers (`frametime`, `timeOfDay`, sizes, the cursor) sit in one shared
 /// `Float32Array` (float, like WE's own) that JS getters read, so a frame costs no bridging.
+/// `engine.runtime` sits in a one-element `Float64Array`: a Float32 steps by 1/64 s after 36 h and
+/// by 1/32 s after 3 days, which makes `Math.sin(engine.runtime * k)` stutter on a wallpaper left
+/// running (SF8), so it keeps the double the clock is counted in.
 /// Storage, console and user shortcuts are narrow native functions on `__rt.native`.
 /// Confined to the runtime's thread, like the runtime; `environment` and `input` are set there.
 final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     /// Slots of the shared frame buffer (`__rt.native.engineFrame`); mirrored in sceneScriptEngine.js.
     enum Slot {
         static let frametime = 0
-        static let runtime = 1
+        // 1 is unused: `engine.runtime` is in the clock buffer.
         static let timeOfDay = 2
         static let screenResolution = 3
         static let canvasSize = 5
@@ -52,6 +55,8 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     private let calendar: Calendar
     private let consoleSink: SceneScriptConsole.Sink
     private var frame: SceneScriptSharedBuffer<Float>?
+    /// `engine.runtime` (`__rt.native.engineClock[0]`).
+    private var clock: SceneScriptSharedBuffer<Double>?
     private var frametime = 0.0
     private var lastFlush = 0.0
     private var unsupportedShortcuts = Set<String>()
@@ -73,15 +78,20 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     // MARK: - SceneScriptRuntimeExtension
 
     func install(into runtime: SceneScriptRuntime) throws {
-        guard let frame = SceneScriptSharedBuffer<Float>(count: Slot.count, in: runtime.context) else {
+        guard let frame = SceneScriptSharedBuffer<Float>(count: Slot.count, in: runtime.context),
+              let clock = SceneScriptSharedBuffer<Double>(count: 1, in: runtime.context) else {
             throw SceneScriptRuntime.CreationError(description: "the engine frame buffer could not be allocated")
         }
         guard let native = runtime.rt.forProperty("native"), native.isObject else {
             throw SceneScriptRuntime.CreationError(description: "runtime.js has no __rt.native")
         }
         self.frame = frame
+        self.clock = clock
+        runtime.watch(frame)
+        runtime.watch(clock)
         publish()
         native.setValue(frame.value, forProperty: "engineFrame")
+        native.setValue(clock.value, forProperty: "engineClock")
         installStorage(on: native, identity: runtime.identity)
         installConsole(on: native, identity: runtime.identity)
         let openUserShortcut: @convention(block) (String) -> Bool = { [weak self] name in
@@ -102,6 +112,11 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
         storage.flush()
     }
 
+    /// Scripts' `destroy()` may have written `localStorage`; nothing writes after this.
+    func tearDown(_ runtime: SceneScriptRuntime) {
+        storage.flush()
+    }
+
     // MARK: - Frame buffer
 
     /// Writes the current numbers into the shared buffer. Called at install (so module bodies and
@@ -109,7 +124,7 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     private func publish() {
         guard let frame else { return }
         frame[Slot.frametime] = Float(frametime)
-        frame[Slot.runtime] = Float(runtimeSeconds)
+        clock?[0] = runtimeSeconds
         frame[Slot.timeOfDay] = Float(timeOfDay())
         frame[Slot.screenResolution] = Float(environment.screenResolution.x)
         frame[Slot.screenResolution + 1] = Float(environment.screenResolution.y)
