@@ -132,7 +132,7 @@ final class ParticleGPURenderTests: XCTestCase {
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         let encoder = try XCTUnwrap(commandBuffer.makeRenderCommandEncoder(descriptor: pass))
-        materials.draw(system, encoder: encoder, context: .init(
+        materials.draw(system, encoder: encoder, commandBuffer: commandBuffer, context: .init(
             sceneSize: SIMD2(Float(Self.size), Float(Self.size)), frame: BuiltinFrameContext(),
             values: ParticleMaterialRenderTests.NoValues(), assetTexture: { _, _ in nil }))
         encoder.endEncoding()

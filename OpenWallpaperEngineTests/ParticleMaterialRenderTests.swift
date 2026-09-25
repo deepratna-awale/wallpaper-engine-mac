@@ -297,6 +297,30 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertTrue(renderer.prepare(system, pixelFormat: format, opacity: { _ in 1 }))
     }
 
+    /// Uniform blocks over 4 KB come from the reused arena, not a new buffer per draw.
+    func testLargeUniformBlocksComeFromTheArena() throws {
+        renderer.uniformArena.inlineLimit = 0
+        let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        for _ in 0..<3 {
+            let pixels = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 80)])
+            XCTAssertGreaterThan(pixels.red(x: 128, y: 128), 250, "the block reaches the shaders")
+        }
+        XCTAssertEqual(renderer.uniformArena.chunksCreated, 1, "one chunk, reused")
+    }
+
+    /// Memory pressure drops the pipelines not drawn with since the last critical trim.
+    func testMemoryPressureDropsIdlePipelines() throws {
+        let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        _ = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 80)])
+        XCTAssertEqual(renderer.pipelineCount, 1)
+        renderer.trimMemory(dropIdlePipelines: false)
+        XCTAssertEqual(renderer.pipelineCount, 1, "a warning keeps pipelines")
+        renderer.trimMemory(dropIdlePipelines: true)
+        XCTAssertEqual(renderer.pipelineCount, 1, "drawn with since the last trim: kept")
+        renderer.trimMemory(dropIdlePipelines: true)
+        XCTAssertEqual(renderer.pipelineCount, 0, "idle since the last trim: dropped")
+    }
+
     func testUserShaderValuesDriveTheMaterialLive() throws {
         let plan = try self.plan("materials/user_overbright.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
         var dim = particle(at: SIMD2(128, 128), size: 80)
@@ -732,7 +756,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
             encoder.setCullMode(cull.0)
             encoder.setFrontFacing(cull.1)
         }
-        renderer.draw(system, encoder: encoder, context: .init(
+        renderer.draw(system, encoder: encoder, commandBuffer: buffer, context: .init(
             sceneSize: SIMD2(Float(size), Float(size)), frame: BuiltinFrameContext(), values: values,
             assetTexture: assetTexture, sceneSnapshot: snapshot))
         encoder.endEncoding()

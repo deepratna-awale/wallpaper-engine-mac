@@ -18,6 +18,8 @@ final class ParticleMaterialRenderer {
 
     private let device: MTLDevice
     private let zeroAttributes: MTLBuffer
+    /// Uniform blocks over 4 KB. Render thread only (see `SceneUniformArena`).
+    let uniformArena: SceneUniformArena
     /// By `.tex` flags that pick a sampler (`clampUVs`, `noInterpolation`).
     private var samplers: [UInt32: MTLSamplerState] = [:]
 
@@ -25,6 +27,8 @@ final class ParticleMaterialRenderer {
     private let compileQueue = DispatchQueue(label: "owe.particle-pipelines", qos: .userInitiated, attributes: .concurrent)
     private let pipelineLock = NSLock()
     private var pipelines: [String: MTLRenderPipelineState] = [:]
+    /// Pipelines drawn with since the last `trimMemory` that dropped idle ones.
+    private var usedPipelines = Set<String>()
     private var pendingPipelines = Set<String>()
     private var failedPipelines: [String: String] = [:]
 
@@ -76,6 +80,7 @@ final class ParticleMaterialRenderer {
         self.device = device
         guard let zero = device.makeBuffer(length: 64) else { return nil }
         zeroAttributes = zero
+        uniformArena = SceneUniformArena(device: device)
     }
 
     /// WE's sampler for a texture: clamp with `clampUVs`, else repeat; nearest with
@@ -100,6 +105,20 @@ final class ParticleMaterialRenderer {
     func releaseAll() {
         systems.removeAll()
     }
+
+    /// Memory pressure: drops free uniform chunks, and with `dropIdlePipelines` every pipeline not
+    /// drawn with since the last trim (they recompile, from the binary archive, if needed again).
+    func trimMemory(dropIdlePipelines: Bool) {
+        uniformArena.trim()
+        guard dropIdlePipelines else { return }
+        pipelineLock.withLock {
+            pipelines = pipelines.filter { usedPipelines.contains($0.key) }
+            usedPipelines.removeAll()
+        }
+    }
+
+    /// Compiled pipelines, for tests and diagnostics.
+    var pipelineCount: Int { pipelineLock.withLock { pipelines.count } }
 
     // MARK: - Frame
 
@@ -187,7 +206,8 @@ final class ParticleMaterialRenderer {
     }
 
     /// Encodes the draw `prepare` set up for `system` this frame.
-    func draw(_ system: ParticleSystemRuntime, encoder: MTLRenderCommandEncoder, context: DrawContext) {
+    func draw(_ system: ParticleSystemRuntime, encoder: MTLRenderCommandEncoder, commandBuffer: MTLCommandBuffer,
+              context: DrawContext) {
         guard let plan = system.configuration.material,
               let state = systems[ObjectIdentifier(system)], state.owner === system,
               let prepared = state.prepared else { return }
@@ -252,12 +272,8 @@ final class ParticleMaterialRenderer {
                     block.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
                     encoder.setVertexBuffer(block, offset: 0, index: 0)
                     encoder.setFragmentBuffer(block, offset: 0, index: 0)
-                } else if raw.count <= 4096 {
-                    encoder.setVertexBytes(raw.baseAddress!, length: raw.count, index: 0)
-                    encoder.setFragmentBytes(raw.baseAddress!, length: raw.count, index: 0)
-                } else if let uniformBuffer = device.makeBuffer(bytes: raw.baseAddress!, length: raw.count) {
-                    encoder.setVertexBuffer(uniformBuffer, offset: 0, index: 0)
-                    encoder.setFragmentBuffer(uniformBuffer, offset: 0, index: 0)
+                } else {
+                    uniformArena.bind(raw, index: 0, to: encoder, commandBuffer: commandBuffer)
                 }
             }
         }
@@ -297,7 +313,8 @@ final class ParticleMaterialRenderer {
         for stage in plan.stages {
             let key = Self.pipelineKey(stage, plan: plan, pixelFormat: pixelFormat)
             let status: (pipeline: MTLRenderPipelineState?, pending: Bool, failure: String?) = pipelineLock.withLock {
-                (pipelines[key], pendingPipelines.contains(key), failedPipelines[key])
+                if pipelines[key] != nil { usedPipelines.insert(key) }
+                return (pipelines[key], pendingPipelines.contains(key), failedPipelines[key])
             }
             if let pipeline = status.pipeline { return .ready(stage, pipeline) }
             if status.pending { return .compiling(stage) }

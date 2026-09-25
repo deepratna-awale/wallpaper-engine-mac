@@ -221,6 +221,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         textFrameCache.trim(to: layers.filter { $0.layer.text != nil }.count)
         effectGraph?.trimMemory(dropIdlePipelines: level == .critical)
         imageMaterials?.trimMemory(dropIdlePipelines: level == .critical)
+        particleMaterials?.trimMemory(dropIdlePipelines: level == .critical)
         if level == .critical { effectAssetTextures.removeAll() }
         OWELog.info(.scene, "Memory pressure (\(level)): freed \((before - renderTargetPool.residentBytes) >> 20) MB of pooled targets")
     }
@@ -567,7 +568,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                         guard let resumed = resumeScenePass(on: sceneTexture, commandBuffer: commandBuffer) else { return false }
                         encoder = resumed
                     }
-                    particleMaterials?.draw(batch.system, encoder: encoder, context: .init(
+                    particleMaterials?.draw(batch.system, encoder: encoder, commandBuffer: commandBuffer, context: .init(
                         sceneSize: sceneSize, frame: effectFrame,
                         values: LiveSceneValueContext(time: sceneTime, scriptTime: sceneTime),
                         assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },

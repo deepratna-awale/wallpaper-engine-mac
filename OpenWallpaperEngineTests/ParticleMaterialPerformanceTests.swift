@@ -63,7 +63,7 @@ final class ParticleMaterialPerformanceTests: XCTestCase {
                 pass.colorAttachments[0].storeAction = .store
                 let buffer = try XCTUnwrap(queue.makeCommandBuffer())
                 let encoder = try XCTUnwrap(buffer.makeRenderCommandEncoder(descriptor: pass))
-                renderer.draw(system, encoder: encoder, context: .init(
+                renderer.draw(system, encoder: encoder, commandBuffer: buffer, context: .init(
                     sceneSize: SIMD2(1920, 1080), frame: BuiltinFrameContext(), values: ParticleMaterialRenderTests.NoValues(),
                     assetTexture: { _, _ in nil }))
                 encoder.endEncoding()
