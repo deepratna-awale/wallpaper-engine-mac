@@ -23,9 +23,11 @@ extension ParticleCPUSimulation {
                     instance.live = live
                     instance.translation = source.translation
                     instance.previousTranslation = source.translation
+                    instance.inheritSource(of: source)
                 } else if instance.active {
                     instance.fresh = false
                     instance.translation = source.translation
+                    instance.inheritSource(of: source)
                     // It runs for as long as its parent instance does.
                     instance.emitting = source.active
                 }

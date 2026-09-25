@@ -80,6 +80,8 @@ final class ParticleChildrenTests: XCTestCase {
         XCTAssertEqual(Set(systems.map(\.order)), [0])
         XCTAssertEqual(systems.map(\.hasEventChildren), [true, false, false, false, false, false])
         XCTAssertEqual(systems[2].link?.probability, 0.5)
+        XCTAssertEqual(systems[2].inheritOnSpawn, [.multiplySize, .setColor], "setcolor when no input is named")
+        XCTAssertEqual(systems[2].inheritEachStep, [.setColor, .setOpacity], "setcoloropacity when no input is named")
         XCTAssertEqual(systems[3].instantaneous, 3)
         XCTAssertTrue(systems[4].worldSpace)
         // The static glow sits 100 units above the rocket's emitter, turned and doubled.
@@ -174,6 +176,29 @@ final class ParticleChildrenTests: XCTestCase {
         for particle in family.runtimes[2].particles { XCTAssertGreaterThan(particle.position.y, 600) }
     }
 
+    func testChildrenInheritFromTheirEventParticle() throws {
+        var root = rocketTestSystem()
+        root.minimumColor = SIMD4(0.1, 0.2, 0.3, 1)
+        root.maximumColor = SIMD4(0.9, 0.8, 0.7, 1)
+        var child = ParticleTestSystem()
+        child.emissionRate = 30
+        child.maximum = 20
+        child.lifetime = 3...3
+        child.inheritOnSpawn = [.setColor, .setVelocity, .multiplySize]
+        child.inheritEachStep = [.setOpacity]
+        let family = try Family(root: root, children: [(child.link(.follow, instances: 20, probability: 1), 0)])
+        family.stepCPU(frames: 40, root: translation(SIMD2(500, 300)))
+        let parent = family.runtimes[0], children = family.runtimes[1]
+        XCTAssertGreaterThan(children.particles.count, 10)
+        for particle in children.particles {
+            let instance = children.instances[particle.instance]
+            guard let source = parent.particles.first(where: { $0.serial == instance.sourceSerial }) else { continue }
+            XCTAssertEqual(SIMD3(particle.color.x, particle.color.y, particle.color.z),
+                           SIMD3(source.color.x, source.color.y, source.color.z), "colour at spawn")
+            XCTAssertEqual(particle.alpha, source.alpha, accuracy: 1e-6, "opacity every step")
+        }
+    }
+
     func testProbabilityAndTheInstanceBudgetLimitEvents() throws {
         var child = ParticleTestSystem()
         child.emissionRate = 0
@@ -210,6 +235,9 @@ final class ParticleChildrenTests: XCTestCase {
         burst.instantaneous = 12
         burst.maximum = 12
         burst.worldSpace = true
+        trail.inheritOnSpawn = [.multiplyColor, .addVelocity, .setSize, .addRotation, .setAngularVelocity]
+        trail.inheritEachStep = [.multiplyOpacity, .multiplySize, .setRotation]
+        spark.inheritOnSpawn = [.setColor, .setOpacity]
         var glow = trail
         glow.emissionRate = 20
         glow.maximum = 10

@@ -192,6 +192,8 @@ struct ParticleGPUParameters {
     var instancing = SIMD4<UInt32>.zero
     /// Probability.
     var link = SIMD4<Float>.zero
+    /// `ParticleInheritance` at spawn, every step.
+    var inherit = SIMD4<UInt32>.zero
 
     /// Samples each `ropetrail` particle keeps.
     var historyLimit: Int { Int(counts.w) }
@@ -306,6 +308,7 @@ struct ParticleGPUParameters {
             instancing = SIMD4(link.kind.rawValue, UInt32(clamping: link.maximumInstances), 0,
                                UInt32(clamping: max(c.instantaneous, 0)))
             self.link = SIMD4(link.probability, 0, 0, 0)
+            inherit = SIMD4(c.inheritOnSpawn.rawValue, c.inheritEachStep.rawValue, 0, 0)
         }
         counts = SIMD4(UInt32(clamping: c.maximumParticleCount), flags.rawValue, seed, UInt32(historyLimit))
     }

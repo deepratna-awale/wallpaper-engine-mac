@@ -1159,6 +1159,17 @@ class SceneWallpaperViewModel: ObservableObject {
         var sequenceRing: ParticleSequenceRing?
         var initialRemap: ParticleInitialRemap?
         var maintainSequenceDistance = false
+        var inheritOnSpawn: ParticleInheritance = []
+        var inheritEachStep: ParticleInheritance = []
+        /// An `inherit…fromevent` element's verb (`default` when it names none); nil logs it.
+        func inheritance(_ input: String?, default fallback: ParticleInheritance, element: String) -> ParticleInheritance {
+            guard let input, !input.isEmpty else { return fallback }
+            guard let verbs = ParticleInheritance(input: input) else {
+                OWELog.error(.scene, "Particle system \(particlePath): \(element) has an unknown input \(input); ignored")
+                return []
+            }
+            return verbs
+        }
         let controlPoints: [ParticleControlPoint] = (particleSystem.controlpoint ?? []).map { controlPoint in
             let offset = (controlPoint.offset ?? "0 0 0").parseVector3()
             return ParticleControlPoint(id: controlPoint.id ?? 0,
@@ -1225,6 +1236,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                                     bounds: (bounds.first ?? 0)...max(bounds.first ?? 0, bounds.count > 1 ? bounds[1] : 1),
                                                     minimumSpeed: SIMD2<Float>(Float(speedMinimum.0), -Float(speedMinimum.1)),
                                                     maximumSpeed: SIMD2<Float>(Float(speedMaximum.0), -Float(speedMaximum.1)))
+            case "inheritinitialvaluefromevent":
+                inheritOnSpawn.formUnion(inheritance(initializer.input, default: .setColor, element: "inheritinitialvaluefromevent"))
             case "remapinitialvalue":
                 // Presets leave `output` implicit; size is the property that visibly tapers a strand
                 // towards its anchor, and velocity damping is already covered by other operators.
@@ -1358,6 +1371,12 @@ class SceneWallpaperViewModel: ObservableObject {
                                                                           strength: Float(`operator`.variablestrength ?? 1))
             case "maintaindistancebetweencontrolpoints":
                 maintainSequenceDistance = true
+            case "inheritvaluefromevent":
+                let verbs = inheritance(`operator`.input, default: [.setColor, .setOpacity], element: "inheritvaluefromevent")
+                if !verbs.isSubset(of: .eachStep) {
+                    OWELog.error(.scene, "Particle system \(particlePath): inheritvaluefromevent can't add \(`operator`.input ?? "") every step; only set and multiply apply")
+                }
+                inheritEachStep.formUnion(verbs.intersection(.eachStep))
             case "turbulence":
                 let mask = `operator`.mask?.vectorValue ?? (1, 1, 0)
                 turbulence = Turbulence(scale: Float(`operator`.scale?.doubleValue ?? 0.005),
@@ -1430,6 +1449,8 @@ class SceneWallpaperViewModel: ObservableObject {
         system.emitterLinear = world.linear
         system.worldSpace = particleSystem.isWorldSpace
         system.worldGravity = worldGravity
+        system.inheritOnSpawn = inheritOnSpawn
+        system.inheritEachStep = inheritEachStep
         if let emitter {
             system.instantaneous = max(emitter.instantaneous ?? 0, 0)
             let speeds = (Float(emitter.speedmin ?? 0), Float(emitter.speedmax ?? emitter.speedmin ?? 0))

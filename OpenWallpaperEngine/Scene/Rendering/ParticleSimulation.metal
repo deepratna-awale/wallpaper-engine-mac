@@ -124,6 +124,41 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     return particle;
 }
 
+/// `ParticleInheritance.applyOnSpawn`.
+static void inheritOnSpawn(thread ParticleState &particle, uint verbs, ParticleInstanceState source) {
+    const float3 rgb = source.sourceColor.xyz;
+    if (verbs & hSetColor) particle.color.xyz = rgb;
+    if (verbs & hMultiplyColor) particle.color.xyz *= rgb;
+    particle.baseColor = particle.color;
+    if (verbs & hSetOpacity) particle.alphaRotation.x = source.sourceColor.w;
+    if (verbs & hMultiplyOpacity) particle.alphaRotation.x *= source.sourceColor.w;
+    particle.alphaRotation.y = particle.alphaRotation.x;
+    if (verbs & hSetVelocity) particle.positionVelocity.zw = source.source.xy;
+    if (verbs & hAddVelocity) particle.positionVelocity.zw += source.source.xy;
+    if (verbs & hSetSize) particle.life.z = source.source.z;
+    if (verbs & hMultiplySize) particle.life.z *= source.source.z;
+    particle.life.w = particle.life.z;
+    if (verbs & hSetRotation) particle.alphaRotation.z = source.source.w;
+    if (verbs & hAddRotation) particle.alphaRotation.z += source.source.w;
+    if (verbs & hSetAngularVelocity) particle.alphaRotation.w = source.emission.x;
+    if (verbs & hAddAngularVelocity) particle.alphaRotation.w += source.emission.x;
+}
+
+/// `ParticleInheritance.applyEachStep`.
+static void inheritEachStep(thread ParticleState &particle, thread float2 &velocity, uint verbs,
+                            ParticleInstanceState source) {
+    const float3 rgb = source.sourceColor.xyz;
+    if (verbs & hSetColor) particle.color.xyz = rgb;
+    if (verbs & hMultiplyColor) particle.color.xyz = particle.baseColor.xyz * rgb;
+    if (verbs & hSetOpacity) particle.alphaRotation.x = source.sourceColor.w;
+    if (verbs & hMultiplyOpacity) particle.alphaRotation.x = particle.alphaRotation.y * source.sourceColor.w;
+    if (verbs & hSetVelocity) velocity = source.source.xy;
+    if (verbs & hSetSize) particle.life.z = source.source.z;
+    if (verbs & hMultiplySize) particle.life.z = particle.life.w * source.source.z;
+    if (verbs & hSetRotation) particle.alphaRotation.z = source.source.w;
+    if (verbs & hSetAngularVelocity) particle.alphaRotation.w = source.emission.x;
+}
+
 /// The instance whose spawns this step include spawn `index` (`ParticleCPUSimulation.step`
 /// spawns instance by instance): the last one starting at or before it.
 static uint spawningInstance(device const ParticleInstanceState *instances, uint count, uint index) {
@@ -145,8 +180,10 @@ kernel void particleEmit(device ParticleState *particles [[buffer(0)]],
     const uint serial = control[cSerialBase] + gid;
     if (p.counts.y & kInstanced) {
         const uint instance = spawningInstance(instances, p.instancing.y, gid);
-        ParticleState particle = spawn(serial, p, f, framePoints(f, instances[instance].place.xy));
+        const ParticleInstanceState source = instances[instance];
+        ParticleState particle = spawn(serial, p, f, framePoints(f, source.place.xy));
         particle.trail.z = float(instance);
+        inheritOnSpawn(particle, p.inherit.x, source);
         particles[control[cCount] + gid] = particle;
     } else {
         particles[control[cCount] + gid] = spawn(serial, p, f, framePoints(f, float2(0)));
@@ -186,10 +223,10 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
     device float2 *own = history + gid * p.counts.w;
     float2 shift = float2(0);
     bool clearing = false;
+    ParticleInstanceState instance = ParticleInstanceState{};
     if (flags & kInstanced) {
         // `ParticleCPUSimulation.followInstance`: the instance's move around its own position.
-        const uint index = uint(particle.trail.z);
-        const ParticleInstanceState instance = instances[index];
+        instance = instances[uint(particle.trail.z)];
         shift = instance.place.xy;
         clearing = (instance.state.x & iClearing) != 0;
         const bool moved = f.motionExtras.z > 0.5 || any(instance.place.xy != instance.place.zw);
@@ -319,6 +356,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
             }
         }
     }
+    if (flags & kInstanced) inheritEachStep(particle, velocity, p.inherit.y, instance);
     particle.positionVelocity = float4(position, velocity);
     if (clearing) particle.life.x = particle.life.y;
     stepped[gid] = particle;

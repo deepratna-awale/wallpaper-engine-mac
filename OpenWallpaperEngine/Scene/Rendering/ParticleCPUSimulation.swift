@@ -9,11 +9,11 @@ struct Particle {
     var size: Float
     var baseSize: Float
     var alpha: Float
-    let baseAlpha: Float
+    var baseAlpha: Float
     var rotation: Float
     var angularVelocity: Float
     var color: SIMD4<Float>
-    let baseColor: SIMD4<Float>
+    var baseColor: SIMD4<Float>
     let spriteFrame: Int
     var history: [SIMD2<Float>]
     var historyStart: Int
@@ -137,6 +137,7 @@ enum ParticleCPUSimulation {
                 for _ in 0..<instance.spawnCount {
                     var particle = spawn(serial: system.nextSerial, system: system, inputs: instanceInputs[index])
                     particle.instance = index
+                    configuration.inheritOnSpawn.applyOnSpawn(to: &particle, from: instance)
                     system.particles.append(particle)
                     system.nextSerial &+= 1
                 }
@@ -169,8 +170,10 @@ enum ParticleCPUSimulation {
             let instance = system.particles[index].instance
             let own = instanceInputs.isEmpty ? inputs : instanceInputs[instance]
             advance(&system.particles[index], index: index, system: system, inputs: own)
-            if !instanceInputs.isEmpty, system.instances[instance].clearing {
-                system.particles[index].age = system.particles[index].lifetime
+            if !instanceInputs.isEmpty {
+                let source = system.instances[instance]
+                configuration.inheritEachStep.applyEachStep(to: &system.particles[index], from: source)
+                if source.clearing { system.particles[index].age = system.particles[index].lifetime }
             }
         }
         if configuration.hasEventChildren {

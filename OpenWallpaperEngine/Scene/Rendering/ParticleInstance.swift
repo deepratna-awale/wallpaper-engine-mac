@@ -21,10 +21,20 @@ struct ParticleInstance {
     var spawnCount = 0
     /// The source particle's values, for `inheritinitialvaluefromevent` and `inheritvaluefromevent`.
     var sourceVelocity = SIMD2<Float>.zero
-    var sourceColor = SIMD4<Float>(repeating: 1)
+    var sourceColor = SIMD4<Float>.zero
     var sourceSize: Float = 0
     var sourceRotation: Float = 0
     var sourceAngularVelocity: Float = 0
+
+    /// Takes another instance's source (a static child of an instanced system inherits from its
+    /// parent instance's event).
+    mutating func inheritSource(of instance: ParticleInstance) {
+        sourceVelocity = instance.sourceVelocity
+        sourceColor = instance.sourceColor
+        sourceSize = instance.sourceSize
+        sourceRotation = instance.sourceRotation
+        sourceAngularVelocity = instance.sourceAngularVelocity
+    }
 
     mutating func track(_ particle: Particle) {
         translation = particle.position

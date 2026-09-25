@@ -23,6 +23,8 @@ struct ParticleTestSystem {
     var emitterSpeed: ClosedRange<Float> = 0...0
     var minimumSpawnRatio: Float = 0
     var emitterSign = SIMD2<Float>.zero
+    var inheritOnSpawn: ParticleInheritance = []
+    var inheritEachStep: ParticleInheritance = []
     var drag: Float = 0
     var alpha: ClosedRange<Float> = 0.5...1
     var minimumColor = SIMD4<Float>(0.2, 0.3, 0.4, 1)
@@ -95,6 +97,8 @@ struct ParticleTestSystem {
         system.emitterSpeed = emitterSpeed
         system.minimumSpawnRatio = minimumSpawnRatio
         system.emitterSign = emitterSign
+        system.inheritOnSpawn = inheritOnSpawn
+        system.inheritEachStep = inheritEachStep
         system.material = material
         return system
     }

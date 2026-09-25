@@ -95,6 +95,10 @@ struct SceneMetalParticleSystem {
     var link: ParticleChildLink? = nil
     /// The system has event children, which read its spawns and deaths.
     var hasEventChildren = false
+    /// What an instanced system's particles take from their event's parent particle
+    /// (`inheritinitialvaluefromevent` at spawn, `inheritvaluefromevent` every step).
+    var inheritOnSpawn: ParticleInheritance = []
+    var inheritEachStep: ParticleInheritance = []
 
     /// Runs as instances (`ParticleChildLink`).
     var isInstanced: Bool { link?.instanced == true }

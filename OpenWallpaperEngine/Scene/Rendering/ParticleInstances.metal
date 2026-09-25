@@ -46,6 +46,13 @@ static void trackSource(thread ParticleInstanceState &instance, ParticleState pa
     instance.emission.x = particle.alphaRotation.w;
 }
 
+/// `ParticleInstance.inheritSource`.
+static void inheritSource(thread ParticleInstanceState &instance, ParticleInstanceState parent) {
+    instance.source = parent.source;
+    instance.sourceColor = parent.sourceColor;
+    instance.emission.x = parent.emission.x;
+}
+
 /// The parent particle with `serial`, by binary search (particles stay in spawn order); `count`
 /// when there is none.
 static uint findSerial(device const ParticleState *particles, uint count, uint serial) {
@@ -105,9 +112,11 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
                     instance.state.x = iActive | iEmitting | iFresh;
                     instance.state.z = live;
                     instance.place = float4(source.place.xy, source.place.xy);
+                    inheritSource(instance, source);
                 } else if (instance.state.x & iActive) {
                     instance.state.x &= ~iFresh;
                     instance.place.xy = source.place.xy;
+                    inheritSource(instance, source);
                     const bool emitting = (source.state.x & iActive) != 0;
                     instance.state.x = emitting ? (instance.state.x | iEmitting) : (instance.state.x & ~iEmitting);
                 }

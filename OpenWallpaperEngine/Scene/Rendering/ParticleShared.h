@@ -56,6 +56,7 @@ struct ParticleParameters {
     float4 sprite;           // mode (0 sequence, 1 once, 2 random frame), sequence multiplier, opacity multiplier, refractive
     uint4 instancing;        // link kind (0 none, `ParticleChildLink.Kind`), instances, -, instantaneous
     float4 link;             // probability
+    uint4 inherit;           // `ParticleInheritance` at spawn, every step
 };
 
 /// One instance of an instanced child system (`ParticleGPUInstance`, `ParticleInstance`).
@@ -122,6 +123,12 @@ constant uint kSpriteSheet = 1u << 20, kInstanced = 1u << 21, kWorldSpace = 1u <
 
 // Instance flags (`ParticleGPUInstance`).
 constant uint iActive = 1u << 0, iEmitting = 1u << 1, iFresh = 1u << 2, iClearing = 1u << 3;
+
+// `ParticleInheritance`.
+constant uint hSetColor = 1u << 0, hMultiplyColor = 1u << 1, hSetOpacity = 1u << 2, hMultiplyOpacity = 1u << 3;
+constant uint hSetVelocity = 1u << 4, hAddVelocity = 1u << 5, hSetSize = 1u << 6, hMultiplySize = 1u << 7;
+constant uint hSetRotation = 1u << 8, hAddRotation = 1u << 9, hSetAngularVelocity = 1u << 10;
+constant uint hAddAngularVelocity = 1u << 11;
 
 // Link kinds (`ParticleChildLink.Kind`).
 constant uint lStatic = 1, lFollow = 2, lSpawn = 3, lDeath = 4;
