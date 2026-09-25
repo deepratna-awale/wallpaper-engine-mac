@@ -20,9 +20,16 @@ enum SceneShaderTranslator {
         "/usr/bin"
     ]
 
-    /// Bumped when the translation pipeline changes, so shaders recorded as unsupported are
-    /// retried against the new pipeline instead of being skipped forever.
-    private static let pipelineRevision = "3"
+    /// Bumped when the translation pipeline changes. It is part of every translation stamp, so
+    /// both translated and unsupported shaders are redone against the new pipeline instead of
+    /// serving output from an older translator forever.
+    private static let pipelineRevision = "5"
+
+    /// A translation is current only if both its source and the translator that produced it match.
+    private static func translationStamp(for source: Data) -> String {
+        let hash = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+        return "\(pipelineRevision):\(hash)"
+    }
 
     static var toolchain: Toolchain? {
         toolchainLock.lock()
@@ -212,7 +219,7 @@ enum SceneShaderTranslator {
             let outputURL = cacheDirectory.appending(path: outputName)
             // Hash-gated rather than existence-gated: Workshop items update their PKG in place,
             // so a plain fileExists check would serve stale Metal forever.
-            let hash = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+            let hash = translationStamp(for: source)
             let hashURL = outputURL.appendingPathExtension("sha256")
             if FileManager.default.fileExists(atPath: outputURL.path),
                (try? String(contentsOf: hashURL, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) == hash {
@@ -225,11 +232,45 @@ enum SceneShaderTranslator {
         }
     }
 
+    /// Editor-only shaders that never render in a wallpaper: previews, Direct3D HLSL, and brushes.
+    private static func isEditorOnlyShader(_ path: String) -> Bool {
+        ["/preview/", "/previewvhs/", "/HLSL/"].contains { path.contains($0) }
+            || path.contains("editorpaintbrush")
+    }
+
+    /// Drops cached translations of editor-only shaders left behind by builds that still translated
+    /// them. Their names collide with the real shaders' when the catalog indexes the cache, so
+    /// leaving them can serve the wrong program. Only those are touched: package translations share
+    /// per-wallpaper cache directories and are not this pass's to remove. A pass that found no
+    /// sources (the bundled cache ships without GLSL) removes nothing.
+    private static func removeOrphanedTranslations(in cacheDirectory: URL, keeping outputs: Set<String>) {
+        guard !outputs.isEmpty,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: cacheDirectory.path) else { return }
+        let sidecarSuffixes = [".metallib", ".sha256", ".unsupported", ".reflection.json"]
+        var removed = 0
+        for name in names {
+            var output = name
+            if let suffix = sidecarSuffixes.first(where: { name.hasSuffix($0) }) {
+                output = String(name.dropLast(suffix.count))
+            }
+            // Output names are source paths with "/" flattened to "_".
+            guard output.hasSuffix(".metal"), !outputs.contains(output),
+                  isEditorOnlyShader("/" + output.replacingOccurrences(of: "_", with: "/") + "/") else { continue }
+            if (try? FileManager.default.removeItem(at: cacheDirectory.appending(path: name))) != nil {
+                removed += 1
+            }
+        }
+        if removed > 0 {
+            OWELog.info(.shader, "Removed \(removed) orphaned shader cache file(s) from \(cacheDirectory.path)")
+        }
+    }
+
     static func translateSharedShaders(in assetsDirectory: URL, cacheDirectory: URL) {
         guard let tools = toolchain else { return }
         let (glslang, spirvCross) = (tools.glslang, tools.spirvCross)
         try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
         var pendingLibraryCompiles: [(metal: URL, marker: URL, contents: String)] = []
+        var currentOutputs = Set<String>()
         // `shaders/` holds the shared runtime shaders (fur, puppet warp, volumetrics) and
         // `zcompat/` per-wallpaper compatibility variants, both of which effects alone miss.
         let searchRoots = ["effects", "shaders", "zcompat"].map { assetsDirectory.appending(path: $0) }
@@ -239,19 +280,18 @@ enum SceneShaderTranslator {
                 let extensionName = url.pathExtension.lowercased()
                 guard extensionName == "frag" || extensionName == "vert" else { continue }
                 let relativePath = url.path.replacingOccurrences(of: assetsDirectory.path + "/", with: "")
-                guard !relativePath.contains("/preview/") && !relativePath.contains("/previewvhs/") else { continue }
-                // HLSL is Direct3D-only and editor brushes never render in a wallpaper.
-                guard !relativePath.contains("/HLSL/"), !relativePath.contains("editorpaintbrush") else { continue }
+                guard !isEditorOnlyShader(relativePath) else { continue }
                 guard let source = try? Data(contentsOf: url) else { continue }
                 let outputName = relativePath.replacingOccurrences(of: "/", with: "_") + ".metal"
                 let outputURL = cacheDirectory.appending(path: outputName)
-                let hash = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+                currentOutputs.insert(outputName)
+                let hash = translationStamp(for: source)
                 let hashURL = outputURL.appendingPathExtension("sha256")
                 // A handful of shaders cannot be expressed in Metal (e.g. more uniform buffers
                 // than its 31 slots). Retrying them every launch costs a process spawn each and
                 // buries real failures in the log.
                 let unsupportedURL = outputURL.appendingPathExtension("unsupported")
-                let unsupportedMarker = "\(pipelineRevision):\(hash)"
+                let unsupportedMarker = hash
                 if (try? String(contentsOf: unsupportedURL, encoding: .utf8))?
                     .trimmingCharacters(in: .whitespacesAndNewlines) == unsupportedMarker { continue }
                 if (try? String(contentsOf: hashURL, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines) == hash {
@@ -279,6 +319,7 @@ enum SceneShaderTranslator {
                 }
             }
         }
+        removeOrphanedTranslations(in: cacheDirectory, keeping: currentOutputs)
         guard !pendingLibraryCompiles.isEmpty else { return }
         DispatchQueue.global(qos: .background).async {
             var compiled = 0
@@ -344,7 +385,9 @@ enum SceneShaderTranslator {
         text = text.replacingOccurrences(of: #"(\bvec3\s+\w+\s*=\s*texSample2D\([^;]+\))\s*;"#, with: "$1.rgb;", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(\bfloat\s+\w+\s*=\s*texSample2D\([^;]+\))\s*;"#, with: "$1.r;", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?m)^\s*#require\s+[^\n]+$"#, with: "", options: .regularExpression)
-        text = text.replacingOccurrences(of: #"(?m)^\s*#define\s+M_PI\s+[^\n]+$"#, with: "", options: .regularExpression)
+        // The header below owns these constants; a second, differently-rounded definition from
+        // common.h is a glslang redefinition error.
+        text = text.replacingOccurrences(of: #"(?m)^\s*#define\s+M_PI(_2|_HALF)?\s+[^\n]+$"#, with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: #"(?m)^\s*in\s+uint\s+gl_(InstanceID|VertexID)\s*;\s*$"#, with: "", options: .regularExpression)
         text = text.replacingOccurrences(of: #"([0-9]+\.[0-9]{9})[0-9]+"#, with: "$1", options: .regularExpression)
         var uniforms: [String] = []
@@ -373,10 +416,14 @@ enum SceneShaderTranslator {
         #define saturate(x) clamp(x, 0.0, 1.0)
         #define frac(x) fract(x)
         #ifndef M_PI
-        #define M_PI 3.14159
+        #define M_PI 3.14159265359
         #endif
+        #ifndef M_PI_HALF
+        #define M_PI_HALF 1.57079632679
+        #endif
+        // Wallpaper Engine's common.h defines M_PI_2 as 2π, not π/2; shaders rely on that value.
         #ifndef M_PI_2
-        #define M_PI_2 1.57079632679
+        #define M_PI_2 6.28318530718
         #endif
         #ifndef M_PI_4
         #define M_PI_4 0.78539816339
@@ -403,6 +450,17 @@ enum SceneShaderTranslator {
         vec2 max(float left, vec2 right) { return max(vec2(left), right); }
         vec3 max(float left, vec3 right) { return max(vec3(left), right); }
         vec4 max(float left, vec4 right) { return max(vec4(left), right); }
+        // Declaring any overload of a built-in stops glslang from converting int arguments when
+        // matching the built-in itself, so HLSL-style calls like pow(x, 4) or max(0, x) need these.
+        float pow(float value, int exponent) { return pow(value, float(exponent)); }
+        vec2 pow(vec2 value, int exponent) { return pow(value, vec2(exponent)); }
+        vec3 pow(vec3 value, int exponent) { return pow(value, vec3(exponent)); }
+        vec4 pow(vec4 value, int exponent) { return pow(value, vec4(exponent)); }
+        float max(int left, float right) { return max(float(left), right); }
+        float max(float left, int right) { return max(left, float(right)); }
+        vec2 max(int left, vec2 right) { return max(vec2(left), right); }
+        vec3 max(int left, vec3 right) { return max(vec3(left), right); }
+        vec4 max(int left, vec4 right) { return max(vec4(left), right); }
         vec2 rotateVec2(vec4 value, float angle) { float s = sin(angle); float c = cos(angle); return vec2(value.x * c - value.y * s, value.x * s + value.y * c); }
         vec3 PerformLighting_V1(vec3 worldPosition, vec3 color, vec3 normal, vec3 viewDirection, vec3 specularTint, vec3 ambient, float roughness, float metallic) {
             float diffuse = max(dot(normalize(normal), normalize(viewDirection)), 0.0);

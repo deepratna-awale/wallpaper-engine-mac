@@ -112,7 +112,7 @@ final class VideoTextureStream {
     /// The wallpaper's own soundtrack drives music sync whenever you can actually hear it;
     /// otherwise sync follows whatever else is playing on the system.
     var musicSyncLevel: Double {
-        audioIsAudible ? ownAudioTap.level : AudioReactiveScriptEngine.shared.audioLevel
+        audioIsAudible && ownAudioTap.isMeasuring ? ownAudioTap.level : AudioReactiveScriptEngine.shared.audioLevel
     }
 
     /// `paceAmount` warps playback with the music the way the AVKit path does; the audio track keeps

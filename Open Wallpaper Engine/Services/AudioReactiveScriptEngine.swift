@@ -321,10 +321,54 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     private var sceneCanvasSize = SIMD2<Double>(1920, 1080)
     private var propertyNotificationWorkItem: DispatchWorkItem?
 
+    /// Guards `stream` and `captureGeneration`; capture starts and stops on arbitrary tasks.
+    private let captureLock = NSLock()
+    /// Bumped on every restart so a start that was already in flight knows it has been superseded.
+    private var captureGeneration = 0
+    private var captureObservers: [NSObjectProtocol] = []
+
     private override init() {
         super.init()
         _ = BrowserMediaIntegration.shared
+        observeCaptureInterruptions()
         startSystemAudioCapture()
+    }
+
+    /// A ScreenCaptureKit stream does not survive system sleep or display reconfiguration, and
+    /// nothing else would ever start a new one, so every audio-reactive feature would stay silent
+    /// until the app is relaunched.
+    private func observeCaptureInterruptions() {
+        captureObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.restartSystemAudioCapture(reason: "system woke")
+            })
+        captureObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.restartSystemAudioCapture(reason: "display configuration changed")
+            })
+    }
+
+    private func restartSystemAudioCapture(reason: String) {
+        captureLock.lock()
+        captureGeneration &+= 1
+        let previous = stream
+        stream = nil
+        captureLock.unlock()
+        resetAudioLevels()
+        OWELog.info(.audio, "Restarting ScreenCaptureKit audio capture: \(reason).")
+        Task { [weak self] in
+            try? await previous?.stopCapture()
+            self?.startSystemAudioCapture()
+        }
+    }
+
+    /// Without this, visuals stay frozen on the last buffer that arrived before capture stopped.
+    private func resetAudioLevels() {
+        levelLock.lock()
+        level = 0
+        spectrum = [Double](repeating: 0, count: spectrum.count)
+        waveform = [Double](repeating: 0, count: waveform.count)
+        levelLock.unlock()
     }
 
     /// Scene-space cursor for per-layer hit testing; the renderer owns the screen-to-scene mapping.
@@ -1066,6 +1110,9 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     }
 
     private func startSystemAudioCapture(attempt: Int = 0) {
+        captureLock.lock()
+        let generation = captureGeneration
+        captureLock.unlock()
         Task { [weak self] in
             guard let self else { return }
             let content: SCShareableContent
@@ -1073,7 +1120,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
                 content = try await SCShareableContent.current
             } catch {
                 OWELog.error(.audio, "Unable to read shareable content: \(error.localizedDescription)")
-                await self.retryOrReportAudioCapture(attempt: attempt)
+                await self.retryOrReportAudioCapture(attempt: attempt, generation: generation)
                 return
             }
             guard let display = content.displays.first else {
@@ -1093,22 +1140,49 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
                 OWELog.info(.audio, "ScreenCaptureKit audio capture started.")
             } catch {
                 OWELog.error(.audio, "Failed to start ScreenCaptureKit audio capture: \(error.localizedDescription)")
-                await self.retryOrReportAudioCapture(attempt: attempt)
+                await self.retryOrReportAudioCapture(attempt: attempt, generation: generation)
                 return
             }
-            self.stream = stream
+            self.captureLock.lock()
+            let isCurrent = generation == self.captureGeneration
+            if isCurrent { self.stream = stream }
+            self.captureLock.unlock()
+            // A restart happened while this start was in flight; the newer attempt owns capture.
+            if !isCurrent { try? await stream.stopCapture() }
         }
+    }
+
+    private func isCurrentCapture(_ generation: Int) -> Bool {
+        captureLock.lock()
+        defer { captureLock.unlock() }
+        return generation == captureGeneration
     }
 
     /// ScreenCaptureKit often fails the first call right after launch even when permission is
     /// granted, so capture is retried before anything is reported to the user.
-    private func retryOrReportAudioCapture(attempt: Int) async {
+    private func retryOrReportAudioCapture(attempt: Int, generation: Int) async {
+        guard isCurrentCapture(generation) else { return }
         guard attempt >= 2 else {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard isCurrentCapture(generation) else { return }
             startSystemAudioCapture(attempt: attempt + 1)
             return
         }
         await reportMissingAudioCapturePermission()
+    }
+
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        captureLock.lock()
+        let wasCurrent = stream === self.stream
+        if wasCurrent { self.stream = nil }
+        captureLock.unlock()
+        guard wasCurrent else { return }
+        OWELog.error(.audio, "ScreenCaptureKit audio capture stopped: \(error.localizedDescription)")
+        resetAudioLevels()
+        // Give the system a moment to settle (the usual cause is sleep or a display change).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.restartSystemAudioCapture(reason: "stream stopped")
+        }
     }
 
     @MainActor

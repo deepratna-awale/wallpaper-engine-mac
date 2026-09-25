@@ -115,7 +115,7 @@ class VideoWallpaperViewModel: ObservableObject {
     /// The wallpaper's own soundtrack drives music sync whenever you can actually hear it;
     /// otherwise sync follows whatever else is playing on the system.
     var musicSyncLevel: Double {
-        !audioPlayer.isMuted && audioPlayer.volume > 0
+        !audioPlayer.isMuted && audioPlayer.volume > 0 && ownAudioTap.isMeasuring
             ? ownAudioTap.level
             : AudioReactiveScriptEngine.shared.audioLevel
     }
@@ -132,7 +132,8 @@ class VideoWallpaperViewModel: ObservableObject {
         } else {
             smoothedAudioLevel = level
         }
-        setVideoRate(max(0, playRate + Float(smoothedAudioLevel * paceAmount)))
+        // A paused wallpaper stays paused; pacing only modulates a video that is playing.
+        setVideoRate(playRate > 0 ? max(0, playRate + Float(smoothedAudioLevel * paceAmount)) : 0)
         // Audio runs on a second player, so a paused wallpaper keeps playing sound unless the
         // pause is applied here too.
         setAudioRate(playsAudio && !audioPlayer.isMuted && playRate > 0 ? wallpaperViewModel.audioPlayRate : 0)

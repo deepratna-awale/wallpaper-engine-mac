@@ -26,17 +26,47 @@ final class AudioLevelTap {
     }
 
     private let storage = Storage()
+    private let stateLock = NSLock()
+    private var isAttached = false
+    private var attachGeneration = 0
 
     var level: Double { storage.level }
+
+    /// Whether a tap is installed. Many video wallpapers have no audio track at all; callers then
+    /// need another level source, because `level` would stay 0 forever.
+    var isMeasuring: Bool {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return isAttached
+    }
+
+    /// Starts a new attachment and returns its token; an older, slower attach must not mark the
+    /// newly attached item as measured.
+    private func beginAttach() -> Int {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        attachGeneration &+= 1
+        isAttached = false
+        return attachGeneration
+    }
+
+    private func finishAttach(_ generation: Int) {
+        stateLock.lock()
+        if generation == attachGeneration { isAttached = true }
+        stateLock.unlock()
+    }
 
     /// Installs the tap on `item`'s first audio track. Track loading is async, so the level stays
     /// at 0 until it completes.
     func attach(to item: AVPlayerItem) {
+        let generation = beginAttach()
+        storage.store(0)
         let asset = item.asset
         Task { [weak self] in
             guard let self,
                   let track = try? await asset.loadTracks(withMediaType: .audio).first else { return }
             guard let tap = self.makeTap() else { return }
+            self.finishAttach(generation)
             let parameters = AVMutableAudioMixInputParameters(track: track)
             parameters.audioTapProcessor = tap
             let mix = AVMutableAudioMix()
