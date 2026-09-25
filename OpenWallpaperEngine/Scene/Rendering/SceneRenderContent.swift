@@ -20,6 +20,24 @@ enum SceneMetalTextureSource {
             return nil
         }
     }
+
+    /// The image's size in pixels, which WE sizes an unsized layer by. An `NSImage`'s `size` is in
+    /// points and follows the file's DPI (a 144-dpi PNG reports half its pixels), so it isn't used.
+    var pixelSize: SIMD2<Float> {
+        switch self {
+        case let .image(image): return Self.pixelSize(of: image)
+        case let .dxt(texture): return SIMD2(Float(texture.contentWidth), Float(texture.contentHeight))
+        case let .animated(animation): return animation.images.first.map(Self.pixelSize(of:)) ?? .zero
+        case let .video(stream): return stream.frameSize
+        }
+    }
+
+    static func pixelSize(of image: NSImage) -> SIMD2<Float> {
+        if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            return SIMD2(Float(cgImage.width), Float(cgImage.height))
+        }
+        return SIMD2(Float(image.size.width), Float(image.size.height))
+    }
 }
 
 struct SceneMetalLayer {

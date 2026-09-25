@@ -630,15 +630,9 @@ class SceneWallpaperViewModel: ObservableObject {
             let value = sizeString.parseVector2()
             size = SIMD2<Float>(Float(value.0), Float(value.1))
         } else {
-            switch source {
-            case let .image(image): size = SIMD2<Float>(Float(image.size.width), Float(image.size.height))
-            // The image's own size, not the block/power-of-two padded allocation around it.
-            case let .dxt(texture): size = SIMD2<Float>(Float(texture.contentWidth), Float(texture.contentHeight))
-            case let .animated(animation):
-                guard let image = animation.images.first else { return nil }
-                size = SIMD2<Float>(Float(image.size.width), Float(image.size.height))
-            case let .video(stream): size = stream.frameSize
-            }
+            // In pixels, and for a .tex the image's own size, not the padded allocation around it.
+            if case let .animated(animation) = source, animation.images.isEmpty { return nil }
+            size = source.pixelSize
         }
         let position: SIMD2<Float> = model.fullscreen == true
             ? sceneSize / 2

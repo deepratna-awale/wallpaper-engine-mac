@@ -109,7 +109,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var frameLocals: [String: SceneLocalTransform] = [:]
     private var layerIndexByStateId: [String: Int] = [:]
     /// The most recently committed frame, so state a removal frees can wait for it.
-    private(set) var lastCommandBuffer: MTLCommandBuffer?
+    private var lastCommandBuffer: MTLCommandBuffer?
     /// Removed clones' state ids, freed once the frame that last drew them completes.
     private var deferredReleases = SceneDeferredReleases()
     /// Told how long each frame took on the CPU, including the wait for a drawable.
@@ -1058,10 +1058,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard textures.count == animation.images.count else { return nil }
             return animation.frames.compactMap { frame in
                 guard frame.imageIndex < textures.count else { return nil }
-                let image = animation.images[frame.imageIndex]
-                guard image.size.width > 0, image.size.height > 0 else { return nil }
-                // WidthY/HeightX allow the frame rect to be sheared/rotated within the atlas.
-                let atlasSize = SIMD2<Float>(Float(image.size.width), Float(image.size.height))
+                // Frame rects are in the atlas's pixels; the texture was made from those pixels,
+                // whatever size in points the image reports. WidthY/HeightX shear or turn the rect.
+                let atlas = textures[frame.imageIndex]
+                let atlasSize = SIMD2<Float>(Float(atlas.width), Float(atlas.height))
+                guard atlasSize.x > 0, atlasSize.y > 0 else { return nil }
                 return RenderTextureFrame(texture: textures[frame.imageIndex], duration: frame.duration,
                                           uvOrigin: SIMD2<Float>(frame.x, frame.y) / atlasSize,
                                           uvAxisX: SIMD2<Float>(frame.width, frame.widthY) / atlasSize,
