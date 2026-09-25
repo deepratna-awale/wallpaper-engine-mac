@@ -48,6 +48,11 @@ enum ParticleRecordWriter {
         return SIMD4(points, 0, 1, points)
     }
 
+    /// The size WE's particle shaders read: half the simulated size (a sprite's quad is this
+    /// wide, a rope ribbon twice this), as linux-wallpaperengine and wallpaper-scene-renderer
+    /// pass it.
+    static func shaderSize(_ particle: Particle) -> Float { particle.size / 2 }
+
     private static func color(_ particle: Particle, opacity: (Particle) -> Float) -> SIMD4<Float> {
         SIMD4(particle.color.x, particle.color.y, particle.color.z, particle.color.w * opacity(particle))
     }
@@ -58,7 +63,7 @@ enum ParticleRecordWriter {
         for (index, particle) in system.particles.prefix(count).enumerated() {
             records[index] = ParticleSpriteInstance(
                 position: SIMD4(particle.position.x, particle.position.y, 0, 0),
-                rotationSize: SIMD4(0, 0, particle.rotation, particle.size),
+                rotationSize: SIMD4(0, 0, particle.rotation, shaderSize(particle)),
                 velocityLifetime: SIMD4(particle.velocity.x, particle.velocity.y, 0,
                                         spritePhase(particle, configuration: configuration)),
                 color: color(particle, opacity: opacity))
@@ -71,7 +76,9 @@ enum ParticleRecordWriter {
         let phase: Float
         switch configuration.animationMode {
         case "randomframe":
-            phase = (Float(particle.spriteFrame % sheet.frames) + 0.5) / Float(sheet.frames)
+            // The frame's own start: with `SPRITESHEETBLEND` the fraction past it is how much of
+            // the next frame shows. The small offset keeps `floor` on this frame despite rounding.
+            phase = (Float(particle.spriteFrame % sheet.frames) + 0.001) / Float(sheet.frames)
         case "once":
             phase = min(particle.age / max(particle.lifetime, 0.0001) * configuration.sequenceMultiplier, 0.9999)
         default:
@@ -92,10 +99,10 @@ enum ParticleRecordWriter {
             let previous = particles[max(index - 1, 0)].position
             let next = particles[min(index + 2, particles.count - 1)].position
             records[index] = ParticleRopeSegmentInstance(
-                start: SIMD4(start.position.x, start.position.y, 0, start.size),
+                start: SIMD4(start.position.x, start.position.y, 0, shaderSize(start)),
                 end: SIMD4(end.position.x, end.position.y, 0, points),
                 previous: SIMD4(previous.x, previous.y, 0, Float(index)),
-                next: SIMD4(next.x, next.y, 0, end.size),
+                next: SIMD4(next.x, next.y, 0, shaderSize(end)),
                 endColor: color(end, opacity: opacity),
                 color: color(start, opacity: opacity))
         }
@@ -115,16 +122,17 @@ enum ParticleRecordWriter {
             }
             let points = history.count + 1
             let rgba = color(particle, opacity: opacity)
+            let size = shaderSize(particle)
             for segment in 0..<(points - 1) where written < count {
                 let start = point(segment)
                 let end = point(segment + 1)
                 let previous = point(max(segment - 1, 0))
                 let next = point(min(segment + 2, points - 1))
                 records[written] = ParticleRopeSegmentInstance(
-                    start: SIMD4(start.x, start.y, 0, particle.size),
+                    start: SIMD4(start.x, start.y, 0, size),
                     end: SIMD4(end.x, end.y, 0, Float(points)),
                     previous: SIMD4(previous.x, previous.y, 0, Float(segment)),
-                    next: SIMD4(next.x, next.y, 0, particle.size),
+                    next: SIMD4(next.x, next.y, 0, size),
                     endColor: rgba, color: rgba)
                 written += 1
             }

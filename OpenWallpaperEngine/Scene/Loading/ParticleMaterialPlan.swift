@@ -41,4 +41,7 @@ struct ParticleMaterialPlan {
     let trailLengths: SIMD4<Float>
     /// Set when texture 0 is a sprite sheet (`SPRITESHEET`).
     let spriteSheet: SpriteSheet?
+    /// Each texture slot's `.tex` flags, which pick its sampler (clamp or repeat, bilinear or
+    /// nearest). A slot without an entry samples as WE's default: repeat, bilinear.
+    var textureFlags: [Int: TEXFlags] = [:]
 }

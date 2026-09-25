@@ -42,11 +42,11 @@ enum ParticleVertexFormat: Equatable {
 }
 
 /// One particle, as `genericparticle.vert` reads it. Positions and vectors are in the system's
-/// model space (the scene, y up); `size` is the full sprite width.
+/// model space (the scene, y up); sizes are `ParticleRecordWriter.shaderSize`.
 struct ParticleSpriteInstance {
     /// `a_Position`: xyz; w unused.
     var position: SIMD4<Float>
-    /// `a_TexCoordVec4`: rotation (radians, xyz) and size.
+    /// `a_TexCoordVec4`: rotation (radians, xyz) and size (the quad's width).
     var rotationSize: SIMD4<Float>
     /// `a_TexCoordVec4C1`: velocity (xyz) and the sprite-sheet phase (`frac` picks the frame).
     var velocityLifetime: SIMD4<Float>

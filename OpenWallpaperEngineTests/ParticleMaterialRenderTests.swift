@@ -32,19 +32,20 @@ final class ParticleMaterialRenderTests: XCTestCase {
 
     func testSpriteThroughEmulatedGeometryStage() throws {
         let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
-        // One particle in the top-left quadrant (scene y is up).
-        let pixels = try render(plan, particles: [particle(at: SIMD2(64, 192), size: 40)])
+        // One particle in the top-left quadrant (scene y is up). WE's shaders read half the
+        // simulated size, which is the quad's width.
+        let pixels = try render(plan, particles: [particle(at: SIMD2(64, 192), size: 80)])
         XCTAssertGreaterThan(pixels.red(x: 64, y: 64), 250, "the sprite covers its position")
-        XCTAssertGreaterThan(pixels.red(x: 64 + 17, y: 64 - 17), 250, "a 40-unit sprite reaches 17 units out")
-        XCTAssertLessThan(pixels.red(x: 64 + 24, y: 64), 5, "and no further than half its size")
+        XCTAssertGreaterThan(pixels.red(x: 64 + 17, y: 64 - 17), 250, "a size-80 sprite is 40 wide: it reaches 17 out")
+        XCTAssertLessThan(pixels.red(x: 64 + 24, y: 64), 5, "and no further than 20")
         XCTAssertLessThan(pixels.red(x: 64, y: 192), 5, "nothing is drawn mirrored")
         XCTAssertEqual(renderer.drawsEncoded, 1, "one instanced draw per system")
     }
 
     func testSpriteThroughNoGeometryShaderStream() throws {
         let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .expandedQuads)
-        let pixels = try render(plan, particles: [particle(at: SIMD2(64, 192), size: 40),
-                                                  particle(at: SIMD2(192, 64), size: 20)])
+        let pixels = try render(plan, particles: [particle(at: SIMD2(64, 192), size: 80),
+                                                  particle(at: SIMD2(192, 64), size: 40)])
         XCTAssertGreaterThan(pixels.red(x: 64, y: 64), 250)
         XCTAssertGreaterThan(pixels.red(x: 192, y: 192), 250, "every instance draws")
         XCTAssertLessThan(pixels.red(x: 192 + 14, y: 192), 5)
@@ -52,7 +53,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
     }
 
     func testBothPathsDrawTheSameRotatedSprite() throws {
-        var rotated = particle(at: SIMD2(128, 128), size: 60)
+        var rotated = particle(at: SIMD2(128, 128), size: 120)
         rotated.rotation = .pi / 4
         let emulated = try render(try plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6)),
                                   particles: [rotated])
@@ -67,7 +68,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
 
     func testSpriteTrailStretchesAlongVelocity() throws {
         let plan = try self.plan("materials/solid.json", renderer: "spritetrail", keeping: .emulated(vertexCount: 6))
-        var moving = particle(at: SIMD2(128, 128), size: 10)
+        var moving = particle(at: SIMD2(128, 128), size: 20)
         moving.velocity = SIMD2(200, 0)
         // length 0.05 · speed 200 = 10 sizes long (the default maxlength).
         let pixels = try render(plan, particles: [moving])
@@ -78,10 +79,11 @@ final class ParticleMaterialRenderTests: XCTestCase {
     func testRopeThroughEmulatedGeometryStage() throws {
         let plan = try self.plan("materials/solid.json", renderer: "rope", keeping: .emulated(vertexCount: 6))
         XCTAssertEqual(plan.shader, "genericropeparticle", "rope renderers swap in WE's rope shader")
-        // A horizontal strand across the middle; rope size is the ribbon's half width.
-        let pixels = try render(plan, particles: [particle(at: SIMD2(32, 128), size: 10),
-                                                  particle(at: SIMD2(128, 128), size: 10),
-                                                  particle(at: SIMD2(224, 128), size: 10)])
+        // A horizontal strand across the middle, as wide as the particles' size (the shader's
+        // half width is half the size).
+        let pixels = try render(plan, particles: [particle(at: SIMD2(32, 128), size: 20),
+                                                  particle(at: SIMD2(128, 128), size: 20),
+                                                  particle(at: SIMD2(224, 128), size: 20)])
         for x in [48, 128, 200] {
             XCTAssertGreaterThan(pixels.red(x: x, y: 128), 250, "strand at x \(x)")
             XCTAssertGreaterThan(pixels.red(x: x, y: 128 - 8), 250, "strand is 20 units wide at x \(x)")
@@ -94,24 +96,24 @@ final class ParticleMaterialRenderTests: XCTestCase {
         let plan = try builder.build(materialPath: "materials/solid.json", renderer: renderer, flags: 0,
                                      baseTexture: .image(NSImage()), spriteSheet: nil)
         XCTAssertEqual(plan.stages.first?.geometry, .emulated(vertexCount: 3 * (4 + 3 * 2 - 2)))
-        let pixels = try render(plan, particles: [particle(at: SIMD2(32, 64), size: 6),
-                                                  particle(at: SIMD2(128, 192), size: 6),
-                                                  particle(at: SIMD2(224, 64), size: 6)])
+        let pixels = try render(plan, particles: [particle(at: SIMD2(32, 64), size: 12),
+                                                  particle(at: SIMD2(128, 192), size: 12),
+                                                  particle(at: SIMD2(224, 64), size: 12)])
         XCTAssertGreaterThan(pixels.red(x: 128, y: 64), 250, "passes through the apex")
         XCTAssertLessThan(pixels.red(x: 128, y: 160), 5)
     }
 
     func testRopeThroughNoGeometryShaderStream() throws {
         let plan = try self.plan("materials/solid.json", renderer: "rope", keeping: .expandedQuads)
-        let pixels = try render(plan, particles: [particle(at: SIMD2(32, 128), size: 10),
-                                                  particle(at: SIMD2(224, 128), size: 10)])
+        let pixels = try render(plan, particles: [particle(at: SIMD2(32, 128), size: 20),
+                                                  particle(at: SIMD2(224, 128), size: 20)])
         XCTAssertGreaterThan(pixels.red(x: 128, y: 128), 250)
         XCTAssertLessThan(pixels.red(x: 128, y: 64), 5)
     }
 
     func testRopeTrailFollowsEachParticlesHistory() throws {
         let plan = try self.plan("materials/solid.json", renderer: "ropetrail", keeping: .emulated(vertexCount: 6))
-        var head = particle(at: SIMD2(200, 128), size: 8)
+        var head = particle(at: SIMD2(200, 128), size: 16)
         // A full ring whose oldest sample sits at `historyStart`.
         head.history = [SIMD2(120, 128), SIMD2(40, 128)]
         head.historyStart = 1
@@ -120,7 +122,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertLessThan(pixels.red(x: 230, y: 128), 5, "nothing past the particle")
     }
 
-    func testSpriteSheetPicksTheParticlesFrame() throws {
+    func testRandomSpriteFramesShowOneFrameEvenWithFrameBlending() throws {
         // Two frames side by side: red, then green.
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 2, height: 1, mipmapped: false)
         let sheet = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
@@ -128,30 +130,62 @@ final class ParticleMaterialRenderTests: XCTestCase {
                       withBytes: [UInt8]([255, 0, 0, 255, 0, 255, 0, 255]), bytesPerRow: 8)
         let frames = SpriteSheet(columns: 2, rows: 1, frames: 2, duration: 1)
         let built = try builder.build(materialPath: "materials/solid.json", renderer: try decodeRenderer(#"{"name":"sprite"}"#),
-                                      flags: ParticleMaterialPlanBuilder.noFrameBlendingFlag, baseTexture: .image(NSImage()),
-                                      spriteSheet: frames)
+                                      flags: 0, baseTexture: .image(NSImage()), spriteSheet: frames)
         let stage = try XCTUnwrap(built.stages.first { $0.geometry == .emulated(vertexCount: 6) })
         XCTAssertEqual(stage.variant.combos["SPRITESHEET"], 1)
+        XCTAssertEqual(stage.variant.combos["SPRITESHEETBLEND"], 1, "blending is on unless the system's flag 2 is set")
         XCTAssertEqual(stage.variant.combos["THICKFORMAT"], 1)
-        let plan = ParticleMaterialPlan(materialPath: built.materialPath, shader: built.shader, format: built.format,
+        var plan = ParticleMaterialPlan(materialPath: built.materialPath, shader: built.shader, format: built.format,
                                         blending: built.blending, stages: [stage], trailLengths: built.trailLengths,
                                         spriteSheet: frames)
-        var second = particle(at: SIMD2(128, 128), size: 40)
-        second = Particle(position: second.position, velocity: .zero, age: 0, lifetime: 10, size: 40, baseSize: 40,
-                          alpha: 1, baseAlpha: 1, rotation: 0, angularVelocity: 0, color: SIMD4(repeating: 1),
-                          baseColor: SIMD4(repeating: 1), spriteFrame: 1, history: [], historyStart: 0)
-        let pixels = try render(plan, particles: [second], texture: sheet, animationMode: "randomframe")
-        let index = (128 * Self.size + 128) * 4
-        XCTAssertLessThan(pixels.bytes[index], 30, "not the first frame")
-        XCTAssertGreaterThan(pixels.bytes[index + 1], 220, "the second frame")
+        // Clamped, so the frames' outer edges don't pull in the opposite frame.
+        plan.textureFlags[0] = .clampUVs
+        for frame in 0..<2 {
+            let chosen = Particle(position: SIMD2(128, 128), velocity: .zero, age: 0, lifetime: 10, size: 80, baseSize: 80,
+                                  alpha: 1, baseAlpha: 1, rotation: 0, angularVelocity: 0, color: SIMD4(repeating: 1),
+                                  baseColor: SIMD4(repeating: 1), spriteFrame: frame, history: [], historyStart: 0)
+            let pixels = try render(plan, particles: [chosen], texture: sheet, animationMode: "randomframe")
+            let index = (128 * Self.size + 128) * 4
+            let (own, other) = frame == 0 ? (pixels.bytes[index], pixels.bytes[index + 1])
+                                          : (pixels.bytes[index + 1], pixels.bytes[index])
+            XCTAssertGreaterThan(own, 250, "frame \(frame) shows")
+            XCTAssertLessThan(other, 5, "without the other frame blended in (frame \(frame))")
+        }
+    }
+
+    func testClampUVsKeepsTheOppositeEdgeOut() throws {
+        // A texture whose top row is transparent and bottom row opaque white: repeat would pull
+        // the bottom row into the top edge under bilinear filtering.
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 1, height: 4, mipmapped: false)
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        texture.replace(region: MTLRegionMake2D(0, 0, 1, 4), mipmapLevel: 0,
+                        withBytes: [UInt8]([0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255]), bytesPerRow: 4)
+        var plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        // A 1×4 texture makes the quad 4× taller than wide: 20 × 80 around the centre.
+        let topRow = 128 - 39
+        plan.textureFlags[0] = .clampUVs
+        let clamped = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 40)], texture: texture)
+        XCTAssertLessThan(clamped.red(x: 128, y: topRow), 5, "clamped: the top edge stays transparent")
+        plan.textureFlags[0] = []
+        let repeated = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 40)], texture: texture)
+        XCTAssertGreaterThan(repeated.red(x: 128, y: topRow), 20, "WE's default repeat wraps the bottom row in")
+    }
+
+    func testBuilderReadsTheTextureFlags() throws {
+        let plan = try builder.build(materialPath: "materials/particle/halo.json", renderer: nil, flags: 0,
+                                     baseTexture: .image(NSImage()), spriteSheet: nil)
+        XCTAssertEqual(plan.textureFlags[0], .clampUVs, "WE's halo.tex clamps")
+        let data = try XCTUnwrap(FileManager.default.contents(
+            atPath: ShaderVariantTests.weAssets.appending(path: "materials/particle/beam/hose_1.tex").path))
+        XCTAssertEqual(TEXFlags(texData: data)?.contains(.clampUVs), false, "rope hoses repeat along the rope")
     }
 
     func testAdditiveBlendingAndMaterialConstants() throws {
         let plan = try self.plan("materials/additive_overbright.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
         XCTAssertEqual(plan.blending, "additive")
         // Two overlapping sprites at half brightness (`g_Overbright` 0.5) add up.
-        let pixels = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 40),
-                                                  particle(at: SIMD2(138, 128), size: 40)])
+        let pixels = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 80),
+                                                  particle(at: SIMD2(138, 128), size: 80)])
         XCTAssertEqual(Double(pixels.red(x: 110, y: 128)), 128, accuracy: 3, "one sprite: half")
         XCTAssertGreaterThan(pixels.red(x: 133, y: 128), 250, "overlap: both added")
     }

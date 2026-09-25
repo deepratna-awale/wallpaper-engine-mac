@@ -68,9 +68,26 @@ struct ParticleMaterialPlanBuilder {
         for failure in failures {
             OWELog.error(.shader, "Particle material \(materialPath) (\(shader)): \(failure)")
         }
-        return ParticleMaterialPlan(materialPath: materialPath, shader: shader, format: format,
-                                    blending: pass.blending?.lowercased() ?? "translucent", stages: stages,
-                                    trailLengths: Self.trailLengths(renderer), spriteSheet: spriteSheet)
+        var plan = ParticleMaterialPlan(materialPath: materialPath, shader: shader, format: format,
+                                        blending: pass.blending?.lowercased() ?? "translucent", stages: stages,
+                                        trailLengths: Self.trailLengths(renderer), spriteSheet: spriteSheet)
+        for (slot, name) in pass.textures.enumerated() {
+            if let name, let flags = textureFlags(named: name, materialPath: materialPath) { plan.textureFlags[slot] = flags }
+        }
+        return plan
+    }
+
+    /// The `.tex` flags of a material texture, found where the scene loader looks for it: next to
+    /// the material, under its root folder, then under `materials/`. Nil for a texture that isn't
+    /// a `.tex` (render targets, generated textures).
+    private func textureFlags(named name: String, materialPath: String) -> TEXFlags? {
+        guard !name.hasPrefix("_rt_") else { return nil }
+        let directory = (materialPath as NSString).deletingLastPathComponent
+        let root = directory.split(separator: "/").first.map(String.init) ?? "materials"
+        for path in ["\(directory)/\(name).tex", "\(root)/\(name).tex", "materials/\(name).tex", "\(name).tex"] {
+            if let data = readFile(path) { return TEXFlags(texData: data) }
+        }
+        return nil
     }
 
     static func isBuiltinSpriteShader(_ shader: String) -> Bool {

@@ -17,7 +17,8 @@ final class ParticleMaterialRenderer {
 
     private let device: MTLDevice
     private let zeroAttributes: MTLBuffer
-    private let sampler: MTLSamplerState
+    /// By `.tex` flags that pick a sampler (`clampUVs`, `noInterpolation`).
+    private var samplers: [UInt32: MTLSamplerState] = [:]
 
     /// Pipelines compile off the render thread. Guarded by `pipelineLock`.
     private let compileQueue = DispatchQueue(label: "owe.particle-pipelines", qos: .userInitiated, attributes: .concurrent)
@@ -50,14 +51,24 @@ final class ParticleMaterialRenderer {
         self.device = device
         guard let zero = device.makeBuffer(length: 64) else { return nil }
         zeroAttributes = zero
+    }
+
+    /// WE's sampler for a texture: clamp with `clampUVs`, else repeat; nearest with
+    /// `noInterpolation`, else bilinear.
+    private func sampler(for flags: TEXFlags) -> MTLSamplerState? {
+        let key = flags.intersection([.clampUVs, .noInterpolation]).rawValue
+        if let sampler = samplers[key] { return sampler }
         let descriptor = MTLSamplerDescriptor()
-        descriptor.minFilter = .linear
-        descriptor.magFilter = .linear
-        descriptor.mipFilter = .linear
-        descriptor.sAddressMode = .repeat
-        descriptor.tAddressMode = .repeat
-        guard let sampler = device.makeSamplerState(descriptor: descriptor) else { return nil }
-        self.sampler = sampler
+        let filter: MTLSamplerMinMagFilter = flags.contains(.noInterpolation) ? .nearest : .linear
+        descriptor.minFilter = filter
+        descriptor.magFilter = filter
+        descriptor.mipFilter = flags.contains(.noInterpolation) ? .nearest : .linear
+        let address: MTLSamplerAddressMode = flags.contains(.clampUVs) ? .clampToEdge : .repeat
+        descriptor.sAddressMode = address
+        descriptor.tAddressMode = address
+        let sampler = device.makeSamplerState(descriptor: descriptor)
+        samplers[key] = sampler
+        return sampler
     }
 
     /// Forgets every system (the scene changed). Compiled pipelines are kept.
@@ -111,6 +122,7 @@ final class ParticleMaterialRenderer {
             // Texture 0 is the one the system already loaded.
             guard case .asset(let key, let source)? = stage.textures[slot],
                   let texture = slot == 0 ? system.texture : context.assetTexture(key, source) else { continue }
+            let sampler = sampler(for: plan.textureFlags[slot] ?? [])
             encoder.setFragmentTexture(texture, index: slot)
             encoder.setFragmentSamplerState(sampler, index: slot)
             encoder.setVertexTexture(texture, index: slot)
