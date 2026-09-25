@@ -95,6 +95,20 @@ final class SceneReviewFixTests: XCTestCase {
         XCTAssertEqual(plain["strength"], .literal(ShaderValue(0.4)))
     }
 
+    /// Risk #22: with no audio (capture denied, stopped or asleep, which resets the level to 0)
+    /// a music-synced override reads as the value the user set, not a frozen modulation.
+    func testSyncedOverrideFallsBackToItsValueWithoutAudio() {
+        let engine = AudioReactiveScriptEngine.shared
+        let wallpaper = "/tests/\(UUID().uuidString)"
+        engine.setUserProperties(["p": "0.4", "p_musicSync": "true", "p_musicAmount": "1"], wallpaper: wallpaper, replacing: true)
+        engine.beginFrame(wallpaper: wallpaper)
+        defer { engine.endFrame() }
+        XCTAssertEqual(engine.audioLevel, 0)
+        XCTAssertTrue(engine.isMusicSynced("p"))
+        XCTAssertEqual(LiveSceneValueContext(engine: engine, time: 0).userProperty("p").flatMap(Float.init), 0.4)
+        XCTAssertEqual(engine.userPropertyValue("p", fallback: 0.4), 0.4)
+    }
+
     func testMusicSyncModulatesScalarsAndComponents() {
         let modulate: (String, Float) -> Float = { _, base in base + 1 }
         XCTAssertEqual(LiveSceneValueContext.musicSynced("0.5", name: "p", isSynced: { $0 == "p" }, modulate: modulate), "1.5")

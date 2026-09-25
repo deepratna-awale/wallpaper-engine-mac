@@ -39,6 +39,29 @@ final class SceneUserPropertyStoreTests: XCTestCase {
         XCTAssertNil(stores.entry(for: "/a").numbers["script"])
     }
 
+    /// Risk #21: a workshop update that turns a bool into a combo, or a key with dots and
+    /// slashes, keeps working: values stay strings, and the numeric view never traps.
+    func testTypeChangesAndOddKeysKeepTheirValues() {
+        var stores = SceneUserPropertyStores()
+        stores.set(["mode": "true", "a.b/c": "0.5"], for: "/w", replacing: true)
+        XCTAssertEqual(stores.entry(for: "/w").numbers["mode"], 1)
+        stores.set(["mode": "fancy", "a.b/c": "0.5"], for: "/w", replacing: true)
+        XCTAssertEqual(stores.entry(for: "/w").strings["mode"], "fancy")
+        XCTAssertEqual(stores.entry(for: "/w").numbers["mode"], 0, "a combo value reads as 0, like WE's numeric view")
+        XCTAssertEqual(stores.entry(for: "/w").numbers["a.b/c"], 0.5)
+    }
+
+    /// The store is keyed by the wallpaper's directory: two displays showing the same wallpaper
+    /// share one set of properties, and a different folder is a different wallpaper.
+    func testSameWallpaperOnTwoDisplaysSharesItsProperties() {
+        var stores = SceneUserPropertyStores()
+        stores.set(["tint": "1 0 0"], for: "/library/123", replacing: true)
+        stores.activeKey = "/library/123"
+        XCTAssertEqual(stores.active.strings["tint"], "1 0 0")
+        XCTAssertEqual(stores.entry(for: "/library/123").strings, stores.active.strings)
+        XCTAssertTrue(stores.entry(for: "/moved/123").strings.isEmpty)
+    }
+
     /// Two displays rendering different wallpapers read their own properties each frame.
     func testEngineFramesReadTheirWallpaper() {
         let engine = AudioReactiveScriptEngine.shared
