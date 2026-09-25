@@ -986,10 +986,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard let texture = try? textureLoader.newTexture(cgImage: cgImage, options: [MTKTextureLoader.Option.SRGB: false]) else { return nil }
             return [RenderTextureFrame(texture: texture, duration: .greatestFiniteMagnitude,
                                        uvOrigin: .zero, uvAxisX: SIMD2<Float>(1, 0), uvAxisY: SIMD2<Float>(0, 1))]
-        case let .dxt(texture):
-            guard let texture = makeDXTTexture(texture) else { return nil }
+        case let .dxt(source):
+            guard let texture = makeDXTTexture(source) else { return nil }
+            let crop = Self.contentUVExtent(source)
             return [RenderTextureFrame(texture: texture, duration: .greatestFiniteMagnitude,
-                                       uvOrigin: .zero, uvAxisX: SIMD2<Float>(1, 0), uvAxisY: SIMD2<Float>(0, 1))]
+                                       uvOrigin: .zero, uvAxisX: SIMD2<Float>(crop.x, 0), uvAxisY: SIMD2<Float>(0, crop.y))]
         case let .video(stream):
             // Stand-in until the first frame decodes; draw() swaps in the live texture.
             guard let texture = stream.currentTexture() ?? makePlaceholderTexture() else { return nil }
@@ -1013,6 +1014,16 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                           uvAxisY: SIMD2<Float>(frame.heightX, frame.height) / atlasSize)
             }
         }
+    }
+
+    /// The part of a padded .tex allocation the image covers, in UV units: the quad samples only
+    /// the image, never the padding around it.
+    static func contentUVExtent(_ texture: TEXCompressedTexture) -> SIMD2<Float> {
+        guard texture.width > 0, texture.height > 0, texture.contentWidth > 0, texture.contentHeight > 0 else {
+            return SIMD2(1, 1)
+        }
+        return simd_min(SIMD2(Float(texture.contentWidth) / Float(texture.width),
+                              Float(texture.contentHeight) / Float(texture.height)), SIMD2(1, 1))
     }
 
     private func makePlaceholderTexture() -> MTLTexture? {

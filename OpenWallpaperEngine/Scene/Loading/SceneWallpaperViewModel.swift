@@ -624,7 +624,8 @@ class SceneWallpaperViewModel: ObservableObject {
         } else {
             switch source {
             case let .image(image): size = SIMD2<Float>(Float(image.size.width), Float(image.size.height))
-            case let .dxt(texture): size = SIMD2<Float>(Float(texture.width), Float(texture.height))
+            // The image's own size, not the block/power-of-two padded allocation around it.
+            case let .dxt(texture): size = SIMD2<Float>(Float(texture.contentWidth), Float(texture.contentHeight))
             case let .animated(animation):
                 guard let image = animation.images.first else { return nil }
                 size = SIMD2<Float>(Float(image.size.width), Float(image.size.height))
