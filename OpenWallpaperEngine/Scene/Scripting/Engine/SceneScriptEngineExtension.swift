@@ -2,8 +2,8 @@ import Foundation
 import JavaScriptCore
 
 /// WP4 of docs/scenescript-plan.md: the `engine`, `input` and `console` globals,
-/// `engine.openUserShortcut` and the conversion of user properties through WE's
-/// `_Internal.convertUserProperties`.
+/// `engine.setTimeout`/`setInterval`, `engine.openUserShortcut` and the conversion of user
+/// properties through WE's `_Internal.convertUserProperties`.
 ///
 /// Per-frame numbers (`frametime`, `runtime`, `timeOfDay`, sizes, the cursor) sit in one shared
 /// `Float32Array` (float, like WE's own) that JS getters read, so a frame costs no bridging.
@@ -25,7 +25,7 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
         static let count = 16
     }
 
-    let scriptResources = ["sceneScriptEngine", "sceneScriptConsole"]
+    let scriptResources = ["sceneScriptEngine", "sceneScriptConsole", "sceneScriptTimers"]
 
     var environment: SceneScriptEngineEnvironment {
         didSet { publish() }
