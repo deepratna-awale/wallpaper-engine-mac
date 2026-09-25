@@ -24,7 +24,90 @@ final class SceneRendererParticleTests: XCTestCase {
         try assertDrawOrder(simulation: .cpu, material: true)
     }
 
+    func testGPUSimulatedRefractionReadsTheSceneUpToItsSystem() throws {
+        try assertRefractionSnapshot(simulation: .gpu)
+    }
+
+    func testCPUSimulatedRefractionReadsTheSceneUpToItsSystem() throws {
+        try assertRefractionSnapshot(simulation: .cpu)
+    }
+
     // MARK: - Helpers
+
+    /// A: red under everything. C: green over the left half, below the particles. B: blue over
+    /// the right half, above them. A refracting sprite on the left samples half a screen to its
+    /// right (`refract_normal.json`): the snapshot there holds A, and not yet B.
+    private func assertRefractionSnapshot(simulation: SceneMetalRenderer.ParticleSimulation,
+                                          file: StaticString = #filePath, line: UInt = #line) throws {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: Self.size, height: Self.size), device: device)
+        view.colorPixelFormat = .bgra8Unorm
+        view.autoResizeDrawable = false
+        view.drawableSize = CGSize(width: Self.size, height: Self.size)
+        let renderer = try XCTUnwrap(SceneMetalRenderer(view: view, particleSimulation: simulation))
+        view.isPaused = true
+        renderer.setPlacement(.stretch)
+
+        let scene = Float(Self.size)
+        let a = layer("A", color: [1, 0, 0, 1], center: SIMD2(scene / 2, scene / 2), size: SIMD2(scene, scene), order: 0)
+        let c = layer("C", color: [0, 1, 0, 1], center: SIMD2(scene / 4, scene / 2), size: SIMD2(scene / 2, scene), order: 1)
+        let b = layer("B", color: [0, 0, 1, 1], center: SIMD2(scene * 3 / 4, scene / 2), size: SIMD2(scene / 2, scene), order: 3)
+        var system = ParticleTestSystem()
+        system.origin = SIMD2(scene / 4, scene / 2)
+        system.spawnExtent = .zero
+        system.minimumVelocity = .zero
+        system.maximumVelocity = .zero
+        system.size = 60...60
+        system.lifetime = 100...100
+        system.alpha = 1...1
+        system.minimumColor = SIMD4(repeating: 1)
+        system.maximumColor = SIMD4(repeating: 1)
+        system.fadeIn = 0
+        system.fadeOut = 1
+        system.maximum = 5
+        system.source = .image(image([1, 1, 1, 1]))
+        system.material = try refractionMaterial()
+        var configuration = system.configuration
+        configuration.order = 2
+        let content = SceneMetalContent(size: SIMD2(scene, scene), layers: [a, c, b], particleSystems: [configuration],
+                                        sceneScript: nil,
+                                        bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3(repeating: 1)))
+        renderer.setContent(content)
+
+        var pixels: [UInt8] = []
+        let deadline = Date().addingTimeInterval(10)
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            renderer.draw(in: view)
+            renderer.lastCommandBuffer?.waitUntilCompleted()
+            guard let texture = view.currentDrawable?.texture else { continue }
+            pixels = [UInt8](repeating: 0, count: Self.size * Self.size * 4)
+            texture.getBytes(&pixels, bytesPerRow: Self.size * 4,
+                             from: MTLRegionMake2D(0, 0, Self.size, Self.size), mipmapLevel: 0)
+        } while Date() < deadline && !isRed(pixels, x: 32, y: 64)
+        XCTAssertTrue(isRed(pixels, x: 32, y: 64), "refracts A from the right half, without B: \(bgra(pixels, x: 32, y: 64))",
+                      file: file, line: line)
+        XCTAssertTrue(isGreen(pixels, x: 5, y: 64), "C beside the sprite: \(bgra(pixels, x: 5, y: 64))", file: file, line: line)
+        XCTAssertTrue(isBlue(pixels, x: 96, y: 64), "B over the right half: \(bgra(pixels, x: 96, y: 64))", file: file, line: line)
+    }
+
+    /// `refract_normal.json` with a normal map pointing along +x (alpha 1), its mask (red) 1.
+    private func refractionMaterial() throws -> ParticleMaterialPlan {
+        let roots = [Fixtures.url("Particles"), ShaderVariantTests.weAssets]
+        let normal = image([1, 0.5, 0.5, 1])
+        let builder = ParticleMaterialPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil),
+            readFile: { path in roots.lazy.compactMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }.first },
+            loadTexture: { name, _ in name == "refractnormal" ? .image(normal) : nil })
+        let renderer = try JSONDecoder().decode(WEParticleRenderer.self, from: Data(#"{"name":"sprite"}"#.utf8))
+        return try builder.build(materialPath: "materials/refract_normal.json", renderer: renderer, flags: 0,
+                                 baseTexture: .image(NSImage()), spriteSheet: nil)
+    }
+
+    private func isGreen(_ pixels: [UInt8], x: Int, y: Int) -> Bool {
+        let p = bgra(pixels, x: x, y: y)
+        return p.count == 4 && p[0] < 5 && p[1] > 250 && p[2] < 5
+    }
 
     private func assertDrawOrder(simulation: SceneMetalRenderer.ParticleSimulation, material: Bool,
                                  file: StaticString = #filePath, line: UInt = #line) throws {

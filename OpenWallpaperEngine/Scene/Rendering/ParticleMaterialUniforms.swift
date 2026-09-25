@@ -47,11 +47,18 @@ struct ParticleMaterialUniforms {
         return SIMD4(frame.x / allocated.x, frame.y / allocated.y, Float(sheet.frames), frame.y / frame.x)
     }
 
+    /// `g_ViewUp`: the scene direction that points up in the clip space the shaders see.
+    /// `modelViewProjection` puts the top of the scene at GL's bottom (the translated stage flips
+    /// it back), so that is scene −y. Screen coordinates derived from the clip position
+    /// (`v_ScreenCoord`) then run top-down like Metal's texture rows, and the refraction offsets
+    /// that `ComputeScreenRefractionTangents` builds from this axis follow them.
+    static let viewUp = SIMD3<Float>(0, -1, 0)
+
     /// The frame's built-ins with this system's view.
     func frame(from frame: BuiltinFrameContext) -> BuiltinFrameContext {
         var result = frame
         result.eyePosition = eyePosition
-        result.viewUp = Self.orientationUp
+        result.viewUp = Self.viewUp
         result.viewRight = Self.orientationRight
         result.viewForward = SIMD3(0, 0, -1)
         return result

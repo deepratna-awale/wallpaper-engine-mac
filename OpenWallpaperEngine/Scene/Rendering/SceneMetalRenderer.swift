@@ -515,18 +515,28 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             }
         }
         var nextParticleBatch = 0
-        /// One instanced draw per system, for every system authored before `order`.
-        func drawParticleBatches(before order: Int) {
+        /// One instanced draw per system, for every system authored before `order`. False when the
+        /// scene pass couldn't resume after a snapshot.
+        func drawParticleBatches(before order: Int) -> Bool {
             var drew = false
             while nextParticleBatch < particleBatches.count,
                   particleBatches[nextParticleBatch].system.configuration.order < order {
                 let batch = particleBatches[nextParticleBatch]
                 nextParticleBatch += 1
                 if batch.material {
+                    var snapshot: MTLTexture?
+                    if particleMaterials?.readsSceneSnapshot(batch.system) == true {
+                        // Refraction reads the scene drawn up to this system (`_rt_FullFrameBuffer`).
+                        encoder.endEncoding()
+                        snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
+                        guard let resumed = resumeScenePass(on: sceneTexture, commandBuffer: commandBuffer) else { return false }
+                        encoder = resumed
+                    }
                     particleMaterials?.draw(batch.system, encoder: encoder, context: .init(
                         sceneSize: sceneSize, frame: effectFrame,
                         values: LiveSceneValueContext(time: sceneTime, scriptTime: sceneTime),
-                        assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) }))
+                        assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
+                        sceneSnapshot: snapshot))
                     drew = true
                     continue
                 }
@@ -555,9 +565,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 drew = true
             }
             if drew { encoder.setRenderPipelineState(renderPipeline) }
+            return true
         }
         for (layerIndex, entry) in layers.enumerated() {
-            drawParticleBatches(before: entry.layer.order)
+            guard drawParticleBatches(before: entry.layer.order) else { return }
             // Hidden layers (script `visible = false`) draw nothing, their raw texture included.
             guard let draw = draws[layerIndex] else { continue }
             var layerSnapshot: MTLTexture?
@@ -573,13 +584,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 dynamicTextures[layerIndex] = input.flatMap {
                     runEffects(entry, draw: draw, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
                 }
-                let resume = MTLRenderPassDescriptor()
-                resume.colorAttachments[0].texture = sceneTexture
-                resume.colorAttachments[0].loadAction = .load
-                resume.colorAttachments[0].storeAction = .store
-                guard let resumed = commandBuffer.makeRenderCommandEncoder(descriptor: resume) else { return }
+                guard let resumed = resumeScenePass(on: sceneTexture, commandBuffer: commandBuffer) else { return }
                 encoder = resumed
-                encoder.setRenderPipelineState(renderPipeline)
                 // Until its effects are ready the layer has nothing of its own to draw.
                 if entry.layer.sceneInput, dynamicTextures[layerIndex] == nil { continue }
             }
@@ -635,7 +641,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(dynamicTextures[layerIndex] ?? textureFrame.texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        drawParticleBatches(before: .max)
+        guard drawParticleBatches(before: .max) else { return }
         encoder.endEncoding()
 
         // Composite the scene-resolution render target onto the real drawable, applying placement exactly once.
@@ -854,6 +860,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         context.assetContentSize = { _, source in source.contentSize }
         return effectGraph.apply(entry.layer.weEffects, to: input, layerID: entry.stateId,
                                  context: context, commandBuffer: commandBuffer)
+    }
+
+    /// Continues the scene pass after a pause (a snapshot of it, or effects run in between).
+    private func resumeScenePass(on scene: MTLTexture, commandBuffer: MTLCommandBuffer) -> MTLRenderCommandEncoder? {
+        let resume = MTLRenderPassDescriptor()
+        resume.colorAttachments[0].texture = scene
+        resume.colorAttachments[0].loadAction = .load
+        resume.colorAttachments[0].storeAction = .store
+        let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: resume)
+        encoder?.setRenderPipelineState(renderPipeline)
+        return encoder
     }
 
     /// A copy of the scene drawn so far. Several scene-reading layers in one frame may share the

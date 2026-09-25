@@ -225,6 +225,47 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertGreaterThan(pixels.red(x: 133, y: 128), 250, "overlap: both added")
     }
 
+    // MARK: Refraction (`_rt_FullFrameBuffer`)
+
+    func testRefractionMultipliesTheScenePixelBeneath() throws {
+        for geometry in [ParticleMaterialPlan.Stage.Geometry.emulated(vertexCount: 6), .expandedQuads] {
+            let plan = try self.plan("materials/refract.json", renderer: "sprite", keeping: geometry)
+            XCTAssertTrue(plan.stages.allSatisfy(\.readsSceneSnapshot))
+            // Four quadrants. Without a normal map nothing is offset, so a white sprite shows the
+            // scene exactly where it lies (not mirrored).
+            let scene = Self.scene { x, y in [x < 128 ? 255 : 0, y < 128 ? 255 : 0, 64, 255] }
+            let pixels = try render(plan, particles: [particle(at: SIMD2(64, 192), size: 160),
+                                                      particle(at: SIMD2(192, 64), size: 160)], scene: scene)
+            for (x, y) in [(40, 40), (88, 88), (168, 168), (216, 216)] {
+                let index = (y * Self.size + x) * 4
+                XCTAssertEqual(Array(pixels.bytes[index..<index + 3]), Array(scene[index..<index + 3]),
+                               "\(geometry): the scene beneath at (\(x), \(y))")
+            }
+        }
+    }
+
+    func testRefractionNormalOffsetsAlongTheScreenAxes() throws {
+        let plan = try refractionPlan()
+        XCTAssertEqual(plan.stages.first?.variant.combos["NORMALMAP"], 1, "a bound normal map switches NORMALMAP on")
+        // Left half red, right half green. The normal map's x (alpha, `DecompressNormalWithMask`)
+        // is +1 and its mask (red) 1: with the material's refract amount 0.5 the sprite samples
+        // the scene half a screen to its right.
+        let columns = Self.scene { x, _ in x < 128 ? [255, 0, 0, 255] : [0, 255, 0, 255] }
+        let rightward = try solidTexture([255, 128, 128, 255])
+        let right = try render(plan, particles: [particle(at: SIMD2(64, 128), size: 100)], scene: columns,
+                               assetTexture: { _, _ in rightward })
+        XCTAssertEqual(right.bytes[(128 * Self.size + 64) * 4 + 1], 255, "samples the green half to the right")
+        XCTAssertEqual(right.bytes[(128 * Self.size + 64) * 4], 0)
+        // Top half red, bottom half green, and the normal's y (green) +1: WE samples below it on
+        // screen (GL: v up and the offset negated; D3D: v down and not negated).
+        let rows = Self.scene { _, y in y < 128 ? [255, 0, 0, 255] : [0, 255, 0, 255] }
+        let upward = try solidTexture([255, 255, 128, 128])
+        let down = try render(plan, particles: [particle(at: SIMD2(128, 192), size: 100)], scene: rows,
+                              assetTexture: { _, _ in upward })
+        XCTAssertEqual(down.bytes[(64 * Self.size + 128) * 4 + 1], 255, "samples the green half below")
+        XCTAssertEqual(down.bytes[(64 * Self.size + 128) * 4], 0)
+    }
+
     func testUserShaderValuesDriveTheMaterialLive() throws {
         let plan = try self.plan("materials/user_overbright.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
         var dim = particle(at: SIMD2(128, 128), size: 80)
@@ -247,14 +288,6 @@ final class ParticleMaterialRenderTests: XCTestCase {
         let combos = ParticleMaterialPlanBuilder.textureFormatCombos([0: header(format: 4), 1: header(format: 4),
                                                                       2: header(format: 8), 3: header(format: 0)])
         XCTAssertEqual(combos, ["TEX1FORMAT": 4], "a DXT5 normal map; RG88, RGBA and texture 0 are expanded on load")
-    }
-
-    func testRefractionFallsBackToTheBuiltInDraw() throws {
-        let plan = try builder.build(materialPath: "materials/refract.json", renderer: nil, flags: 0,
-                                     baseTexture: .image(NSImage()), spriteSheet: nil)
-        XCTAssertTrue(plan.stages.allSatisfy(\.readsSceneSnapshot))
-        let system = ParticleSystemRuntime(texture: white, configuration: Self.configuration(plan: plan))
-        XCTAssertFalse(renderer.prepare(system, pixelFormat: .rgba8Unorm, opacity: { _ in 1 }))
     }
 
     func testFailedPipelineFallsBackToTheBuiltInDraw() throws {
@@ -347,8 +380,8 @@ final class ParticleMaterialRenderTests: XCTestCase {
 
     /// I16: a system that can't use its material is reported once, however many frames ask.
     func testAFallbackIsReportedOnce() throws {
-        let plan = try builder.build(materialPath: "materials/refract.json", renderer: nil, flags: 0,
-                                     baseTexture: .image(NSImage()), spriteSheet: nil)
+        let (plan, _) = try brokenPlan()
+        XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: .rgba8Unorm))
         let system = ParticleSystemRuntime(texture: white, configuration: Self.configuration(plan: plan))
         for _ in 0..<100 {
             XCTAssertFalse(renderer.prepare(system, pixelFormat: .rgba8Unorm, opacity: { _ in 1 }))
@@ -504,6 +537,39 @@ final class ParticleMaterialRenderTests: XCTestCase {
         return (plan, broken)
     }
 
+    /// `refract_normal.json`'s emulated sprite stage, its normal map (`refractnormal`) found.
+    private func refractionPlan() throws -> ParticleMaterialPlan {
+        let roots = [Fixtures.url("Particles"), ShaderVariantTests.weAssets]
+        let builder = ParticleMaterialPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil),
+            readFile: { path in roots.lazy.compactMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }.first },
+            loadTexture: { name, _ in name == "refractnormal" ? .image(NSImage()) : nil })
+        let built = try builder.build(materialPath: "materials/refract_normal.json", renderer: try decodeRenderer(#"{"name":"sprite"}"#),
+                                      flags: 0, baseTexture: .image(NSImage()), spriteSheet: nil)
+        return ParticleMaterialPlan(materialPath: built.materialPath, shader: built.shader, format: built.format,
+                                    blending: built.blending, stages: built.stages.filter { $0.geometry == .emulated(vertexCount: 6) },
+                                    trailLengths: built.trailLengths, spriteSheet: nil)
+    }
+
+    /// A 4×4 texture of one RGBA colour.
+    private func solidTexture(_ rgba: [UInt8]) throws -> MTLTexture {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        let bytes = (0..<16).flatMap { _ in rgba }
+        texture.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0, withBytes: bytes, bytesPerRow: 16)
+        return texture
+    }
+
+    /// RGBA bytes of a scene target, `color(x, y)` per pixel, row 0 at the top.
+    private static func scene(_ color: (Int, Int) -> [UInt8]) -> [UInt8] {
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(size * size * 4)
+        for y in 0..<size {
+            for x in 0..<size { bytes += color(x, y) }
+        }
+        return bytes
+    }
+
     private func particle(at position: SIMD2<Float>, size: Float) -> Particle {
         Particle(position: position, velocity: .zero, age: 0, lifetime: 10, size: size, baseSize: size,
                  alpha: 1, baseAlpha: 1, rotation: 0, angularVelocity: 0, color: SIMD4(repeating: 1),
@@ -530,10 +596,13 @@ final class ParticleMaterialRenderTests: XCTestCase {
         var time: Double { 0 }
     }
 
+    /// Draws `particles` onto a target holding `scene` (black without one), which is also the
+    /// snapshot a refracting stage reads.
     private func render(_ plan: ParticleMaterialPlan, particles: [Particle], texture: MTLTexture? = nil,
                         animationMode: String = "sequence", cull: (MTLCullMode, MTLWinding)? = nil,
-                        pixelFormat: MTLPixelFormat = .rgba8Unorm,
-                        values: SceneValueContext = NoValues()) throws -> Pixels {
+                        pixelFormat: MTLPixelFormat = .rgba8Unorm, scene: [UInt8]? = nil,
+                        values: SceneValueContext = NoValues(),
+                        assetTexture: @escaping (String, SceneMetalTextureSource) -> MTLTexture? = { _, _ in nil }) throws -> Pixels {
         let size = Self.size
         XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: pixelFormat), "pipelines still compiling")
         for stage in plan.stages {
@@ -548,9 +617,18 @@ final class ParticleMaterialRenderTests: XCTestCase {
         descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .shared
         let target = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        var snapshot: MTLTexture?
+        if let scene {
+            let copy = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+            for texture in [target, copy] {
+                texture.replace(region: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0, withBytes: scene, bytesPerRow: size * 4)
+            }
+            snapshot = copy
+        }
+        XCTAssertEqual(renderer.readsSceneSnapshot(system), plan.stages.first?.readsSceneSnapshot ?? false)
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
-        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].loadAction = scene == nil ? .clear : .load
         pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         pass.colorAttachments[0].storeAction = .store
         let buffer = try XCTUnwrap(queue.makeCommandBuffer())
@@ -561,7 +639,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
         }
         renderer.draw(system, encoder: encoder, context: .init(
             sceneSize: SIMD2(Float(size), Float(size)), frame: BuiltinFrameContext(), values: values,
-            assetTexture: { _, _ in nil }))
+            assetTexture: assetTexture, sceneSnapshot: snapshot))
         encoder.endEncoding()
         buffer.commit()
         buffer.waitUntilCompleted()

@@ -7,9 +7,10 @@ import simd
 /// (`ParticleVertexFormat`) is one instance, expanded on the GPU by the emulated geometry
 /// stage (`GeometryShaderEmulation`) or WE's no-geometry-shader stream (`ParticleQuadExpansion`).
 ///
-/// A system whose material has no usable stage yet (pipeline compiling) or at all (failed, or
-/// needing a feature not supported here) keeps the renderer's built-in particle draw; a failure
-/// is logged once per system.
+/// A system whose material has no usable stage yet (pipeline compiling) or at all (failed)
+/// keeps the renderer's built-in particle draw; a failure is logged once per system.
+/// A stage that reads the scene (`_rt_FullFrameBuffer`, refraction) draws with the snapshot the
+/// caller takes right before it (`readsSceneSnapshot`, `DrawContext.sceneSnapshot`).
 final class ParticleMaterialRenderer {
     /// Vertex buffer slots; buffer 0 is the `WEUniforms` block.
     static let recordBuffer = 30
@@ -109,7 +110,11 @@ final class ParticleMaterialRenderer {
         guard let plan = system.configuration.material else { return false }
         let state = state(for: system)
         state.prepared = nil
-        guard let ready = readyStage(plan, pixelFormat: pixelFormat, state: state) else { return false }
+        let ready: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState)
+        switch readiness(plan, pixelFormat: pixelFormat, state: state) {
+        case .unavailable, .compiling: return false
+        case .ready(let stage, let pipeline): ready = (stage, pipeline)
+        }
         let count = ParticleRecordWriter.recordCount(system, format: plan.format)
         var buffer: MTLBuffer?
         if count > 0 {
@@ -127,7 +132,11 @@ final class ParticleMaterialRenderer {
         guard let plan = system.configuration.material else { return nil }
         let state = state(for: system)
         state.prepared = nil
-        guard let ready = readyStage(plan, pixelFormat: pixelFormat, state: state) else { return nil }
+        let ready: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState)
+        switch readiness(plan, pixelFormat: pixelFormat, state: state) {
+        case .unavailable, .compiling: return nil
+        case .ready(let stage, let pipeline): ready = (stage, pipeline)
+        }
         var renderVar: (buffer: MTLBuffer, offset: Int)?
         var uniforms: MTLBuffer?
         if plan.format == .rope, system.configuration.rendererName != "ropetrail",
@@ -161,6 +170,15 @@ final class ParticleMaterialRenderer {
         let values: SceneValueContext
         /// Texture for an asset input, materialised by the renderer.
         let assetTexture: (String, SceneMetalTextureSource) -> MTLTexture?
+        /// The scene drawn so far (`_rt_FullFrameBuffer`), for a system that reads it.
+        var sceneSnapshot: MTLTexture?
+    }
+
+    /// Whether `system`'s draw this frame reads the scene drawn so far, which the caller then
+    /// snapshots right before it and passes in `DrawContext.sceneSnapshot`.
+    func readsSceneSnapshot(_ system: ParticleSystemRuntime) -> Bool {
+        guard let state = systems[ObjectIdentifier(system)], state.owner === system else { return false }
+        return state.prepared?.stage.readsSceneSnapshot ?? false
     }
 
     /// Encodes the draw `prepare` set up for `system` this frame.
@@ -185,15 +203,31 @@ final class ParticleMaterialRenderer {
 
         var textures: [Int: BuiltinTextureInfo] = [:]
         for slot in stage.variant.textureSlots {
-            // Texture 0 is the one the system already loaded.
-            guard case .asset(let key, let source)? = stage.textures[slot],
-                  let texture = slot == 0 ? system.texture : context.assetTexture(key, source) else { continue }
-            let sampler = sampler(for: plan.textureFlags[slot] ?? [])
+            let texture: MTLTexture
+            let flags: TEXFlags
+            var contentSize: SIMD2<Float>?
+            switch stage.textures[slot] {
+            case .asset(let key, let source)?:
+                // Texture 0 is the one the system already loaded.
+                guard let asset = slot == 0 ? system.texture : context.assetTexture(key, source) else { continue }
+                texture = asset
+                flags = plan.textureFlags[slot] ?? []
+                contentSize = source.contentSize
+            case .sceneSnapshot?:
+                // Without the scene there is nothing to refract; the caller always passes it
+                // when `readsSceneSnapshot` (only a failed allocation leaves it out).
+                guard let snapshot = context.sceneSnapshot else { return }
+                texture = snapshot
+                flags = .clampUVs
+            default:
+                continue
+            }
+            let sampler = sampler(for: flags)
             encoder.setFragmentTexture(texture, index: slot)
             encoder.setFragmentSamplerState(sampler, index: slot)
             encoder.setVertexTexture(texture, index: slot)
             encoder.setVertexSamplerState(sampler, index: slot)
-            textures[slot] = EffectGraphRenderer.textureInfo(for: texture, contentSize: source.contentSize)
+            textures[slot] = EffectGraphRenderer.textureInfo(for: texture, contentSize: contentSize)
         }
 
         let program = self.program(for: stage, state: state)
@@ -244,28 +278,30 @@ final class ParticleMaterialRenderer {
         return state
     }
 
-    /// The first stage with a built pipeline. Nil while an earlier stage is still compiling, or
-    /// when every stage failed (logged once).
-    private func readyStage(_ plan: ParticleMaterialPlan, pixelFormat: MTLPixelFormat,
-                            state: SystemState) -> (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState)? {
+    private enum Readiness {
+        /// The first stage whose pipeline built.
+        case ready(ParticleMaterialPlan.Stage, MTLRenderPipelineState)
+        /// This stage, which comes before any that built, is still compiling.
+        case compiling(ParticleMaterialPlan.Stage)
+        /// Every stage failed (logged once).
+        case unavailable
+    }
+
+    private func readiness(_ plan: ParticleMaterialPlan, pixelFormat: MTLPixelFormat, state: SystemState) -> Readiness {
         var reasons: [String] = []
         for stage in plan.stages {
-            if stage.readsSceneSnapshot {
-                reasons.append("\(stage.geometry): reads _rt_FullFrameBuffer (refraction), not supported for particles yet")
-                continue
-            }
             let key = Self.pipelineKey(stage, plan: plan, pixelFormat: pixelFormat)
             let status: (pipeline: MTLRenderPipelineState?, pending: Bool, failure: String?) = pipelineLock.withLock {
                 (pipelines[key], pendingPipelines.contains(key), failedPipelines[key])
             }
-            if let pipeline = status.pipeline { return (stage, pipeline) }
-            if status.pending { return nil }
+            if let pipeline = status.pipeline { return .ready(stage, pipeline) }
+            if status.pending { return .compiling(stage) }
             if let failure = status.failure {
                 reasons.append("\(stage.geometry): \(failure)")
                 continue
             }
             compile(stage, plan: plan, pixelFormat: pixelFormat, key: key)
-            return nil
+            return .compiling(stage)
         }
         if !state.reportedFallback {
             state.reportedFallback = true
@@ -273,7 +309,7 @@ final class ParticleMaterialRenderer {
             OWELog.error(.scene, "Particle material \(plan.materialPath) (\(plan.shader)) can't render; "
                          + "using the built-in particle draw: \(reasons.joined(separator: "; "))")
         }
-        return nil
+        return .unavailable
     }
 
     private static func pipelineKey(_ stage: ParticleMaterialPlan.Stage, plan: ParticleMaterialPlan,
@@ -308,7 +344,7 @@ final class ParticleMaterialRenderer {
     /// Blocks until every stage of `plan` has a pipeline or failed (tests, prewarming).
     func waitUntilCompiled(_ plan: ParticleMaterialPlan, pixelFormat: MTLPixelFormat, timeout: TimeInterval = 60) -> Bool {
         let keys = plan.stages.map { Self.pipelineKey($0, plan: plan, pixelFormat: pixelFormat) }
-        for (stage, key) in zip(plan.stages, keys) where !stage.readsSceneSnapshot {
+        for (stage, key) in zip(plan.stages, keys) {
             let known = pipelineLock.withLock { pipelines[key] != nil || pendingPipelines.contains(key) || failedPipelines[key] != nil }
             if !known { compile(stage, plan: plan, pixelFormat: pixelFormat, key: key) }
         }
