@@ -8,27 +8,51 @@ import Foundation
 /// wallpaper-scene-renderer. HLSL's implicit conversions, which no macro can express, are applied
 /// to the preprocessed text by `fixupAfterPreprocess`.
 enum ShaderPrelude {
+    /// What the prelude needs to know about the shader it goes in front of. Depends on the source
+    /// text only, so `ShaderSource` computes it once for all its variants.
+    struct SourceAnalysis {
+        /// Names the shader `#define`s.
+        let macros: Set<String>
+        /// Names the shader defines as functions.
+        let functions: Set<String>
+        /// C++ keywords the shader declares itself, sorted.
+        let reservedLocals: [String]
+
+        init(source: String) {
+            (macros, functions) = definedNames(in: source)
+            // A declaration needs the name as a whole identifier, so only names that occur as one
+            // are checked with the (much slower) declaration patterns.
+            let identifiers = identifierTokens(in: source)
+            reservedLocals = cppReservedWords.subtracting(macros).sorted().filter { name in
+                identifiers.contains(Substring(name)) && declaresLocal(name, in: source)
+            }
+        }
+    }
+
     /// `source` is the shader the prelude goes in front of: a macro the shader defines itself (as a
     /// macro or a function, e.g. its own `M_PI` or `log10`) is left out, as WE has no such macro.
     static func text(for stage: ShaderStage, combos: [String: Int], source: String = "") -> String {
+        text(for: stage, combos: combos, analysis: SourceAnalysis(source: source))
+    }
+
+    static func text(for stage: ShaderStage, combos: [String: Int], analysis: SourceAnalysis) -> String {
         var lines = ["#version 450"]
         // Resolved combos first so the shader's own `#ifndef X / #define X default` keeps them.
         for (name, value) in combos.sorted(by: { $0.key < $1.key }) {
             lines.append("#define \(name) \(value)")
         }
-        let definitions = definedNames(in: source)
-        let defined = definitions.macros.union(definitions.functions)
+        let defined = analysis.macros.union(analysis.functions)
         lines.append(contentsOf: common.filter { line in
             macroName(line).map { !defined.contains($0) } ?? true
         })
         // A function named like a Metal built-in GLSL lacks (e.g. `log10`) becomes ambiguous
         // in MSL; rename the shader's own definition and every call to it.
-        for name in metalOnlyBuiltins where definitions.functions.contains(name) && !definitions.macros.contains(name) {
+        for name in metalOnlyBuiltins where analysis.functions.contains(name) && !analysis.macros.contains(name) {
             lines.append("#define \(name) we_\(name)")
         }
         // C++ keywords are valid GLSL names but not MSL ones (`vec2 or;`). Only names the shader
         // declares itself are renamed, never an interface name, which binds by name.
-        for name in cppReservedWords.subtracting(definitions.macros).sorted() where declaresLocal(name, in: source) {
+        for name in analysis.reservedLocals {
             lines.append("#define \(name) we_\(name)")
         }
         switch stage {
@@ -125,12 +149,52 @@ enum ShaderPrelude {
     /// Whether the shader declares `name` itself (a variable or function after a type), and not
     /// as a uniform, varying or attribute.
     static func declaresLocal(_ name: String, in source: String) -> Bool {
-        guard source.range(of: #"\b\w+\s+"# + name + #"\s*[=;,()\[]"#, options: .regularExpression) != nil else { return false }
-        let declarations = interfacePattern.matches(in: source, range: NSRange(source.startIndex..., in: source))
+        guard let patterns = localPatterns[name] ?? makeLocalPatterns(name) else { return false }
+        let whole = NSRange(source.startIndex..., in: source)
+        guard patterns.declaration.firstMatch(in: source, range: whole) != nil else { return false }
+        let declarations = interfacePattern.matches(in: source, range: whole)
         return !declarations.contains { match in
-            (source as NSString).substring(with: match.range)
-                .range(of: #"\b"# + name + #"\s*[;\[]"#, options: .regularExpression) != nil
+            patterns.interface.firstMatch(in: source, range: match.range) != nil
         }
+    }
+
+    /// A declaration of `name` after a type, and `name` declared in an interface statement.
+    private typealias LocalPatterns = (declaration: NSRegularExpression, interface: NSRegularExpression)
+
+    /// Compiled once; the names are fixed identifiers.
+    private static let localPatterns: [String: LocalPatterns] = Dictionary(
+        uniqueKeysWithValues: cppReservedWords.compactMap { name in makeLocalPatterns(name).map { (name, $0) } })
+
+    private static func makeLocalPatterns(_ name: String) -> LocalPatterns? {
+        do {
+            return (try NSRegularExpression(pattern: #"\b\w+\s+"# + NSRegularExpression.escapedPattern(for: name) + #"\s*[=;,()\[]"#),
+                    try NSRegularExpression(pattern: #"\b"# + NSRegularExpression.escapedPattern(for: name) + #"\s*[;\[]"#))
+        } catch {
+            OWELog.error(.shader, "Invalid declaration pattern for \(name): \(error)")
+            return nil
+        }
+    }
+
+    /// Every maximal run of ASCII identifier characters: a superset of the names a declaration
+    /// pattern can match, found in one pass over the UTF-8 bytes.
+    static func identifierTokens(in source: String) -> Set<Substring> {
+        var tokens = Set<Substring>()
+        let utf8 = source.utf8
+        var start: String.Index?
+        var index = utf8.startIndex
+        while index != utf8.endIndex {
+            let byte = utf8[index]
+            let isWord = (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || byte == 95
+            if isWord {
+                if start == nil { start = index }
+            } else if let tokenStart = start {
+                tokens.insert(source[tokenStart..<index])
+                start = nil
+            }
+            index = utf8.index(after: index)
+        }
+        if let tokenStart = start { tokens.insert(source[tokenStart...]) }
+        return tokens
     }
 
     /// Names the shader `#define`s, and names it defines as functions.
@@ -259,9 +323,11 @@ extension ShaderPrelude {
     /// Ends the prelude in preprocessed text; the rewrites apply only to the shader after it.
     static let endMarker = "void weEndOfPrelude() {}"
 
+    private static let endMarkerPattern = NSRegularExpression.shader(#"void\s+weEndOfPrelude\s*\(\s*\)\s*\{\s*\}"#)
+
     static func applyImplicitConversions(to text: String) -> String {
         // The preprocessor may respace the marker's tokens.
-        let prelude = text.range(of: #"void\s+weEndOfPrelude\s*\(\s*\)\s*\{\s*\}"#, options: .regularExpression)
+        let prelude = endMarkerPattern.firstRange(in: text)
             .map { String(text[..<$0.upperBound]) } ?? ""
         var code = Array(text.dropFirst(prelude.count).utf16)
         code = packedArrayIndices(code)
@@ -581,6 +647,10 @@ extension ShaderPrelude {
         return insert(edits, into: code, removing: Set(removed))
     }
 
+    private static let swizzleSuffixPattern = NSRegularExpression.shader(#"\.[xyzwrgba]{1,4}$"#)
+    private static let namePattern = NSRegularExpression.shader(#"^\w+$"#)
+    private static let constructorPattern = NSRegularExpression.shader(#"^vec[234]\("#)
+
     /// Components of a vector operand when evident without a type checker: a declared name, a
     /// swizzle, or a `vecN(...)` constructor, optionally parenthesised. nil when unknown.
     private static func operandSize(_ operand: [UInt16], types: [String: String]) -> Int? {
@@ -588,13 +658,13 @@ extension ShaderPrelude {
         while text.hasPrefix("("), let close = closing(Array(text.utf16), from: 0), close == text.utf16.count - 1 {
             text = String(text.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
         }
-        if let swizzle = text.range(of: #"\.[xyzwrgba]{1,4}$"#, options: .regularExpression) {
+        if let swizzle = swizzleSuffixPattern.firstRange(in: text) {
             return text.distance(from: swizzle.lowerBound, to: swizzle.upperBound) - 1
         }
-        if text.range(of: #"^\w+$"#, options: .regularExpression) != nil {
+        if namePattern.matches(text) {
             return types[text].flatMap { $0.hasPrefix("vec") ? dimension($0) : nil }
         }
-        if let match = text.range(of: #"^vec[234]\("#, options: .regularExpression),
+        if let match = constructorPattern.firstRange(in: text),
            let close = closing(Array(text.utf16), from: text.utf16.count - text[match.upperBound...].utf16.count - 1),
            close == text.utf16.count - 1 {
             return Int(String(text[text.index(text.startIndex, offsetBy: 3)]))
@@ -694,18 +764,29 @@ extension ShaderPrelude {
         return nil
     }
 
-    /// Applies insertions; at equal offsets, later edits land first so earlier ones end up outside.
     /// Insertions before the given offsets (in edit order at equal offsets), and removal of the
     /// characters at `removing`.
     private static func insert(_ edits: [(Int, String)], into code: [UInt16], removing: Set<Int> = []) -> [UInt16] {
-        var byOffset: [Int: [UInt16]] = [:]
-        for (offset, text) in edits { byOffset[offset, default: []] += Array(text.utf16) }
+        guard !edits.isEmpty || !removing.isEmpty else { return code }
+        // Stable by offset, so edits at one offset keep their order.
+        let ordered = edits.enumerated().sorted { ($0.element.0, $0.offset) < ($1.element.0, $1.offset) }.map(\.element)
         var result: [UInt16] = []
         result.reserveCapacity(code.count + edits.count * 12)
-        for index in 0...code.count {
-            if let text = byOffset[index] { result += text }
-            if index < code.count, !removing.contains(index) { result.append(code[index]) }
+        var copied = 0
+        func copy(upTo end: Int) {
+            guard copied < end else { return }
+            if removing.isEmpty {
+                result.append(contentsOf: code[copied..<end])
+            } else {
+                for index in copied..<end where !removing.contains(index) { result.append(code[index]) }
+            }
+            copied = end
         }
+        for (offset, text) in ordered {
+            copy(upTo: offset)
+            result.append(contentsOf: text.utf16)
+        }
+        copy(upTo: code.count)
         return result
     }
 }

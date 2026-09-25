@@ -152,7 +152,8 @@ enum ShaderPairRewriter {
 
     /// Whether `name` (or a swizzle of it) is the target of `=` or a compound assignment.
     static func isAssigned(_ name: String, in text: String) -> Bool {
-        text.range(of: #"(?<![\w.])"# + name + #"\s*(?:\.\w+)?\s*[-+*/]?=(?!=)"#, options: .regularExpression) != nil
+        NSRegularExpression.shader(#"(?<![\w.])"# + NSRegularExpression.escapedPattern(for: name)
+                                   + #"\s*(?:\.\w+)?\s*[-+*/]?=(?!=)"#).matches(text)
     }
 
     /// Components of a float scalar/vector type; nil for anything else.
@@ -210,13 +211,20 @@ enum ShaderPairRewriter {
     /// After `#version`/`#extension` and the preprocessor's `#line` markers at the top.
     private static func insertAfterHeader(_ text: String, _ insertion: String) -> String {
         guard !insertion.isEmpty else { return text }
-        var lines = text.components(separatedBy: "\n")
-        var index = 0
-        while index < lines.count, lines[index].hasPrefix("#version") || lines[index].hasPrefix("#extension")
-                || lines[index].trimmingCharacters(in: .whitespaces).isEmpty {
-            index += 1
+        // Walks the header lines in place; `insertion` becomes a line of its own.
+        let utf8 = text.utf8
+        var lineStart = utf8.startIndex
+        while true {
+            let lineEnd = utf8[lineStart...].firstIndex(of: UInt8(ascii: "\n")) ?? utf8.endIndex
+            let line = text[lineStart..<lineEnd]
+            guard line.hasPrefix("#version") || line.hasPrefix("#extension")
+                    || line.utf8.allSatisfy({ $0 == UInt8(ascii: " ") || $0 == UInt8(ascii: "\t") }) else { break }
+            // Every line is header: the insertion becomes the last line.
+            guard lineEnd < utf8.endIndex else { return text + "\n" + insertion }
+            lineStart = utf8.index(after: lineEnd)
         }
-        lines.insert(insertion, at: index)
-        return lines.joined(separator: "\n")
+        var result = text
+        result.insert(contentsOf: insertion + "\n", at: lineStart)
+        return result
     }
 }

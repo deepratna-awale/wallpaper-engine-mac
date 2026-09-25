@@ -43,6 +43,27 @@ struct ShaderSource {
     let uniforms: [ShaderUniformDeclaration]
 
     var samplers: [ShaderUniformDeclaration] { uniforms.filter(\.isSampler) }
+
+    /// Shared by copies of this source, so every variant of it reuses one analysis.
+    private let preludeAnalysisCache = PreludeAnalysisCache()
+
+    /// `ShaderPrelude.SourceAnalysis` of `text`, computed on first use.
+    var preludeAnalysis: ShaderPrelude.SourceAnalysis { preludeAnalysisCache.value(for: text) }
+}
+
+/// Holds one source's prelude analysis. Thread-safe: `lock` owns `analysis`.
+private final class PreludeAnalysisCache {
+    private let lock = NSLock()
+    private var analysis: ShaderPrelude.SourceAnalysis?
+
+    func value(for text: String) -> ShaderPrelude.SourceAnalysis {
+        lock.withLock {
+            if let analysis { return analysis }
+            let computed = ShaderPrelude.SourceAnalysis(source: text)
+            analysis = computed
+            return computed
+        }
+    }
 }
 
 enum ShaderSourceError: Error, CustomStringConvertible {
@@ -137,14 +158,19 @@ struct ShaderSourceLoader {
         return main
     }
 
+    private static let ifPattern = NSRegularExpression.shader(#"^#\s*if"#)
+    private static let endifPattern = NSRegularExpression.shader(#"^#\s*endif\b"#)
+    private static let mainPattern = NSRegularExpression.shader(#"\bvoid\s+main\s*\("#)
+    private static let declarationPattern = NSRegularExpression.shader(#"^(attribute|varying|uniform|struct)\s"#)
+
     /// WE's compiler ignores an `#endif` that closes nothing; glslang rejects the whole shader.
     static func dropUnmatchedEndifs(in text: String) -> String {
         var depth = 0
         var lines = text.components(separatedBy: "\n")
         for index in lines.indices {
             let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-            if trimmed.range(of: #"^#\s*if"#, options: .regularExpression) != nil { depth += 1 }
-            if trimmed.range(of: #"^#\s*endif\b"#, options: .regularExpression) != nil {
+            if ifPattern.matches(trimmed) { depth += 1 }
+            if endifPattern.matches(trimmed) {
                 if depth == 0 { lines[index] = "// (unmatched) " + lines[index] } else { depth -= 1 }
             }
         }
@@ -154,7 +180,7 @@ struct ShaderSourceLoader {
     /// Character offset (UTF-16) where includes go.
     static func includeInsertionOffset(in text: String) -> Int {
         let lines = text.components(separatedBy: "\n")
-        let mains = lines.filter { $0.range(of: #"\bvoid\s+main\s*\("#, options: .regularExpression) != nil }.count
+        let mains = lines.filter { mainPattern.matches($0) }.count
         guard mains < 2 else { return 0 }
         var depth = 0
         var offset = 0
@@ -167,9 +193,9 @@ struct ShaderSourceLoader {
             if trimmed.hasPrefix("#if") { depth += 1 }
             if trimmed.hasPrefix("#endif") { depth = max(0, depth - 1) }
             let lineEnd = offset + line.utf16.count + 1
-            if trimmed.range(of: #"\bvoid\s+main\s*\("#, options: .regularExpression) != nil { break }
+            if mainPattern.matches(trimmed) { break }
             if depth == 0, braces == 0,
-               trimmed.range(of: #"^(attribute|varying|uniform|struct)\s"#, options: .regularExpression) != nil {
+               declarationPattern.matches(trimmed) {
                 pending = true
             }
             braces += line.filter { $0 == "{" }.count - line.filter { $0 == "}" }.count

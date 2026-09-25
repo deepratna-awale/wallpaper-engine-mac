@@ -119,8 +119,8 @@ final class ShaderVariantTranslator {
                            combos: [String: Int]) throws -> TranslatedShaderVariant {
         let label = "\(vertex.path) + \(fragment.path)"
         do {
-            let vertexText = try compiler.preprocess(ShaderPrelude.text(for: .vertex, combos: combos, source: vertex.text) + vertex.text, stage: .vertex)
-            let fragmentText = try compiler.preprocess(ShaderPrelude.text(for: .fragment, combos: combos, source: fragment.text) + fragment.text, stage: .fragment)
+            let vertexText = try compiler.preprocess(ShaderPrelude.text(for: .vertex, combos: combos, analysis: vertex.preludeAnalysis) + vertex.text, stage: .vertex)
+            let fragmentText = try compiler.preprocess(ShaderPrelude.text(for: .fragment, combos: combos, analysis: fragment.preludeAnalysis) + fragment.text, stage: .fragment)
             let pair = ShaderPairRewriter.rewrite(vertex: ShaderPrelude.fixupAfterPreprocess(vertexText),
                                                   fragment: ShaderPrelude.fixupAfterPreprocess(fragmentText))
             let vertexOut = try compiler.compileToMSL(pair.vertex, stage: .vertex)
