@@ -47,6 +47,8 @@ final class ParticleSystemRuntime {
     /// Positions and velocities at the start of a step, which boids read their neighbours from.
     var neighborPositions: [SIMD2<Float>] = []
     var neighborVelocities: [SIMD2<Float>] = []
+    /// The system's state on the GPU, when `ParticleGPUSimulator` runs it.
+    var gpu: ParticleGPUSystem?
 
     init(texture: MTLTexture, configuration: SceneMetalParticleSystem, seed: UInt32 = 0) {
         self.texture = texture
