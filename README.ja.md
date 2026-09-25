@@ -146,10 +146,10 @@ Xcode で署名証明書を自分のものに変更するか「Sign to Run Local
 - `Services/SceneParsers/PKGParser.swift` — PKGV アーカイブパーサー
 - `Services/SceneParsers/TEXParser.swift` — TEXV テクスチャパーサー
 - `Services/SceneParsers/SceneModels.swift` — Scene JSON データモデル
-- `Services/SceneWallpaperViewModel.swift` — シーン読み込みと SpriteKit レンダリング
-- `Services/SteamCmdService.swift` — steamcmd 検出、ログイン、Workshop ダウンロード
-- `Services/WorkshopAPIService.swift` — Steam Web API クライアント
-- `Services/WorkshopViewModel.swift` — Workshop ブラウザ状態管理
-- `Services/WallpaperDirectory.swift` — 集中壁紙ストレージパス
-- `Services/ZipImporter.swift` — Zip ファイル解凍とインポート
+- `Scene/Loading/SceneWallpaperViewModel.swift` — シーン読み込み（Metal レンダラー用）
+- `Workshop/SteamCmdService.swift` — steamcmd 検出、ログイン、Workshop ダウンロード
+- `Workshop/WorkshopAPIService.swift` — Steam Web API クライアント
+- `Workshop/WorkshopViewModel.swift` — Workshop ブラウザ状態管理
+- `Library/WallpaperDirectory.swift` — 集中壁紙ストレージパス
+- `Library/Import/ZipImporter.swift` — Zip ファイル解凍とインポート
 - `ContentView/Components/WorkshopView.swift` — Workshop ブラウザ UI

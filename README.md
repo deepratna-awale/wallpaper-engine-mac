@@ -280,12 +280,12 @@ In Xcode, change the signing certificate to your own or select "Sign to Run Loca
 
 - `Open Wallpaper Engine/Services/SceneParsers/` — PKG, TEX/TEXS, and scene.json parsers and models
 - `Open Wallpaper Engine/Services/SceneEffects/` — dynamic effect catalog and authored effect parameter ranges
-- `Open Wallpaper Engine/Services/SceneShaderTranslator.swift` — GLSL → SPIR-V → MSL translation, `.metallib` compilation, and caching
-- `Open Wallpaper Engine/Services/AudioReactiveScriptEngine.swift` — SceneScript runtime and audio/FFT bindings
-- `Open Wallpaper Engine/Services/AudioLevelTap.swift` — ScreenCaptureKit system audio capture
-- `Open Wallpaper Engine/WallpaperView/SceneMetalRenderer.swift`, `SceneShaders.metal` — the Metal scene renderer and shader library
-- `Open Wallpaper Engine/Services/SteamCmdService.swift`, `WorkshopAPIService.swift`, `WorkshopViewModel.swift` — Steam Workshop browsing and downloads
-- `Open Wallpaper Engine/Services/WallpaperDirectory.swift`, `ZipImporter.swift`, `WallpaperPackageConverter.swift` — library storage, import, and package conversion
+- `Open Wallpaper Engine/Scene/Shaders/SceneShaderTranslator.swift` — GLSL → SPIR-V → MSL translation, `.metallib` compilation, and caching
+- `Open Wallpaper Engine/Scene/Scripting/AudioReactiveScriptEngine.swift` — SceneScript runtime and audio/FFT bindings
+- `Open Wallpaper Engine/Audio/AudioLevelTap.swift` — ScreenCaptureKit system audio capture
+- `Open Wallpaper Engine/Scene/Rendering/SceneMetalRenderer.swift`, `SceneShaders.metal` — the Metal scene renderer and shader library
+- `Open Wallpaper Engine/Workshop/SteamCmdService.swift`, `WorkshopAPIService.swift`, `WorkshopViewModel.swift` — Steam Workshop browsing and downloads
+- `Open Wallpaper Engine/Library/WallpaperDirectory.swift`, `ZipImporter.swift`, `WallpaperPackageConverter.swift` — library storage, import, and package conversion
 - `Scripts/vendor-shader-tools.sh` — vendors `glslang` and `spirv-cross` into the app bundle
 - `Scripts/vendor-we-assets.sh` — vendors translated effect shaders and manifests into `we-assets/`
 - `Scripts/scene-api-coverage.py` — reports which SceneScript APIs installed wallpapers use versus what is implemented

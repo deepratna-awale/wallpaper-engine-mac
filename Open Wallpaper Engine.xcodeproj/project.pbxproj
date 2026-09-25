@@ -37,7 +37,7 @@
 			membershipExceptions = (
 				"Open Wallpaper Engine-Bridging-Header.h",
 				Open_Wallpaper_Engine.entitlements,
-				Services/ObjCExceptionCatcher.h,
+				Core/ObjCExceptionCatcher.h,
 			);
 			target = 5EC47E752A2DB2E600120CCC /* Open Wallpaper Engine */;
 		};

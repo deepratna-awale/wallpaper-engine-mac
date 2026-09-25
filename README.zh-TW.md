@@ -146,10 +146,10 @@ open "Open Wallpaper Engine.xcodeproj"
 - `Services/SceneParsers/PKGParser.swift` — PKGV 封存解析器
 - `Services/SceneParsers/TEXParser.swift` — TEXV 紋理解析器
 - `Services/SceneParsers/SceneModels.swift` — Scene JSON 資料模型
-- `Services/SceneWallpaperViewModel.swift` — 場景載入與 SpriteKit 渲染
-- `Services/SteamCmdService.swift` — steamcmd 偵測、登入與創意工坊下載
-- `Services/WorkshopAPIService.swift` — Steam Web API 客戶端
-- `Services/WorkshopViewModel.swift` — 創意工坊瀏覽器狀態管理
-- `Services/WallpaperDirectory.swift` — 集中式桌布儲存路徑
-- `Services/ZipImporter.swift` — Zip 檔案解壓與匯入
+- `Scene/Loading/SceneWallpaperViewModel.swift` — 場景載入（供 Metal 渲染器使用）
+- `Workshop/SteamCmdService.swift` — steamcmd 偵測、登入與創意工坊下載
+- `Workshop/WorkshopAPIService.swift` — Steam Web API 客戶端
+- `Workshop/WorkshopViewModel.swift` — 創意工坊瀏覽器狀態管理
+- `Library/WallpaperDirectory.swift` — 集中式桌布儲存路徑
+- `Library/Import/ZipImporter.swift` — Zip 檔案解壓與匯入
 - `ContentView/Components/WorkshopView.swift` — 創意工坊瀏覽器 UI

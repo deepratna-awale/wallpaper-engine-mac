@@ -45,9 +45,9 @@ def collect_scripts(library):
 
 def implemented():
     """APIs the runtime provides, parsed from the sources so this can't drift."""
-    renderer = open(os.path.join(REPO, "Open Wallpaper Engine/WallpaperView/SceneMetalRenderer.swift"),
+    renderer = open(os.path.join(REPO, "Open Wallpaper Engine/Scene/Rendering/SceneMetalRenderer.swift"),
                     encoding="utf-8").read()
-    engine = open(os.path.join(REPO, "Open Wallpaper Engine/Services/AudioReactiveScriptEngine.swift"),
+    engine = open(os.path.join(REPO, "Open Wallpaper Engine/Scene/Scripting/AudioReactiveScriptEngine.swift"),
                   encoding="utf-8").read()
 
     state = re.search(r"scriptLayers\[entry\.layer\.id\] = \[(.*?)\n                    \]",
