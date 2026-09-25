@@ -96,5 +96,8 @@ final class SceneLayerKindTests: XCTestCase {
         XCTAssertEqual(layers["1"]?.parallaxDepth, SIMD3(1, 1, 0))
         XCTAssertEqual(layers["2"]?.parallaxDepth, SIMD3(0, 0, 0))
         XCTAssertEqual(layers["3"]?.parallaxDepth, SIMD3(0, 0.5, 0))
+        // Text reads its object's depth like any layer; it used to be pinned at 0 0.
+        XCTAssertEqual(layers["4"]?.parallaxDepth, SIMD3(1, 1, 0))
+        XCTAssertEqual(layers["5"]?.parallaxDepth, SIMD3(0.25, 0.75, 0))
     }
 }

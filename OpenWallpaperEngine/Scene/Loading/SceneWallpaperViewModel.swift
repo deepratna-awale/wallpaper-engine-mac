@@ -652,7 +652,6 @@ class SceneWallpaperViewModel: ObservableObject {
         let rotation = Float(object.angles?.parseVector3().2 ?? 0)
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let objectColor = object.color?.parseVector3() ?? (1, 1, 1)
-        let parallaxValue = object.parallaxDepthValue
         let effectPlans = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
@@ -662,7 +661,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
                        color: SIMD4<Float>(Float(objectColor.0), Float(objectColor.1), Float(objectColor.2), 1), colorScript: object.colorScript,
                        text: nil,
-                       parallaxDepth: SIMD3<Float>(Float(parallaxValue.0), Float(parallaxValue.1), Float(parallaxValue.2)),
+                       parallaxDepth: Self.parallaxDepth(of: object),
                        perspective: object.perspective ?? false,
                        positionScript: object.originScript, positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
                        sizeScript: object.sizeScript, sizeAnimation: nil,
@@ -706,7 +705,6 @@ class SceneWallpaperViewModel: ObservableObject {
         let size = authoredSize.flatMap { $0.x > 0 && $0.y > 0 ? $0 : nil } ?? sceneSize
         let color = object.color?.parseVector3() ?? (1, 1, 1)
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
-        let parallaxValue = object.parallaxDepthValue
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                        source: .image(Self.solidImage(red: color.0, green: color.1, blue: color.2)),
                        position: localOrigin(for: object, sceneSize: sceneSize),
@@ -718,7 +716,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
                        color: SIMD4<Float>(repeating: 1), colorScript: object.colorScript,
                        text: nil,
-                       parallaxDepth: SIMD3<Float>(Float(parallaxValue.0), Float(parallaxValue.1), Float(parallaxValue.2)),
+                       parallaxDepth: Self.parallaxDepth(of: object),
                        perspective: object.perspective ?? false,
                        positionScript: object.originScript, positionScriptProperties: object.originScriptProperties,
                        positionAnimation: object.originAnimation,
@@ -778,7 +776,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
                                brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
                                color: SIMD4<Float>(Float(color.0), Float(color.1), Float(color.2), 1), colorScript: object.colorScript,
-                               text: textConfig, parallaxDepth: .zero, perspective: false,
+                               text: textConfig, parallaxDepth: Self.parallaxDepth(of: object),
+                               perspective: object.perspective ?? false,
                                positionScript: object.originScript,
                                positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
                                sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
@@ -833,7 +832,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        scale: SIMD2<Float>(repeating: 1), scaleScript: nil, scaleAnimation: nil,
                        opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
                        brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
-                       text: nil, parallaxDepth: .zero, perspective: false,
+                       text: nil, parallaxDepth: Self.parallaxDepth(of: object), perspective: object.perspective ?? false,
                        positionScript: object.originScript, positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
                        sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
                        rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
@@ -1047,6 +1046,12 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private static func normalizeVariant(_ value: String) -> String {
         value.lowercased().filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// An object's `parallaxDepth` (WE's 1 1 when absent), as the layer carries it.
+    static func parallaxDepth(of object: WESceneObject) -> SIMD3<Float> {
+        let value = object.parallaxDepthValue
+        return SIMD3<Float>(Float(value.0), Float(value.1), Float(value.2))
     }
 
     private func loadMetalTexture(named name: String, materialDir: String, wallpaperDir: URL) -> SceneMetalTextureSource? {
