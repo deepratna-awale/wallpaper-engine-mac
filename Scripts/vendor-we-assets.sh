@@ -1,5 +1,5 @@
 #!/bin/bash
-# Regenerates "Open Wallpaper Engine/Resources/we-assets" from a local Wallpaper Engine install.
+# Regenerates "Vendor/we-assets" from a local Wallpaper Engine install.
 #
 #   ./Scripts/vendor-we-assets.sh [assets-dir]
 #
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="$REPO/Open Wallpaper Engine/Resources/we-assets"
+DEST="$REPO/Vendor/we-assets"
 ASSETS="${1:-}"
 
 if [[ -z "$ASSETS" ]]; then

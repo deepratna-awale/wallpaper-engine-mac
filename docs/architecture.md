@@ -73,7 +73,7 @@ These are folders in the app target today. The scene engine (`Scene/`, `Audio/`,
 ### `Resources/`
 
 - `Assets.xcassets`, `Localizable.xcstrings`, media.
-- `we-assets/`: the vendored WE runtime assets. It is a **folder reference**: it's copied into the app as-is and never compiled.
+- The vendored WE runtime assets live outside the app folder in `Vendor/we-assets/` (repo root). They're a **folder reference**, copied into the app as `Resources/we-assets` and never compiled.
 
 ## Scene data flow
 

@@ -1,6 +1,6 @@
 # Phase 1 reorganization plan
 
-**Status:** proposal, awaiting approval. Nothing below has been done yet.
+**Status:** approved 2026-09-25; in progress on `deepratna/phase1-structure`.
 
 **Aim:** move the code into the layout described in [`architecture.md`](architecture.md) and add the safety net, *without changing behaviour*. Type renames and logic changes are out of scope; they happen in Phases 2–6 as each area is rewritten.
 
@@ -38,7 +38,7 @@ These keep their current handling:
 
 | Item | Handling |
 |---|---|
-| `Resources/we-assets/` | Excluded from the synced group and kept as the existing **folder reference**, copied as-is. Otherwise its 1,361 `.metal` files would be compiled. |
+| `Resources/we-assets/` | **Moved to `Vendor/we-assets/`** at the repo root and kept as the existing folder reference, copied as-is. A folder listed in `membershipExceptions` does *not* exclude its contents: the build then failed with duplicate outputs, and its 1,361 `.metal` files would have been compiled. |
 | `Open_Wallpaper_Engine.entitlements`, `Open Wallpaper Engine-Bridging-Header.h` | Excluded from target membership; they're referenced by build settings. |
 | `Preview Content/` | Unchanged (`DEVELOPMENT_ASSET_PATHS`). |
 | `Open-Wallpaper-Engine-Info.plist` | Stays at the repo root, outside the synced group. |

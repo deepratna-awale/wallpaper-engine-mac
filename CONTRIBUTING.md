@@ -57,4 +57,4 @@ There is **one type per file** unless the types are tiny and private to it. A fi
 ## Changing the project file
 
 - New files: once the project uses folder-synced groups (Phase 1), putting a file in the right folder is enough. Until then, add it through Xcode.
-- `Resources/we-assets` is a **folder reference**. Don't let it become a synced group, or Xcode will try to compile the `.metal` files inside it.
+- `Vendor/we-assets` is a **folder reference** kept outside the synced app folder. Keep it there, or Xcode will pick up its files one by one and try to compile the `.metal` files inside it.
