@@ -8,6 +8,18 @@ enum SceneMetalTextureSource {
     case animated(TEXAnimatedImages)
     /// Frames arrive from AVFoundation each frame rather than being decoded up front.
     case video(VideoTextureStream)
+
+    /// The image's own size in texels when it is smaller than the texture it is uploaded into
+    /// (`g_TextureNResolution.zw`). Decoded images are already cropped to their content, so
+    /// only block-compressed uploads, which keep the .tex padding, report one.
+    var contentSize: SIMD2<Float>? {
+        switch self {
+        case let .dxt(texture):
+            return SIMD2(Float(texture.contentWidth), Float(texture.contentHeight))
+        case .image, .animated, .video:
+            return nil
+        }
+    }
 }
 
 struct SceneMetalLayer {

@@ -38,9 +38,13 @@ struct TEXAnimationFrame {
 
 struct TEXCompressedTexture {
     let format: UInt32
+    /// Allocated (block/power-of-two padded) size of the stored mipmap.
     let width: Int
     let height: Int
     let data: [UInt8]
+    /// The image's own size inside the allocation (the header's image width/height).
+    var contentWidth: Int
+    var contentHeight: Int
 }
 
 class TEXParser {
@@ -191,8 +195,8 @@ class TEXParser {
               readUInt32(from: bytes, cursor: &cursor) != nil,
               readUInt32(from: bytes, cursor: &cursor) != nil,
               readUInt32(from: bytes, cursor: &cursor) != nil,
-              readUInt32(from: bytes, cursor: &cursor) != nil,
-              readUInt32(from: bytes, cursor: &cursor) != nil,
+              let imageWidth = readUInt32(from: bytes, cursor: &cursor),
+              let imageHeight = readUInt32(from: bytes, cursor: &cursor),
               readUInt32(from: bytes, cursor: &cursor) != nil,
               let containerVersion = readNullTerminatedString(from: bytes, cursor: &cursor),
               let imageCount = readUInt32(from: bytes, cursor: &cursor), imageCount > 0 else {
@@ -254,7 +258,11 @@ class TEXParser {
         }
         let expectedSize = ((textureWidth + 3) / 4) * ((textureHeight + 3) / 4) * (format == 7 ? 8 : 16)
         guard mipmapData.count >= expectedSize else { return nil }
-        return TEXCompressedTexture(format: format, width: textureWidth, height: textureHeight, data: mipmapData)
+        // A zero or oversized header size means "no crop": the whole allocation is content.
+        let contentWidth = imageWidth > 0 ? min(Int(imageWidth), textureWidth) : textureWidth
+        let contentHeight = imageHeight > 0 ? min(Int(imageHeight), textureHeight) : textureHeight
+        return TEXCompressedTexture(format: format, width: textureWidth, height: textureHeight, data: mipmapData,
+                                    contentWidth: contentWidth, contentHeight: contentHeight)
     }
 
     /// TEXB0004 mipmaps use the conditional-variant layout (param1/param2/conditionJson/param3 preamble)
