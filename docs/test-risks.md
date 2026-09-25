@@ -40,12 +40,16 @@ Paths are relative to `OpenWallpaperEngine/`. **A** = renderer agent, **B** = sh
 - Unit: seed `~/Library/Caches/com.winddog.wallpaper-engine/shader-variants` with a v4 JSON for a known key, run the new build, assert it is not read (or is re-translated).
 - CLAUDE.md rule: bump `ShaderVariantTranslator.revision` in the same commit; add a test that fails when the translator output hash for a fixed corpus changes without a revision bump (golden-file test).
 
+**Status (R2, 2026-09-25).** Fixed 8cd197b. The key already held the revision and the library versions and options (1231087). Variants now also live in a directory per revision and compiler, so an upgrade never reads old ones. Verified by `ShaderVariantCacheTests.testVariantsOfAnotherCompilerAreNotReused` and `testTranslatedOutputMatchesItsRevision`: a golden hash of every bundled effect pair's output, keyed by `revision`, fails when output changes without a bump. Also by `InProcessShaderCompilerTests.testFingerprintNamesLibraryVersionsAndOptions` and `testCacheKeyDiffersBetweenBackends`.
+
 ## 2. glslang global state is not thread-safe in-process — Critical, B
 **Scenario.** `glslang::InitializeProcess()`/`FinalizeProcess()` are process-global and ref-counted; older glslang has a global pool allocator and symbol-table init that races. Today each translate is an isolated process (`Scene/Shaders/ShaderCompiler.swift:76`), so parallel loads (multi-display, each display's scene loading at once; preloading many effects) were safe. In-process, two `variant(...)` calls run concurrently (`ShaderVariant.swift:109-121` only locks the memory map, not translation) → heap corruption, sporadic wrong SPIR-V, or crashes that are not reproducible. Calling `FinalizeProcess` per compile while another thread compiles is a use-after-free.
 **Test.**
 - Stress unit test: 64 concurrent `translate` calls over 16 different WE shaders on `DispatchQueue.concurrentPerform`, run under Thread Sanitizer and Address Sanitizer, 50 iterations; compare every output byte-for-byte to a serial run.
 - Assert `InitializeProcess` is called exactly once (e.g. `static let` / `dispatch_once`) and `FinalizeProcess` never while the app lives.
 - Manual: two displays, two different heavy scene wallpapers, launch with an empty cache.
+
+**Status (R2, 2026-09-25).** Fixed 1231087: `InitializeProcess` runs once (`std::call_once`), is never finalized, and one mutex serializes every library call. Verified by `InProcessShaderCompilerTests.testParallelTranslationMatchesSerial` (24 pairs × 4 rounds concurrent, byte-equal to serial), which also passes under Thread Sanitizer with no reports. Open: two displays loading heavy scenes with an empty cache is manual. ASan was not run.
 
 ## 3. Static-lib symbol clashes — Critical, B
 **Scenario.** glslang ships its own `spv::` headers and SPIRV-Tools; SPIRV-Cross embeds `spirv.hpp` (`spv::` namespace too). Linking both statically can give ODR violations (different `spv::Op` enum sizes, duplicated inline functions) — the linker silently picks one; crashes only on specific opcodes. Also clashes with any other C++ in the process (MoltenVK-like libs, a future `.mdl` loader). Duplicate `-lc++` / different C++ standard libraries between prebuilt libs and Xcode.
@@ -54,12 +58,16 @@ Paths are relative to `OpenWallpaperEngine/`. **A** = renderer agent, **B** = sh
 - Round-trip test: translate the whole bundled `we-assets/shaders` corpus in-process and compare to the process path (golden). Any difference that is not whitespace is a bug.
 - Build Release with LTO and with `-dead_strip`; run the same corpus test on the Release binary.
 
+**Status (R2, 2026-09-25).** Verified. SPIRV-Cross's `spv::` is renamed `spvc_spv` (f28027d). `Scripts/check-toolchain-symbols.sh` (2a11bc6, run in CI) finds no symbol defined by both libraries in Debug or Release objects; the only shared definitions are libc++ instantiations and the libraries' own header inlines in the shim. `testMatchesProcessCompilerOverBundledCorpus` is byte-identical to the Homebrew tools. The Release archive links with dead stripping. Open: LTO is off, and the corpus test runs on the Debug build.
+
 ## 4. Corrupt or foreign `MTLBinaryArchive` — High, B
 **Scenario.** App killed mid-`serialize(to:)`; disk full; the file written by a newer macOS/driver and read by an older one after a downgrade; two app instances (or login-item + manually launched) writing the same archive. `makeBinaryArchive(descriptor:)` with a corrupt URL throws — or succeeds and `makeRenderPipelineState` crashes deep in the driver.
 **Test.**
 - Unit: write random bytes / a truncated real archive to the archive path, launch the loader, assert it deletes the file and falls back to an empty archive without crashing.
 - Serialize to a temp file then atomically rename; unit test that no partial file exists at the final path after a simulated failure.
 - Manual: `kill -9` the app during first-launch warmup, relaunch.
+
+**Status (R2, 2026-09-25).** Fixed a040708 and bdd0b48: writes go to a pid-named temporary file that is renamed into place, and an archive Metal can't open is deleted. Verified by `EffectPipelineArchiveTests`: `testCorruptArchiveIsDiscardedAndReplaced`, `testTruncatedArchiveIsDiscarded` (b68e85f), `testCompiledPipelinesArePersistedAndHitOnTheNextLaunch` (no `.tmp` left behind) and `testConcurrentCompilesSerializeCleanly` (also clean under TSan). With two instances, the last writer wins. Open: `kill -9` during warmup is manual (QA 3).
 
 ## 5. Binary archive tied to one GPU; GPU switch — High, B
 **Scenario.** Archives contain GPU-specific binaries. MacBook Pro with dGPU/iGPU switching, eGPU hot-plug, or two displays on different GPUs (Intel Mac Pro): a pipeline looked up in an archive from another device silently recompiles (fine) — or code passes the archive to a device other than the one it was created with (error). Also an OS update invalidates everything; archive grows unbounded as keys accumulate.
@@ -68,12 +76,16 @@ Paths are relative to `OpenWallpaperEngine/`. **A** = renderer agent, **B** = sh
 - Manual: Intel MBP, toggle "Automatic graphics switching", plug an external display, confirm no errors in `/usr/bin/log stream --predicate 'subsystem CONTAINS "wallpaper"'`.
 - Check archive size after 44-wallpaper library sweep, then again after 3 sweeps (should not grow).
 
+**Status (R2, 2026-09-25).** Fixed a040708: there is one file per GPU (name and registry ID), OS build, app build and revision, and this GPU's stale files are deleted. Each write holds only the pipelines of the last session that compiled something, which bounds the size. Verified by `testEachGPUHasItsOwnArchive` (b68e85f), `testArchivesForAnotherBuildOfThisGPUAreDeleted`, `testRenderersOfADeviceShareOneArchive` and `testBuiltinEffectPipelinesSurviveRepeatedWritesAndLaunches`. Open: a real GPU switch or eGPU is manual; no dual-GPU Mac was available.
+
 ## 6. Async pipeline compile races with `releaseLayer` — High, B
 **Scenario.** A layer requests a pipeline asynchronously, then the wallpaper is switched (or a clone is removed, see #14) and `releaseLayer` runs before the completion handler; the handler writes into freed state or re-inserts a pipeline for a dead layer (leak). Two layers requesting the same key concurrently compile twice and one overwrites the other's cache entry while a frame is encoding with it.
 **Test.**
 - Unit: fake compiler with a controllable delay; request → `releaseLayer` → complete; assert no entry remains and no crash (TSan).
 - Unit: two concurrent requests for one key produce one compile (in-flight dedupe).
 - Manual: rapidly switch wallpapers (arrow keys in library) 30× with an empty cache.
+
+**Status (R2, 2026-09-25).** Fixed 96a746b: the check for a pending compile and marking it pending were two separate locked steps, so two callers could both start one. Pipelines are keyed by variant, not by layer, and a completion only writes the shared cache under the lock. Verified by `EffectGraphTests.testReleaseLayerWhileItsPipelinesCompile` (no state comes back, and the next layer reuses the compiles) and `testConcurrentRequestsCompileEachPipelineOnce` (clean under TSan). Open: switching wallpapers 30× with an empty cache is manual.
 
 ## 7. In-process failure modes replace a recoverable subprocess — High, B
 **Scenario.** The spawn path has a 30 s timeout and isolates crashes (`ShaderCompiler.swift:73`, `:76-100`). In-process, a glslang `assert`/`abort` on a malformed WE shader, an infinite loop in the preprocessor, or a stack overflow on deeply nested macros kills the whole app — and the menu-bar/login-item app then crash-loops on relaunch with the same wallpaper. `/tmp/owe-failed-shaders` dumping may also be lost.
@@ -82,6 +94,8 @@ Paths are relative to `OpenWallpaperEngine/`. **A** = renderer agent, **B** = sh
 - Test that a failed shader still lands in `/tmp/owe-failed-shaders`.
 - Crash-loop guard: if the app crashed during translation last launch, start without restoring the wallpaper (manual: inject a crash).
 
+**Status (R2, 2026-09-25).** Fixed 0be8b90 and earlier. glslang builds with `NDEBUG`. `InProcessCompileCrashGuard` turns in-process compiling off after 2 deaths mid-compile, and safe restart skips the wallpaper. Fixed d9b00ee and 0418de2: the `/tmp/owe-failed-shaders` dump had been lost with the process translator. Verified by `ShaderVariantCacheTests.testGarbledSourcesFailWithoutCrashing` (truncated and garbled WE shaders, 20 000 parentheses, 2 000 nested `#if`), `testRejectedSourceIsWrittenForInspection` and `testFactoryFallsBackOnlyAfterRepeatedCrashes`, plus the crash-guard tests in `InProcessShaderCompilerTests`. Open: an in-process hang has no timeout; it would stall the translating thread, not the app.
+
 ## 8. Packaging still expects `shader-tools`; hardened runtime — High, B / CI
 **Scenario.** The release workflow asserts `Contents/Resources/shader-tools/glslangValidator` and `spirv-cross` exist and are executable, and CI `brew install`s them (`.github/workflows/*` "Verify bundle before notarizing"; `brew install glslang spirv-cross`). M9 removes them → release fails, or the tools are kept and unsigned binaries are notarized needlessly. If glslang is instead linked as a *dylib*, it must be signed with the same team, embedded under `Frameworks`, and library validation (hardened runtime) rejects an unsigned/ad-hoc dylib at launch — works in Debug, crashes in the notarized build. `SceneShaderTranslator.swift:18-19` still searches `/opt/homebrew/bin` and `/usr/local/bin`: a stale Homebrew toolchain could be preferred over the in-process one.
 **Test.**
@@ -89,12 +103,16 @@ Paths are relative to `OpenWallpaperEngine/`. **A** = renderer agent, **B** = sh
 - Manual on a clean Mac/VM with no Homebrew: install the notarized DMG, open a scene with effects.
 - Unit: the translator factory returns the in-process backend even when `/opt/homebrew/bin/glslangValidator` exists.
 
+**Status (R2, 2026-09-25).** Fixed 9dda345: removed the Vendor Shader Tools build phase and its script, the bundle path from the fallback search and Homebrew from the release workflow. The release check now asserts that there is no `shader-tools`, that the WE assets are bundled, a Developer ID signature, the hardened runtime, only `/usr/lib` and `/System` libraries, and no extra executables. The linked libraries are static, so library validation has no dylib to reject. Verified locally on a Release archive: `codesign --verify --deep --strict` passes, `flags=0x10002(adhoc,runtime)`, `otool -L` lists system libraries only, and the verify step's checks pass. Also by `ShaderVariantCacheTests.testFactoryPrefersTheLinkedCompiler` with Homebrew installed. Tests translate in-process, so they need no Homebrew (1da4ae8). Open: Developer ID signing and notarization run only in the workflow, which hasn't run yet. QA 1 (a clean Mac) is manual.
+
 ## 9. Pool evicts targets whose contents must survive — High, R (9cccfe2, d05e689)
 **Scenario.** `SceneRenderTargetPool.endFrame()` drops any bucket untouched for 600 frames (`Scene/Rendering/SceneRenderTargetPool.swift:64-67`) and `evictOverBudget` drops the LRU bucket over 256 MB (`:73-80`). Anything that relies on *previous-frame content* (ping-pong feedback effects, `_rt_` persistent targets, cached static-chain results from #18) gets a fresh uninitialised texture: trails reset, or garbage because `.private` storage is not cleared. 600 frames = 5 s at 120 Hz, 10 s at 60 Hz, so a layer hidden by a script for a few seconds loses its state; behaviour depends on refresh rate. Also: `texture(...)` returns `buckets[key]!.textures.first` (`:46-48`) — two consumers of the same size in one frame get the *same* texture unless `avoiding` is passed.
 **Test.**
 - Unit: request A, then `endFrame()` 601× without touching A, request again → assert the caller that holds a persistent target is notified/re-seeded (or persistent targets are excluded from the pool).
 - Unit: two requests of the same key within a frame without `avoiding` → assert distinct textures (or document the contract).
 - Headless: render a feedback-effect wallpaper 120 frames, hide the layer for 700 frames, show it → compare to reference.
+
+**Status (R2, 2026-09-25).** Fixed 7272f67: frame leases, persistent leases that are never evicted or shared, and idle eviction by wall time instead of frames. Verified by `SceneRenderTargetPoolTests` (distinct textures within a frame, `avoiding`, idle by time at 240 Hz, persistent targets and LRU over budget). Effect ping-pong and FBO targets are per layer in `EffectGraphRenderer`, not pooled, so a hidden layer keeps them. Open: nothing reacts to memory pressure (#20).
 
 ## 10. Screen-space scene snapshot — High, A
 **Scenario.** Rotated or partly off-screen layers whose effect reads the scene (`_rt_FullFrameBuffer`, refraction). Edge cases: rotation 90°/180° (width/height swap), negative scale (mirrored), layer entirely off-screen (zero-size rect: `pixelRect` returns nil at `Scene/Rendering/SceneRenderResolution.swift:33-`), snapshot taken before vs after the layer's own draw (feedback into itself), Retina scale (#11) applied twice or not at all, y-flip between scene y-up and texture y-down.
@@ -202,11 +220,15 @@ Paths are relative to `OpenWallpaperEngine/`. **A** = renderer agent, **B** = sh
 - Unit: point the cache dir at a read-only folder → translation still succeeds (no persist).
 - Manual: check cache size after 44-wallpaper sweep; add a size cap or document.
 
+**Status (R2, 2026-09-25).** Fixed 8cd197b: variants are stored per generation (`r<revision>-<compiler hash>`). Other generations and the old flat files are deleted after a week unused. The path's bundle id still matches the app's (`com.winddog.wallpaper-engine`). Verified by `ShaderVariantCacheTests`: `testVariantsLiveInTheirGeneration`, `testStaleGenerationsArePruned`, `testUnwritableCacheStillTranslates` and `testCorruptCachedVariantIsRetranslated`. Tests no longer write the user's pipeline archive (1da4ae8). Open: within one generation the cache grows with the variants used, which is bounded by the library.
+
 ## 25. CI with older Xcode / SDK — Low, B/CI
 **Scenario.** CI uses `macos-15` and picks the latest Xcode; a runner with an older Xcode lacks newer `MTLBinaryArchive`/Metal 3 APIs or C++20 features glslang needs; prebuilt static libs compiled with a newer clang (`-fcoroutines`, newer libc++ ABI) fail to link on older Xcode; deployment target mismatch warnings ("built for macOS 15 newer than 14"). Building glslang from source in CI adds minutes and may time out.
 **Test.**
 - Add a CI matrix leg with the oldest supported Xcode; `-Werror` on "was built for newer macOS version".
 - Guard new Metal APIs with `if #available` and a unit test that the fallback path (no archive) still compiles pipelines.
+
+**Status (R2, 2026-09-25).** Fixed 2a11bc6. CI and release pin Xcode 16.4, the oldest supported version, instead of the newest on the image, so development on the newest Xcode and CI on the oldest cover both. CI fails on "built for newer macOS version" link warnings and on toolchain symbol clashes. The Metal APIs used (`MTLBinaryArchive`, `.failOnBinaryArchiveMiss`) need macOS 11, below the 14.0 deployment target, so no `#available` is needed. The no-archive path runs in `ImageMaterialRenderTests` (`archive: nil`). Open: nothing was built with Xcode 16.4 locally (only Xcode 27 is installed); CI is the check.
 
 ---
 
