@@ -70,6 +70,8 @@ struct SceneMetalParticleSystem {
     let fadeInScript: String?
     let fadeOutScript: String?
     let blending: String
+    /// The system's material for WE's own particle shaders; nil keeps the built-in particle draw.
+    var material: ParticleMaterialPlan? = nil
 }
 
 struct ParticleChange {

@@ -46,7 +46,7 @@ private struct RenderTextureFrame {
     let uvAxisY: SIMD2<Float>
 }
 
-private struct Particle {
+struct Particle {
     var position: SIMD2<Float>
     var velocity: SIMD2<Float>
     var age: Float
@@ -73,7 +73,7 @@ private struct Particle {
     }
 }
 
-private final class ParticleSystemRuntime {
+final class ParticleSystemRuntime {
     let texture: MTLTexture
     let configuration: SceneMetalParticleSystem
     var particles: [Particle] = []
@@ -103,6 +103,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let renderTargetPool: SceneRenderTargetPool
     /// Runs authored effects through Wallpaper Engine's own shaders.
     private lazy var effectGraph = EffectGraphRenderer(device: device)
+    /// Draws particle systems through their WE material.
+    private lazy var particleMaterials = ParticleMaterialRenderer(device: device)
     /// Draws image layers through their own WE material.
     private lazy var imageMaterials = ImageMaterialRenderer(device: device, archive: effectGraph?.pipelineArchive)
     /// Asset textures used by effect passes, materialised once per content.
@@ -219,6 +221,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     func setContent(_ content: SceneMetalContent?) {
         effectAssetTextures.removeAll()
         effectGraph?.releaseTargets()
+        particleMaterials?.releaseAll()
         imageMaterials?.releaseAll()
         contentGenerationLock.lock()
         contentGeneration &+= 1
@@ -447,13 +450,18 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // One instanced draw per system rather than one per particle (or per rope segment, which
         // multiplies out to thousands on trail renderers).
         particleInstances.removeAll(keepingCapacity: true)
-        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int)] = []
+        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int, material: Bool)] = []
         // Systems are drawn in scene.json order, between the layers around them.
         let orderedSystems = particleSystems.enumerated()
             .sorted { ($0.element.configuration.order, $0.offset) < ($1.element.configuration.order, $1.offset) }
             .map(\.element)
         for system in orderedSystems {
             let base = particleInstances.count
+            if particleMaterials?.prepare(system, pixelFormat: sceneTexture.pixelFormat,
+                                          opacity: { [unowned self] in self.particleOpacity($0, in: system) }) == true {
+                particleBatches.append((system, base, 0, true))
+                continue
+            }
             if system.configuration.rendererName == "rope" {
                 appendRope(system, drawableSize: drawableSize)
             } else {
@@ -478,7 +486,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     }
                 }
             }
-            particleBatches.append((system, base, particleInstances.count - base))
+            particleBatches.append((system, base, particleInstances.count - base, false))
         }
         let particleBuffer = particleInstanceBuffer(for: particleInstances.count)
         if let particleBuffer {
@@ -489,13 +497,20 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         var nextParticleBatch = 0
         /// One instanced draw per system, for every system authored before `order`.
         func drawParticleBatches(before order: Int) {
-            guard let particleBuffer else { return }
             var drew = false
             while nextParticleBatch < particleBatches.count,
                   particleBatches[nextParticleBatch].system.configuration.order < order {
                 let batch = particleBatches[nextParticleBatch]
                 nextParticleBatch += 1
-                guard batch.count > 0 else { continue }
+                if batch.material {
+                    particleMaterials?.draw(batch.system, encoder: encoder, context: .init(
+                        sceneSize: sceneSize, frame: effectFrame,
+                        values: LiveSceneValueContext(time: sceneTime, scriptTime: sceneTime),
+                        assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) }))
+                    drew = true
+                    continue
+                }
+                guard batch.count > 0, let particleBuffer else { continue }
                 // Layer draws rebind index 0 with setVertexBytes, so bind the instances per draw.
                 encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
                 encoder.setFragmentBuffer(particleBuffer, offset: 0, index: 0)

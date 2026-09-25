@@ -1384,7 +1384,30 @@ class SceneWallpaperViewModel: ObservableObject {
                                         fadeInScript: fadeInScript, fadeOutScript: fadeOutScript,
                                         blending: material.passes?.first?.blending?.lowercased() ?? "translucent")
         system.velocityRotation = emitterSpace.rotation
+        system.material = buildParticleMaterial(materialPath, particleSystem: particleSystem, renderer: particleRenderer,
+                                                source: source, spriteSheet: spriteSheet, object: object,
+                                                wallpaperDir: wallpaperDir)
         return system
+    }
+
+    /// The system's material through WE's particle shaders; nil (logged when it's a failure)
+    /// keeps the built-in particle draw.
+    private func buildParticleMaterial(_ materialPath: String, particleSystem: WEParticleSystem,
+                                       renderer: WEParticleRenderer?, source: SceneMetalTextureSource,
+                                       spriteSheet: SpriteSheet?, object: WESceneObject,
+                                       wallpaperDir: URL) -> ParticleMaterialPlan? {
+        guard let translator = Self.effectTranslator else { return nil }
+        let builder = ParticleMaterialPlanBuilder(
+            translator: translator,
+            readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
+            loadTexture: { [weak self] name, path in self?.loadMetalTexture(named: name, materialDir: path, wallpaperDir: wallpaperDir) })
+        do {
+            return try builder.build(materialPath: materialPath, renderer: renderer, flags: particleSystem.flags ?? 0,
+                                     baseTexture: source, spriteSheet: spriteSheet)
+        } catch {
+            OWELog.error(.scene, "Particle system \(object.id ?? -1) uses the built-in draw, material \(materialPath): \(error)")
+            return nil
+        }
     }
 
     private func loadSpriteSheet(named name: String, materialDir: String, wallpaperDir: URL,
