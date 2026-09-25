@@ -117,9 +117,10 @@ final class SceneScriptLocalStorageTests: XCTestCase {
 
     func testTheCapCountsEveryOtherEntryAndRejectsTheWrite() throws {
         let fixture = try makeFixture()
-        // Each entry is 8 header bytes plus its JSON: a 49_990-character string is 49_992 JSON bytes.
+        // Each entry is 8 header bytes, its key and its JSON: a 49_989-character string is 49_991
+        // JSON bytes, so 'a' and 'b' take 50_000 bytes each.
         let result = run("""
-            const big = 'x'.repeat(49990);
+            const big = 'x'.repeat(49989);
             localStorage.set('a', big);
             localStorage.set('a', big);
             localStorage.set('b', big);
@@ -130,7 +131,8 @@ final class SceneScriptLocalStorageTests: XCTestCase {
             """, in: fixture)?.toString()
         XCTAssertEqual(result, "LocalStorageSet failed, possibly out of memory.|undefined|1",
                        "replacing a key doesn't count it twice; the full screen store refuses, the global one is separate")
-        XCTAssertEqual(2 * (SceneScriptStorage.entryOverhead + 49_992), SceneScriptStorage.capacity)
+        XCTAssertEqual(2 * SceneScriptStorage.size(key: "a", json: String(repeating: "x", count: 49_991)),
+                       SceneScriptStorage.capacity)
     }
 
     func testValuesPersistUnderTheRuntimeIdentity() throws {

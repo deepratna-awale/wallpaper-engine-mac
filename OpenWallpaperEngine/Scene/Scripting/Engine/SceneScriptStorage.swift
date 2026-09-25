@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// WE's SceneScript `localStorage` (lib.sceneScript.d.ts `ILocalStorage`), persisted per wallpaper:
@@ -9,6 +10,10 @@ import Foundation
 /// each other's `'global'` writes at once; the owner (WP11) creates it and passes it in. `lock`
 /// guards `stores`; each mutation marks its store dirty and `flush()` writes dirty stores.
 /// `flushLock` serializes flushes, so an older snapshot never overwrites a newer one.
+///
+/// Stores are written by the runtimes (at most once a second, and at teardown) and when the app
+/// terminates: the storage flushes itself on `NSApplication.willTerminateNotification`, since
+/// runtimes are not torn down on quit (SF7).
 final class SceneScriptStorage: @unchecked Sendable {
     enum Location: Equatable {
         case global
@@ -18,16 +23,26 @@ final class SceneScriptStorage: @unchecked Sendable {
     /// wallpaper64.exe refuses a write that would take a store past 100000 bytes (`0x186a0`,
     /// "up to 100 KB per wallpaper" in the docs): the other keys' entries plus the new one.
     static let capacity = 100_000
-    /// Each entry is WE's `LSKV0001` header followed by the value's JSON text.
+    /// Each entry is WE's `LSKV0001` header followed by the value's JSON text. The key counts too
+    /// (SF6): whether WE counts it is not known, but the file is ours, and without it a script that
+    /// uses data as keys grows the store without bound.
     static let entryOverhead = 8
 
     let directory: URL
     private let lock = NSLock()
     private let flushLock = NSLock()
     private var stores: [String: Store] = [:]
+    private var terminationObserver: NSObjectProtocol?
+    private let notificationCenter: NotificationCenter
 
-    init(directory: URL) {
+    /// `notificationCenter` is where the app posts `willTerminateNotification` (tests pass their own).
+    init(directory: URL, notificationCenter: NotificationCenter = .default) {
         self.directory = directory
+        self.notificationCenter = notificationCenter
+        terminationObserver = notificationCenter.addObserver(
+            forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { [weak self] _ in
+            self?.flush()
+        }
     }
 
     /// `<Application Support>/Open Wallpaper Engine/scenestorage`, the counterpart of WE's
@@ -38,6 +53,7 @@ final class SceneScriptStorage: @unchecked Sendable {
     }
 
     deinit {
+        if let terminationObserver { notificationCenter.removeObserver(terminationObserver) }
         flush()
     }
 
@@ -51,8 +67,8 @@ final class SceneScriptStorage: @unchecked Sendable {
     /// Stores `json` under `key`. False, storing nothing, when the store would exceed `capacity`.
     func setValue(_ json: String, forKey key: String, in location: Location, of identity: SceneScriptIdentity) -> Bool {
         withStore(location, identity) { store in
-            let size = Self.size(of: json)
-            let others = store.size - (store.entries[key].map(Self.size(of:)) ?? 0)
+            let size = Self.size(key: key, json: json)
+            let others = store.size - (store.entries[key].map { Self.size(key: key, json: $0) } ?? 0)
             guard others + size <= Self.capacity else { return false }
             store.entries[key] = json
             store.size = others + size
@@ -66,7 +82,7 @@ final class SceneScriptStorage: @unchecked Sendable {
     func removeValue(forKey key: String, in location: Location, of identity: SceneScriptIdentity) -> Bool {
         withStore(location, identity) { store in
             guard let removed = store.entries.removeValue(forKey: key) else { return false }
-            store.size -= Self.size(of: removed)
+            store.size -= Self.size(key: key, json: removed)
             store.dirty = true
             return true
         }
@@ -106,7 +122,7 @@ final class SceneScriptStorage: @unchecked Sendable {
     private struct Store {
         var url: URL
         var entries: [String: String]
-        /// The entries' total size as WE counts it (`entryOverhead` + UTF-8 bytes each).
+        /// The entries' total size: `entryOverhead` plus the key's and the value's UTF-8 bytes each.
         var size: Int
         var dirty = false
     }
@@ -130,7 +146,7 @@ final class SceneScriptStorage: @unchecked Sendable {
         guard FileManager.default.fileExists(atPath: url.path) else { return store }
         do {
             store.entries = try JSONDecoder().decode(File.self, from: Data(contentsOf: url)).entries
-            store.size = store.entries.values.reduce(0) { $0 + Self.size(of: $1) }
+            store.size = store.entries.reduce(0) { $0 + Self.size(key: $1.key, json: $1.value) }
         } catch {
             OWELog.error(.script, "Reading SceneScript localStorage \(url.path) failed; starting empty: \(error)")
         }
@@ -155,8 +171,8 @@ final class SceneScriptStorage: @unchecked Sendable {
         }
     }
 
-    private static func size(of json: String) -> Int {
-        entryOverhead + json.utf8.count
+    static func size(key: String, json: String) -> Int {
+        entryOverhead + key.utf8.count + json.utf8.count
     }
 
     /// A path component that can't escape the storage folder, whatever the id holds.
