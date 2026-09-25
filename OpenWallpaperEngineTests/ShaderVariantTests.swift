@@ -3,8 +3,9 @@ import Metal
 @testable import OpenWallpaperEngine
 
 final class ShaderVariantTests: XCTestCase {
-    static let weAssets = URL(fileURLWithPath:
-        "/Volumes/980Pro/Crossover/bottles/Steam Bottle/drive_c/Program Files (x86)/Steam/steamapps/common/wallpaper_engine/assets")
+    /// The WE assets shipped in the app bundle, so tests cover what users get without a WE install.
+    static let weAssets = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().appending(path: "Vendor/we-assets")
 
     private var translator: ShaderVariantTranslator!
     private var cache: URL!

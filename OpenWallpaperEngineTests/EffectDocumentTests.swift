@@ -3,7 +3,7 @@ import XCTest
 
 final class EffectDocumentTests: XCTestCase {
     /// Local Wallpaper Engine install and library; CI has neither, so those tests skip.
-    private static let assetsRoot = URL(fileURLWithPath: "/Volumes/980Pro/Crossover/bottles/Steam Bottle/drive_c/Program Files (x86)/Steam/steamapps/common/wallpaper_engine/assets", isDirectory: true)
+    private static let assetsRoot = ShaderVariantTests.weAssets
     private static let libraryRoot = URL(fileURLWithPath: "/Volumes/980Pro/OpenWallpaperStorage", isDirectory: true)
 
     private func directories(in url: URL) -> [URL] {
