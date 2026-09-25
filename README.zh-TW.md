@@ -59,7 +59,7 @@ Open Wallpaper Engine（修補版）
 Cmd+點擊選取多個桌布，右鍵選擇批次取消訂閱。
 
 ### 桌布儲存隔離
-桌布現在儲存在 `~/Documents/Open Wallpaper Engine/`，不再使用原始 Documents 目錄，避免克隆專案時出現「error」桌布。
+桌布現在儲存在 `~/Documents/OpenWallpaperEngine/`，不再使用原始 Documents 目錄，避免克隆專案時出現「error」桌布。
 
 ## 修補內容
 
@@ -132,7 +132,7 @@ open "Open Wallpaper Engine.xcodeproj"
 
 - **資料夾：** 檔案 > 從資料夾匯入——選擇包含 `project.json` 的桌布資料夾
 - **Zip：** 檔案 > 匯入 或拖放包含桌布套件的 `.zip` 檔案
-- **手動：** 直接將桌布資料夾複製到 `~/Documents/Open Wallpaper Engine/`
+- **手動：** 直接將桌布資料夾複製到 `~/Documents/OpenWallpaperEngine/`
 
 ## 變更的檔案（相對上游）
 

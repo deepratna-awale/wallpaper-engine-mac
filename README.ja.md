@@ -59,7 +59,7 @@ Open Wallpaper Engine（パッチ版）
 Cmd+クリックで複数の壁紙を選択し、右クリックで一括サブスクライブ解除。
 
 ### 壁紙ストレージの分離
-壁紙は `~/Documents/Open Wallpaper Engine/` に保存されるようになり、Documents ディレクトリを直接使用しなくなりました。リポジトリをクローンした際の「error」壁紙を防止します。
+壁紙は `~/Documents/OpenWallpaperEngine/` に保存されるようになり、Documents ディレクトリを直接使用しなくなりました。リポジトリをクローンした際の「error」壁紙を防止します。
 
 ## パッチ内容
 
@@ -132,7 +132,7 @@ Xcode で署名証明書を自分のものに変更するか「Sign to Run Local
 
 - **フォルダ：** ファイル > フォルダからインポート — `project.json` を含む壁紙フォルダを選択
 - **Zip：** ファイル > インポート またはドラッグ＆ドロップで `.zip` ファイルを読み込み
-- **手動：** 壁紙フォルダを `~/Documents/Open Wallpaper Engine/` に直接コピー
+- **手動：** 壁紙フォルダを `~/Documents/OpenWallpaperEngine/` に直接コピー
 
 ## 変更ファイル（上流との差分）
 

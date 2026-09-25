@@ -124,7 +124,7 @@ Import wallpaper packages directly from `.zip` files — no need to manually ext
 Cmd+click to select multiple wallpapers, then right-click to batch unsubscribe.
 
 ### Wallpaper Storage Isolation
-Wallpapers are now stored in `~/Documents/Open Wallpaper Engine/` instead of the raw Documents directory, preventing "error" wallpapers when cloning the repo on a fresh machine.
+Wallpapers are now stored in `~/Documents/OpenWallpaperEngine/` instead of the raw Documents directory, preventing "error" wallpapers when cloning the repo on a fresh machine.
 
 </details>
 
@@ -274,18 +274,18 @@ In Xcode, change the signing certificate to your own or select "Sign to Run Loca
 
 - **Folder:** File > Import from Folder — select wallpaper folders containing `project.json`
 - **Zip:** File > Import or drag-and-drop a `.zip` file containing wallpaper packages
-- **Manual:** Copy wallpaper folders directly into `~/Documents/Open Wallpaper Engine/`
+- **Manual:** Copy wallpaper folders directly into `~/Documents/OpenWallpaperEngine/`
 
 ## Project Layout
 
-- `Open Wallpaper Engine/Services/SceneParsers/` — PKG, TEX/TEXS, and scene.json parsers and models
-- `Open Wallpaper Engine/Services/SceneEffects/` — dynamic effect catalog and authored effect parameter ranges
-- `Open Wallpaper Engine/Scene/Shaders/SceneShaderTranslator.swift` — GLSL → SPIR-V → MSL translation, `.metallib` compilation, and caching
-- `Open Wallpaper Engine/Scene/Scripting/AudioReactiveScriptEngine.swift` — SceneScript runtime and audio/FFT bindings
-- `Open Wallpaper Engine/Audio/AudioLevelTap.swift` — ScreenCaptureKit system audio capture
-- `Open Wallpaper Engine/Scene/Rendering/SceneMetalRenderer.swift`, `SceneShaders.metal` — the Metal scene renderer and shader library
-- `Open Wallpaper Engine/Workshop/SteamCmdService.swift`, `WorkshopAPIService.swift`, `WorkshopViewModel.swift` — Steam Workshop browsing and downloads
-- `Open Wallpaper Engine/Library/WallpaperDirectory.swift`, `ZipImporter.swift`, `WallpaperPackageConverter.swift` — library storage, import, and package conversion
+- `OpenWallpaperEngine/Services/SceneParsers/` — PKG, TEX/TEXS, and scene.json parsers and models
+- `OpenWallpaperEngine/Services/SceneEffects/` — dynamic effect catalog and authored effect parameter ranges
+- `OpenWallpaperEngine/Scene/Shaders/SceneShaderTranslator.swift` — GLSL → SPIR-V → MSL translation, `.metallib` compilation, and caching
+- `OpenWallpaperEngine/Scene/Scripting/AudioReactiveScriptEngine.swift` — SceneScript runtime and audio/FFT bindings
+- `OpenWallpaperEngine/Audio/AudioLevelTap.swift` — ScreenCaptureKit system audio capture
+- `OpenWallpaperEngine/Scene/Rendering/SceneMetalRenderer.swift`, `SceneShaders.metal` — the Metal scene renderer and shader library
+- `OpenWallpaperEngine/Workshop/SteamCmdService.swift`, `WorkshopAPIService.swift`, `WorkshopViewModel.swift` — Steam Workshop browsing and downloads
+- `OpenWallpaperEngine/Library/WallpaperDirectory.swift`, `ZipImporter.swift`, `WallpaperPackageConverter.swift` — library storage, import, and package conversion
 - `Scripts/vendor-shader-tools.sh` — vendors `glslang` and `spirv-cross` into the app bundle
 - `Scripts/vendor-we-assets.sh` — vendors translated effect shaders and manifests into `we-assets/`
 - `Scripts/scene-api-coverage.py` — reports which SceneScript APIs installed wallpapers use versus what is implemented

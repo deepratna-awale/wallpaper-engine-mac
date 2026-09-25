@@ -47,7 +47,7 @@ Verification checks 2 and 3 matter most here: identical sources and identical re
 
 ## Step 4: moves (`git mv` only)
 
-Paths are relative to `Open Wallpaper Engine/`.
+Paths are relative to `OpenWallpaperEngine/`.
 
 | From | To |
 |---|---|
