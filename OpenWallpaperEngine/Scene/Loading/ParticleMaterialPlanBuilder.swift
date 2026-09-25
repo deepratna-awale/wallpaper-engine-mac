@@ -86,6 +86,10 @@ struct ParticleMaterialPlanBuilder {
     /// material, under its root folder, then under `materials/`. Nil for a texture that isn't a
     /// `.tex` (render targets, generated textures).
     private func textureHeader(named name: String, materialPath: String) -> Data? {
+        Self.textureHeader(named: name, materialPath: materialPath, readFile: readFile)
+    }
+
+    static func textureHeader(named name: String, materialPath: String, readFile: (String) -> Data?) -> Data? {
         guard !name.hasPrefix("_rt_") else { return nil }
         let directory = (materialPath as NSString).deletingLastPathComponent
         let root = directory.split(separator: "/").first.map(String.init) ?? "materials"
@@ -95,13 +99,16 @@ struct ParticleMaterialPlanBuilder {
         return nil
     }
 
-    /// `TEX<n>FORMAT` for the textures after the first that the GPU samples as stored, as WE sets
-    /// it from each bound texture (`DecompressNormal` reads a DXT normal map's channels by it).
-    /// Texture 0 and the formats `TEXParser` expands to RGBA stay `FORMAT_RGBA8888`.
+    /// `TEX<n>FORMAT` for the textures the GPU samples as stored, as WE sets it from each bound
+    /// texture: `DecompressNormal` reads a block-compressed or RG88 normal map's channels by it, and
+    /// `ConvertTexture0Format` turns an RG88 albedo (stored as (r, g, 0, 1)) into `.rrrg`. The
+    /// formats `TEXParser` expands to RGBA (R8 and the uncompressed ones) stay `FORMAT_RGBA8888`,
+    /// as does a block-compressed texture 0, which no particle shader converts.
     static func textureFormatCombos(_ headers: [Int: Data]) -> [String: Int] {
         var combos: [String: Int] = [:]
-        for (slot, header) in headers where slot > 0 {
-            guard let format = TEXImageFormat(texData: header), format.isBlockCompressed else { continue }
+        for (slot, header) in headers {
+            guard let format = TEXImageFormat(texData: header),
+                  format == .rg88 || (format.isBlockCompressed && slot > 0) else { continue }
             combos["TEX\(slot)FORMAT"] = Int(format.rawValue)
         }
         return combos

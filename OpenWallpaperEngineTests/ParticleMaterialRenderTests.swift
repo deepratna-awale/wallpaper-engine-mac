@@ -1,5 +1,6 @@
 import XCTest
 import Metal
+import MetalKit
 import AppKit
 @testable import OpenWallpaperEngine
 
@@ -302,7 +303,38 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertEqual(TEXFlags(texData: header(format: 4)), .clampUVs, "the flags follow the format word")
         let combos = ParticleMaterialPlanBuilder.textureFormatCombos([0: header(format: 4), 1: header(format: 4),
                                                                       2: header(format: 8), 3: header(format: 0)])
-        XCTAssertEqual(combos, ["TEX1FORMAT": 4], "a DXT5 normal map; RG88, RGBA and texture 0 are expanded on load")
+        XCTAssertEqual(combos, ["TEX1FORMAT": 4, "TEX2FORMAT": 8],
+                       "a DXT5 normal map and an RG88 texture; RGBA and a block-compressed texture 0 stay unset")
+    }
+
+    /// An RG88 normal map (loaded as (r, g, 0, 1)) refracts by `DecompressNormalWithMask`'s RG88
+    /// branch: x from green, y from red, the mask (alpha) 1.
+    func testRG88NormalMapRefractsThroughItsFormatCombo() throws {
+        let built = try rg88Builder().build(materialPath: "materials/refract_rg88.json",
+                                            renderer: try decodeRenderer(#"{"name":"sprite"}"#), flags: 0,
+                                            baseTexture: .image(NSImage()), spriteSheet: nil)
+        let plan = emulated(built)
+        XCTAssertEqual(plan.stages.first?.variant.combos["TEX1FORMAT"], 8)
+        let normal = try rg88Texture([128, 255])
+        let columns = Self.scene { x, _ in x < 128 ? [255, 0, 0, 255] : [0, 255, 0, 255] }
+        let pixels = try render(plan, particles: [particle(at: SIMD2(64, 128), size: 100)], scene: columns,
+                                assetTexture: { _, _ in normal })
+        XCTAssertEqual(pixels.bytes[(128 * Self.size + 64) * 4 + 1], 255, "green is x: it samples the half to the right")
+        XCTAssertEqual(pixels.bytes[(128 * Self.size + 64) * 4], 0)
+    }
+
+    /// An RG88 albedo reads as luminance and alpha (`ConvertTexture0Format`'s `.rrrg`).
+    func testRG88AlbedoReadsAsLuminanceAndAlpha() throws {
+        let built = try rg88Builder().build(materialPath: "materials/albedo_rg88.json",
+                                            renderer: try decodeRenderer(#"{"name":"sprite"}"#), flags: 0,
+                                            baseTexture: .image(NSImage()), spriteSheet: nil)
+        let plan = emulated(built)
+        XCTAssertEqual(plan.stages.first?.variant.combos["TEX0FORMAT"], 8)
+        let pixels = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 80)], texture: try rg88Texture([255, 128]))
+        let index = (128 * Self.size + 128) * 4
+        for channel in 0..<3 {
+            XCTAssertEqual(Double(pixels.bytes[index + channel]), 128, accuracy: 2, "white at half alpha over black")
+        }
     }
 
     func testFailedPipelineFallsBackToTheBuiltInDraw() throws {
@@ -564,6 +596,32 @@ final class ParticleMaterialRenderTests: XCTestCase {
         return ParticleMaterialPlan(materialPath: built.materialPath, shader: built.shader, format: built.format,
                                     blending: built.blending, stages: built.stages.filter { $0.geometry == .emulated(vertexCount: 6) },
                                     trailLengths: built.trailLengths, spriteSheet: nil)
+    }
+
+    /// A builder that also finds the RG88 `.tex` files the `*_rg88.json` fixtures name.
+    private func rg88Builder() -> ParticleMaterialPlanBuilder {
+        let roots = [Fixtures.url("Particles"), ShaderVariantTests.weAssets]
+        let generated = ["materials/refractnormal_rg88.tex": TextureRG88Tests.tex(format: 8),
+                         "materials/albedo_rg88.tex": TextureRG88Tests.tex(format: 8)]
+        return ParticleMaterialPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil),
+            readFile: { path in
+                generated[path] ?? roots.lazy.compactMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }.first
+            },
+            loadTexture: { name, _ in name == "refractnormal_rg88" ? .image(NSImage()) : nil })
+    }
+
+    private func emulated(_ plan: ParticleMaterialPlan) -> ParticleMaterialPlan {
+        ParticleMaterialPlan(materialPath: plan.materialPath, shader: plan.shader, format: plan.format,
+                             blending: plan.blending, stages: plan.stages.filter { $0.geometry == .emulated(vertexCount: 6) },
+                             trailLengths: plan.trailLengths, spriteSheet: nil)
+    }
+
+    /// A 4×4 RG88 texture of one texel value, loaded as the scene loader loads it.
+    private func rg88Texture(_ texel: [UInt8]) throws -> MTLTexture {
+        let data = TextureRG88Tests.tex(format: 8, width: 4, height: 4, pixels: (0..<16).flatMap { _ in texel })
+        let image = try XCTUnwrap(TEXParser(data: data).extractImage()?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        return try SceneTextureUpload.texture(from: image, loader: MTKTextureLoader(device: device), device: device)
     }
 
     /// A 4×4 texture of one RGBA colour.

@@ -73,6 +73,9 @@ struct SceneMetalParticleSystem {
     let blending: String
     /// The system's material for WE's own particle shaders; nil keeps the built-in particle draw.
     var material: ParticleMaterialPlan? = nil
+    /// Texture 0 for the built-in draw when it can't sample `source` as it is
+    /// (`ParticleFallbackTexture`).
+    var fallbackSource: SceneMetalTextureSource? = nil
     /// The emitter object's id in the scene hierarchy; the renderer moves the emitter with that
     /// object's live transform (parents, scripts and animations included).
     var objectID: String? = nil

@@ -263,8 +263,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             }
             let runtimes: [ParticleSystemRuntime?] = content.particleSystems.enumerated().map { index, system in
                 guard let texture = self.makeTextureFrames(from: system.source)?.first?.texture else { return nil }
+                let fallback = system.fallbackSource.flatMap { self.makeTextureFrames(from: $0)?.first?.texture }
                 // Seeded by position in the scene, so a wallpaper's particles replay the same way.
-                return ParticleSystemRuntime(texture: texture, configuration: system, seed: ParticleRandom.pcg(UInt32(index)))
+                return ParticleSystemRuntime(texture: texture, configuration: system, seed: ParticleRandom.pcg(UInt32(index)),
+                                             fallbackTexture: fallback)
             }
             ParticleSystemRuntime.linkFamilies(runtimes)
             let preparedParticleSystems = runtimes.compactMap { $0 }
@@ -577,7 +579,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     encoder.setVertexBuffer(records, offset: 0, index: 0)
                     encoder.setFragmentBuffer(records, offset: 0, index: 0)
                     encoder.setRenderPipelineState(pipeline)
-                    encoder.setFragmentTexture(batch.system.texture, index: 0)
+                    encoder.setFragmentTexture(batch.system.fallbackTexture, index: 0)
                     encoder.drawPrimitives(type: .triangleStrip, indirectBuffer: gpu.control,
                                            indirectBufferOffset: ParticleGPUSystem.Control.fallbackDrawOffset)
                     drew = true
@@ -588,7 +590,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
                 encoder.setFragmentBuffer(particleBuffer, offset: 0, index: 0)
                 encoder.setRenderPipelineState(pipeline)
-                encoder.setFragmentTexture(batch.system.texture, index: 0)
+                encoder.setFragmentTexture(batch.system.fallbackTexture, index: 0)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                        instanceCount: batch.count, baseInstance: batch.base)
                 drew = true

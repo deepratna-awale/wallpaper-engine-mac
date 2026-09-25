@@ -15,9 +15,13 @@ struct TEXImageFormat: RawRepresentable, Equatable {
         rawValue = word
     }
 
+    /// Two 8-bit channels (`FORMAT_RG88`), loaded as (r, g, 0, 1) like the GPU samples them.
+    static let rg88 = TEXImageFormat(rawValue: 8)
+
     /// Block-compressed formats (ETC, DXT, BC7): the GPU samples them exactly as stored, so a
-    /// shader may rely on their channel layout. Other formats are expanded to RGBA on load
-    /// (`TEXParser`), and shaders must see them as `FORMAT_RGBA8888`.
+    /// shader may rely on their channel layout. RG88 loads as it samples too (`rg88`); the other
+    /// formats are expanded to RGBA on load (`TEXParser`), and shaders must see them as
+    /// `FORMAT_RGBA8888`.
     var isBlockCompressed: Bool {
         (3...7).contains(rawValue) || rawValue == 12
     }

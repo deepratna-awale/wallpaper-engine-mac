@@ -433,13 +433,14 @@ class TEXParser {
                                 visibleWidth: visibleWidth, visibleHeight: visibleHeight)
         case 8:
             guard bytes.count >= width * height * 2 else { return nil }
-            var rgba = [UInt8](repeating: 0, count: width * height * 4)
+            // As a two-channel texture samples in WE: (r, g, 0, 1). Shaders that read RG88 as
+            // luminance and alpha convert it by `TEX<n>FORMAT` (`ConvertTexture0Format`'s
+            // `.rrrg`); normal maps (`DecompressNormal`) and flow maps read `.rg`.
+            var rgba = [UInt8](repeating: 255, count: width * height * 4)
             for pixel in 0..<(width * height) {
-                let luminance = bytes[pixel * 2]
-                rgba[pixel * 4] = luminance
-                rgba[pixel * 4 + 1] = luminance
-                rgba[pixel * 4 + 2] = luminance
-                rgba[pixel * 4 + 3] = bytes[pixel * 2 + 1]
+                rgba[pixel * 4] = bytes[pixel * 2]
+                rgba[pixel * 4 + 1] = bytes[pixel * 2 + 1]
+                rgba[pixel * 4 + 2] = 0
             }
             return rawRGBAImage(rgba, width: width, height: height, visibleWidth: visibleWidth, visibleHeight: visibleHeight)
         case 9:

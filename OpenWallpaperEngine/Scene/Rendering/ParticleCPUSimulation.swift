@@ -34,6 +34,9 @@ struct Particle {
 
 final class ParticleSystemRuntime {
     let texture: MTLTexture
+    /// Texture 0 for the built-in draw (`SceneMetalParticleSystem.fallbackSource`); `texture`
+    /// when it samples that as it is.
+    let fallbackTexture: MTLTexture
     let configuration: SceneMetalParticleSystem
     var particles: [Particle] = []
     var emissionRemainder: Float = 0
@@ -62,8 +65,10 @@ final class ParticleSystemRuntime {
     var spawnedThisStep: [Particle] = []
     var diedThisStep: [Particle] = []
 
-    init(texture: MTLTexture, configuration: SceneMetalParticleSystem, seed: UInt32 = 0) {
+    init(texture: MTLTexture, configuration: SceneMetalParticleSystem, seed: UInt32 = 0,
+         fallbackTexture: MTLTexture? = nil) {
         self.texture = texture
+        self.fallbackTexture = fallbackTexture ?? texture
         self.configuration = configuration
         self.seed = seed
         self.fadeIn = configuration.fadeIn

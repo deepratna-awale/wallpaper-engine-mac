@@ -1528,6 +1528,10 @@ class SceneWallpaperViewModel: ObservableObject {
             system.minimumSpawnRatio = distance.0 > 0 ? min(max(innerDistance / Float(distance.0), 0), 1) : 0
         }
         system.material = materialPlan
+        let albedo = ParticleMaterialPlanBuilder.textureHeader(named: textureName, materialPath: materialPath) {
+            assetData(named: $0, wallpaperDir: wallpaperDir)
+        }
+        system.fallbackSource = ParticleFallbackTexture.converted(source, format: albedo.flatMap(TEXImageFormat.init(texData:)))
         return system
     }
 
