@@ -266,6 +266,21 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertEqual(down.bytes[(64 * Self.size + 128) * 4], 0)
     }
 
+    func testCompilingPipelineDrawsNothingRatherThanTheBuiltInDraw() throws {
+        // A pixel format no other test compiles for, so the pipeline is new here.
+        let format = MTLPixelFormat.bgra8Unorm_srgb
+        let plan = try self.plan("materials/additive_overbright.json", renderer: "sprite", keeping: .expandedQuads)
+        let system = ParticleSystemRuntime(texture: white, configuration: Self.configuration(plan: plan))
+        system.particles = [particle(at: SIMD2(128, 128), size: 80)]
+        // The first frame starts the compile: the system stays on the material path, drawing nothing.
+        XCTAssertTrue(renderer.prepare(system, pixelFormat: format, opacity: { _ in 1 }))
+        XCTAssertFalse(renderer.readsSceneSnapshot(system))
+        XCTAssertNotNil(renderer.prepareSimulated(system, pixelFormat: format))
+        XCTAssertEqual(renderer.fallbacksReported, 0)
+        XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: format))
+        XCTAssertTrue(renderer.prepare(system, pixelFormat: format, opacity: { _ in 1 }))
+    }
+
     func testUserShaderValuesDriveTheMaterialLive() throws {
         let plan = try self.plan("materials/user_overbright.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
         var dim = particle(at: SIMD2(128, 128), size: 80)

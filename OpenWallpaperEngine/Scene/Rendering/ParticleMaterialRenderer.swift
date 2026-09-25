@@ -7,8 +7,8 @@ import simd
 /// (`ParticleVertexFormat`) is one instance, expanded on the GPU by the emulated geometry
 /// stage (`GeometryShaderEmulation`) or WE's no-geometry-shader stream (`ParticleQuadExpansion`).
 ///
-/// A system whose material has no usable stage yet (pipeline compiling) or at all (failed)
-/// keeps the renderer's built-in particle draw; a failure is logged once per system.
+/// A system draws nothing while its pipeline compiles. One whose material has no usable stage
+/// (every pipeline failed) keeps the renderer's built-in particle draw, logged once per system.
 /// A stage that reads the scene (`_rt_FullFrameBuffer`, refraction) draws with the snapshot the
 /// caller takes right before it (`readsSceneSnapshot`, `DrawContext.sceneSnapshot`).
 final class ParticleMaterialRenderer {
@@ -104,7 +104,8 @@ final class ParticleMaterialRenderer {
     // MARK: - Frame
 
     /// Picks `system`'s stage and writes its records for this frame. False means the system
-    /// can't draw through its material now; the caller draws it the built-in way.
+    /// can't draw through its material; the caller draws it the built-in way. True while its
+    /// pipeline compiles, when `draw` draws nothing.
     func prepare(_ system: ParticleSystemRuntime, pixelFormat: MTLPixelFormat,
                  opacity: (Particle) -> Float) -> Bool {
         guard let plan = system.configuration.material else { return false }
@@ -112,7 +113,8 @@ final class ParticleMaterialRenderer {
         state.prepared = nil
         let ready: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState)
         switch readiness(plan, pixelFormat: pixelFormat, state: state) {
-        case .unavailable, .compiling: return false
+        case .unavailable: return false
+        case .compiling: return true
         case .ready(let stage, let pipeline): ready = (stage, pipeline)
         }
         let count = ParticleRecordWriter.recordCount(system, format: plan.format)
@@ -127,14 +129,17 @@ final class ParticleMaterialRenderer {
     }
 
     /// Picks `system`'s stage for a draw whose records the GPU simulation writes this frame.
-    /// Nil means the system can't draw through its material now (see `prepare`).
+    /// Nil means the system can't draw through its material (see `prepare`); while its pipeline
+    /// compiles, the simulation writes the compiling stage's records and `draw` draws nothing.
     func prepareSimulated(_ system: ParticleSystemRuntime, pixelFormat: MTLPixelFormat) -> Simulated? {
         guard let plan = system.configuration.material else { return nil }
         let state = state(for: system)
         state.prepared = nil
         let ready: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState)
         switch readiness(plan, pixelFormat: pixelFormat, state: state) {
-        case .unavailable, .compiling: return nil
+        case .unavailable: return nil
+        case .compiling(let stage):
+            return Simulated(format: plan.format, vertexCount: Self.vertexCount(stage), renderVar: nil)
         case .ready(let stage, let pipeline): ready = (stage, pipeline)
         }
         var renderVar: (buffer: MTLBuffer, offset: Int)?
