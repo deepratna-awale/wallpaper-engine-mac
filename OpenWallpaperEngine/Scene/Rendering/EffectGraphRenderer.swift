@@ -300,7 +300,7 @@ final class EffectGraphRenderer {
                     attachment.destinationAlphaBlendFactor = blend.destination
                 }
                 descriptor.vertexDescriptor = Self.vertexDescriptor(for: vertex)
-                result = try Self.makePipeline(descriptor, device: device, archive: archive)
+                result = try Self.makePipeline(descriptor, device: device, archive: archive, key: key)
             } catch {
                 OWELog.error(.shader, "Effect pipeline failed (\(key.prefix(12))): \(error)")
                 result = nil
@@ -315,16 +315,19 @@ final class EffectGraphRenderer {
 
     /// Takes the pipeline from the archive when it has it; otherwise compiles it and adds it.
     static func makePipeline(_ descriptor: MTLRenderPipelineDescriptor, device: MTLDevice,
-                             archive: EffectPipelineArchive?) throws -> MTLRenderPipelineState {
+                             archive: EffectPipelineArchive?, key: String) throws -> MTLRenderPipelineState {
         guard let archive else { return try device.makeRenderPipelineState(descriptor: descriptor) }
-        descriptor.binaryArchives = archive.archives
-        // Optional: a miss is the normal first-launch case and falls through to a full compile.
-        if let hit = try? device.makeRenderPipelineState(descriptor: descriptor, options: [.failOnBinaryArchiveMiss]).0 {
-            archive.recordHit()
-            return hit
+        let archives = archive.archives
+        if !archives.isEmpty {
+            descriptor.binaryArchives = archives
+            // Optional: a miss is the normal case for a new pipeline and falls through to a full compile.
+            if let hit = try? device.makeRenderPipelineState(descriptor: descriptor, options: [.failOnBinaryArchiveMiss]).0 {
+                archive.recordHit()
+                return hit
+            }
         }
         let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-        archive.add(descriptor)
+        archive.add(descriptor, key: key)
         return pipeline
     }
 

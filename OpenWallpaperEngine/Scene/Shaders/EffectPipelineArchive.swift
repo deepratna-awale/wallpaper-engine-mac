@@ -10,21 +10,42 @@ import Metal
 /// archive. Writes go to a temporary file that is renamed into place, so a crash mid-write
 /// never leaves a truncated archive behind.
 ///
-/// Thread-safe: `lock` owns `archive`, `dirty`, `serializeScheduled` and the counters; `serializeQueue` runs writes one at a time.
+/// Two archive objects: `lookup` is what was on disk at launch and is only read (handed to
+/// pipeline descriptors, possibly from several compile threads at once); `writer` collects the
+/// same plus every new pipeline and is the one serialized. Mutating an archive that concurrent
+/// compiles are reading produced archives Metal could not serialize.
+///
+/// Metal can refuse to serialize an archive because of one pipeline in it (seen with WE's
+/// `transform` effect next to the other built-ins: "expecting 'fragment' stage in pipeline no.
+/// N"). A failed write is retried pipeline by pipeline from the last good file; a pipeline that
+/// breaks it is left out and remembered in `<archive>.skip`, and still renders, just compiled
+/// normally.
+///
+/// Thread-safe: `lock` owns `writer`, `pending`, `skipped`, `serializeScheduled` and the
+/// counters; `serializeQueue` runs writes one at a time; `lookup` is immutable.
 final class EffectPipelineArchive {
     /// Bump when what goes into the archive changes (e.g. descriptor fields).
     static let revision = 1
 
     let url: URL
+    private let skipURL: URL
     private let device: MTLDevice
     private let lock = NSLock()
-    private var archive: MTLBinaryArchive?
-    private var dirty = false
+    private let lookup: MTLBinaryArchive?
+    private var writer: MTLBinaryArchive?
+    /// Pipelines added since the last successful write, by key.
+    private var pending: [(key: String, descriptor: MTLRenderPipelineDescriptor)] = []
+    /// Keys of pipelines that make the archive unserializable.
+    private var skipped: Set<String>
+    private var writeFailureCount = 0
     private var hitCount = 0
     private var additionCount = 0
     /// Pipelines served from the archive / added to it, for tests and diagnostics.
     var hits: Int { lock.withLock { hitCount } }
     var additions: Int { lock.withLock { additionCount } }
+    /// Writes that failed even after leaving out unserializable pipelines.
+    var writeFailures: Int { lock.withLock { writeFailureCount } }
+    var skippedCount: Int { lock.withLock { skipped.count } }
     private var serializeScheduled = false
     private let serializeQueue = DispatchQueue(label: "owe.effect-pipeline-archive", qos: .utility)
     /// Writes wait this long after the last addition, so a burst of compiles writes once.
@@ -41,7 +62,10 @@ final class EffectPipelineArchive {
             OWELog.error(.shader, "Could not create the pipeline archive directory \(directory.path): \(error)")
         }
         Self.deleteStale(in: directory, deviceName: Self.deviceName(device), prefix: prefix, keeping: url)
-        archive = open()
+        skipURL = url.appendingPathExtension("skip")
+        skipped = Self.loadSkipped(skipURL)
+        lookup = Self.open(url, device: device)
+        writer = Self.open(url, device: device) ?? Self.makeEmpty(device)
     }
 
     static var defaultDirectory: URL? {
@@ -50,18 +74,20 @@ final class EffectPipelineArchive {
     }
 
     /// The archives to put on a pipeline descriptor (`binaryArchives`), empty without one.
-    var archives: [MTLBinaryArchive] {
-        lock.withLock { archive.map { [$0] } ?? [] }
-    }
+    var archives: [MTLBinaryArchive] { lookup.map { [$0] } ?? [] }
 
-    /// Records a pipeline that compiled, and schedules a write.
-    func add(_ descriptor: MTLRenderPipelineDescriptor) {
+    /// Records a pipeline that compiled, and schedules a write. `key` identifies the pipeline
+    /// across launches.
+    func add(_ descriptor: MTLRenderPipelineDescriptor, key: String) {
         lock.lock()
         defer { lock.unlock() }
-        guard let archive else { return }
+        guard let writer, !skipped.contains(key) else { return }
+        // The writer must not be referenced by what it records.
+        let recorded = descriptor.copy() as! MTLRenderPipelineDescriptor // copy() of this class returns its own type
+        recorded.binaryArchives = nil
         do {
-            try archive.addRenderPipelineFunctions(descriptor: descriptor)
-            dirty = true
+            try writer.addRenderPipelineFunctions(descriptor: recorded)
+            pending.append((key, recorded))
             additionCount += 1
         } catch {
             OWELog.error(.shader, "Could not add an effect pipeline to the binary archive: \(error)")
@@ -87,7 +113,54 @@ final class EffectPipelineArchive {
         lock.lock()
         defer { lock.unlock() }
         serializeScheduled = false
-        guard dirty, let archive else { return }
+        guard !pending.isEmpty, let writer else { return }
+        do {
+            try write(writer)
+            pending.removeAll()
+        } catch {
+            OWELog.error(.shader, "Could not write the effect pipeline archive \(url.path): \(error); "
+                         + "retrying pipeline by pipeline")
+            recover()
+        }
+    }
+
+    /// Rebuilds the writer from the last good file, adding the pending pipelines one at a time
+    /// and leaving out each one Metal can't serialize.
+    private func recover() {
+        let batch = pending
+        pending.removeAll()
+        var accepted: [MTLRenderPipelineDescriptor] = []
+        func rebuilt() -> MTLBinaryArchive? {
+            guard let archive = Self.open(url, device: device) ?? Self.makeEmpty(device) else { return nil }
+            for descriptor in accepted {
+                do {
+                    try archive.addRenderPipelineFunctions(descriptor: descriptor)
+                } catch {
+                    OWELog.error(.shader, "Could not re-add an effect pipeline to the binary archive: \(error)")
+                }
+            }
+            return archive
+        }
+        var current = rebuilt()
+        for (key, descriptor) in batch {
+            guard let archive = current else { break }
+            do {
+                try archive.addRenderPipelineFunctions(descriptor: descriptor)
+                try write(archive)
+                accepted.append(descriptor)
+            } catch {
+                OWELog.error(.shader, "Leaving pipeline \(key.prefix(24)) out of the binary archive: \(error)")
+                skipped.insert(key)
+                current = rebuilt()
+            }
+        }
+        writer = current
+        if writer == nil { writeFailureCount += 1 }
+        saveSkipped()
+    }
+
+    /// Serializes `archive` to a temporary file and renames it over `url`.
+    private func write(_ archive: MTLBinaryArchive) throws {
         let temporary = url.deletingLastPathComponent()
             .appending(path: ".\(url.lastPathComponent).\(ProcessInfo.processInfo.processIdentifier).tmp")
         do {
@@ -95,31 +168,52 @@ final class EffectPipelineArchive {
             if rename(temporary.path, url.path) != 0 {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
-            dirty = false
         } catch {
-            OWELog.error(.shader, "Could not write the effect pipeline archive \(url.path): \(error)")
             try? FileManager.default.removeItem(at: temporary) // best-effort cleanup of our own temp file
+            throw error
         }
     }
 
-    private func open() -> MTLBinaryArchive? {
-        let descriptor = MTLBinaryArchiveDescriptor()
-        if FileManager.default.fileExists(atPath: url.path) {
-            descriptor.url = url
-            do {
-                return try device.makeBinaryArchive(descriptor: descriptor)
-            } catch {
-                OWELog.error(.shader, "Discarding unreadable effect pipeline archive \(url.path): \(error)")
-                do {
-                    try FileManager.default.removeItem(at: url)
-                } catch {
-                    OWELog.error(.shader, "Could not delete \(url.path): \(error)")
-                }
-                descriptor.url = nil
-            }
+    private static func loadSkipped(_ url: URL) -> Set<String> {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        do {
+            return Set(try JSONDecoder().decode([String].self, from: Data(contentsOf: url)))
+        } catch {
+            OWELog.error(.shader, "Ignoring unreadable \(url.path): \(error)")
+            return []
         }
+    }
+
+    private func saveSkipped() {
+        guard !skipped.isEmpty else { return }
+        do {
+            try JSONEncoder().encode(skipped.sorted()).write(to: skipURL, options: .atomic)
+        } catch {
+            OWELog.error(.shader, "Could not write \(skipURL.path): \(error)")
+        }
+    }
+
+    /// The archive at `url`, or nil when there is none or Metal can't open it (then it is deleted).
+    private static func open(_ url: URL, device: MTLDevice) -> MTLBinaryArchive? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let descriptor = MTLBinaryArchiveDescriptor()
+        descriptor.url = url
         do {
             return try device.makeBinaryArchive(descriptor: descriptor)
+        } catch {
+            OWELog.error(.shader, "Discarding unreadable effect pipeline archive \(url.path): \(error)")
+            do {
+                try FileManager.default.removeItem(at: url)
+            } catch {
+                OWELog.error(.shader, "Could not delete \(url.path): \(error)")
+            }
+            return nil
+        }
+    }
+
+    private static func makeEmpty(_ device: MTLDevice) -> MTLBinaryArchive? {
+        do {
+            return try device.makeBinaryArchive(descriptor: MTLBinaryArchiveDescriptor())
         } catch {
             OWELog.error(.shader, "Could not create an effect pipeline archive: \(error)")
             return nil
@@ -155,7 +249,8 @@ final class EffectPipelineArchive {
         let fileManager = FileManager.default
         // Optional: an unreadable directory just means there is nothing to prune.
         let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
-        for name in names where name.hasPrefix(deviceName) && name != url.lastPathComponent {
+        for name in names where name.hasPrefix(deviceName) && name != url.lastPathComponent
+            && name != url.lastPathComponent + ".skip" {
             let path = directory.appending(path: name)
             if !name.hasPrefix("\(prefix)--") {
                 // Optional: without a date the file is left alone.

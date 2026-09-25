@@ -14,8 +14,8 @@ final class EffectGraphTests: XCTestCase {
         try XCTSkipIf(SceneShaderTranslator.toolchain == nil, "glslang/spirv-cross not installed")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: ShaderVariantTests.weAssets.path), "WE install not present")
         device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        renderer = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: nil))
         cache = FileManager.default.temporaryDirectory.appending(path: "owe-graph-\(UUID().uuidString)")
+        renderer = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache.appending(path: "archives")))
         let translator = ShaderVariantTranslator(compiler: try ProcessShaderCompiler(), cacheDirectory: cache)
         let root = ShaderVariantTests.weAssets
         builder = SceneEffectPlanBuilder(
@@ -147,6 +147,14 @@ final class EffectGraphTests: XCTestCase {
             }
         }
         XCTAssertEqual(failures, [], failures.joined(separator: "\n"))
+        // Every built-in effect's pipelines go into the binary archive, which must serialize.
+        let archive = try XCTUnwrap(renderer.pipelineArchive)
+        archive.flush()
+        XCTAssertGreaterThan(archive.additions, 0)
+        XCTAssertEqual(archive.writeFailures, 0)
+        XCTAssertLessThan(archive.skippedCount, archive.additions / 4, "most pipelines are archived")
+        let reopened = try XCTUnwrap(EffectPipelineArchive(device: device, directory: archive.url.deletingLastPathComponent()))
+        XCTAssertEqual(reopened.skippedCount, archive.skippedCount, "left-out pipelines are remembered")
     }
 
     /// Chains that don't change over time are rendered once and reused while the input is the same.
