@@ -182,11 +182,15 @@ final class EffectGraphTests: XCTestCase {
         let size = 256
         let maskSize = 128
         let maskPixels = (0..<(maskSize * maskSize)).map { UInt8($0 % maskSize < maskSize / 4 ? 255 : 0) }
-        let mask = TextureRG88Tests.tex(format: 9, width: UInt32(maskSize), height: UInt32(maskSize), pixels: maskPixels)
+        // As WE's editor writes a painted mask: R8, clamped.
+        let mask = TextureRG88Tests.tex(format: 9, width: UInt32(maskSize), height: UInt32(maskSize), pixels: maskPixels,
+                                        flags: .clampUVs)
         let root = ShaderVariantTests.weAssets
         let maskedBuilder = SceneEffectPlanBuilder(
             translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache),
-            readFile: { FileManager.default.contents(atPath: root.appending(path: $0).path) },
+            readFile: { path in
+                path == "materials/masks/left_quarter.tex" ? mask : FileManager.default.contents(atPath: root.appending(path: path).path)
+            },
             loadTexture: { name, materialPath in
                 if name == "masks/left_quarter" { return TEXParser(data: mask).extractImage().map { .image($0) } }
                 let effectDirectory = materialPath.split(separator: "/").prefix(2).joined(separator: "/")
@@ -199,6 +203,9 @@ final class EffectGraphTests: XCTestCase {
         let json = #"{"file":"effects/shine/effect.json","passes":[{"textures":[null,"masks/left_quarter",null],"constantshadervalues":{"raythreshold":0.26,"noiseamount":0.01}},{"constantshadervalues":{"raylength":0.1}},{},{},{}]}"#
         let plan = try maskedBuilder.build(try effect(json))
         XCTAssertEqual(plan.passes.first?.variant?.combos["MASK"], 1)
+        // Sampled as its `.tex` flags say: the mask clamps, the noise (`util/clouds_256`) repeats.
+        XCTAssertEqual(plan.passes.first?.textureFlags[1], .clampUVs)
+        XCTAssertEqual(plan.passes.first?.textureFlags[2], [])
         let queue = try XCTUnwrap(device.makeCommandQueue())
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: size, height: size, mipmapped: false)
         let input = try XCTUnwrap(device.makeTexture(descriptor: descriptor))

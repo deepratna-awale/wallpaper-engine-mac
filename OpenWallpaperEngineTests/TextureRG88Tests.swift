@@ -65,12 +65,13 @@ final class TextureRG88Tests: XCTestCase {
         return try TextureUploadTests.read(texture, device: device)
     }
 
-    /// A one-mipmap, uncompressed `TEXB0003` `.tex` of `format` holding `pixels`.
-    static func tex(format: UInt32, width: UInt32 = 1, height: UInt32 = 1, pixels: [UInt8] = [0, 0]) -> Data {
+    /// A one-mipmap, uncompressed `TEXB0003` `.tex` of `format` holding `pixels`, with `flags`.
+    static func tex(format: UInt32, width: UInt32 = 1, height: UInt32 = 1, pixels: [UInt8] = [0, 0],
+                    flags: TEXFlags = []) -> Data {
         var data = Data("TEXV0005\u{0}TEXI0001\u{0}".utf8)
         func word(_ value: UInt32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
         // Format, flags, texture size, image size, unknown.
-        for value in [format, 0, width, height, width, height, 0] { word(value) }
+        for value in [format, flags.rawValue, width, height, width, height, 0] { word(value) }
         data.append(contentsOf: Data("TEXB0003\u{0}".utf8))
         // Images, FreeImage format (none), mipmaps; then the mipmap: size, uncompressed, bytes.
         for value in [1, UInt32.max, 1, width, height, 0, 0, UInt32(pixels.count)] { word(value) }

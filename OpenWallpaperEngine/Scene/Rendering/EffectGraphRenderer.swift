@@ -14,7 +14,8 @@ final class EffectGraphRenderer {
     private let quadTexCoords: MTLBuffer
     private let zeroAttributes: MTLBuffer
     private let clampSampler: MTLSamplerState
-    private let repeatSampler: MTLSamplerState
+    /// Asset samplers by the `.tex` flags that pick one (`clampUVs`, `noInterpolation`).
+    private let assetSamplers: [UInt32: MTLSamplerState]
     /// Uniform blocks over 4 KB. Render thread only (see `SceneUniformArena`).
     let uniformArena: SceneUniformArena
 
@@ -109,18 +110,28 @@ final class EffectGraphRenderer {
         self.quadPositions = quadPositions
         self.quadTexCoords = quadTexCoords
         self.zeroAttributes = zeroAttributes
-        func sampler(_ mode: MTLSamplerAddressMode) -> MTLSamplerState? {
-            let descriptor = MTLSamplerDescriptor()
-            descriptor.minFilter = .linear
-            descriptor.magFilter = .linear
-            descriptor.mipFilter = .linear
-            descriptor.sAddressMode = mode
-            descriptor.tAddressMode = mode
-            return device.makeSamplerState(descriptor: descriptor)
+        var assetSamplers: [UInt32: MTLSamplerState] = [:]
+        for raw in UInt32(0)...3 {
+            guard let sampler = Self.makeSampler(device: device, flags: TEXFlags(rawValue: raw)) else { return nil }
+            assetSamplers[raw] = sampler
         }
-        guard let clamp = sampler(.clampToEdge), let wrap = sampler(.repeat) else { return nil }
+        guard let clamp = assetSamplers[TEXFlags.clampUVs.rawValue] else { return nil }
         clampSampler = clamp
-        repeatSampler = wrap
+        self.assetSamplers = assetSamplers
+    }
+
+    /// WE's sampler for a texture: clamp with `clampUVs`, else repeat; nearest with
+    /// `noInterpolation`, else bilinear.
+    private static func makeSampler(device: MTLDevice, flags: TEXFlags) -> MTLSamplerState? {
+        let descriptor = MTLSamplerDescriptor()
+        let filter: MTLSamplerMinMagFilter = flags.contains(.noInterpolation) ? .nearest : .linear
+        descriptor.minFilter = filter
+        descriptor.magFilter = filter
+        descriptor.mipFilter = flags.contains(.noInterpolation) ? .nearest : .linear
+        let address: MTLSamplerAddressMode = flags.contains(.clampUVs) ? .clampToEdge : .repeat
+        descriptor.sAddressMode = address
+        descriptor.tAddressMode = address
+        return device.makeSamplerState(descriptor: descriptor)
     }
 
     /// Drops per-layer state, e.g. when the scene changes. Compiled pipelines are kept.
@@ -404,7 +415,8 @@ final class EffectGraphRenderer {
             case .asset(let key, let source):
                 texture = context.assetTexture(key, source)
                 contentSize = context.assetContentSize?(key, source)
-                sampler = repeatSampler
+                let flags = (pass.textureFlags[slot] ?? []).intersection([.clampUVs, .noInterpolation])
+                sampler = assetSamplers[flags.rawValue] ?? clampSampler
             }
             guard let texture else { continue }
             encoder.setFragmentTexture(texture, index: slot)

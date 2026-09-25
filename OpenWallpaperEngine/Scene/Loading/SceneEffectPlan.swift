@@ -31,6 +31,9 @@ struct SceneEffectPassPlan {
     let target: String?
     let textures: [Int: SceneEffectTextureInput]
     let constants: ShaderConstantResolver.ResolvedConstants
+    /// `.tex` flags of the asset textures, by slot: how WE samples each (`clampUVs`,
+    /// `noInterpolation`). A slot without flags repeats with bilinear filtering.
+    var textureFlags: [Int: TEXFlags] = [:]
 
     var readsSceneSnapshot: Bool {
         textures.values.contains { if case .sceneSnapshot = $0 { return true } else { return false } }
@@ -157,10 +160,29 @@ struct SceneEffectPlanBuilder {
             material: materialPass.constantshadervalues.compactMapValues(\.valueSource),
             instance: Self.applyingOverrides(overrides, to: (instance?.constants ?? [:]).compactMapValues(\.valueSource),
                                              uniforms: uniforms))
+        var textureFlags: [Int: TEXFlags] = [:]
+        for (slot, input) in inputs {
+            guard case .asset(let key, _) = input else { continue }
+            let name = String(key.dropFirst(materialPath.count + 1))
+            if let flags = self.textureFlags(named: name, materialPath: materialPath, effectDirectory: effectDirectory) {
+                textureFlags[slot] = flags
+            }
+        }
         return SceneEffectPassPlan(command: .render,
                                    variantKey: ShaderVariantTranslator.cacheKey(vertex: vertex, fragment: fragment, combos: combos),
                                    variant: variant, blending: materialPass.blending ?? "normal", target: pass.target,
-                                   textures: inputs, constants: constants)
+                                   textures: inputs, constants: constants, textureFlags: textureFlags)
+    }
+
+    /// The `.tex` flags of texture `name`, found where `loadTexture` finds it (then in the effect's
+    /// own `materials/`); nil for a texture that isn't a `.tex`.
+    private func textureFlags(named name: String, materialPath: String, effectDirectory: String) -> TEXFlags? {
+        var header = ParticleMaterialPlanBuilder.textureHeader(named: name, materialPath: materialPath, readFile: readFile)
+        if header == nil, !effectDirectory.isEmpty {
+            header = ParticleMaterialPlanBuilder.textureHeader(named: "\(effectDirectory)/materials/\(name)",
+                                                               materialPath: materialPath, readFile: readFile)
+        }
+        return header.flatMap(TEXFlags.init(texData:))
     }
 
     private func textureInput(named name: String, materialPath: String, fboNames: Set<String>,
