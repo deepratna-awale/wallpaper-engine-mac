@@ -427,8 +427,13 @@ class SceneWallpaperViewModel: ObservableObject {
             return system
         }
         if !layers.isEmpty || !particleSystems.isEmpty {
+            var transforms = SceneTransformHierarchy(objects: scene.objects, sceneSize: sceneSize)
+            for layer in layers where layer.fillsScene {
+                transforms.makeRoot(layer.id, local: SceneLocalTransform(origin: layer.position, scale: layer.scale, angle: layer.rotation))
+            }
             let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
-                                            sceneScript: sceneScript, bloom: bloomSettings(for: scene.general))
+                                            sceneScript: sceneScript, bloom: bloomSettings(for: scene.general),
+                                            transforms: transforms)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -556,39 +561,21 @@ class SceneWallpaperViewModel: ObservableObject {
         return SIMD2<Float>(widest, tallest)
     }
 
-    /// Sums every ancestor's origin (not including the object itself), so parented objects
-    /// (e.g. an effect attached to another layer) can be positioned relative to their parent.
-    private func ancestorOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>,
-                                objectsByID: [Int: WESceneObject]) -> SIMD2<Float> {
-        var total = SIMD2<Float>.zero
-        var visited = Set<Int>()
-        var parentID = object.parent
-        while let id = parentID, visited.insert(id).inserted, let parentObject = objectsByID[id] {
-            if let origin = parentObject.origin {
-                let value = origin.parseVector3()
-                total += SIMD2<Float>(Float(value.0), Float(value.1))
-            } else if parentObject.parent == nil {
-                // A root object without an explicit origin is anchored at the canvas center.
-                total += sceneSize / 2
-            }
-            parentID = parentObject.parent
-        }
-        return total
+    /// Where an object's origin lands in scene space once its parents' full transforms apply.
+    private func worldOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>,
+                             objectsByID: [Int: WESceneObject]) -> SIMD2<Float> {
+        let hierarchy = SceneTransformHierarchy(objects: objectsByID.sorted { $0.key < $1.key }.map { id, object in
+            var keyed = object
+            keyed.id = id
+            return keyed
+        }, sceneSize: sceneSize)
+        guard let id = object.id else { return SceneLocalTransform(object: object, sceneSize: sceneSize).origin }
+        return hierarchy.world(of: String(id)).translation
     }
 
-    /// An object's own origin (or canvas center if it's a root object without one) plus its ancestor chain.
-    private func effectiveOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>,
-                                 objectsByID: [Int: WESceneObject]) -> SIMD2<Float> {
-        let ownOrigin: SIMD2<Float>
-        if let origin = object.origin {
-            let value = origin.parseVector3()
-            ownOrigin = SIMD2<Float>(Float(value.0), Float(value.1))
-        } else if object.parent == nil {
-            ownOrigin = sceneSize / 2
-        } else {
-            ownOrigin = .zero
-        }
-        return ownOrigin + ancestorOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+    /// An object's own `origin`, relative to its parent.
+    private func localOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>) -> SIMD2<Float> {
+        SceneLocalTransform(object: object, sceneSize: sceneSize).origin
     }
 
     private func buildMetalLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
@@ -629,7 +616,7 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         let position: SIMD2<Float> = model.fullscreen == true
             ? sceneSize / 2
-            : effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+            : localOrigin(for: object, sceneSize: sceneSize)
         let rotation = Float(object.angles?.parseVector3().2 ?? 0)
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let objectColor = object.color?.parseVector3() ?? (1, 1, 1)
@@ -652,6 +639,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                rotationAnimation: object.anglesAnimation, effects: effects)
         layer.weEffects = effectPlans.plans
         layer.sceneInput = sceneInput
+        layer.alignment = model.fullscreen == true ? nil : object.alignment
+        layer.fillsScene = model.fullscreen == true
         // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
         if sceneInput, effectPlans.plans.isEmpty { return nil }
         return layer
@@ -672,7 +661,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                        source: .image(Self.solidImage(red: color.0, green: color.1, blue: color.2)),
-                       position: effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID),
+                       position: localOrigin(for: object, sceneSize: sceneSize),
                        size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
                        scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
@@ -689,6 +678,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
                        rotationAnimation: object.anglesAnimation, effects: materialEffects(material.passes?.first))
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
+        layer.alignment = object.alignment
         return layer
     }
 
@@ -702,13 +692,14 @@ class SceneWallpaperViewModel: ObservableObject {
         return image
     }
 
+    /// Text is laid out and rasterised by the renderer every frame (its string can change); the
+    /// layer's source is only a placeholder. `size` is the block before auto-sizing.
     private func buildMetalTextLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
                                      objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
-        guard let text = object.textValue, let sizeString = object.size else { return nil }
-        let sizeValue = sizeString.parseVector2()
-        let position = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        guard let text = object.textValue else { return nil }
+        let sizeValue = object.size?.parseVector2() ?? (0, 0)
         let textScale = object.scale?.parseVector3() ?? (1, 1, 1)
-        let clock = clockConfiguration(for: object)
+        let color = object.color?.parseVector3() ?? (1, 1, 1)
         // Padding is authored as "32" or "32 32"; a scalar applies to both axes.
         let paddingParts = (object.padding ?? "0").split(separator: " ").compactMap { Float($0) }
         let padding = SIMD2<Float>(paddingParts.first ?? 0,
@@ -721,13 +712,15 @@ class SceneWallpaperViewModel: ObservableObject {
                                          maxWidth: object.limitwidth == true ? object.maxwidth.map(Float.init) : nil,
                                          maxRows: object.limitrows == true ? object.maxrows : nil,
                                          useEllipsis: object.limituseellipsis ?? false,
-                                         clock: clock)
+                                         anchor: object.anchor, blockAlign: object.blockalign ?? false)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
-                               source: .image(renderText(textConfig, size: CGSize(width: sizeValue.0, height: sizeValue.1))),
-                               position: position, size: SIMD2<Float>(Float(sizeValue.0), Float(sizeValue.1)),
+                               source: .image(transparentPlaceholderImage),
+                               position: localOrigin(for: object, sceneSize: sceneSize),
+                               size: SIMD2<Float>(Float(sizeValue.0), Float(sizeValue.1)),
                                scale: SIMD2<Float>(Float(textScale.0), Float(textScale.1)), scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
                                opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
-                               brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
+                               brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
+                               color: SIMD4<Float>(Float(color.0), Float(color.1), Float(color.2), 1), colorScript: object.colorScript,
                                text: textConfig, parallaxDepth: .zero, perspective: false,
                                positionScript: object.originScript,
                                positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
@@ -737,49 +730,10 @@ class SceneWallpaperViewModel: ObservableObject {
                                effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                                              exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                                              transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
+        layer.alignment = SceneAlignment.text(horizontal: object.horizontalalign, vertical: object.verticalalign)
         // WE runs a text object's effects on its rasterised text; the renderer rasterises before effects run.
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         return layer
-    }
-
-    private func clockConfiguration(for object: WESceneObject) -> SceneClock? {
-        let script = object.textScript ?? ""
-        let isCountdown = script.contains("targetDate") && script.contains("getTime")
-        let isClock = script.contains("getHours") && script.contains("getMinutes")
-            || object.name?.localizedCaseInsensitiveContains("clock") == true
-        guard isClock || isCountdown else { return nil }
-
-        func boolValue(_ name: String, fallback: Bool) -> Bool {
-            let patterns = [
-                #"(?:let|var|const)\s+\#(name)\s*=\s*(true|false)"#,
-                #"name:\s*['\"]\#(name)['\"][\s\S]{0,180}?value:\s*(true|false)"#
-            ]
-            for pattern in patterns {
-                guard let expression = try? NSRegularExpression(pattern: pattern),
-                      let match = expression.firstMatch(in: script, range: NSRange(script.startIndex..., in: script)),
-                      let range = Range(match.range(at: 1), in: script) else { continue }
-                return script[range] == "true"
-            }
-            return fallback
-        }
-
-        let delimiterPattern = #"(?:let\s+delimiter\s*=|name:\s*['\"]delimiter['\"][\s\S]{0,180}?value:)\s*['\"]([^'\"]*)['\"]"#
-        let delimiter: String
-        if let expression = try? NSRegularExpression(pattern: delimiterPattern),
-           let match = expression.firstMatch(in: script, range: NSRange(script.startIndex..., in: script)),
-           let range = Range(match.range(at: 1), in: script) {
-            delimiter = String(script[range])
-        } else {
-            delimiter = ":"
-        }
-        let targetPattern = #"name:\s*['\"]date['\"][\s\S]{0,180}?value:\s*['\"]([^'\"]+)['\"]"#
-        let targetDate = (try? NSRegularExpression(pattern: targetPattern))
-            .flatMap { expression in expression.firstMatch(in: script, range: NSRange(script.startIndex..., in: script)) }
-            .flatMap { Range($0.range(at: 1), in: script).map { String(script[$0]) } }
-        let kind: SceneClock.Kind = isCountdown ? .countdown : script.contains("getDate") || script.contains("getMonth") ? .date : .time
-        return SceneClock(kind: kind, use24HourFormat: boolValue("use24hFormat", fallback: true),
-                          showSeconds: boolValue("showSeconds", fallback: false), delimiter: delimiter,
-                          targetDate: targetDate, recurring: boolValue("recurring", fallback: true), finalMessage: nil)
     }
 
     /// Standalone "shape" objects (e.g. a DIRECTDRAW light-shaft quad) have no image/particle of their own;
@@ -789,7 +743,7 @@ class SceneWallpaperViewModel: ObservableObject {
         guard object.shape != nil, let effects = object.effects, !effects.isEmpty else { return nil }
         let plans = buildEffectPlans(effects, objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         guard !plans.isEmpty else { return nil }
-        let position = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        let position = localOrigin(for: object, sceneSize: sceneSize)
         let size: SIMD2<Float>
         if let sizeString = object.size {
             let value = sizeString.parseVector2()
@@ -811,6 +765,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                                      exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                                      transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
         layer.weEffects = plans
+        layer.alignment = object.alignment
         return layer
     }
 
@@ -821,48 +776,6 @@ class SceneWallpaperViewModel: ObservableObject {
         image.lockFocus()
         NSColor.white.withAlphaComponent(0).setFill()
         NSRect(x: 0, y: 0, width: 1, height: 1).fill()
-        image.unlockFocus()
-        return image
-    }
-
-    private func renderText(_ text: SceneMetalText, size: CGSize) -> NSImage {
-        let image = NSImage(size: size)
-        image.lockFocus()
-        NSGraphicsContext.current?.shouldAntialias = true
-        NSGraphicsContext.current?.imageInterpolation = .high
-        let fontName = text.font ?? "System"
-        let font = SceneFontRegistry.font(named: fontName, size: text.pointSize)
-            ?? NSFont(name: fontName, size: text.pointSize)
-            ?? NSFont.systemFont(ofSize: text.pointSize)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = text.horizontalAlignment == "left" ? .left : text.horizontalAlignment == "right" ? .right : .center
-        // Only `limitwidth` authorises wrapping; otherwise keep one line and shrink to fit.
-        if text.maxWidth == nil { paragraph.lineBreakMode = .byClipping }
-        var attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .foregroundColor: NSColor.white,
-            .paragraphStyle: paragraph
-        ]
-        var attributed = NSAttributedString(string: text.value, attributes: attributes)
-        if text.maxWidth == nil {
-            let naturalWidth = attributed.size().width
-            if naturalWidth > size.width, naturalWidth > 0, size.width > 0,
-               let fitted = NSFont(descriptor: font.fontDescriptor,
-                                   size: font.pointSize * size.width / naturalWidth) {
-                attributes[.font] = fitted
-                attributed = NSAttributedString(string: text.value, attributes: attributes)
-            }
-        }
-        let textSize = attributed.size()
-        let y: CGFloat
-        if text.verticalAlignment == "top" {
-            y = size.height - textSize.height
-        } else if text.verticalAlignment == "bottom" {
-            y = 0
-        } else {
-            y = (size.height - textSize.height) / 2
-        }
-        attributed.draw(in: NSRect(x: 0, y: max(0, y), width: size.width, height: textSize.height))
         image.unlockFocus()
         return image
     }
@@ -985,9 +898,6 @@ class SceneWallpaperViewModel: ObservableObject {
         if object.textValue != nil {
             if AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(objectID)_enabled") == "false" {
                 return false
-            }
-            if let name = object.name?.lowercased(), name.contains("clock") || name.contains("date") || name.contains("day") {
-                return object.visible != false
             }
         }
         if let property = object.visibleUserProperty {
@@ -1116,7 +1026,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let emitter = particleSystem.emitter?.first
         let isSnowParticle = object.name?.localizedCaseInsensitiveContains("snow") == true
         let objectScale = object.scale?.parseVector3() ?? (1, 1, 1)
-        let origin = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        let origin = worldOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
         let rate = Float((emitter?.rate ?? 100) * (object.instanceoverride?.rate?.value ?? 1))
         let rateScript = object.instanceoverride?.rate?.script ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)

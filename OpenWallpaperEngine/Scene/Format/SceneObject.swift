@@ -43,6 +43,9 @@ struct WESceneObject: Decodable {
     var limitwidth: Bool?
     var limitrows: Bool?
     var limituseellipsis: Bool?
+    /// Dynamic screen anchor: none, center, top, topright, …
+    var anchor: String?
+    var blockalign: Bool?
 
     // Image objects
     var image: String?       // path to model JSON
@@ -69,7 +72,7 @@ struct WESceneObject: Decodable {
 
     enum CodingKeys: String, CodingKey {
         case id, parent, name, origin, scale, angles, visible, effects, text, font, pointsize, horizontalalign, verticalalign
-        case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis
+        case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis, anchor, blockalign
         case image, alpha, brightness, color, colorBlendMode, size, alignment, shape
         case solid, copybackground, parallaxDepth, perspective
         case particle, instanceoverride
@@ -105,6 +108,8 @@ struct WESceneObject: Decodable {
         limitwidth = try? c.decodeIfPresent(Bool.self, forKey: .limitwidth)
         limitrows = try? c.decodeIfPresent(Bool.self, forKey: .limitrows)
         limituseellipsis = try? c.decodeIfPresent(Bool.self, forKey: .limituseellipsis)
+        anchor = try? c.decodeIfPresent(String.self, forKey: .anchor)
+        blockalign = try? c.decodeIfPresent(Bool.self, forKey: .blockalign)
 
         // Fields that may be simple values or {"script":..,"value":..} objects
         let scriptedOrigin = try? c.decode(WEScriptedProperty.self, forKey: .origin)
