@@ -30,7 +30,9 @@ class SteamCmdService: ObservableObject {
         let fileSize: Int
     }
 
-    private static let lastUsernameKey = "SteamLastUsername"
+    /// The account name of the last successful login, kept to reuse steamcmd's cached session.
+    /// The password is never stored: steamcmd keeps its own login token after the first login.
+    private let account = SteamCredentials.steamCmdAccount()
     private static let previewCacheLimit = 250 * 1024 * 1024
     private let previewQueue = DispatchQueue(label: "steamcmd.preview.download")
     private let downloadQueue = DispatchQueue(label: "steamcmd.workshop.download")
@@ -43,13 +45,16 @@ class SteamCmdService: ObservableObject {
 
     /// Run a steamcmd process with proper pipe handling to avoid deadlocks.
     /// Reads stdout/stderr concurrently with process execution and applies a timeout.
-    private func runSteamCmd(arguments: [String], timeout: TimeInterval = 30) -> (output: String, exitCode: Int32) {
+    /// The commands go to stdin, so no argument of theirs is visible in the process list.
+    private func runSteamCmd(script: SteamCmdScript, timeout: TimeInterval = 30) -> (output: String, exitCode: Int32) {
         guard let cmdPath = steamCmdPath else { return ("", -1) }
 
         let process = Process()
         let outputPipe = Pipe()
+        let inputPipe = Pipe()
         process.executableURL = URL(fileURLWithPath: cmdPath)
-        process.arguments = arguments
+        process.arguments = []
+        process.standardInput = inputPipe
         process.standardOutput = outputPipe
         process.standardError = outputPipe
 
@@ -70,6 +75,7 @@ class SteamCmdService: ObservableObject {
             handle.readabilityHandler = nil
             return ("Failed to run steamcmd: \(error.localizedDescription)", -1)
         }
+        Self.write(script, to: inputPipe)
 
         // Wait with timeout
         let deadline = DispatchTime.now() + timeout
@@ -95,10 +101,24 @@ class SteamCmdService: ObservableObject {
         return (output, process.terminationStatus)
     }
 
+    /// Writes the whole script and closes stdin, so steamcmd reads EOF after `quit`.
+    private static func write(_ script: SteamCmdScript, to pipe: Pipe) {
+        let handle = pipe.fileHandleForWriting
+        // If steamcmd already exited, the write must fail with EPIPE rather than kill the app.
+        _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
+        do {
+            try handle.write(contentsOf: script.standardInput)
+            try handle.close()
+        } catch {
+            // steamcmd exited before reading its input; its output says why.
+            OWELog.error(.workshop, "Can't write the steamcmd script: \(error)")
+        }
+    }
+
     /// Automatically try cached session if we have a saved username and steamcmd is installed.
     private func attemptCachedLogin() {
         guard isInstalled, !isLoggedIn else { return }
-        if let saved = UserDefaults.standard.string(forKey: Self.lastUsernameKey), !saved.isEmpty {
+        if let saved = account.load() {
             loginWithCachedSession(username: saved)
         }
     }
@@ -182,8 +202,18 @@ class SteamCmdService: ObservableObject {
     }
 
     /// Attempt login with username and password. Steam Guard code is optional.
+    /// Neither is stored: steamcmd caches a login token, which `loginWithCachedSession` reuses.
     func login(username: String, password: String, guardCode: String? = nil) {
         guard steamCmdPath != nil else { return }
+
+        let code = guardCode.flatMap { $0.isEmpty ? nil : $0 }
+        var script = SteamCmdScript.withoutPasswordPrompt()
+        do {
+            try script.append("login", [username, password] + (code.map { [$0] } ?? []))
+        } catch {
+            loginError = error.localizedDescription
+            return
+        }
 
         isLoggingIn = true
         loginError = nil
@@ -192,20 +222,15 @@ class SteamCmdService: ObservableObject {
         downloadQueue.async { [weak self] in
             guard let self = self else { return }
 
-            var args = ["+login", username, password]
-            if let code = guardCode, !code.isEmpty {
-                args = ["+login", username, password, code]
-            }
-            args += ["+quit"]
-
-            let (output, exitCode) = self.runSteamCmd(arguments: args, timeout: 60)
+            let (rawOutput, exitCode) = self.runSteamCmd(script: script, timeout: 60)
+            let output = SteamSecretRedactor.redact(rawOutput, secrets: [password] + (code.map { [$0] } ?? []))
 
             DispatchQueue.main.async {
                 self.isLoggingIn = false
                 if output.contains("Logged in OK") || (output.contains("OK") && exitCode == 0) {
                     self.isLoggedIn = true
                     self.loginError = nil
-                    UserDefaults.standard.set(username, forKey: Self.lastUsernameKey)
+                    self.rememberAccount(username)
                 } else if output.contains("Steam Guard") || output.contains("Two-factor") {
                     self.loginError = "Steam Guard code required"
                 } else if output.contains("Invalid Password") || output.contains("FAILED") {
@@ -213,13 +238,32 @@ class SteamCmdService: ObservableObject {
                 } else {
                     self.loginError = "Login failed. Check credentials and try again."
                 }
+                if !self.isLoggedIn {
+                    OWELog.error(.workshop, "steamcmd login failed (exit \(exitCode)):\n\(output)")
+                }
             }
+        }
+    }
+
+    private func rememberAccount(_ username: String) {
+        do {
+            try account.save(username)
+        } catch {
+            OWELog.error(.workshop, "Can't keep the steamcmd account for the next launch: \(error)")
         }
     }
 
     /// Try login with cached session (no password needed if previously authenticated).
     func loginWithCachedSession(username: String) {
         guard steamCmdPath != nil else { return }
+
+        var script = SteamCmdScript.withoutPasswordPrompt()
+        do {
+            try script.append("login", [username])
+        } catch {
+            loginError = error.localizedDescription
+            return
+        }
 
         isLoggingIn = true
         loginError = nil
@@ -228,13 +272,13 @@ class SteamCmdService: ObservableObject {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            let (output, exitCode) = self.runSteamCmd(arguments: ["+login", username, "+quit"], timeout: 30)
+            let (output, exitCode) = self.runSteamCmd(script: script, timeout: 30)
 
             DispatchQueue.main.async {
                 self.isLoggingIn = false
                 if output.contains("Logged in OK") || (output.contains("OK") && exitCode == 0) {
                     self.isLoggedIn = true
-                    UserDefaults.standard.set(username, forKey: Self.lastUsernameKey)
+                    self.rememberAccount(username)
                 } else {
                     self.loginError = "Cached session expired. Please log in with password."
                 }
@@ -309,17 +353,29 @@ class SteamCmdService: ObservableObject {
                 return
             }
 
+            let script: SteamCmdScript
+            do {
+                script = try Self.workshopDownloadScript(
+                    installDirectory: steamCmdInstallDirectory,
+                    username: self.steamUsername,
+                    workshopId: workshopId,
+                    validate: true
+                )
+            } catch {
+                DispatchQueue.main.async {
+                    self.downloadProgress[workshopId] = .failed(error.localizedDescription)
+                    onCompleted?(nil)
+                }
+                return
+            }
+
             let process = Process()
             let outputPipe = Pipe()
+            let inputPipe = Pipe()
             process.executableURL = URL(fileURLWithPath: cmdPath)
             process.currentDirectoryURL = URL(fileURLWithPath: cmdPath).deletingLastPathComponent()
-            process.arguments = [
-                "+@sSteamCmdForcePlatformType", "windows",
-                "+force_install_dir", steamCmdInstallDirectory.path,
-                "+login", self.steamUsername,
-                "+workshop_download_item", "431960", workshopId, "validate",
-                "+quit"
-            ]
+            process.arguments = []
+            process.standardInput = inputPipe
             process.standardOutput = outputPipe
             process.standardError = outputPipe
 
@@ -349,6 +405,7 @@ class SteamCmdService: ObservableObject {
 
             do {
                 try process.run()
+                Self.write(script, to: inputPipe)
                 process.waitUntilExit()
             } catch {
                 handle.readabilityHandler = nil
@@ -440,16 +497,19 @@ class SteamCmdService: ObservableObject {
             }
 
             if !FileManager.default.fileExists(atPath: sourcePath.path) {
-                let (output, exitCode) = self.runSteamCmd(
-                    arguments: [
-                        "+@sSteamCmdForcePlatformType", "windows",
-                        "+force_install_dir", cacheRoot.path,
-                        "+login", self.steamUsername,
-                        "+workshop_download_item", "431960", workshopId,
-                        "+quit"
-                    ],
-                    timeout: 300
-                )
+                let script: SteamCmdScript
+                do {
+                    script = try Self.workshopDownloadScript(
+                        installDirectory: cacheRoot,
+                        username: self.steamUsername,
+                        workshopId: workshopId,
+                        validate: false
+                    )
+                } catch {
+                    self.finishPreview(workshopId, with: .failure(error), presentWhenReady: presentWhenReady)
+                    return
+                }
+                let (output, exitCode) = self.runSteamCmd(script: script, timeout: 300)
 
                 guard exitCode == 0, FileManager.default.fileExists(atPath: sourcePath.path) else {
                     let errorLine = output.components(separatedBy: "\n")
@@ -475,6 +535,22 @@ class SteamCmdService: ObservableObject {
                 self.finishPreview(workshopId, with: .failure(error), presentWhenReady: presentWhenReady)
             }
         }
+    }
+
+    /// Logs in with the cached session and downloads one Wallpaper Engine workshop item.
+    private static func workshopDownloadScript(
+        installDirectory: URL,
+        username: String,
+        workshopId: String,
+        validate: Bool
+    ) throws -> SteamCmdScript {
+        var script = SteamCmdScript.withoutPasswordPrompt()
+        try script.append("@sSteamCmdForcePlatformType", ["windows"])
+        try script.append("force_install_dir", [installDirectory.path])
+        try script.append("login", [username])
+        try script.append("workshop_download_item",
+                          ["\(WorkshopAPIService.wallpaperEngineAppId)", workshopId] + (validate ? ["validate"] : []))
+        return script
     }
 
     private func finishPreview(
