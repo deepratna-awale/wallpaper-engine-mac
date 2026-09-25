@@ -1010,16 +1010,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let mouse = view.convert(windowPoint, from: nil)
         let drawablePoint = SIMD2<Float>(Float(mouse.x) * drawableSize.x / Float(max(view.bounds.width, 1)),
                                          Float(mouse.y) * drawableSize.y / Float(max(view.bounds.height, 1)))
-        switch placement {
-        case .stretch:
-            return SIMD2<Float>(drawablePoint.x * sceneSize.x / drawableSize.x,
-                                drawablePoint.y * sceneSize.y / drawableSize.y)
-        case .fill, .zoom, .fit, .center:
-            let scale = ScenePlacementScale.scale(for: placement, sceneSize: sceneSize, drawableSize: drawableSize,
-                                                  pixelsPerPoint: drawablePixelsPerPoint)
-            let offset = (drawableSize - sceneSize * scale) / 2
-            return (drawablePoint - offset) / scale
-        }
+        return ScenePlacementScale.scenePoint(drawablePoint: drawablePoint, placement: placement, sceneSize: sceneSize,
+                                              drawableSize: drawableSize, pixelsPerPoint: drawablePixelsPerPoint)
     }
 
     private func makeTextureFrames(from source: SceneMetalTextureSource) -> [RenderTextureFrame]? {

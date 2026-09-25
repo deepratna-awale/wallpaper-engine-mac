@@ -69,6 +69,32 @@ final class SceneRendererPlacementTests: XCTestCase {
                                                  pixelsPerPoint: 2), 1800 / 1080, accuracy: 1e-5)
     }
 
+    /// Risk #16: the cursor maps back through the same placement the composite draws with, so
+    /// the pointer lands on the scene pixel under it: cropped (fill), letterboxed (fit), centred
+    /// at one point per unit and stretched. y is up, like the scene.
+    func testCursorMapsThroughThePlacement() {
+        let scene = SIMD2<Float>(1920, 1080), drawable = SIMD2<Float>(2880, 1800)
+        func near(_ a: SIMD2<Float>, _ b: SIMD2<Float>, _ message: String) {
+            XCTAssertEqual(a.x, b.x, accuracy: 1e-3, message)
+            XCTAssertEqual(a.y, b.y, accuracy: 1e-3, message)
+        }
+        func point(_ p: SIMD2<Float>, _ placement: WallpaperPlacement) -> SIMD2<Float> {
+            ScenePlacementScale.scenePoint(drawablePoint: p, placement: placement, sceneSize: scene,
+                                           drawableSize: drawable, pixelsPerPoint: 2)
+        }
+        // Fill: 1800/1080 px per unit, 160 px of scene cropped off each side.
+        near(point(SIMD2(0, 1800), .fill), SIMD2(96, 1080), "fill: top-left corner")
+        near(point(drawable / 2, .fill), scene / 2, "fill: centre")
+        // Fit: 1.5 px per unit, 90 px bars above and below.
+        near(point(SIMD2(0, 90), .fit), SIMD2(0, 0), "fit: bottom-left of the picture")
+        XCTAssertLessThan(point(SIMD2(0, 0), .fit).y, 0, "fit: the bar is outside the scene")
+        // Center: 2 px per unit on a Retina drawable.
+        near(point(drawable / 2 + SIMD2(200, 100), .center), scene / 2 + SIMD2(100, 50), "center")
+        near(point(drawable, .stretch), scene, "stretch: top-right corner")
+        let pointer = simd_clamp(point(SIMD2(0, 0), .fit) / scene, SIMD2(0, 0), SIMD2(1, 1))
+        near(pointer, SIMD2(0, 0), "g_PointerPosition stays in 0...1")
+    }
+
     // MARK: .tex content size
 
     /// A minimal TEXV0005 / TEXB0001 DXT1 file: `texture` allocated, `image` the header's content size.

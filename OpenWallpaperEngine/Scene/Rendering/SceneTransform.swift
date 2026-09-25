@@ -191,4 +191,16 @@ enum ScenePlacementScale {
         case .center: return max(pixelsPerPoint, 1)
         }
     }
+
+    /// The scene point (scene units, y up) under a drawable point (pixels, y up from the
+    /// drawable's bottom-left): the inverse of the composite's placement. Outside the drawn scene
+    /// (letterbox bars, cropped edges) it lies beyond the scene's bounds.
+    static func scenePoint(drawablePoint: SIMD2<Float>, placement: WallpaperPlacement, sceneSize: SIMD2<Float>,
+                           drawableSize: SIMD2<Float>, pixelsPerPoint: Float) -> SIMD2<Float> {
+        let drawable = simd_max(drawableSize, SIMD2(1, 1))
+        if placement == .stretch { return drawablePoint * sceneSize / drawable }
+        let scale = self.scale(for: placement, sceneSize: sceneSize, drawableSize: drawable, pixelsPerPoint: pixelsPerPoint)
+        let offset = (drawable - sceneSize * scale) / 2
+        return (drawablePoint - offset) / scale
+    }
 }
