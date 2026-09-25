@@ -39,8 +39,8 @@ final class SceneRendererParticleTests: XCTestCase {
 
         let scene = Float(Self.size)
         // A: red under everything. B: blue over the left half, above the particles.
-        let below = layer("A", color: NSColor.red, center: SIMD2(scene / 2, scene / 2), size: SIMD2(scene, scene), order: 0)
-        let above = layer("B", color: NSColor.blue, center: SIMD2(scene / 4, scene / 2), size: SIMD2(scene / 2, scene), order: 2)
+        let below = layer("A", color: [1, 0, 0, 1], center: SIMD2(scene / 2, scene / 2), size: SIMD2(scene, scene), order: 0)
+        let above = layer("B", color: [0, 0, 1, 1], center: SIMD2(scene / 4, scene / 2), size: SIMD2(scene / 2, scene), order: 2)
         var system = ParticleTestSystem()
         system.origin = SIMD2(scene / 2, scene / 2)
         system.spawnExtent = .zero
@@ -54,7 +54,7 @@ final class SceneRendererParticleTests: XCTestCase {
         system.fadeIn = 0
         system.fadeOut = 1
         system.maximum = 5
-        system.source = .image(image(.white))
+        system.source = .image(image([1, 1, 1, 1]))
         if material { system.material = try solidMaterial() }
         var configuration = system.configuration
         configuration.order = 1
@@ -99,17 +99,17 @@ final class SceneRendererParticleTests: XCTestCase {
 
     private func isWhite(_ pixels: [UInt8], x: Int, y: Int) -> Bool {
         let p = bgra(pixels, x: x, y: y)
-        return p.count == 4 && p[0] > 200 && p[1] > 200 && p[2] > 200
+        return p.count == 4 && p[0] > 250 && p[1] > 250 && p[2] > 250
     }
 
     private func isBlue(_ pixels: [UInt8], x: Int, y: Int) -> Bool {
         let p = bgra(pixels, x: x, y: y)
-        return p.count == 4 && p[0] > 200 && p[1] < 60 && p[2] < 60
+        return p.count == 4 && p[0] > 250 && p[1] < 5 && p[2] < 5
     }
 
     private func isRed(_ pixels: [UInt8], x: Int, y: Int) -> Bool {
         let p = bgra(pixels, x: x, y: y)
-        return p.count == 4 && p[0] < 60 && p[1] < 60 && p[2] > 200
+        return p.count == 4 && p[0] < 5 && p[1] < 5 && p[2] > 250
     }
 
     private func solidMaterial() throws -> ParticleMaterialPlan {
@@ -123,16 +123,10 @@ final class SceneRendererParticleTests: XCTestCase {
                                  baseTexture: .image(NSImage()), spriteSheet: nil)
     }
 
-    private func image(_ color: NSColor) -> NSImage {
-        let image = NSImage(size: NSSize(width: 4, height: 4))
-        image.lockFocus()
-        color.setFill()
-        NSRect(x: 0, y: 0, width: 4, height: 4).fill()
-        image.unlockFocus()
-        return image
-    }
+    /// Exact texels, not AppKit drawing (which colour-matches `NSColor.red` to about (237, 47, 25)).
+    private func image(_ rgba: [Double]) -> NSImage { SceneWallpaperViewModel.pixelImage(rgba) }
 
-    private func layer(_ id: String, color: NSColor, center: SIMD2<Float>, size: SIMD2<Float>, order: Int) -> SceneMetalLayer {
+    private func layer(_ id: String, color: [Double], center: SIMD2<Float>, size: SIMD2<Float>, order: Int) -> SceneMetalLayer {
         var layer = SceneMetalLayer(
             id: id, name: id, source: .image(image(color)), position: center, size: size, scale: SIMD2(1, 1),
             scaleScript: nil, scaleAnimation: nil, opacity: 1, opacityScript: nil, opacityAnimation: nil,
