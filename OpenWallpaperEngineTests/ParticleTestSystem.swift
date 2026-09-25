@@ -1,0 +1,87 @@
+import AppKit
+import simd
+@testable import OpenWallpaperEngine
+
+/// A particle system configuration for simulation tests: every operator off unless set.
+struct ParticleTestSystem {
+    var origin = SIMD2<Float>(500, 500)
+    var emissionRate: Float = 600
+    var maximum = 1000
+    var spawnExtent = SIMD2<Float>(50, 30)
+    var emitterName = "sphererandom"
+    var lifetime: ClosedRange<Float> = 1...2
+    var size: ClosedRange<Float> = 10...20
+    var minimumVelocity = SIMD2<Float>(-40, -20)
+    var maximumVelocity = SIMD2<Float>(40, 60)
+    var gravity = SIMD2<Float>.zero
+    var velocityRotation = matrix_identity_float2x2
+    var drag: Float = 0
+    var alpha: ClosedRange<Float> = 0.5...1
+    var minimumColor = SIMD4<Float>(0.2, 0.3, 0.4, 1)
+    var maximumColor = SIMD4<Float>(0.9, 0.8, 1, 1)
+    var minimumRotation: Float = 0
+    var maximumRotation: Float = 1
+    var minimumAngularVelocity: Float = -1
+    var maximumAngularVelocity: Float = 1
+    var sizeChange: ParticleChange?
+    var alphaChange: ParticleChange?
+    var colorChange: ParticleColorChange?
+    var angularAcceleration: Float = 0
+    var maximumSpeed: Float?
+    var vortex: ParticleVortex?
+    var boids: ParticleBoids?
+    var oscillateSize: ParticleOscillation?
+    var oscillateAlpha: ParticleOscillation?
+    var oscillatePosition: ParticleOscillation?
+    var positionOffsetMinimum = SIMD2<Float>.zero
+    var positionOffsetMaximum = SIMD2<Float>.zero
+    var remapAlpha: ParticleRemap?
+    var nearControlPointReduction: ParticleDistanceReduction?
+    var maintainControlPointDistance: ParticleDistanceConstraint?
+    var controlPoints: [ParticleControlPoint] = []
+    var sequenceSpan: ParticleSequenceSpan?
+    var sequenceRing: ParticleSequenceRing?
+    var initialRemap: ParticleInitialRemap?
+    var maintainSequenceDistance = false
+    var rendererName = "sprite"
+    var trailLength: Float = 1
+    var trailSegments = 4
+    var ropeSubdivision = 1
+    var fadeTrailAlpha = false
+    var fadeTrailSize = false
+    var turbulence: Turbulence?
+    var attractor: Attractor?
+    var cursorControlPoint: CursorControlPoint?
+    var emitterControlPoint: Int?
+    var spriteSheet: SpriteSheet?
+    var animationMode = "sequence"
+    var fadeIn: Float = 0.1
+    var fadeOut: Float = 0.8
+    var material: ParticleMaterialPlan?
+
+    var configuration: SceneMetalParticleSystem {
+        var system = SceneMetalParticleSystem(
+            source: .image(NSImage()), origin: origin, emissionRate: emissionRate, emissionRateScript: nil,
+            maximumParticleCount: maximum, spawnExtent: spawnExtent, lifetime: lifetime, size: size,
+            minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity, gravity: gravity,
+            drag: drag, dragScript: nil, alpha: alpha, minimumColor: minimumColor, maximumColor: maximumColor,
+            minimumRotation: minimumRotation, maximumRotation: maximumRotation,
+            minimumAngularVelocity: minimumAngularVelocity, maximumAngularVelocity: maximumAngularVelocity,
+            emitterName: emitterName, sizeChange: sizeChange, alphaChange: alphaChange, colorChange: colorChange,
+            angularAcceleration: angularAcceleration, maximumSpeed: maximumSpeed, vortex: vortex, boids: boids,
+            oscillateSize: oscillateSize, oscillateAlpha: oscillateAlpha, oscillatePosition: oscillatePosition,
+            positionOffsetMinimum: positionOffsetMinimum, positionOffsetMaximum: positionOffsetMaximum,
+            remapAlpha: remapAlpha, nearControlPointReduction: nearControlPointReduction,
+            maintainControlPointDistance: maintainControlPointDistance, controlPoints: controlPoints,
+            sequenceSpan: sequenceSpan, sequenceRing: sequenceRing, initialRemap: initialRemap,
+            maintainSequenceDistance: maintainSequenceDistance, rendererName: rendererName, trailLength: trailLength,
+            trailSegments: trailSegments, ropeSubdivision: ropeSubdivision, fadeTrailAlpha: fadeTrailAlpha,
+            fadeTrailSize: fadeTrailSize, turbulence: turbulence, attractor: attractor,
+            cursorControlPoint: cursorControlPoint, emitterControlPoint: emitterControlPoint, spriteSheet: spriteSheet,
+            animationMode: animationMode, sequenceMultiplier: 1, opacityMultiplier: 1, refractive: false,
+            fadeIn: fadeIn, fadeOut: fadeOut, fadeInScript: nil, fadeOutScript: nil, blending: "translucent")
+        system.velocityRotation = velocityRotation
+        system.material = material
+        return system
+    }
+}

@@ -20,6 +20,8 @@ struct Particle {
     var historyTimer: Float = 0
     /// Normalised position along a control-point sequence, 0 at the start point and 1 at the end.
     var sequence: Float = 0
+    /// Spawn order within the system; with the system's seed it names the particle's random draws.
+    var serial: UInt32 = 0
 
     /// `history` is a circular buffer; this returns it oldest-first so a trail can be walked.
     var orderedHistory: [SIMD2<Float>] {
@@ -34,291 +36,299 @@ final class ParticleSystemRuntime {
     var particles: [Particle] = []
     var emissionRemainder: Float = 0
     var elapsedTime: Float = 0
-    var spawnCounter: Int = 0
+    /// Steps taken (`ParticleFrameInputs.frameIndex`).
+    var frameIndex: UInt32 = 0
+    /// The next particle's serial number: particles spawned so far.
+    var nextSerial: UInt32 = 0
+    /// Seeds every random draw of this system (`ParticleRandom`).
+    let seed: UInt32
     var fadeIn: Float
     var fadeOut: Float
+    /// Positions and velocities at the start of a step, which boids read their neighbours from.
+    var neighborPositions: [SIMD2<Float>] = []
+    var neighborVelocities: [SIMD2<Float>] = []
 
-    init(texture: MTLTexture, configuration: SceneMetalParticleSystem) {
+    init(texture: MTLTexture, configuration: SceneMetalParticleSystem, seed: UInt32 = 0) {
         self.texture = texture
         self.configuration = configuration
+        self.seed = seed
         self.fadeIn = configuration.fadeIn
         self.fadeOut = configuration.fadeOut
     }
 }
 
 /// The particle simulation on the CPU: emission, initializers, operators and death.
+/// `ParticleSimulation.metal` runs the same step on the GPU; the two must stay in step
+/// (`ParticleSimulationParityTests`).
 enum ParticleCPUSimulation {
     static func update(_ particleSystems: [ParticleSystemRuntime], deltaTime: Float, cursor: SIMD2<Float>) {
         let signpost = OWESignpost.begin(OWESignpost.render, "updateParticles")
         defer { signpost.end() }
         for system in particleSystems {
-            let configuration = system.configuration
-            system.elapsedTime += deltaTime
-            let emissionRate = configuration.emissionRateScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.emissionRate, time: Double(system.elapsedTime))
-            } ?? configuration.emissionRate
-            if emissionRate <= 0.0001 || configuration.opacityMultiplier <= 0.0001 {
-                system.particles.removeAll(keepingCapacity: true)
-                system.emissionRemainder = 0
-                continue
-            }
-            let drag = configuration.dragScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.drag, time: Double(system.elapsedTime))
-            } ?? configuration.drag
-            system.fadeIn = configuration.fadeInScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeIn, time: Double(system.elapsedTime))
-            } ?? configuration.fadeIn
-            system.fadeOut = configuration.fadeOutScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeOut, time: Double(system.elapsedTime))
-            } ?? configuration.fadeOut
-            system.emissionRemainder += max(emissionRate, 0) * deltaTime
-            let sequenceStart = configuration.sequenceSpan.map {
-                controlPointPosition($0.startControlPoint, configuration: configuration, cursor: cursor)
-            }
-            let sequenceEnd = configuration.sequenceSpan.map {
-                controlPointPosition($0.endControlPoint, configuration: configuration, cursor: cursor)
-            }
-            let emissionCount = max(0, min(Int(system.emissionRemainder),
-                                    configuration.maximumParticleCount - system.particles.count))
-            // Spawns a full system could not take are skipped, not queued into a later burst.
-            system.emissionRemainder -= Float(emissionCount)
-            if system.particles.count + emissionCount >= configuration.maximumParticleCount {
-                system.emissionRemainder = system.emissionRemainder.truncatingRemainder(dividingBy: 1)
-            }
-            for _ in 0..<max(emissionCount, 0) {
-                let angle = Float.random(in: 0...(2 * .pi))
-                let radius = sqrt(Float.random(in: 0...1))
-                let spawnOrigin: SIMD2<Float>
-                if let controlPoint = configuration.cursorControlPoint,
-                   configuration.emitterControlPoint == controlPoint.id {
-                    spawnOrigin = cursor + controlPoint.offset
-                } else {
-                    spawnOrigin = configuration.origin
-                }
-                let spawnOffset: SIMD2<Float>
-                if configuration.emitterName == "boxrandom" {
-                    let extentX = abs(configuration.spawnExtent.x)
-                    let extentY = abs(configuration.spawnExtent.y)
-                    spawnOffset = SIMD2<Float>(Float.random(in: -extentX...extentX),
-                                               Float.random(in: -extentY...extentY))
-                } else {
-                    spawnOffset = SIMD2<Float>(cos(angle) * configuration.spawnExtent.x,
-                                               sin(angle) * configuration.spawnExtent.y) * radius
-                }
-                let authoredOffset = SIMD2<Float>(Float.random(in: min(configuration.positionOffsetMinimum.x, configuration.positionOffsetMaximum.x)...max(configuration.positionOffsetMinimum.x, configuration.positionOffsetMaximum.x)),
-                                                  Float.random(in: min(configuration.positionOffsetMinimum.y, configuration.positionOffsetMaximum.y)...max(configuration.positionOffsetMinimum.y, configuration.positionOffsetMaximum.y)))
-                let initialSize = Float.random(in: configuration.size)
-                let initialAlpha = Float.random(in: configuration.alpha)
-                let initialColor = SIMD4<Float>(Float.random(in: min(configuration.minimumColor.x, configuration.maximumColor.x)...max(configuration.minimumColor.x, configuration.maximumColor.x)),
-                                                Float.random(in: min(configuration.minimumColor.y, configuration.maximumColor.y)...max(configuration.minimumColor.y, configuration.maximumColor.y)),
-                                                Float.random(in: min(configuration.minimumColor.z, configuration.maximumColor.z)...max(configuration.minimumColor.z, configuration.maximumColor.z)), 1)
-                var size = initialSize
-                var alpha = initialAlpha
-                var position = spawnOrigin + spawnOffset + authoredOffset
-                var velocity = SIMD2<Float>(Float.random(in: min(configuration.minimumVelocity.x, configuration.maximumVelocity.x)...max(configuration.minimumVelocity.x, configuration.maximumVelocity.x)),
-                                            Float.random(in: min(configuration.minimumVelocity.y, configuration.maximumVelocity.y)...max(configuration.minimumVelocity.y, configuration.maximumVelocity.y)))
-                // Authored in emitter space; a rotated emitter (or parent) turns the launch direction.
-                velocity = configuration.velocityRotation * velocity
-                var sequence: Float = 0
-                if let span = configuration.sequenceSpan, let start = sequenceStart, let end = sequenceEnd {
-                    let slot = system.spawnCounter % span.count
-                    let lap = system.spawnCounter / span.count
-                    system.spawnCounter &+= 1
-                    // "mirror" walks the strand back down on alternate passes so successive
-                    // particles stay adjacent instead of jumping from the end to the start.
-                    sequence = span.mirrored && lap % 2 == 1
-                        ? 1 - Float(slot) / Float(span.count - 1)
-                        : Float(slot) / Float(span.count - 1)
-                    let axis = end - start
-                    let normal = SIMD2<Float>(-axis.y, axis.x)
-                    let arc = normal * span.arcAmount * sin(sequence * .pi) * 0.5
-                    var offset = spawnOffset
-                    if let ring = configuration.sequenceRing {
-                        // The emitter still sets the radius; only the angle comes from the sequence,
-                        // which is what turns a straight span into a helix.
-                        let radius = simd_length(spawnOffset)
-                        let bounded = ring.bounds.lowerBound
-                            + sequence * (ring.bounds.upperBound - ring.bounds.lowerBound)
-                        let angle = bounded * ring.turns * 2 * .pi
-                        let ringAxis = simd_length(ring.axis) > 0.0001 ? simd_normalize(ring.axis)
-                            : (simd_length(axis) > 0.0001 ? simd_normalize(axis) : SIMD2<Float>(0, 1))
-                        offset = SIMD2<Float>(-ringAxis.y, ringAxis.x) * cos(angle) * radius
-                        velocity += SIMD2<Float>(Float.random(in: min(ring.minimumSpeed.x, ring.maximumSpeed.x)...max(ring.minimumSpeed.x, ring.maximumSpeed.x)),
-                                                 Float.random(in: min(ring.minimumSpeed.y, ring.maximumSpeed.y)...max(ring.minimumSpeed.y, ring.maximumSpeed.y)))
-                    }
-                    position = start + axis * sequence + arc + offset + authoredOffset
-                }
-                if let remap = configuration.initialRemap {
-                    let anchor = controlPointPosition(remap.controlPoint, configuration: configuration, cursor: cursor)
-                    let range = max(remap.rangeMaximum - remap.rangeMinimum, 0.001)
-                    let factor = min(max((simd_length(position - anchor) - remap.rangeMinimum) / range, 0), 1)
-                    switch remap.output {
-                    case .size: size = remap.multiply ? size * factor : factor
-                    case .alpha: alpha = remap.multiply ? alpha * factor : factor
-                    case .velocity: velocity = remap.multiply ? velocity * factor : velocity
-                    }
-                }
-                system.particles.append(Particle(
-                    position: position,
-                    velocity: velocity,
-                    age: 0,
-                    lifetime: Float.random(in: configuration.lifetime),
-                    size: size, baseSize: size,
-                    alpha: alpha, baseAlpha: alpha,
-                    rotation: Float.random(in: configuration.minimumRotation...configuration.maximumRotation),
-                    angularVelocity: Float.random(in: configuration.minimumAngularVelocity...configuration.maximumAngularVelocity),
-                    color: initialColor, baseColor: initialColor,
-                    spriteFrame: Int.random(in: 0..<max(configuration.spriteSheet?.frames ?? 1, 1)),
-                    history: [], historyStart: 0, sequence: sequence))
-            }
-            for index in system.particles.indices {
-                system.particles[index].position += system.particles[index].velocity * deltaTime
-                if let turbulence = configuration.turbulence {
-                    let position = system.particles[index].position * turbulence.scale
-                    let phase = system.elapsedTime * turbulence.timeScale + turbulence.phase
-                    // Spelled out step by step: older Swift compilers mis-resolve the chained operators.
-                    let direction = SIMD2<Float>(sin(position.y + phase), cos(position.x - phase))
-                    let magnitude: Float = Float.random(in: turbulence.speed)
-                    let force: SIMD2<Float> = direction * magnitude * turbulence.mask
-                    system.particles[index].velocity += force * deltaTime
-                }
-                if let attractor = configuration.attractor {
-                    let origin = configuration.cursorControlPoint.map { cursor + $0.offset } ?? attractor.origin
-                    let offset = origin - system.particles[index].position
-                    let distance = max(simd_length(offset), 0.001)
-                    if distance < attractor.threshold {
-                        system.particles[index].velocity += offset / distance * attractor.strength * deltaTime
-                    }
-                }
-                if let vortex = configuration.vortex {
-                    let offset = system.particles[index].position - vortex.origin
-                    let distance = simd_length(offset)
-                    if distance > 0.001, distance >= vortex.innerDistance, distance <= max(vortex.outerDistance, vortex.innerDistance) {
-                        let progress = min(max((distance - vortex.innerDistance) / max(vortex.outerDistance - vortex.innerDistance, 0.001), 0), 1)
-                        let speed = vortex.innerSpeed + (vortex.outerSpeed - vortex.innerSpeed) * progress
-                        let tangent = SIMD2<Float>(-offset.y, offset.x) / distance
-                        system.particles[index].velocity += tangent * speed * deltaTime
-                    }
-                }
-                     if let boids = configuration.boids, boids.threshold > 0,
-                         system.particles.count < 1500 {
-                    var neighborCount: Float = 0
-                    var averageVelocity = SIMD2<Float>.zero
-                    var averagePosition = SIMD2<Float>.zero
-                    var separation = SIMD2<Float>.zero
-                    let neighborStride = max(1, system.particles.count / 256)
-                    for neighborIndex in system.particles.indices where neighborIndex != index && neighborIndex % neighborStride == 0 {
-                        let offset = system.particles[neighborIndex].position - system.particles[index].position
-                        let distance = simd_length(offset)
-                        guard distance > 0.001, distance < boids.threshold else { continue }
-                        neighborCount += 1
-                        averageVelocity += system.particles[neighborIndex].velocity
-                        averagePosition += system.particles[neighborIndex].position
-                        separation -= offset / distance
-                    }
-                    if neighborCount > 0 {
-                        averageVelocity /= neighborCount
-                        averagePosition /= neighborCount
-                        let alignment = averageVelocity - system.particles[index].velocity
-                        let cohesion = averagePosition - system.particles[index].position
-                        system.particles[index].velocity += (alignment * boids.alignment
-                            + cohesion * boids.cohesion + separation * boids.separation) * deltaTime
-                    }
-                }
-                if let reduction = configuration.nearControlPointReduction {
-                    let offset = system.particles[index].position - reduction.origin
-                    let distance = simd_length(offset)
-                    if distance < reduction.outerDistance {
-                        let progress = min(max((distance - reduction.innerDistance) / max(reduction.outerDistance - reduction.innerDistance, 0.001), 0), 1)
-                        let multiplier = 1 - reduction.reduction * (1 - progress) * deltaTime
-                        system.particles[index].velocity *= max(multiplier, 0)
-                    }
-                }
-                if let constraint = configuration.maintainControlPointDistance {
-                    let offset = constraint.origin - system.particles[index].position
-                    system.particles[index].velocity += offset * constraint.strength * deltaTime
-                }
-                if configuration.maintainSequenceDistance, let start = sequenceStart, let end = sequenceEnd {
-                    // Pulls each particle back to its slot on the strand so turbulence bends the
-                    // shape without tearing it away from its two anchors.
-                    let anchor = start + (end - start) * system.particles[index].sequence
-                    system.particles[index].velocity += (anchor - system.particles[index].position) * 10 * deltaTime
-                }
-                system.particles[index].velocity += configuration.gravity * deltaTime
-                system.particles[index].velocity *= max(0, 1 - drag * deltaTime)
-                if let maximumSpeed = configuration.maximumSpeed, maximumSpeed > 0 {
-                    let speed = simd_length(system.particles[index].velocity)
-                    if speed > maximumSpeed {
-                        system.particles[index].velocity *= maximumSpeed / speed
-                    }
-                }
-                system.particles[index].age += deltaTime
-                let particleProgress = min(max(system.particles[index].age / max(system.particles[index].lifetime, 0.001), 0), 1)
-                if let change = configuration.sizeChange {
-                    let progress = min(max((particleProgress - change.startTime) / max(change.endTime - change.startTime, 0.001), 0), 1)
-                    system.particles[index].size = system.particles[index].baseSize * (change.startValue + (change.endValue - change.startValue) * progress)
-                }
-                if let change = configuration.alphaChange {
-                    let progress = min(max((particleProgress - change.startTime) / max(change.endTime - change.startTime, 0.001), 0), 1)
-                    system.particles[index].alpha = system.particles[index].baseAlpha * (change.startValue + (change.endValue - change.startValue) * progress)
-                }
-                if let change = configuration.colorChange {
-                    let progress = min(max((particleProgress - change.startTime) / max(change.endTime - change.startTime, 0.001), 0), 1)
-                    system.particles[index].color = simd_mix(change.startValue, change.endValue, SIMD4<Float>(repeating: progress)) * system.particles[index].baseColor
-                }
-                if let oscillation = configuration.oscillateSize {
-                    let frequency = (oscillation.frequency.lowerBound + oscillation.frequency.upperBound) / 2
-                    let scale = (oscillation.scale.lowerBound + oscillation.scale.upperBound) / 2
-                    let phase = (oscillation.phase.lowerBound + oscillation.phase.upperBound) / 2
-                    system.particles[index].size = system.particles[index].baseSize * (1 + (scale - 1) * sin(system.particles[index].age * frequency + phase))
-                }
-                if let oscillation = configuration.oscillateAlpha {
-                    let frequency = (oscillation.frequency.lowerBound + oscillation.frequency.upperBound) / 2
-                    let scale = (oscillation.scale.lowerBound + oscillation.scale.upperBound) / 2
-                    let phase = (oscillation.phase.lowerBound + oscillation.phase.upperBound) / 2
-                    system.particles[index].alpha = max(0, system.particles[index].baseAlpha * (1 + (scale - 1) * sin(system.particles[index].age * frequency + phase)))
-                }
-                if let oscillation = configuration.oscillatePosition {
-                    let frequency = (oscillation.frequency.lowerBound + oscillation.frequency.upperBound) / 2
-                    let scale = (oscillation.scale.lowerBound + oscillation.scale.upperBound) / 2
-                    let phase = (oscillation.phase.lowerBound + oscillation.phase.upperBound) / 2
-                    let offset = sin(system.particles[index].age * frequency + phase) * scale * deltaTime
-                    system.particles[index].position += SIMD2<Float>(offset, cos(system.particles[index].age * frequency + phase) * scale * deltaTime)
-                }
-                if let remap = configuration.remapAlpha {
-                    var value = system.particles[index].age * remap.scale
-                    if remap.sine { value = sin(value) * 0.5 + 0.5 }
-                    let mapped = remap.outputMinimum + (remap.outputMaximum - remap.outputMinimum) * min(max(value, 0), 1)
-                    system.particles[index].alpha = system.particles[index].baseAlpha * mapped
-                }
-                system.particles[index].angularVelocity += configuration.angularAcceleration * deltaTime
-                system.particles[index].rotation += system.particles[index].angularVelocity * deltaTime
-                let historyLimit = max(configuration.trailSegments, 1)
-                // Only the ropetrail renderer reads history, and it wants samples spread over the
-                // renderer's `length` in seconds rather than one per frame.
-                if configuration.rendererName == "ropetrail" {
-                    let interval = max(configuration.trailLength, 0.001) / Float(historyLimit)
-                    system.particles[index].historyTimer += deltaTime
-                    if system.particles[index].historyTimer >= interval || system.particles[index].history.isEmpty {
-                        system.particles[index].historyTimer = 0
-                        if system.particles[index].history.count < historyLimit {
-                            system.particles[index].history.append(system.particles[index].position)
-                        } else {
-                            let historyStart = system.particles[index].historyStart
-                            system.particles[index].history[historyStart] = system.particles[index].position
-                            system.particles[index].historyStart = (historyStart + 1) % historyLimit
-                        }
-                    }
-                }
-            }
-            system.particles.removeAll { $0.age >= $0.lifetime }
+            step(system, inputs: ParticleFrameInputs.advance(system, deltaTime: deltaTime, cursor: cursor))
         }
     }
 
-    static func controlPointPosition(_ id: Int, configuration: SceneMetalParticleSystem,
-                                      cursor: SIMD2<Float>) -> SIMD2<Float> {        guard let point = configuration.controlPoints.first(where: { $0.id == id }) else {
-            return configuration.origin
+    /// How many particles to spawn this step, updating the fractional carry-over. Spawns a full
+    /// system could not take are skipped, not queued into a later burst.
+    static func emissionCount(liveCount: Int, maximum: Int, rate: Float, deltaTime: Float,
+                              remainder: inout Float) -> Int {
+        remainder += max(rate, 0) * deltaTime
+        let count = max(0, min(Int(remainder), maximum - liveCount))
+        remainder -= Float(count)
+        if liveCount + count >= maximum {
+            remainder = remainder.truncatingRemainder(dividingBy: 1)
         }
-        return (point.locksToCursor ? cursor : configuration.origin) + point.offset
+        return count
     }
+
+    static func step(_ system: ParticleSystemRuntime, inputs: ParticleFrameInputs) {
+        let configuration = system.configuration
+        if inputs.clears {
+            system.particles.removeAll(keepingCapacity: true)
+            system.emissionRemainder = 0
+            return
+        }
+        let emitted = emissionCount(liveCount: system.particles.count, maximum: configuration.maximumParticleCount,
+                                    rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
+                                    remainder: &system.emissionRemainder)
+        for _ in 0..<emitted {
+            system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: inputs))
+            system.nextSerial &+= 1
+        }
+        if configuration.boids != nil {
+            system.neighborPositions.removeAll(keepingCapacity: true)
+            system.neighborVelocities.removeAll(keepingCapacity: true)
+            for particle in system.particles {
+                system.neighborPositions.append(particle.position)
+                system.neighborVelocities.append(particle.velocity)
+            }
+        }
+        for index in system.particles.indices {
+            advance(&system.particles[index], index: index, system: system, inputs: inputs)
+        }
+        system.particles.removeAll { $0.age >= $0.lifetime }
+    }
+
+    /// A new particle: the emitter's shape and every initializer.
+    static func spawn(serial: UInt32, system: ParticleSystemRuntime, inputs: ParticleFrameInputs) -> Particle {
+        let configuration = system.configuration
+        let seed = system.seed
+        func random(_ a: Float, _ b: Float, _ stream: ParticleRandom.Stream) -> Float {
+            ParticleRandom.value(a, b, seed: seed, serial: serial, stream)
+        }
+        let angle = random(0, 2 * .pi, .spawnAngle)
+        let radius = sqrt(random(0, 1, .spawnRadius))
+        let spawnOffset: SIMD2<Float>
+        if configuration.emitterName == "boxrandom" {
+            let extent = abs(configuration.spawnExtent)
+            spawnOffset = SIMD2(random(-extent.x, extent.x, .boxX), random(-extent.y, extent.y, .boxY))
+        } else {
+            spawnOffset = SIMD2(cos(angle) * configuration.spawnExtent.x, sin(angle) * configuration.spawnExtent.y) * radius
+        }
+        let authoredOffset = SIMD2(random(configuration.positionOffsetMinimum.x, configuration.positionOffsetMaximum.x, .offsetX),
+                                   random(configuration.positionOffsetMinimum.y, configuration.positionOffsetMaximum.y, .offsetY))
+        var size = random(configuration.size.lowerBound, configuration.size.upperBound, .size)
+        var alpha = random(configuration.alpha.lowerBound, configuration.alpha.upperBound, .alpha)
+        let color = SIMD4<Float>(random(configuration.minimumColor.x, configuration.maximumColor.x, .red),
+                                 random(configuration.minimumColor.y, configuration.maximumColor.y, .green),
+                                 random(configuration.minimumColor.z, configuration.maximumColor.z, .blue), 1)
+        var position = inputs.spawnOrigin + spawnOffset + authoredOffset
+        var velocity = SIMD2(random(configuration.minimumVelocity.x, configuration.maximumVelocity.x, .velocityX),
+                             random(configuration.minimumVelocity.y, configuration.maximumVelocity.y, .velocityY))
+        // Authored in emitter space; a rotated emitter (or parent) turns the launch direction.
+        velocity = configuration.velocityRotation * velocity
+        var sequence: Float = 0
+        if let span = configuration.sequenceSpan, let start = inputs.sequenceStart, let end = inputs.sequenceEnd {
+            let slot = Int(serial) % span.count
+            let lap = Int(serial) / span.count
+            // "mirror" walks the strand back down on alternate passes so successive
+            // particles stay adjacent instead of jumping from the end to the start.
+            sequence = span.mirrored && lap % 2 == 1
+                ? 1 - Float(slot) / Float(span.count - 1)
+                : Float(slot) / Float(span.count - 1)
+            let axis = end - start
+            let normal = SIMD2<Float>(-axis.y, axis.x)
+            let arc = normal * span.arcAmount * sin(sequence * .pi) * 0.5
+            var offset = spawnOffset
+            if let ring = configuration.sequenceRing {
+                // The emitter still sets the radius; only the angle comes from the sequence,
+                // which is what turns a straight span into a helix.
+                let radius = simd_length(spawnOffset)
+                let bounded = ring.bounds.lowerBound + sequence * (ring.bounds.upperBound - ring.bounds.lowerBound)
+                let angle = bounded * ring.turns * 2 * .pi
+                let ringAxis = simd_length(ring.axis) > 0.0001 ? simd_normalize(ring.axis)
+                    : (simd_length(axis) > 0.0001 ? simd_normalize(axis) : SIMD2<Float>(0, 1))
+                offset = SIMD2<Float>(-ringAxis.y, ringAxis.x) * cos(angle) * radius
+                velocity += SIMD2(random(ring.minimumSpeed.x, ring.maximumSpeed.x, .ringSpeedX),
+                                  random(ring.minimumSpeed.y, ring.maximumSpeed.y, .ringSpeedY))
+            }
+            position = start + axis * sequence + arc + offset + authoredOffset
+        }
+        if let remap = configuration.initialRemap {
+            let range = max(remap.rangeMaximum - remap.rangeMinimum, 0.001)
+            let factor = min(max((simd_length(position - inputs.remapAnchor) - remap.rangeMinimum) / range, 0), 1)
+            switch remap.output {
+            case .size: size = remap.multiply ? size * factor : factor
+            case .alpha: alpha = remap.multiply ? alpha * factor : factor
+            case .velocity: velocity = remap.multiply ? velocity * factor : velocity
+            }
+        }
+        return Particle(
+            position: position, velocity: velocity, age: 0,
+            lifetime: random(configuration.lifetime.lowerBound, configuration.lifetime.upperBound, .lifetime),
+            size: size, baseSize: size, alpha: alpha, baseAlpha: alpha,
+            rotation: random(configuration.minimumRotation, configuration.maximumRotation, .rotation),
+            angularVelocity: random(configuration.minimumAngularVelocity, configuration.maximumAngularVelocity, .angularVelocity),
+            color: color, baseColor: color,
+            spriteFrame: ParticleRandom.index(configuration.spriteSheet?.frames ?? 1, seed: seed, serial: serial, .spriteFrame),
+            history: [], historyStart: 0, sequence: sequence, serial: serial)
+    }
+
+    /// One step of every operator for the particle at `index`.
+    static func advance(_ particle: inout Particle, index: Int, system: ParticleSystemRuntime, inputs: ParticleFrameInputs) {
+        let configuration = system.configuration
+        let deltaTime = inputs.deltaTime
+        particle.position += particle.velocity * deltaTime
+        if let turbulence = configuration.turbulence {
+            let position = particle.position * turbulence.scale
+            let phase = inputs.elapsedTime * turbulence.timeScale + turbulence.phase
+            let direction = SIMD2<Float>(sin(position.y + phase), cos(position.x - phase))
+            let magnitude = ParticleRandom.value(turbulence.speed.lowerBound, turbulence.speed.upperBound, seed: system.seed,
+                                                 serial: particle.serial, stream: ParticleRandom.frameStream(inputs.frameIndex))
+            let force: SIMD2<Float> = direction * magnitude * turbulence.mask
+            particle.velocity += force * deltaTime
+        }
+        if let attractor = configuration.attractor {
+            let offset = inputs.attractorOrigin - particle.position
+            let distance = max(simd_length(offset), 0.001)
+            if distance < attractor.threshold {
+                particle.velocity += offset / distance * attractor.strength * deltaTime
+            }
+        }
+        if let vortex = configuration.vortex {
+            let offset = particle.position - vortex.origin
+            let distance = simd_length(offset)
+            if distance > 0.001, distance >= vortex.innerDistance, distance <= max(vortex.outerDistance, vortex.innerDistance) {
+                let progress = min(max((distance - vortex.innerDistance) / max(vortex.outerDistance - vortex.innerDistance, 0.001), 0), 1)
+                let speed = vortex.innerSpeed + (vortex.outerSpeed - vortex.innerSpeed) * progress
+                let tangent = SIMD2<Float>(-offset.y, offset.x) / distance
+                particle.velocity += tangent * speed * deltaTime
+            }
+        }
+        if let boids = configuration.boids, boids.threshold > 0 {
+            applyBoids(boids, to: &particle, index: index, system: system, deltaTime: deltaTime)
+        }
+        if let reduction = configuration.nearControlPointReduction {
+            let distance = simd_length(particle.position - reduction.origin)
+            if distance < reduction.outerDistance {
+                let progress = min(max((distance - reduction.innerDistance) / max(reduction.outerDistance - reduction.innerDistance, 0.001), 0), 1)
+                let multiplier = 1 - reduction.reduction * (1 - progress) * deltaTime
+                particle.velocity *= max(multiplier, 0)
+            }
+        }
+        if let constraint = configuration.maintainControlPointDistance {
+            particle.velocity += (constraint.origin - particle.position) * constraint.strength * deltaTime
+        }
+        if configuration.maintainSequenceDistance, let start = inputs.sequenceStart, let end = inputs.sequenceEnd {
+            // Pulls each particle back to its slot on the strand so turbulence bends the
+            // shape without tearing it away from its two anchors.
+            let anchor = start + (end - start) * particle.sequence
+            particle.velocity += (anchor - particle.position) * 10 * deltaTime
+        }
+        particle.velocity += configuration.gravity * deltaTime
+        particle.velocity *= max(0, 1 - inputs.drag * deltaTime)
+        if let maximumSpeed = configuration.maximumSpeed, maximumSpeed > 0 {
+            let speed = simd_length(particle.velocity)
+            if speed > maximumSpeed { particle.velocity *= maximumSpeed / speed }
+        }
+        particle.age += deltaTime
+        let life = min(max(particle.age / max(particle.lifetime, 0.001), 0), 1)
+        func progress(_ start: Float, _ end: Float) -> Float {
+            min(max((life - start) / max(end - start, 0.001), 0), 1)
+        }
+        if let change = configuration.sizeChange {
+            let t = progress(change.startTime, change.endTime)
+            particle.size = particle.baseSize * (change.startValue + (change.endValue - change.startValue) * t)
+        }
+        if let change = configuration.alphaChange {
+            let t = progress(change.startTime, change.endTime)
+            particle.alpha = particle.baseAlpha * (change.startValue + (change.endValue - change.startValue) * t)
+        }
+        if let change = configuration.colorChange {
+            let t = progress(change.startTime, change.endTime)
+            particle.color = simd_mix(change.startValue, change.endValue, SIMD4<Float>(repeating: t)) * particle.baseColor
+        }
+        if let oscillation = configuration.oscillateSize {
+            let wave = sin(particle.age * oscillation.frequency.middle + oscillation.phase.middle)
+            particle.size = particle.baseSize * (1 + (oscillation.scale.middle - 1) * wave)
+        }
+        if let oscillation = configuration.oscillateAlpha {
+            let wave = sin(particle.age * oscillation.frequency.middle + oscillation.phase.middle)
+            particle.alpha = max(0, particle.baseAlpha * (1 + (oscillation.scale.middle - 1) * wave))
+        }
+        if let oscillation = configuration.oscillatePosition {
+            let angle = particle.age * oscillation.frequency.middle + oscillation.phase.middle
+            let scale = oscillation.scale.middle
+            particle.position += SIMD2<Float>(sin(angle) * scale * deltaTime, cos(angle) * scale * deltaTime)
+        }
+        if let remap = configuration.remapAlpha {
+            var value = particle.age * remap.scale
+            if remap.sine { value = sin(value) * 0.5 + 0.5 }
+            let mapped = remap.outputMinimum + (remap.outputMaximum - remap.outputMinimum) * min(max(value, 0), 1)
+            particle.alpha = particle.baseAlpha * mapped
+        }
+        particle.angularVelocity += configuration.angularAcceleration * deltaTime
+        particle.rotation += particle.angularVelocity * deltaTime
+        // Only the ropetrail renderer reads history, and it wants samples spread over the
+        // renderer's `length` in seconds rather than one per frame.
+        if configuration.rendererName == "ropetrail" {
+            let historyLimit = max(configuration.trailSegments, 1)
+            let interval = max(configuration.trailLength, 0.001) / Float(historyLimit)
+            particle.historyTimer += deltaTime
+            if particle.historyTimer >= interval || particle.history.isEmpty {
+                particle.historyTimer = 0
+                if particle.history.count < historyLimit {
+                    particle.history.append(particle.position)
+                } else {
+                    particle.history[particle.historyStart] = particle.position
+                    particle.historyStart = (particle.historyStart + 1) % historyLimit
+                }
+            }
+        }
+    }
+
+    /// Alignment, cohesion and separation against the neighbours within `threshold`, read from
+    /// the start of the step. Each particle samples at most about 256 neighbours spread over the
+    /// system (every `count / 256`-th), which bounds the cost without capping the system.
+    private static func applyBoids(_ boids: ParticleBoids, to particle: inout Particle, index: Int,
+                                   system: ParticleSystemRuntime, deltaTime: Float) {
+        let positions = system.neighborPositions
+        let velocities = system.neighborVelocities
+        let neighborStride = max(1, positions.count / 256)
+        var neighborCount: Float = 0
+        var averageVelocity = SIMD2<Float>.zero
+        var averagePosition = SIMD2<Float>.zero
+        var separation = SIMD2<Float>.zero
+        for neighborIndex in stride(from: 0, to: positions.count, by: neighborStride) where neighborIndex != index {
+            let offset = positions[neighborIndex] - particle.position
+            let distance = simd_length(offset)
+            guard distance > 0.001, distance < boids.threshold else { continue }
+            neighborCount += 1
+            averageVelocity += velocities[neighborIndex]
+            averagePosition += positions[neighborIndex]
+            separation -= offset / distance
+        }
+        guard neighborCount > 0 else { return }
+        averageVelocity /= neighborCount
+        averagePosition /= neighborCount
+        let alignment = averageVelocity - particle.velocity
+        let cohesion = averagePosition - particle.position
+        particle.velocity += (alignment * boids.alignment + cohesion * boids.cohesion + separation * boids.separation) * deltaTime
+    }
+}
+
+extension ClosedRange where Bound == Float {
+    /// The range's midpoint; the oscillation operators run at their ranges' middle.
+    var middle: Float { (lowerBound + upperBound) / 2 }
 }

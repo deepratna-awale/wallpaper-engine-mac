@@ -211,9 +211,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 guard let frames = self.makeTextureFrames(from: layer.source), !frames.isEmpty else { return nil }
                 return PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration }, layer: layer)
             }
-            let preparedParticleSystems: [ParticleSystemRuntime] = content.particleSystems.compactMap { system in
+            let preparedParticleSystems: [ParticleSystemRuntime] = content.particleSystems.enumerated().compactMap { index, system in
                 guard let texture = self.makeTextureFrames(from: system.source)?.first?.texture else { return nil }
-                return ParticleSystemRuntime(texture: texture, configuration: system)
+                // Seeded by position in the scene, so a wallpaper's particles replay the same way.
+                return ParticleSystemRuntime(texture: texture, configuration: system, seed: ParticleRandom.pcg(UInt32(index)))
             }
             guard self.isCurrentContentGeneration(generation) else { return }
             DispatchQueue.main.async { [weak self] in
