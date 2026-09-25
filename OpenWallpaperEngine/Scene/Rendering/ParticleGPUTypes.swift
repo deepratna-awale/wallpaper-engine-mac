@@ -104,6 +104,8 @@ struct ParticleGPUFrame {
     var spawnScale: SIMD4<Float>
     /// `ParticleFrameInputs.colorScale`.
     var colorScale: SIMD4<Float>
+    /// Audio velocity, turbulence and vortex scales.
+    var audioScales: SIMD4<Float>
 
     static let noRenderVar = UInt32.max
 
@@ -128,7 +130,8 @@ struct ParticleGPUFrame {
                                  motion.translation.x, motion.translation.y)
         motionLinear = Self.columns(motion.linear)
         motionExtras = SIMD4(inputs.motionScale, inputs.motionAngle, inputs.motion == nil ? 0 : 1, 0)
-        extra = SIMD4(inputs.absolutePoints.rawValue, UInt32(clamping: inputs.maximum), 0, 0)
+        extra = SIMD4(inputs.absolutePoints.rawValue, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count), 0)
+        audioScales = SIMD4(inputs.audioVelocityScale, inputs.turbulenceScale, inputs.vortexScale, 0)
         spawnScale = inputs.spawnScale
         colorScale = SIMD4(inputs.colorScale, 1)
     }
@@ -200,6 +203,8 @@ struct ParticleGPUParameters {
     var link = SIMD4<Float>.zero
     /// `ParticleInheritance` at spawn, every step.
     var inherit = SIMD4<UInt32>.zero
+    /// An audio-responsive `turbulentvelocityrandom`: minimum xy, maximum xy.
+    var audioVelocity = SIMD4<Float>.zero
 
     /// Samples each `ropetrail` particle keeps.
     var historyLimit: Int { Int(counts.w) }
@@ -215,6 +220,8 @@ struct ParticleGPUParameters {
         velocityRange = SIMD4(c.minimumVelocity.x, c.minimumVelocity.y, c.maximumVelocity.x, c.maximumVelocity.y)
         emitterShape = SIMD4(c.emitterSpeed.lowerBound, c.emitterSpeed.upperBound, c.emitterSign.x, c.emitterSign.y)
         emitterRing = SIMD4(min(max(c.minimumSpawnRatio, 0), 1), 0, 0, 0)
+        audioVelocity = SIMD4(c.audioVelocityMinimum.x, c.audioVelocityMinimum.y,
+                              c.audioVelocityMaximum.x, c.audioVelocityMaximum.y)
         colorMinimum = c.minimumColor
         colorMaximum = c.maximumColor
         offsetRange = SIMD4(c.positionOffsetMinimum.x, c.positionOffsetMinimum.y,

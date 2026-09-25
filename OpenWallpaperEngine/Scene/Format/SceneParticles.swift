@@ -55,6 +55,12 @@ struct WEParticleEmitter: Codable {
     var directions: WEFlexValue?
     /// Per-axis sign the spawn offset is forced to (0 keeps both).
     var sign: WEFlexValue?
+    /// Audio response: 0 off, 1 left, 2 right, 3 both channels (`ParticleAudioResponse`).
+    @WEFlexibleInt var audioprocessingmode: Int?
+    @WEFlexibleDouble var audioprocessingexponent: Double?
+    var audioprocessingbounds: WEFlexValue?
+    @WEFlexibleInt var audioprocessingfrequencystart: Int?
+    @WEFlexibleInt var audioprocessingfrequencyend: Int?
 }
 
 struct WEParticleControlPoint: Codable {
@@ -86,6 +92,12 @@ struct WEParticleInitializer: Codable {
     @WEFlexibleInt var inputcontrolpoint0: Int?
     @WEFlexibleDouble var inputrangemin: Double?
     @WEFlexibleDouble var inputrangemax: Double?
+    /// Audio response: 0 off, 1 left, 2 right, 3 both channels (`ParticleAudioResponse`).
+    @WEFlexibleInt var audioprocessingmode: Int?
+    @WEFlexibleDouble var audioprocessingexponent: Double?
+    var audioprocessingbounds: WEFlexValue?
+    @WEFlexibleInt var audioprocessingfrequencystart: Int?
+    @WEFlexibleInt var audioprocessingfrequencyend: Int?
 }
 
 struct WEParticleOperator: Codable {
@@ -138,8 +150,23 @@ struct WEParticleOperator: Codable {
     var outputrangemax: WEFlexValue?
     @WEFlexibleInt var controlpoint0: Int?
     @WEFlexibleInt var controlpoint1: Int?
-    /// `movement`: bit 0 applies gravity in world space rather than the system's.
+    /// `movement`: bit 0 applies gravity in world space rather than the system's. Collision
+    /// operators: bit 0 locks the shape to `controlpoint`, bit 1 stops rotation on contact.
     @WEFlexibleInt var flags: Int?
+    /// Audio response: 0 off, 1 left, 2 right, 3 both channels (`ParticleAudioResponse`).
+    @WEFlexibleInt var audioprocessingmode: Int?
+    @WEFlexibleDouble var audioprocessingexponent: Double?
+    var audioprocessingbounds: WEFlexValue?
+    @WEFlexibleInt var audioprocessingfrequencystart: Int?
+    @WEFlexibleInt var audioprocessingfrequencyend: Int?
+    // Collision operators (`ParticleCollision`).
+    var collisionbehavior: String?
+    @WEFlexibleDouble var bouncefactor: Double?
+    var plane: WEFlexValue?
+    @WEFlexibleDouble var distance: Double?
+    @WEFlexibleDouble var radius: Double?
+    var size: WEFlexValue?
+    var forward: WEFlexValue?
 }
 
 struct WEParticleRenderer: Codable {

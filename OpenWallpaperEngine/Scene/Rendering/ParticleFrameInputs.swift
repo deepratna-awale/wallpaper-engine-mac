@@ -17,6 +17,13 @@ struct ParticleFrameInputs {
     var spawnScale = SIMD4<Float>(repeating: 1)
     /// The overrides' tint times brightness, on spawned particles' colour.
     var colorScale = SIMD3<Float>(repeating: 1)
+    /// Audio responses (`ParticleAudioResponse`): of an audio-responsive `turbulentvelocityrandom`,
+    /// of `turbulence`'s and `vortex`'s speeds. 1 without one.
+    var audioVelocityScale: Float = 1
+    var turbulenceScale: Float = 1
+    var vortexScale: Float = 1
+    /// Collision shapes in scene space this step, in operator order.
+    var collisions: [ParticleCollisionPlacement] = []
     var drag: Float = 0
     var fadeIn: Float = 0
     var fadeOut: Float = 1
@@ -76,7 +83,8 @@ struct ParticleFrameInputs {
     /// Advances `system`'s clock and evaluates this step's inputs. `emitter` is the emitter's
     /// world transform this frame; nil keeps the authored one.
     static func advance(_ system: ParticleSystemRuntime, deltaTime: Float, cursor: SIMD2<Float>,
-                        emitter: SceneAffineTransform? = nil, values: SceneValueContext? = nil) -> ParticleFrameInputs {
+                        emitter: SceneAffineTransform? = nil, values: SceneValueContext? = nil,
+                        audio: AudioSpectrumSnapshot = .silent) -> ParticleFrameInputs {
         let configuration = system.configuration
         system.elapsedTime += deltaTime
         system.frameIndex &+= 1
@@ -113,7 +121,18 @@ struct ParticleFrameInputs {
         } ?? configuration.fadeOut
         inputs.fadeIn = system.fadeIn
         inputs.fadeOut = system.fadeOut
-        inputs.place(configuration, in: SceneParticleEmitterSpace(world: world), cursor: cursor)
+        // Silence stops an audio-responsive emitter without clearing what it emitted.
+        if let response = configuration.rateAudio { inputs.emissionRate *= response.response(audio) }
+        inputs.audioVelocityScale = configuration.velocityAudio?.response(audio) ?? 1
+        inputs.turbulenceScale = configuration.turbulenceAudio?.response(audio) ?? 1
+        inputs.vortexScale = configuration.vortexAudio?.response(audio) ?? 1
+        let space = SceneParticleEmitterSpace(world: world)
+        inputs.place(configuration, in: space, cursor: cursor)
+        inputs.collisions = configuration.collisions.flatMap { collision in
+            collision.placed(in: space) { id in
+                controlPointPosition(id, configuration: configuration, space: space, cursor: cursor)
+            }
+        }
         return inputs
     }
 
@@ -197,6 +216,7 @@ struct ParticleFrameInputs {
         inputs.vortexOrigin += translation
         inputs.reductionOrigin += translation
         inputs.constraintOrigin += translation
+        inputs.collisions = collisions.map { $0.moved(by: translation) }
         return inputs
     }
 

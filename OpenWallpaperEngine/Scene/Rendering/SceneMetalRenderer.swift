@@ -461,7 +461,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for system in orderedSystems {
             let base = particleInstances.count
             let inputs = ParticleFrameInputs.advance(system, deltaTime: Float(clock.delta), cursor: cursor,
-                                                     emitter: emitterWorld(system.configuration, time: time))
+                                                     emitter: emitterWorld(system.configuration, time: time),
+                                                     audio: effectFrame.audio)
             if particleSimulator != nil {
                 // The GPU steps the system and writes whichever records it is drawn from.
                 let rendererName = system.configuration.rendererName

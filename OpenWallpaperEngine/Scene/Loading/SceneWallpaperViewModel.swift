@@ -1109,7 +1109,7 @@ class SceneWallpaperViewModel: ObservableObject {
             load: { [weak self] path in self?.loadJSON(path: path, wallpaperDir: wallpaperDir) },
             build: { [weak self] path, system, world, overrides in
                 self?.buildMetalParticleSystem(path, particleSystem: system, object: object, world: world,
-                                               overrides: overrides, wallpaperDir: wallpaperDir)
+                                               overrides: overrides, sceneSize: sceneSize, wallpaperDir: wallpaperDir)
             },
             report: { message in OWELog.error(.scene, "Particle object \(object.id ?? -1): \(message)") })
         var family = builder.family(particlePath, world: world,
@@ -1121,7 +1121,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func buildMetalParticleSystem(_ particlePath: String, particleSystem: WEParticleSystem, object: WESceneObject,
                                           world: SceneAffineTransform, overrides: SceneParticleOverrides,
-                                          wallpaperDir: URL) -> SceneMetalParticleSystem? {
+                                          sceneSize: SIMD2<Float>, wallpaperDir: URL) -> SceneMetalParticleSystem? {
         guard let materialPath = particleSystem.material,
               let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir),
               let textureName = material.passes?.first?.textures?.first else { return nil }
@@ -1160,6 +1160,11 @@ class SceneWallpaperViewModel: ObservableObject {
         var sequenceRing: ParticleSequenceRing?
         var initialRemap: ParticleInitialRemap?
         var maintainSequenceDistance = false
+        var collisions: [ParticleCollision] = []
+        var velocityAudio: ParticleAudioResponse?
+        var audioVelocityMinimum = SIMD2<Float>.zero, audioVelocityMaximum = SIMD2<Float>.zero
+        var turbulenceAudio: ParticleAudioResponse?
+        var vortexAudio: ParticleAudioResponse?
         var inheritOnSpawn: ParticleInheritance = []
         var inheritEachStep: ParticleInheritance = []
         /// An `inherit…fromevent` element's verb (`default` when it names none); nil logs it.
@@ -1206,8 +1211,15 @@ class SceneWallpaperViewModel: ObservableObject {
             case "turbulentvelocityrandom":
                 let minimum = initializer.min?.vectorValue ?? (0, 0, 0)
                 let maximum = initializer.max?.vectorValue ?? (0, 0, 0)
-                minimumVelocity += SIMD2<Float>(Float(minimum.0), Float(minimum.1))
-                maximumVelocity += SIMD2<Float>(Float(maximum.0), Float(maximum.1))
+                let low = SIMD2<Float>(Float(minimum.0), Float(minimum.1)), high = SIMD2<Float>(Float(maximum.0), Float(maximum.1))
+                if let response = ParticleAudioResponse(initializer) {
+                    velocityAudio = response
+                    audioVelocityMinimum += low
+                    audioVelocityMaximum += high
+                } else {
+                    minimumVelocity += low
+                    maximumVelocity += high
+                }
             case "positionoffsetrandom":
                 let minimum = initializer.min?.vectorValue ?? (0, 0, 0)
                 let maximum = initializer.max?.vectorValue ?? (0, 0, 0)
@@ -1325,7 +1337,12 @@ class SceneWallpaperViewModel: ObservableObject {
                 angularAcceleration = Float((`operator`.force ?? "0 0 0").parseVector3().2)
             case "capvelocity":
                 maximumSpeed = Float(`operator`.maxspeed ?? 0)
+            case "collisionplane", "collisionsphere", "collisionquad", "collisionbounds":
+                if let collision = ParticleCollision(`operator`, sceneSize: sceneSize) { collisions.append(collision) }
+            case "collisionmodel":
+                OWELog.error(.scene, "Particle system \(particlePath): collisionmodel needs 3D models, not supported; ignored")
             case "vortex", "vortex_v2":
+                vortexAudio = ParticleAudioResponse(`operator`) ?? vortexAudio
                 let axis = (`operator`.axis ?? "0 1 0").parseVector3()
                 vortex = ParticleVortex(offset: SIMD2<Float>(Float(axis.0), -Float(axis.1)),
                                          innerSpeed: Float(`operator`.speedinner ?? 0),
@@ -1378,6 +1395,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 }
                 inheritEachStep.formUnion(verbs.intersection(.eachStep))
             case "turbulence":
+                turbulenceAudio = ParticleAudioResponse(`operator`)
                 let mask = `operator`.mask?.vectorValue ?? (1, 1, 0)
                 turbulence = Turbulence(scale: Float(`operator`.scale?.doubleValue ?? 0.005),
                                         speed: Float(`operator`.speedmin ?? 500)...Float(`operator`.speedmax ?? 1000),
@@ -1455,6 +1473,13 @@ class SceneWallpaperViewModel: ObservableObject {
            instanceOverride.values.values.contains(where: { $0.userBindingSource != nil }) {
             system.liveOverrides = instanceOverride
         }
+        system.collisions = collisions
+        system.rateAudio = emitter.flatMap { ParticleAudioResponse($0) }
+        system.velocityAudio = velocityAudio
+        system.audioVelocityMinimum = audioVelocityMinimum
+        system.audioVelocityMaximum = audioVelocityMaximum
+        system.turbulenceAudio = turbulenceAudio
+        system.vortexAudio = vortexAudio
         system.inheritOnSpawn = inheritOnSpawn
         system.inheritEachStep = inheritEachStep
         if let emitter {

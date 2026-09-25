@@ -234,6 +234,10 @@ enum ParticleCPUSimulation {
         let velocityMinimum = configuration.minimumVelocity * scale.w, velocityMaximum = configuration.maximumVelocity * scale.w
         var velocity = SIMD2(random(velocityMinimum.x, velocityMaximum.x, .velocityX),
                              random(velocityMinimum.y, velocityMaximum.y, .velocityY))
+        // An audio-responsive `turbulentvelocityrandom`, scaled by its response.
+        let audioMinimum = configuration.audioVelocityMinimum, audioMaximum = configuration.audioVelocityMaximum
+        velocity += SIMD2(random(audioMinimum.x, audioMaximum.x, .audioVelocityX),
+                          random(audioMinimum.y, audioMaximum.y, .audioVelocityY)) * inputs.audioVelocityScale * scale.w
         // Authored in emitter space; a rotated emitter (or parent) turns the launch direction.
         velocity = inputs.velocityRotation * velocity
         // The emitter's own speed pushes particles out from its centre.
@@ -290,6 +294,7 @@ enum ParticleCPUSimulation {
     static func advance(_ particle: inout Particle, index: Int, system: ParticleSystemRuntime, inputs: ParticleFrameInputs) {
         let configuration = system.configuration
         let deltaTime = inputs.deltaTime
+        let previous = particle.position
         particle.position += particle.velocity * deltaTime
         if let turbulence = configuration.turbulence {
             let position = particle.position * turbulence.scale
@@ -297,7 +302,7 @@ enum ParticleCPUSimulation {
             let direction = SIMD2<Float>(sin(position.y + phase), cos(position.x - phase))
             let magnitude = ParticleRandom.value(turbulence.speed.lowerBound, turbulence.speed.upperBound, seed: system.seed,
                                                  serial: particle.serial, stream: ParticleRandom.frameStream(inputs.frameIndex))
-            let force: SIMD2<Float> = direction * magnitude * turbulence.mask
+            let force: SIMD2<Float> = direction * magnitude * inputs.turbulenceScale * turbulence.mask
             particle.velocity += force * deltaTime
         }
         if let attractor = configuration.attractor {
@@ -312,7 +317,7 @@ enum ParticleCPUSimulation {
             let distance = simd_length(offset)
             if distance > 0.001, distance >= vortex.innerDistance, distance <= max(vortex.outerDistance, vortex.innerDistance) {
                 let progress = min(max((distance - vortex.innerDistance) / max(vortex.outerDistance - vortex.innerDistance, 0.001), 0), 1)
-                let speed = vortex.innerSpeed + (vortex.outerSpeed - vortex.innerSpeed) * progress
+                let speed = (vortex.innerSpeed + (vortex.outerSpeed - vortex.innerSpeed) * progress) * inputs.vortexScale
                 let tangent = SIMD2<Float>(-offset.y, offset.x) / distance
                 particle.velocity += tangent * speed * deltaTime
             }
@@ -342,6 +347,12 @@ enum ParticleCPUSimulation {
         if let maximumSpeed = configuration.maximumSpeed, maximumSpeed > 0 {
             let speed = simd_length(particle.velocity)
             if speed > maximumSpeed { particle.velocity *= maximumSpeed / speed }
+        }
+        for collision in inputs.collisions {
+            var dies = false
+            collision.resolve(position: &particle.position, velocity: &particle.velocity,
+                              angularVelocity: &particle.angularVelocity, dies: &dies, previous: previous)
+            if dies { particle.age = particle.lifetime }
         }
         particle.age += deltaTime
         let life = min(max(particle.age / max(particle.lifetime, 0.001), 0), 1)

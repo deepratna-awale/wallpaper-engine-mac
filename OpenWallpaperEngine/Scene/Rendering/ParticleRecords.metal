@@ -275,4 +275,5 @@ kernel void particleLayoutSizes(device uint *sizes [[buffer(0)]]) {
     sizes[4] = sizeof(RopeRecord);
     sizes[5] = sizeof(FallbackInstance);
     sizes[6] = sizeof(ParticleInstanceState);
+    sizes[7] = sizeof(CollisionPlacement);
 }

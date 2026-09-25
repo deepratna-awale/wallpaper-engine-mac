@@ -101,6 +101,17 @@ struct SceneMetalParticleSystem {
     var liveOverrides: WEInstanceOverride? = nil
     /// A child that keeps its own colours (link flag 2): the overrides' tint and brightness skip it.
     var keepsOwnColors = false
+    /// Collision operators, in order.
+    var collisions: [ParticleCollision] = []
+    /// Audio responses: of the emitter's rate, of an audio-responsive `turbulentvelocityrandom`
+    /// (`audioVelocity…`, kept apart from the other velocity initializers), of `turbulence`'s and
+    /// `vortex`'s speeds.
+    var rateAudio: ParticleAudioResponse? = nil
+    var velocityAudio: ParticleAudioResponse? = nil
+    var audioVelocityMinimum = SIMD2<Float>.zero
+    var audioVelocityMaximum = SIMD2<Float>.zero
+    var turbulenceAudio: ParticleAudioResponse? = nil
+    var vortexAudio: ParticleAudioResponse? = nil
     /// The system has event children, which read its spawns and deaths.
     var hasEventChildren = false
     /// What an instanced system's particles take from their event's parent particle

@@ -57,6 +57,15 @@ struct ParticleParameters {
     uint4 instancing;        // link kind (0 none, `ParticleChildLink.Kind`), instances, -, instantaneous
     float4 link;             // probability
     uint4 inherit;           // `ParticleInheritance` at spawn, every step
+    float4 audioVelocity;    // audio-responsive turbulentvelocityrandom: minimum xy, maximum xy
+};
+
+/// A collision shape in scene space (`ParticleCollisionPlacement`).
+struct CollisionPlacement {
+    float4 shape;    // plane: normal xy, distance; sphere: centre xy, radius; quad: centre xy, normal xy
+    float4 axis;     // quad: right xy, half size along it, half size along `extra`
+    float4 extra;    // quad: second axis xy; z: fixed in the scene
+    float4 response; // bounce coefficient, behaviour, stops rotation, kind
 };
 
 /// One instance of an instanced child system (`ParticleGPUInstance`, `ParticleInstance`).
@@ -84,9 +93,10 @@ struct ParticleFrame {
     float4 constraintMotion; // constraint origin xy, motion translation xy
     float4 motionLinear;     // motion column 0 xy, column 1 xy
     float4 motionExtras;     // motion size scale, turn, has motion
-    uint4 extra;             // points that stay put in every instance (`ParticleFrameInputs.AbsolutePoints`), maximum
+    uint4 extra;             // points that stay put in every instance (`ParticleFrameInputs.AbsolutePoints`), maximum, collisions
     float4 spawnScale;       // instance overrides: size, alpha, lifetime, speed
     float4 colorScale;       // instance overrides: tint times brightness
+    float4 audioScales;      // audio responses: turbulentvelocityrandom, turbulence, vortex
 };
 
 // `ParticleSpriteInstance` and `ParticleRopeSegmentInstance` (ParticleInstanceLayout.swift).
@@ -173,6 +183,8 @@ constant uint sAngularVelocity = 17;
 constant uint sSpriteFrame = 18;
 constant uint sEmitterSpeed = 19;
 constant uint sEventProbability = 20;
+constant uint sAudioVelocityX = 21;
+constant uint sAudioVelocityY = 22;
 
 static uint pcg(uint value) {
     const uint state = value * 747796405u + 2891336453u;

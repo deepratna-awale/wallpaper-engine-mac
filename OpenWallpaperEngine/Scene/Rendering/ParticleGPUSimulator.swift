@@ -149,6 +149,17 @@ final class ParticleGPUSimulator {
         encoder.setBuffer(gpu.parameters, offset: 0, index: 5)
         encoder.setBytes(&frame, length: frameLength, index: 6)
         encoder.setBuffer(instances, offset: 0, index: 7)
+        let collisions = request.inputs.collisions
+        let collisionBytes = collisions.count * MemoryLayout<ParticleCollisionPlacement>.stride
+        if collisions.isEmpty {
+            encoder.setBuffer(control, offset: 0, index: 8)
+        } else if collisionBytes <= 4096 {
+            collisions.withUnsafeBytes { encoder.setBytes($0.baseAddress!, length: collisionBytes, index: 8) }
+        } else if let buffer = device.makeBuffer(bytes: collisions, length: collisionBytes, options: .storageModeShared) {
+            encoder.setBuffer(buffer, offset: 0, index: 8)
+        } else {
+            encoder.setBuffer(control, offset: 0, index: 8)
+        }
         perParticle()
 
         scan(alive, count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.count, offsets: offsets,

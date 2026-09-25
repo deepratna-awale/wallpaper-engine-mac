@@ -15,6 +15,8 @@ enum ParticleRandom {
         case lifetime, rotation, angularVelocity, spriteFrame, emitterSpeed
         /// Whether a parent particle's event makes a child instance (keyed by the parent's serial).
         case eventProbability
+        /// An audio-responsive `turbulentvelocityrandom`.
+        case audioVelocityX, audioVelocityY
     }
 
     /// Per-frame draws (turbulence): the frame index with the high bit set, so they never meet a

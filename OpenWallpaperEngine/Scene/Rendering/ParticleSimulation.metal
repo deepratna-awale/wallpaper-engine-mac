@@ -79,6 +79,9 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     const float4 velocityRange = p.velocityRange * scale.w;
     float2 velocity = float2(randomValue(velocityRange.x, velocityRange.z, seed, serial, sVelocityX),
                              randomValue(velocityRange.y, velocityRange.w, seed, serial, sVelocityY));
+    velocity += float2(randomValue(p.audioVelocity.x, p.audioVelocity.z, seed, serial, sAudioVelocityX),
+                       randomValue(p.audioVelocity.y, p.audioVelocity.w, seed, serial, sAudioVelocityY))
+        * f.audioScales.x * scale.w;
     velocity = float2x2(f.velocityRotation.xy, f.velocityRotation.zw) * velocity;
     const float2 outward = length(spawnOffset) > 1e-6f ? normalize(spawnOffset) : float2(0);
     velocity += outward * randomValue(p.emitterShape.x, p.emitterShape.y, seed, serial, sEmitterSpeed);
@@ -196,6 +199,43 @@ kernel void particleEmit(device ParticleState *particles [[buffer(0)]],
     }
 }
 
+/// `ParticleCollisionPlacement.resolve`, the shape carried by `shift` (`moved(by:)`).
+static void collide(CollisionPlacement collision, float2 shift, thread float2 &position, thread float2 &velocity,
+                    thread float &angularVelocity, thread bool &dies, float2 previous) {
+    float4 shape = collision.shape;
+    const uint kind = uint(collision.response.w);
+    if (collision.extra.z < 0.5) {
+        if (kind == 0) shape.z += dot(shape.xy, shift);
+        else shape.xy += shift;
+    }
+    float2 normal;
+    if (kind == 0) {
+        const float depth = dot(shape.xy, position) - shape.z;
+        if (!(depth < 0)) return;
+        position -= shape.xy * depth;
+        normal = shape.xy;
+    } else if (kind == 1) {
+        const float2 offset = position - shape.xy;
+        const float distance = length(offset);
+        if (!(distance < shape.z)) return;
+        normal = distance > 1e-6f ? offset / distance : float2(0, 1);
+        position = shape.xy + normal * shape.z;
+    } else {
+        const float2 n = shape.zw;
+        const float depth = dot(n, position - shape.xy);
+        if (!(depth <= 0 && dot(n, previous - shape.xy) > 0 && abs(dot(position - shape.xy, collision.axis.xy)) < collision.axis.z
+              && abs(dot(position - shape.xy, collision.extra.xy)) < collision.axis.w)) return;
+        position -= n * depth * 1.05f;
+        normal = n;
+    }
+    const uint behavior = uint(collision.response.y);
+    if (behavior == 0) velocity += normal * dot(normal, velocity) * collision.response.x;
+    else if (behavior == 1) velocity -= normal * dot(normal, velocity);
+    else if (behavior == 2) velocity = float2(0);
+    else dies = true;
+    if (collision.response.z > 0.5) angularVelocity = 0;
+}
+
 /// `ParticleCPUSimulation.follow`: carries a particle along with its emitter's move, `linear`
 /// and `translation`.
 static void follow(thread ParticleState &particle, device float2 *own, constant ParticleParameters &p,
@@ -219,6 +259,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
                              constant ParticleParameters &p [[buffer(5)]],
                              constant ParticleFrame &f [[buffer(6)]],
                              device ParticleInstanceState *instances [[buffer(7)]],
+                             constant CollisionPlacement *collisions [[buffer(8)]],
                              uint gid [[thread_position_in_grid]]) {
     const uint total = control[cTotal];
     if (gid >= total) return;
@@ -245,6 +286,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
     const FramePoints points = framePoints(f, shift);
     float2 position = particle.positionVelocity.xy;
     float2 velocity = particle.positionVelocity.zw;
+    const float2 previous = position;
     position += velocity * deltaTime;
     if (flags & kTurbulence) {
         const float2 scaled = position * p.turbulence.x;
@@ -252,7 +294,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         const float2 direction = float2(sin(scaled.y + phase), cos(scaled.x - phase));
         const float magnitude = randomValue(p.turbulence.y, p.turbulence.z, p.counts.z, particle.identity.x,
                                             0x80000000u | (f.indices.x & 0x7FFFFFFFu));
-        velocity += direction * magnitude * p.turbulenceMask.yz * deltaTime;
+        velocity += direction * magnitude * f.audioScales.y * p.turbulenceMask.yz * deltaTime;
     }
     if (flags & kAttractor) {
         const float2 offset = points.attractor - position;
@@ -265,7 +307,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         const float inner = p.vortex.z, outer = p.vortex.w;
         if (distance > 0.001f && distance >= inner && distance <= max(outer, inner)) {
             const float progress = saturateValue((distance - inner) / max(outer - inner, 0.001f));
-            const float speed = p.vortex.x + (p.vortex.y - p.vortex.x) * progress;
+            const float speed = (p.vortex.x + (p.vortex.y - p.vortex.x) * progress) * f.audioScales.z;
             velocity += float2(-offset.y, offset.x) / distance * speed * deltaTime;
         }
     }
@@ -310,6 +352,13 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
     if ((flags & kMaximumSpeed) && p.limits.x > 0) {
         const float speed = length(velocity);
         if (speed > p.limits.x) velocity *= p.limits.x / speed;
+    }
+    for (uint index = 0; index < f.extra.z; ++index) {
+        bool dies = false;
+        float angularVelocity = particle.alphaRotation.w;
+        collide(collisions[index], shift, position, velocity, angularVelocity, dies, previous);
+        particle.alphaRotation.w = angularVelocity;
+        if (dies) particle.life.x = particle.life.y;
     }
     particle.life.x += deltaTime;
     const float life = saturateValue(particle.life.x / max(particle.life.y, 0.001f));
