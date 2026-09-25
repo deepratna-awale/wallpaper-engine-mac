@@ -14,12 +14,9 @@ struct TEXFlags: OptionSet, Equatable {
     /// Reads the flags from a `.tex` file (`TEXV0005\0TEXI0001\0`, format, flags…). Nil when the
     /// data isn't a `.tex`.
     init?(texData data: Data) {
-        let bytes = [UInt8](data.prefix(64))
-        guard let texi = (0..<max(bytes.count - 4, 0)).first(where: { bytes[$0..<$0 + 4] == [0x54, 0x45, 0x58, 0x49] }),
-              let end = bytes[texi...].firstIndex(of: 0), end + 9 <= bytes.count else { return nil }
-        let offset = end + 1 + 4 // past the name, then the format word
-        rawValue = UInt32(bytes[offset]) | UInt32(bytes[offset + 1]) << 8
-            | UInt32(bytes[offset + 2]) << 16 | UInt32(bytes[offset + 3]) << 24
+        // The format word comes first, then the flags.
+        guard let word = TEXImageFormat.texiWord(1, in: data) else { return nil }
+        rawValue = word
     }
 
     init(rawValue: UInt32) {
