@@ -102,6 +102,18 @@ final class ShaderVariantTests: XCTestCase {
         XCTAssertTrue(packed.contains("uniform float g[64];"), packed)
     }
 
+    /// HLSL converts a scalar `?:` condition to bool; `mask = INVERT ? 1 - mask : mask` with the
+    /// combo preprocessed to `0` is a sharpen workshop effect.
+    func testTernaryConditionsBecomeBool() {
+        let out = ShaderPrelude.fixupAfterPreprocess(
+            "void main() { m = 0 ? 1 - m : m; n = f(a == b ? x : y, (k) ? p : q ? r : s); o += t >= 1.0 ? 1.0 : 0.0; }")
+        XCTAssertTrue(out.contains("m = bool(0) ? 1 - m : m;"), out)
+        XCTAssertTrue(out.contains("f(bool(a == b) ? x : y, bool((k)) ? p : bool(q) ? r : s)"), out)
+        XCTAssertTrue(out.contains("bool(t >= 1.0) ? 1.0 : 0.0"), out)
+        let returned = ShaderPrelude.fixupAfterPreprocess("float g(int c) { return c ? 1.0 : 0.0; }")
+        XCTAssertTrue(returned.contains("bool(c) ? 1.0 : 0.0"), returned)
+    }
+
     /// A shader's own `M_PI`/`log10` replace the prelude's instead of clashing with them.
     func testShaderDefinitionsOverridePreludeMacros() throws {
         let prelude = ShaderPrelude.text(for: .fragment, combos: [:], source: "#define M_PI 3.14\nfloat log10(float x) { return x; }")

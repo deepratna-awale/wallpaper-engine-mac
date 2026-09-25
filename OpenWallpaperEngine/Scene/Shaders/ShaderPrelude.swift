@@ -267,6 +267,7 @@ extension ShaderPrelude {
         code = packedArrayIndices(code)
         code = integerSubscripts(code)
         code = modulo(code)
+        code = ternaryConditions(code)
         code = vectorOperandSizes(code)
         code = compoundAssignments(code)
         code = returnCasts(code)
@@ -334,6 +335,50 @@ extension ShaderPrelude {
             }
             edits.append((open + 1, "int("))
             edits.append((close, ")"))
+        }
+        return insert(edits, into: code)
+    }
+
+    /// `c ? a : b`: HLSL converts a scalar `c` to bool, GLSL requires a bool, so the condition
+    /// becomes `bool(c)` (an identity for a bool). The condition runs back from `?` to the
+    /// enclosing bracket, an assignment, `return`, or a `;`, `,`, `?` or `:`.
+    private static func ternaryConditions(_ code: [UInt16]) -> [UInt16] {
+        let comparisonPrefixes: Set<UInt16> = [ascii("="), ascii("!"), ascii("<"), ascii(">")]
+        var edits: [(Int, String)] = []
+        for question in code.indices where code[question] == ascii("?") {
+            var index = question - 1
+            var depth = 0
+            scan: while index >= 0 {
+                let c = code[index]
+                if isClosing(c) {
+                    depth += 1
+                } else if isOpening(c) {
+                    if depth == 0 { break scan }
+                    depth -= 1
+                } else if depth == 0 {
+                    if c == ascii(";") || c == ascii(",") || c == ascii("?") || c == ascii(":") { break scan }
+                    if c == ascii("=") {
+                        let next = index + 1 < code.count ? code[index + 1] : 0
+                        let previous = index > 0 ? code[index - 1] : 0
+                        // `=` or a compound assignment ends the condition; `==`, `!=`, `<=`, `>=` don't.
+                        if next != ascii("="), !comparisonPrefixes.contains(previous) { break scan }
+                    }
+                    if isIdentifier(c) {
+                        var wordStart = index
+                        while wordStart > 0, isIdentifier(code[wordStart - 1]) { wordStart -= 1 }
+                        if String(decoding: code[wordStart...index], as: UTF16.self) == "return" { break scan }
+                        index = wordStart
+                    }
+                }
+                index -= 1
+            }
+            var start = index + 1
+            while start < question, isSpace(code[start]) { start += 1 }
+            var end = question
+            while end > start, isSpace(code[end - 1]) { end -= 1 }
+            guard start < end else { continue }
+            edits.append((start, "bool("))
+            edits.append((end, ")"))
         }
         return insert(edits, into: code)
     }
