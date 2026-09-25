@@ -19,7 +19,10 @@ final class RenderCheckTests: XCTestCase {
         XCTAssertTrue(ids.contains("1"), "text layer missing; layers: \(ids)")
         // Kept, but it samples _rt_FullFrameBuffer, which is still a transparent placeholder (B1);
         // a pixel check belongs to the Phase 3 compositing work.
-        XCTAssertTrue(ids.contains("3"), "composition layer missing; layers: \(ids)")
+        // A composition layer only exists while its effect can run, which needs WE's shader sources.
+        if Fixtures.hasWEShaderSources {
+            XCTAssertTrue(ids.contains("3"), "composition layer missing; layers: \(ids)")
+        }
         XCTAssertTrue(ids.contains("2"), "solid layer missing; layers: \(ids)")
     }
 }

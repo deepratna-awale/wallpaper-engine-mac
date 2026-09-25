@@ -1,4 +1,5 @@
 import Foundation
+@testable import OpenWallpaperEngine
 
 /// Fixtures live in `Tests/Fixtures` at the repository root, outside the test target, so they are
 /// read from the source checkout instead of being flattened into the test bundle.
@@ -18,5 +19,14 @@ enum Fixtures {
             .appending(path: "owe-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.copyItem(at: url(path), to: destination)
         return destination
+    }
+}
+
+extension Fixtures {
+    /// True when WE's effect shader sources are reachable (a configured install or a bundled copy
+    /// with GLSL). CI has neither, so tests that need an effect to plan skip there.
+    static var hasWEShaderSources: Bool {
+        guard SceneShaderTranslator.toolchain != nil, let assets = WallpaperEngineAssets.directory else { return false }
+        return FileManager.default.fileExists(atPath: assets.appending(path: "effects/tint/shaders/effects/tint.frag").path)
     }
 }

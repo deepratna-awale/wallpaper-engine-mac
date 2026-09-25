@@ -43,11 +43,7 @@ final class SceneLayerKindTests: XCTestCase {
     }
 
     func testTextLayersKeepTheirAuthoredEffects() throws {
-        do {
-            _ = try ProcessShaderCompiler()
-        } catch {
-            throw XCTSkip("WE shader toolchain unavailable: \(error)")
-        }
+        try XCTSkipUnless(Fixtures.hasWEShaderSources, "WE shader sources or toolchain unavailable")
         let text = try XCTUnwrap(try content("ordering").layers.first { $0.id == "10" })
         XCTAssertNotNil(text.text)
         XCTAssertEqual(text.weEffects.count, 1, "B2: text layers must run their effects")
