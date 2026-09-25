@@ -77,4 +77,13 @@ final class SceneLayerKindTests: XCTestCase {
         XCTAssertEqual(green.x, 0, accuracy: 0.01)
         XCTAssertEqual(green.y, 1, accuracy: 0.01)
     }
+
+    /// WE's objects default `parallaxDepth` to 1 1 and its writer leaves defaults out: a layer
+    /// without the key moves with camera parallax; an authored depth, even 0 0, is kept.
+    func testAbsentParallaxDepthIsWEsDefault() throws {
+        let layers = Dictionary(uniqueKeysWithValues: try content("parallax-depth").layers.map { ($0.id, $0) })
+        XCTAssertEqual(layers["1"]?.parallaxDepth, SIMD3(1, 1, 0))
+        XCTAssertEqual(layers["2"]?.parallaxDepth, SIMD3(0, 0, 0))
+        XCTAssertEqual(layers["3"]?.parallaxDepth, SIMD3(0, 0.5, 0))
+    }
 }

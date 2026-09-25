@@ -68,6 +68,13 @@ struct WESceneObject: Decodable {
     var parallaxDepth: String?
     var perspective: Bool?
 
+    /// `parallaxDepth`, or WE's default (1, 1) when the object leaves it out: WE's object
+    /// constructor sets it to 1 1 (like `scale`), and its scene writer omits default values, so
+    /// an absent key is a layer that moves with camera parallax.
+    var parallaxDepthValue: (Double, Double, Double) {
+        parallaxDepth?.parseVector3() ?? (1, 1, 0)
+    }
+
     // Particle objects
     var particle: String?    // path to particle JSON
     var instanceoverride: WEInstanceOverride?

@@ -657,7 +657,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let rotation = Float(object.angles?.parseVector3().2 ?? 0)
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let objectColor = object.color?.parseVector3() ?? (1, 1, 1)
-        let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
+        let parallaxValue = object.parallaxDepthValue
         let effects = materialEffects(material.passes?.first)
         let effectPlans = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
@@ -712,7 +712,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let size = authoredSize.flatMap { $0.x > 0 && $0.y > 0 ? $0 : nil } ?? sceneSize
         let color = object.color?.parseVector3() ?? (1, 1, 1)
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
-        let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
+        let parallaxValue = object.parallaxDepthValue
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                        source: .image(Self.solidImage(red: color.0, green: color.1, blue: color.2)),
                        position: localOrigin(for: object, sceneSize: sceneSize),

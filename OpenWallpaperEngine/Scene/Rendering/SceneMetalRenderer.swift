@@ -773,7 +773,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             opacity *= AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
         }
         var local = evaluatedLocal(entry, time: time)
-        // Layers without an authored parallax depth stay put, as in Wallpaper Engine.
+        // WE's default depth is 1 1 (`WESceneObject.parallaxDepthValue`); an authored 0 0 stays put.
         let parallaxDepth = entry.layer.parallaxDepth
         let parallaxOffset = motion.parallaxEnabled
             ? SIMD2<Float>(parallaxDepth.x * motion.cursorDelta.x * sceneSize.x * 0.18 * motion.parallaxAmount,
