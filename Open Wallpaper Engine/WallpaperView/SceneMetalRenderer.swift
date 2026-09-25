@@ -815,6 +815,10 @@ private final class DynamicEffectPipelineCache {
 }
 
 final class SceneMetalRenderer: NSObject, MTKViewDelegate {
+    /// Authored masks bound per layer. Stacking several masked effects on one object is common
+    /// (a shine plus a handful of shakes), and anything past this renders unmasked.
+    /// Must match `kMaxEffectMasks` and the `masks` array length in SceneShaders.metal.
+    static let maxEffectMasks = 32
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let renderPipeline: MTLRenderPipelineState
@@ -957,14 +961,21 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 var effectMasks: [MTLTexture] = []
                 let effectMaskSlots: [Int?] = layer.sceneEffects.map { effect in
                     guard let mask = effect.mask, let texture = self.makeTextureFrames(from: mask)?.first?.texture else { return nil }
-                    guard effectMasks.count < 4 else { return nil }
+                    guard effectMasks.count < SceneMetalRenderer.maxEffectMasks else {
+                        OWELog.error(.scene, "Layer '\(layer.name)' exceeds \(SceneMetalRenderer.maxEffectMasks) masked effects; '\(effect.name)' will render unmasked")
+                        return nil
+                    }
                     effectMasks.append(texture)
                     return effectMasks.count - 1
                 }
+                // Blend sources share the mask array, so they draw from the same budget.
                 let effectBlendSlots: [Int?] = layer.sceneEffects.map { effect in
                     guard let blend = effect.blend,
                           let texture = self.makeTextureFrames(from: blend)?.first?.texture else { return nil }
-                    guard effectMasks.count < 4 else { return nil }
+                    guard effectMasks.count < SceneMetalRenderer.maxEffectMasks else {
+                        OWELog.error(.scene, "Layer '\(layer.name)' exceeds \(SceneMetalRenderer.maxEffectMasks) mask/blend textures; '\(effect.name)' will not blend")
+                        return nil
+                    }
                     effectMasks.append(texture)
                     return effectMasks.count - 1
                 }
@@ -1286,10 +1297,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
             encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
             encoder.setFragmentTexture(dynamicTextures[layerIndex] ?? textureFrame.texture, index: 0)
-            for index in 0..<4 {
-                encoder.setFragmentTexture(index < entry.effectMasks.count ? entry.effectMasks[index] : nil, index: index + 1)
+            encoder.setFragmentTexture(entry.xrayTexture, index: 1)
+            // The shader takes the masks as one indexable array starting at slot 2, so the whole
+            // range is bound in a single call and unused slots are explicitly cleared.
+            var maskTextures = [MTLTexture?](repeating: nil, count: SceneMetalRenderer.maxEffectMasks)
+            for (index, texture) in entry.effectMasks.prefix(SceneMetalRenderer.maxEffectMasks).enumerated() {
+                maskTextures[index] = texture
             }
-            encoder.setFragmentTexture(entry.xrayTexture, index: 5)
+            encoder.setFragmentTextures(maskTextures, range: 2..<(2 + SceneMetalRenderer.maxEffectMasks))
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
         updateParticles(deltaTime: frameDelta, cursor: cursor)

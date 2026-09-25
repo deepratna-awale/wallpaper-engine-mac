@@ -71,6 +71,7 @@
 		EE1000000000000000000005 /* SceneUserPropertiesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000006 /* SceneUserPropertiesView.swift */; };
 		EE1000000000000000000007 /* SceneInspectorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000008 /* SceneInspectorView.swift */; };
 		EE1000000000000000000A07 /* CollapsibleSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000A08 /* CollapsibleSection.swift */; };
+		EE1000000000000000000C07 /* SceneHelp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000C08 /* SceneHelp.swift */; };
 		EE1000000000000000000009 /* SceneEffectDefinitions.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100000000000000000000A /* SceneEffectDefinitions.swift */; };
 		EE100000000000000000000D /* SceneDynamicEffectCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100000000000000000000E /* SceneDynamicEffectCatalog.swift */; };
 		EE100000000000000000000B /* WorkshopDependencyResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE100000000000000000000C /* WorkshopDependencyResolver.swift */; };
@@ -162,6 +163,7 @@
 		EE1000000000000000000006 /* SceneUserPropertiesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneUserPropertiesView.swift; sourceTree = "<group>"; };
 		EE1000000000000000000008 /* SceneInspectorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneInspectorView.swift; sourceTree = "<group>"; };
 		EE1000000000000000000A08 /* CollapsibleSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollapsibleSection.swift; sourceTree = "<group>"; };
+		EE1000000000000000000C08 /* SceneHelp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneHelp.swift; sourceTree = "<group>"; };
 		EE100000000000000000000A /* SceneEffectDefinitions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneEffectDefinitions.swift; sourceTree = "<group>"; };
 		EE100000000000000000000C /* WorkshopDependencyResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkshopDependencyResolver.swift; sourceTree = "<group>"; };
 		EE100000000000000000000E /* SceneDynamicEffectCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SceneDynamicEffectCatalog.swift; sourceTree = "<group>"; };
@@ -228,6 +230,7 @@
 				EE1000000000000000000006 /* SceneUserPropertiesView.swift */,
 				EE1000000000000000000008 /* SceneInspectorView.swift */,
 				EE1000000000000000000A08 /* CollapsibleSection.swift */,
+				EE1000000000000000000C08 /* SceneHelp.swift */,
 				EE100000000000000000000A /* SceneEffectDefinitions.swift */,
 				5E32ABFD2A4D595D00A0EEEC /* FilterResults.swift */,
 				CC000000000000000000000C /* WorkshopView.swift */,
@@ -590,6 +593,7 @@
 				EE1000000000000000000005 /* SceneUserPropertiesView.swift in Sources */,
 				EE1000000000000000000007 /* SceneInspectorView.swift in Sources */,
 				EE1000000000000000000A07 /* CollapsibleSection.swift in Sources */,
+				EE1000000000000000000C07 /* SceneHelp.swift in Sources */,
 				EE1000000000000000000009 /* SceneEffectDefinitions.swift in Sources */,
 				EE100000000000000000000D /* SceneDynamicEffectCatalog.swift in Sources */,
 				EE100000000000000000000B /* WorkshopDependencyResolver.swift in Sources */,

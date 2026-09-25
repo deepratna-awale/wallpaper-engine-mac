@@ -38,12 +38,15 @@ struct WallpaperPreview: SubviewOfContentView {
     }
     
     var body: some View {
-        VStack {
+        VStack(spacing: 0) {
+            // Pinned outside the ScrollView so scrolled content cannot ride up under the titlebar.
+            Text("Details")
+                .font(.title3.bold())
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.top, 12)
+                .padding(.bottom, 10)
             ScrollView {
                 VStack(spacing: 16) {
-                    Text("Details")
-                        .font(.title3.bold())
-                        .frame(maxWidth: .infinity, alignment: .center)
                     VStack(spacing: 10) {
                         GifImage(contentsOf: { (url: URL) in
                             if let selectedProject = try? JSONDecoder()
@@ -210,6 +213,7 @@ struct WallpaperPreview: SubviewOfContentView {
                             }
                             HStack {
                                 Label("Placement", systemImage: "arrow.up.left.and.arrow.down.right")
+                                infoButton(SceneHelp.placement)
                                 Spacer()
                                 Picker("", selection: $wallpaperViewModel.wallpaperPlacement) {
                                     ForEach(WallpaperPlacement.allCases) { placement in
@@ -224,6 +228,7 @@ struct WallpaperPreview: SubviewOfContentView {
                             case "video", "remote-video":
                                 HStack {
                                     Label("Volume", systemImage: "speaker.wave.3.fill")
+                                    infoButton(SceneHelp.volume)
                                     Spacer()
                                     NumericSliderInput(value: $wallpaperViewModel.playVolume, range: 0...1,
                                                        defaultValue: 1, displayScale: 100, suffix: "%",
@@ -231,6 +236,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                 }
                                 HStack {
                                     Label("Video Speed", systemImage: "play.fill")
+                                    infoButton(SceneHelp.videoSpeed)
                                     Spacer()
                                     NumericSliderInput(value: $wallpaperViewModel.playRate, range: 0...2,
                                                        defaultValue: 1, step: 0.1, suffix: "x",
@@ -238,6 +244,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                 }
                                 HStack {
                                     Label("Audio Speed", systemImage: "waveform")
+                                    infoButton(SceneHelp.audioSpeed)
                                     Spacer()
                                     Button {
                                         wallpaperViewModel.arePlaybackRatesLinked.toggle()
@@ -246,7 +253,7 @@ struct WallpaperPreview: SubviewOfContentView {
                                             .foregroundStyle(wallpaperViewModel.arePlaybackRatesLinked ? Color.primary : .gray)
                                     }
                                     .buttonStyle(.plain)
-                                    .help(wallpaperViewModel.arePlaybackRatesLinked ? "Unlink audio speed" : "Link audio speed")
+                                    .help(SceneHelp.linkRates)
                                     NumericSliderInput(value: $wallpaperViewModel.audioPlayRate, range: 0...2,
                                                        defaultValue: 1, step: 0.1, suffix: "x",
                                                        fractionDigits: 2, sliderWidth: 76, fieldWidth: 42)
@@ -407,9 +414,11 @@ struct WallpaperPreview: SubviewOfContentView {
         return VStack(alignment: .leading, spacing: 8) {
             Toggle("Scene Music", isOn: enabled)
                 .toggleStyle(.checkbox)
+                .help(SceneHelp.sceneMusic)
             if enabled.wrappedValue {
                 HStack {
                     Label("Scene Music Volume", systemImage: "music.note")
+                    infoButton(SceneHelp.sceneMusicVolume)
                     Spacer()
                     NumericSliderInput(value: volume, range: 0...1,
                                        defaultValue: 1, displayScale: 100, suffix: "%",
@@ -491,6 +500,10 @@ struct WallpaperPreview: SubviewOfContentView {
 
     private func formatCount(_ count: Int) -> String {
         count >= 1_000 ? String(format: "%.1fK", Double(count) / 1_000) : "\(count)"
+    }
+
+    private func infoButton(_ help: String) -> some View {
+        InfoTip(help)
     }
 }
 

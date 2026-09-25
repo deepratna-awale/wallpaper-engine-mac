@@ -59,14 +59,10 @@ struct EffectDescriptor {
     float4 extra3;
 };
 
-float4 effectSlotColor(uint index, float2 coordinate, texture2d<float> mask0,
-                       texture2d<float> mask1, texture2d<float> mask2,
-                       texture2d<float> mask3, sampler maskSampler) {
-    if (index == 0) { return mask0.sample(maskSampler, coordinate); }
-    if (index == 1) { return mask1.sample(maskSampler, coordinate); }
-    if (index == 2) { return mask2.sample(maskSampler, coordinate); }
-    if (index == 3) { return mask3.sample(maskSampler, coordinate); }
-    return float4(0.0);
+float4 effectSlotColor(uint index, float2 coordinate,
+                       array<texture2d<float>, 32> masks, sampler maskSampler) {
+    if (index >= 32) { return float4(0.0); }
+    return masks[index].sample(maskSampler, coordinate);
 }
 
 static float3 rgbToHsl(float3 color) {
@@ -147,26 +143,15 @@ static float3 applyBlending(int mode, float3 A, float3 B, float opacity) {
     return mix(A, result, opacity);
 }
 
-float effectMask(uint index, float2 coordinate, texture2d<float> mask0,
-                texture2d<float> mask1, texture2d<float> mask2,
-                texture2d<float> mask3, sampler maskSampler) {
-    if (index == 0) {
-        const float4 sample = mask0.sample(maskSampler, coordinate);
-        return sample.a < 0.999 ? sample.a : sample.r;
-    }
-    if (index == 1) {
-        const float4 sample = mask1.sample(maskSampler, coordinate);
-        return sample.a < 0.999 ? sample.a : sample.r;
-    }
-    if (index == 2) {
-        const float4 sample = mask2.sample(maskSampler, coordinate);
-        return sample.a < 0.999 ? sample.a : sample.r;
-    }
-    if (index == 3) {
-        const float4 sample = mask3.sample(maskSampler, coordinate);
-        return sample.a < 0.999 ? sample.a : sample.r;
-    }
-    return 1.0;
+/// Keep in sync with `SceneMetalRenderer.maxEffectMasks`.
+constant uint kMaxEffectMasks = 32;
+
+float effectMask(uint index, float2 coordinate,
+                 array<texture2d<float>, 32> masks, sampler maskSampler) {
+    if (index >= kMaxEffectMasks) { return 1.0; }
+    const float4 sample = masks[index].sample(maskSampler, coordinate);
+    // Wallpaper Engine authors masks either as alpha or as a white-on-black luminance map.
+    return sample.a < 0.999 ? sample.a : sample.r;
 }
 
 float fogNoise(float2 coordinate) {
@@ -208,15 +193,32 @@ float3 hueRotate(float3 color, float angle) {
     return color * c + cross(weights, color) * s + weights * dot(weights, color) * (1.0 - c);
 }
 
+/// 13-tap 2D Gaussian. The weights are the separable 5-tap kernel
+/// (0.070270, 0.316216, 0.227027) evaluated as an outer product over the sampled offsets and
+/// renormalised, so the blur spreads evenly instead of only along one axis.
 float4 gaussianBlur5(texture2d<float> texture, sampler samplerState, float2 coordinate, float radius) {
-    const float centerWeight = 0.227027;
-    const float nearWeight = 0.316216;
-    const float farWeight = 0.070270;
+    const float centerWeight = 0.064230;
+    const float axisWeight = 0.089465;
+    const float diagonalWeight = 0.124604;
+    const float farAxisWeight = 0.019880;
+
     float4 result = texture.sample(samplerState, coordinate) * centerWeight;
-    result += texture.sample(samplerState, coordinate + float2(radius, 0)) * nearWeight;
-    result += texture.sample(samplerState, coordinate - float2(radius, 0)) * nearWeight;
-    result += texture.sample(samplerState, coordinate + float2(radius * 2.0, 0)) * farWeight;
-    result += texture.sample(samplerState, coordinate - float2(radius * 2.0, 0)) * farWeight;
+
+    result += texture.sample(samplerState, coordinate + float2(radius, 0)) * axisWeight;
+    result += texture.sample(samplerState, coordinate - float2(radius, 0)) * axisWeight;
+    result += texture.sample(samplerState, coordinate + float2(0, radius)) * axisWeight;
+    result += texture.sample(samplerState, coordinate - float2(0, radius)) * axisWeight;
+
+    result += texture.sample(samplerState, coordinate + float2(radius, radius)) * diagonalWeight;
+    result += texture.sample(samplerState, coordinate - float2(radius, radius)) * diagonalWeight;
+    result += texture.sample(samplerState, coordinate + float2(radius, -radius)) * diagonalWeight;
+    result += texture.sample(samplerState, coordinate + float2(-radius, radius)) * diagonalWeight;
+
+    result += texture.sample(samplerState, coordinate + float2(radius * 2.0, 0)) * farAxisWeight;
+    result += texture.sample(samplerState, coordinate - float2(radius * 2.0, 0)) * farAxisWeight;
+    result += texture.sample(samplerState, coordinate + float2(0, radius * 2.0)) * farAxisWeight;
+    result += texture.sample(samplerState, coordinate - float2(0, radius * 2.0)) * farAxisWeight;
+
     return result;
 }
 
@@ -314,9 +316,8 @@ fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> tex
                               constant EffectUniform &effect [[buffer(1)]],
                               constant EffectDescriptor *effects [[buffer(2)]],
                               constant uint &effectCount [[buffer(3)]],
-                              texture2d<float> mask0 [[texture(1)]], texture2d<float> mask1 [[texture(2)]],
-                              texture2d<float> mask2 [[texture(3)]], texture2d<float> mask3 [[texture(4)]],
-                              texture2d<float> xrayTexture [[texture(5)]]) {
+                              texture2d<float> xrayTexture [[texture(1)]],
+                              array<texture2d<float>, 32> masks [[texture(2)]]) {
     const LayerUniform layer = layers[input.instance];
     constexpr sampler linearSampler(filter::linear);
     float2 coordinate = input.textureCoordinate;
@@ -334,7 +335,7 @@ fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> tex
     const float2 maskCoordinate = coordinate;
     for (uint index = 0; index < effectCount; ++index) {
         const EffectDescriptor descriptor = effects[index];
-        const float mask = effectMask(descriptor.maskIndex, maskCoordinate, mask0, mask1, mask2, mask3, linearSampler);
+        const float mask = effectMask(descriptor.maskIndex, maskCoordinate, masks, linearSampler);
         if (descriptor.kind == 14) {
             constexpr float pi = 3.14159265358979323846;
             const float aperture = 178.0 * (pi / 180.0);
@@ -378,7 +379,7 @@ fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> tex
             const float ripple = sin(distance * 36.0 - phase * 4.0) * descriptor.values.x;
             coordinate += normalize(centered + 0.0001) * ripple * mask;
         } else if (descriptor.kind == 46) {
-            const float depth = effectMask(descriptor.maskIndex, maskCoordinate, mask0, mask1, mask2, mask3, linearSampler);
+            const float depth = effectMask(descriptor.maskIndex, maskCoordinate, masks, linearSampler);
             const float centeredDepth = depth - 0.5;
             const float2 displacement = effect.cursor * centeredDepth
                 * float2(descriptor.values.x, descriptor.values.y) * mask;
@@ -444,7 +445,7 @@ fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> tex
     float4 color = texture.sample(linearSampler, coordinate);
     for (uint index = 0; index < effectCount; ++index) {
         const EffectDescriptor descriptor = effects[index];
-        const float mask = effectMask(descriptor.maskIndex, maskCoordinate, mask0, mask1, mask2, mask3, linearSampler);
+        const float mask = effectMask(descriptor.maskIndex, maskCoordinate, masks, linearSampler);
         if (descriptor.kind == 7) {
             float volume = 0.0;
             const float depth = clamp(1.0 - input.sceneCoordinate.y, 0.0, 1.0);
@@ -569,7 +570,7 @@ fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> tex
             // extra.x is the bound slot of the blend image, extra.y its BLENDMODE.
             if (descriptor.extra.x >= 0.0) {
                 const float4 blendColor = effectSlotColor(uint(descriptor.extra.x), maskCoordinate,
-                                                          mask0, mask1, mask2, mask3, linearSampler);
+                                                          masks, linearSampler);
                 const float amount = saturate(descriptor.values.x * mask) * blendColor.a;
                 color.rgb = applyBlending(int(descriptor.extra.y), color.rgb, blendColor.rgb, amount);
             }

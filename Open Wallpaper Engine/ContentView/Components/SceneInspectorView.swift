@@ -805,12 +805,14 @@ struct SceneInspectorView: View {
         }
     }
 
+    /// Styled after the Apple Music search field: a soft filled capsule that brightens and picks up
+    /// an accent ring while focused.
     private var searchField: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-                .font(.system(size: 12))
-            TextField("Search everything in this scene", text: $searchText)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isSearchFocused ? Color.accentColor : .secondary)
+            TextField("Search", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13))
                 .focused($isSearchFocused)
@@ -819,15 +821,27 @@ struct SceneInspectorView: View {
                     searchText = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
                         .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .transition(.opacity)
             }
         }
-        .padding(.horizontal, 7)
-        .frame(width: 280, height: 22)
-        .background(Color(nsColor: .textBackgroundColor), in: Capsule())
+        .padding(.horizontal, 9)
+        .frame(width: isSearchFocused ? 300 : 240, height: 24)
+        .background {
+            Capsule()
+                .fill(Color.primary.opacity(isSearchFocused ? 0.10 : 0.06))
+        }
+        .overlay {
+            Capsule()
+                .strokeBorder(Color.accentColor.opacity(isSearchFocused ? 0.55 : 0), lineWidth: 1)
+        }
+        .animation(.easeOut(duration: 0.18), value: isSearchFocused)
+        .animation(.easeOut(duration: 0.12), value: searchText.isEmpty)
+        .contentShape(Capsule())
+        .onTapGesture { isSearchFocused = true }
     }
 
     /// Shows where the wallpaper lives and copies that path, so its files can be opened elsewhere.
@@ -841,14 +855,15 @@ struct SceneInspectorView: View {
             HStack(spacing: 6) {
                 Image(systemName: didCopyPath ? "checkmark" : "doc.on.doc")
                     .font(.system(size: 12))
-                Text(wallpaperDirectory.path)
+                Text(didCopyPath ? "Copied" : "Copy Path")
                     .font(.system(size: 12))
                     .lineLimit(1)
-                    .truncationMode(.head)
             }
-            .padding(.horizontal, 7)
-            .frame(maxWidth: 340, minHeight: 22)
-            .background(Color(nsColor: .textBackgroundColor), in: Capsule())
+            .padding(.horizontal, 9)
+            .frame(minHeight: 24)
+            .background {
+                Capsule().fill(Color.primary.opacity(0.06))
+            }
         }
         .buttonStyle(.plain)
         .help(didCopyPath ? "Copied" : "Copy wallpaper folder path\n\(wallpaperDirectory.path)")
@@ -892,7 +907,10 @@ struct SceneInspectorView: View {
                     DisclosureGroup {
                         VStack(alignment: .leading, spacing: 10) {
                             if let maskPath = effect.maskPath {
-                                Text("Mask").font(.headline)
+                                HStack(spacing: 5) {
+                                    Text("Mask").font(.headline)
+                                    InfoTip("Limits this effect to the white areas of the mask. Black areas are left untouched.")
+                                }
                                 Text(maskPath).font(.caption.monospaced()).foregroundStyle(.secondary)
                                 if let mask = model.decodedMasks[effect.id] {
                                     Image(nsImage: mask.image)
@@ -914,7 +932,7 @@ struct SceneInspectorView: View {
                                             get: { model.effectColor(for: control) },
                                             set: { model.setEffectColor($0, control: control) }
                                         ), supportsOpacity: false) {
-                                            parameterLabel(control.title, help: parameterHelp(control))
+                                            parameterLabel(control.title, help: parameterHelp(control, effect: effect.name))
                                         }
                                         .anchorsColorPanel()
                                     }
@@ -924,7 +942,7 @@ struct SceneInspectorView: View {
                                         set: { model.setDisplayedEffectValue($0, control: control) }
                                     )
                                     VStack(alignment: .leading, spacing: 4) {
-                                        parameterLabel(control.title + (control.displaysDegrees ? " (degrees)" : isPercentage(control) ? " (%)" : ""), help: parameterHelp(control))
+                                        parameterLabel(control.title + (control.displaysDegrees ? " (degrees)" : isPercentage(control) ? " (%)" : ""), help: parameterHelp(control, effect: effect.name))
                                         NumericSliderInput(value: value,
                                                            range: control.minimum...max(control.maximum, control.minimum + 0.001),
                                                            defaultValue: control.displaysDegrees
@@ -945,6 +963,7 @@ struct SceneInspectorView: View {
                             .labelsHidden()
                             .toggleStyle(.checkbox)
                             Label(effect.title, systemImage: "slider.horizontal.3")
+                            InfoTip(SceneHelp.effect(effect.name))
                         }
                     }
                 }
@@ -960,6 +979,7 @@ struct SceneInspectorView: View {
         Toggle("Sync to Music", isOn: isEnabled)
             .toggleStyle(.checkbox)
             .font(.caption)
+            .help(SceneHelp.musicSyncSource)
         if isEnabled.wrappedValue {
             let span = max(control.maximum - control.minimum, 0.001)
             let amount = Binding<Double>(
@@ -1191,21 +1211,13 @@ struct SceneInspectorView: View {
     private func parameterLabel(_ title: String, help: String) -> some View {
         HStack(spacing: 5) {
             Text(title)
-            Image(systemName: "info.circle")
-                .foregroundStyle(.secondary)
-                .help(help)
+            InfoTip(help)
         }
     }
 
-    private func parameterHelp(_ control: SceneInspectorEffectControl) -> String {
-        let key = control.key.lowercased()
-        if key.contains("color") { return "Choose the color used by this effect." }
-        if key.contains("opacity") || key.contains("alpha") { return "Controls the transparency of this effect." }
-        if key.contains("speed") || key.contains("frequency") { return "Controls how quickly this effect changes over time." }
-        if key.contains("strength") || key.contains("intensity") || key.contains("amount") { return "Controls the strength or intensity of this effect." }
-        if key.contains("size") || key.contains("scale") || key.contains("radius") { return "Controls the size or spatial scale of this effect." }
-        if control.displaysDegrees || key.contains("direction") || key.contains("angle") { return "Controls the direction or angle, in degrees." }
-        return "Adjusts \(control.title.lowercased())."
+    private func parameterHelp(_ control: SceneInspectorEffectControl, effect: String? = nil) -> String {
+        SceneHelp.parameter(effect: effect, key: control.key, title: control.title,
+                            displaysDegrees: control.displaysDegrees)
     }
 
     private func isPercentage(_ control: SceneInspectorEffectControl) -> Bool {

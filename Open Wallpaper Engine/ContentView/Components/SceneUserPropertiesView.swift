@@ -364,8 +364,11 @@ struct SceneUserPropertiesView: View {
             set: { VideoMusicSyncStore.shared.set($0, wallpaper, amountKey) }
         )
         return VStack(alignment: .leading, spacing: 4) {
-            Toggle("Sync \(title)", isOn: isEnabled)
-                .toggleStyle(.checkbox)
+            HStack(spacing: 5) {
+                Toggle("Sync \(title)", isOn: isEnabled)
+                    .toggleStyle(.checkbox)
+                infoButton(SceneHelp.musicSync(title))
+            }
             if isEnabled.wrappedValue {
                 HStack {
                     Text("Amount")
@@ -407,6 +410,7 @@ struct SceneUserPropertiesView: View {
                     } else {
                         Text(definition.title)
                     }
+                    infoButton(SceneHelp.effect(definition.name))
                     Spacer()
                 }
             }
@@ -517,20 +521,26 @@ struct SceneUserPropertiesView: View {
     }
 
     private func infoButton(_ help: String) -> some View {
-        Image(systemName: "info.circle")
-            .foregroundStyle(.secondary)
-            .help(help)
+        InfoTip(help)
     }
 
     private func parameterHelp(_ property: SceneUserProperty) -> String {
-        let key = property.id.lowercased()
-        if key.contains("color") || property.type == "color" { return "Choose the color used by this parameter." }
-        if key.contains("opacity") || key.contains("alpha") { return "Controls the transparency of this parameter." }
-        if key.contains("speed") || key.contains("frequency") { return "Controls how quickly this effect changes over time." }
-        if key.contains("strength") || key.contains("intensity") || key.contains("amount") { return "Controls the strength or intensity of this effect." }
-        if key.contains("size") || key.contains("scale") || key.contains("radius") { return "Controls the size or spatial scale of this effect." }
-        if key.contains("direction") || key.contains("angle") { return "Controls the direction or angle, in degrees." }
-        return property.title.isEmpty ? "Adjust this wallpaper parameter." : "Adjusts \(property.title.lowercased())."
+        if property.type == "color" { return SceneHelp.parameter(key: "color") }
+        // Effect controls are stored as "_owe_effect_<effect>_<parameter>"; effect names never
+        // contain an underscore, so the first one separates the two.
+        let prefix = "_owe_effect_"
+        if property.id.hasPrefix(prefix) {
+            let rest = property.id.dropFirst(prefix.count)
+            if rest.hasPrefix("enabled_") {
+                return SceneHelp.effect(String(rest.dropFirst("enabled_".count)))
+            }
+            let parts = rest.split(separator: "_", maxSplits: 1, omittingEmptySubsequences: false)
+            if parts.count == 2 {
+                return SceneHelp.parameter(effect: String(parts[0]), key: String(parts[1]),
+                                           title: property.title)
+            }
+        }
+        return SceneHelp.parameter(key: property.id, title: property.title)
     }
 
     private func colorValue(_ value: String) -> Color {
