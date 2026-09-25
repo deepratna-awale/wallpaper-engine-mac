@@ -18,6 +18,26 @@ private struct PreparedLayer {
     }
 }
 
+/// What a visible layer is drawn with this frame: its scripted/animated opacity and colour and
+/// its placed quad. Computed once, before effects run, so effects see the same values.
+private struct LayerDraw {
+    let opacity: Float
+    let color: SIMD4<Float>
+    let brightness: Float
+    /// World-space quad, parallax and camera shake included.
+    let quad: SceneQuadGeometry
+    let musicSyncLevel: Double
+}
+
+/// Frame-wide camera motion applied to every layer.
+private struct CameraMotion {
+    let parallaxEnabled: Bool
+    let parallaxAmount: Float
+    let cursorDelta: SIMD2<Float>
+    let shakeOffset: SIMD2<Float>
+    let audioLevel: Double
+}
+
 private struct RenderTextureFrame {
     let texture: MTLTexture
     let duration: Float
@@ -83,8 +103,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private lazy var effectGraph = EffectGraphRenderer(device: device)
     /// Asset textures used by effect passes, materialised once per content.
     private var effectAssetTextures: [String: MTLTexture] = [:]
-    /// `g_Time` counts from when the scene appeared, as in Wallpaper Engine.
-    private var effectTimeOrigin = CACurrentMediaTime()
+    /// Scene time since the content loaded, speed applied; drives animations, `g_Time`,
+    /// particles and scripts alike.
+    private var clock = SceneClock()
     private let contentQueue = DispatchQueue(label: "SceneMetalRenderer.content", qos: .userInitiated)
     private let contentGenerationLock = NSLock()
     private var contentGeneration = 0
@@ -94,7 +115,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var particleInstanceStorage: MTLBuffer?
 
     private var particleSystems: [ParticleSystemRuntime] = []
-    private var lastFrameTime = CACurrentMediaTime()
     private var sceneScript: String?
     private var camera = SceneCameraEffects()
     /// Whose user properties this renderer's frames read (see `SceneMetalContent.wallpaperKey`).
@@ -102,8 +122,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var placement: WallpaperPlacement = .fill
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     private var sceneRenderTarget: MTLTexture?
-    private var sceneRenderTargetSize = SIMD2<Float>.zero
-    private var textFrameCache: [String: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
+    private var sceneRenderTargetSize = SIMD2<Int>.zero
+    /// Render-target pixels per scene unit this frame (see `SceneRenderResolution`).
+    private var renderPixelsPerUnit: Float = 1
+    private var textFrameCache = SceneLRUCache<String, (frame: RenderTextureFrame, baseSize: SIMD2<Float>)>(capacity: 128)
+    /// The finest raster scale each text layer has needed, so an animated scale doesn't
+    /// re-rasterise at every step (see `SceneTextRasterScale.retained`).
+    private var textRasterScales: [String: Float] = [:]
     /// Parent graph of the current content; layer origins are relative to their parents.
     private var transforms = SceneTransformHierarchy.empty
     /// Each layer's local transform, evaluated once per frame so a parent's scripts run once
@@ -168,7 +193,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     func setContent(_ content: SceneMetalContent?) {
         effectAssetTextures.removeAll()
         effectGraph?.releaseTargets()
-        effectTimeOrigin = CACurrentMediaTime()
         contentGenerationLock.lock()
         contentGeneration &+= 1
         let generation = contentGeneration
@@ -178,7 +202,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             layers = []
             particleSystems = []
             sceneScript = nil
-            textFrameCache.removeAll(keepingCapacity: true)
+            textFrameCache.removeAll()
+            textRasterScales.removeAll()
+            clock = SceneClock()
             transforms = .empty
             return
         }
@@ -203,7 +229,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.transforms = content.transforms
                 self.wallpaperKey = content.wallpaperKey
                 self.camera = content.camera
-                self.textFrameCache.removeAll(keepingCapacity: true)
+                self.textFrameCache.removeAll()
+                self.textRasterScales.removeAll()
                 var scriptLayers: [String: [String: Any]] = [:]
                 var layerAliases: [String: String] = [:]
                 for entry in preparedLayers {
@@ -226,7 +253,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 }
                 AudioReactiveScriptEngine.shared.configureLayers(scriptLayers, aliases: layerAliases,
                                                                  canvasSize: content.size)
-                self.lastFrameTime = CACurrentMediaTime()
+                self.clock = SceneClock()
             }
         }
     }
@@ -272,6 +299,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let removals = Set(AudioReactiveScriptEngine.shared.drainPendingLayerRemovals())
         if !removals.isEmpty {
             layers.removeAll { removals.contains($0.stateId) && $0.stateId != $0.layer.id }
+            for id in removals { textRasterScales.removeValue(forKey: id) }
         }
     }
 
@@ -292,55 +320,62 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
 
         guard let descriptor = view.currentRenderPassDescriptor,
-              let drawable = view.currentDrawable,
-              let sceneTexture = sceneRenderTarget(matching: descriptor),
+              let drawable = view.currentDrawable else {
+            return
+        }
+        let realDrawableSize = SIMD2<Float>(Float(drawable.texture.width), Float(drawable.texture.height))
+        renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize, drawableSize: realDrawableSize)
+        guard let sceneTexture = sceneRenderTarget(matching: descriptor),
               let commandBuffer = commandQueue.makeCommandBuffer() else {
             return
         }
 
-        // Render every layer/particle at native scene resolution; placement scaling happens once, in the final composite pass.
+        // Layers and particles are drawn in scene units onto a target at the output's pixel
+        // density; placement scaling happens once, in the final composite pass.
         let drawableSize = SIMD2<Float>(Float(sceneTexture.width), Float(sceneTexture.height))
-        let realDrawableSize = SIMD2<Float>(Float(drawable.texture.width), Float(drawable.texture.height))
         let animationSpeed = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_speed", fallback: 1)
-        let time = Float(CACurrentMediaTime()) * animationSpeed
-        let audioLevel = AudioReactiveScriptEngine.shared.audioLevel
-        let frameDelta = min(Float(CACurrentMediaTime() - lastFrameTime), 1.0 / 15.0)
-        AudioReactiveScriptEngine.shared.setSceneClock(deltaTime: Double(frameDelta))
+        clock.advance(to: CACurrentMediaTime(), speed: Double(animationSpeed))
+        let sceneTime = clock.time
+        let time = Float(sceneTime)
+        AudioReactiveScriptEngine.shared.setSceneClock(deltaTime: clock.delta)
         if let sceneScript {
-            AudioReactiveScriptEngine.shared.executeSceneScript(sceneScript, time: Double(time))
+            AudioReactiveScriptEngine.shared.executeSceneScript(sceneScript, time: sceneTime)
         }
         let cursor = sceneCursor(in: view, drawableSize: realDrawableSize)
         AudioReactiveScriptEngine.shared.updateSceneCursor(cursor)
-        let cursorDelta = (cursor - sceneSize / 2) / sceneSize
         materializeScriptCreatedLayers()
         beginTransformFrame()
-        let outputPixelsPerUnit = max(realDrawableSize.x / max(sceneSize.x, 1), realDrawableSize.y / max(sceneSize.y, 1))
         var dynamicTextures: [Int: MTLTexture] = [:]
         // Advanced once per frame: every advance smooths the spectrum one step further.
         var effectFrame = BuiltinFrameContext()
-        effectFrame.time = CACurrentMediaTime() - effectTimeOrigin
-        effectFrame.frameTime = Double(frameDelta)
+        effectFrame.time = sceneTime
+        effectFrame.frameTime = clock.delta
         effectFrame.daytime = BuiltinFrameContext.daytime(at: Date())
         effectFrame.pointer = simd_clamp(cursor / max(sceneSize, SIMD2(1, 1)), SIMD2(0, 0), SIMD2(1, 1))
         effectFrame.screenSize = drawableSize
         effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
+        let motion = cameraMotion(cursor: cursor, time: time)
         // Text is rasterised first so its effects run on the finished text, like an image layer's.
         var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
+        // Only visible layers get an entry; the draw loop skips the rest.
+        var draws: [Int: LayerDraw] = [:]
         for (layerIndex, entry) in layers.enumerated() {
             guard AudioReactiveScriptEngine.shared.layerBoolean(entry.stateId, property: "visible", fallback: true) else { continue }
             if entry.layer.text != nil {
                 let world = worldTransform(entry, time: time)
-                let pixelsPerUnit = max(world.axisScale.x, world.axisScale.y) * outputPixelsPerUnit
+                let pixelsPerUnit = max(world.axisScale.x, world.axisScale.y) * renderPixelsPerUnit
                 textFrames[layerIndex] = layerTextFrame(entry, boxSize: layerBaseSize(entry, time: time),
                                                         pixelsPerUnit: pixelsPerUnit, time: time)
             }
+            let draw = layerDraw(entry, baseSize: textFrames[layerIndex]?.baseSize ?? layerBaseSize(entry, time: time),
+                                 time: time, motion: motion)
+            draws[layerIndex] = draw
             // Layers that read the scene run inside the scene pass, once what's beneath them is drawn.
             if entry.layer.readsScene { continue }
             if !entry.layer.weEffects.isEmpty {
                 let input = textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)
-                dynamicTextures[layerIndex] = runEffects(entry, input: input.texture,
+                dynamicTextures[layerIndex] = runEffects(entry, draw: draw, input: input.texture,
                                                          snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
-                continue
             }
         }
 
@@ -353,18 +388,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard var encoder = commandBuffer.makeRenderCommandEncoder(descriptor: sceneRenderPass) else { return }
         encoder.setRenderPipelineState(renderPipeline)
 
-        // The scene's own `general.cameraparallax` / `camerashake` (possibly user-bound) or the app's toggles.
-        let parallaxEnabled = camera.parallax
-            || AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
-        let parallaxAmount = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
-            * (camera.parallax ? camera.parallaxAmount * camera.parallaxMouseInfluence : 1)
-        // Two decorrelated frequencies so the shake reads as a jitter rather than a circle.
-        let cameraShakeOffset: SIMD2<Float> = AudioReactiveScriptEngine.shared.cameraShakeEnabled || camera.shake
-            ? SIMD2<Float>(sin(time * 47.3) * 0.004 + sin(time * 71.9) * 0.002,
-                           cos(time * 53.1) * 0.004 + cos(time * 83.7) * 0.002) * sceneSize
-            : .zero
-        updateParticles(deltaTime: frameDelta, cursor: cursor)
-        lastFrameTime = CACurrentMediaTime()
+        updateParticles(deltaTime: Float(clock.delta), cursor: cursor)
         // One instanced draw per system rather than one per particle (or per rope segment, which
         // multiplies out to thousands on trail renderers).
         particleInstances.removeAll(keepingCapacity: true)
@@ -387,7 +411,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                         var uniform = layerUniform(position: particle.position,
                                                    size: SIMD2<Float>(repeating: particle.size),
                                                    opacity: particleOpacity(particle, in: system),
-                                                   drawableSize: drawableSize)
+                                                   drawableSize: drawableSize, placement: .stretch)
                         uniform.particleShape = 1
                         uniform.rotation = particle.rotation
                         uniform.color = particle.color
@@ -431,17 +455,18 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
         for (layerIndex, entry) in layers.enumerated() {
             drawParticleBatches(before: entry.layer.order)
+            // Hidden layers (script `visible = false`) draw nothing, their raw texture included.
+            guard let draw = draws[layerIndex] else { continue }
             if entry.layer.readsScene {
                 // Metal can't sample the attachment it's drawing into: pause the scene pass, copy
                 // what's drawn so far (`_rt_FullFrameBuffer`), run this layer's effects on it, resume.
-                guard AudioReactiveScriptEngine.shared.layerBoolean(entry.stateId, property: "visible", fallback: true) else { continue }
                 encoder.endEncoding()
                 let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
                 let input = entry.layer.sceneInput
-                    ? snapshot.flatMap { sceneRegion(of: $0, under: entry.layer, commandBuffer: commandBuffer) }
+                    ? snapshot.flatMap { sceneRegion(of: $0, covering: draw.quad.boundingBox, commandBuffer: commandBuffer) }
                     : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)).texture
                 dynamicTextures[layerIndex] = input.flatMap {
-                    runEffects(entry, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
+                    runEffects(entry, draw: draw, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
                 }
                 let resume = MTLRenderPassDescriptor()
                 resume.colorAttachments[0].texture = sceneTexture
@@ -453,72 +478,31 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 // Until its effects are ready the layer has nothing of its own to draw.
                 if entry.layer.sceneInput, dynamicTextures[layerIndex] == nil { continue }
             }
-            // User-bound values give the base that scripts and animations start from.
-            let base = baseValues(entry, time: time)
-            let opacity = entry.layer.opacityScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.opacity, layerId: entry.stateId)
-            } ?? timelineValue(entry.layer.opacityAnimation, at: time, fallback: AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "alpha", fallback: base.opacity))
-            var local = evaluatedLocal(entry, time: time)
-            let baseSize = textFrames[layerIndex]?.baseSize ?? layerBaseSize(entry, time: time)
-            let hasAuthoredDepth = simd_length(entry.layer.parallaxDepth) > 0
-            let fallbackDepth = Float(layerIndex + 1) / Float(max(layers.count, 1)) * 0.35
-            let parallaxDepth = hasAuthoredDepth
-                ? entry.layer.parallaxDepth
-                : SIMD3<Float>(repeating: fallbackDepth)
-            let parallaxOffset = parallaxEnabled
-                ? SIMD2<Float>(parallaxDepth.x * cursorDelta.x * sceneSize.x * 0.18 * parallaxAmount,
-                               parallaxDepth.y * cursorDelta.y * sceneSize.y * 0.18 * parallaxAmount)
-                : .zero
-            let perspectiveScale = parallaxEnabled && entry.layer.perspective
-                ? 1 + parallaxDepth.z * simd_length(cursorDelta) * 0.18 * parallaxAmount
-                : 1
-            let musicSyncLevel = entry.layer.musicSync?.levelSource.map { $0() } ?? audioLevel
-            local.scale *= perspectiveScale * (1 + (entry.layer.musicSync?.zoomAmount ?? 0) * Float(musicSyncLevel))
-            local.angle += entry.layer.musicSync.map { $0.tiltAmount * Float(musicSyncLevel) * .pi / 180 } ?? 0
-            let quad = SceneQuadGeometry(world: parentWorld(entry, time: time) * SceneAffineTransform(local),
-                                         size: baseSize, alignment: entry.layer.alignment)
-            let size = quad.extent
-            let unclampedPosition = quad.center + parallaxOffset + cameraShakeOffset
-            let safePosition = SIMD2<Float>(
-                safeParallaxPosition(unclampedPosition.x, baseSize: size.x, sceneExtent: sceneSize.x),
-                safeParallaxPosition(unclampedPosition.y, baseSize: size.y, sceneExtent: sceneSize.y)
-            )
-            var uniform = layerUniform(position: safePosition, size: size,
-                                       opacity: opacity, drawableSize: drawableSize)
-            setQuadAxes(&uniform, quad: quad)
-            if entry.layer.text != nil {
-                uniform.opacity *= AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
-            }
-            let objectBrightness = entry.layer.brightnessScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.brightness, layerId: entry.stateId)
-            } ?? base.brightness
-            let objectColor = entry.layer.colorScript.flatMap {
-                AudioReactiveScriptEngine.shared.evaluateVector3($0,
-                    fallback: SIMD3<Float>(base.color.x, base.color.y, base.color.z),
-                    layerId: entry.stateId)
-            }.map { SIMD4<Float>($0.x, $0.y, $0.z, 1) } ?? base.color
-            uniform.color = objectColor
+            var uniform = layerUniform(position: draw.quad.center, size: draw.quad.extent,
+                                       opacity: draw.opacity, drawableSize: drawableSize, placement: .stretch)
+            setQuadAxes(&uniform, quad: draw.quad)
+            uniform.color = draw.color
             let materialEffects = entry.layer.effects
             let brightness = materialEffects.scripts["brightness"].map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.brightness, layerId: entry.stateId)
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.brightness, layerId: entry.stateId, time: sceneTime)
             } ?? materialEffects.brightness
             let contrast = materialEffects.scripts["contrast"].map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.contrast, layerId: entry.stateId)
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.contrast, layerId: entry.stateId, time: sceneTime)
             } ?? materialEffects.contrast
             let saturation = materialEffects.scripts["saturation"].map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.saturation, layerId: entry.stateId)
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.saturation, layerId: entry.stateId, time: sceneTime)
             } ?? materialEffects.saturation
             // Scripts write thisObject.bloomstrength directly rather than through a property script.
             let bloom = AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "bloomstrength",
                 fallback: materialEffects.scripts["bloom"].map {
-                    AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.bloom, layerId: entry.stateId)
+                    AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.bloom, layerId: entry.stateId, time: sceneTime)
                 } ?? materialEffects.bloom)
-            uniform.effects = SIMD4<Float>(brightness * objectBrightness, contrast,
+            uniform.effects = SIMD4<Float>(brightness * draw.brightness, contrast,
                                            saturation * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_saturation", fallback: 1)
-                                               * (1 + (entry.layer.musicSync?.saturationAmount ?? 0) * Float(musicSyncLevel)),
+                                               * (1 + (entry.layer.musicSync?.saturationAmount ?? 0) * Float(draw.musicSyncLevel)),
                                            bloom * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1))
             uniform.blur = materialEffects.scripts["blur"].map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.blur, layerId: entry.stateId)
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.blur, layerId: entry.stateId, time: sceneTime)
             } ?? materialEffects.blur * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_blur", fallback: 1)
             uniform.colorEffects = SIMD4<Float>(materialEffects.exposure, materialEffects.gamma,
                                                 materialEffects.hue + AudioReactiveScriptEngine.shared.userPropertyValue("_owe_hue", fallback: 0), materialEffects.bloomThreshold)
@@ -544,7 +528,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return
         }
         compositeEncoder.setRenderPipelineState(renderPipeline)
-        var compositeUniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize)
+        var compositeUniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
+                                            placement: placement)
         let bloomMultiplier = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1)
         let authoredBloom = bloom.enabled ? bloom.strength * bloomMultiplier : 0
         let userBloom = max(bloomMultiplier - 1, 0) * 1.2
@@ -566,10 +551,73 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         commandBuffer.commit()
     }
 
+    /// The scene's own `general.cameraparallax` / `camerashake` (possibly user-bound) or the app's toggles.
+    private func cameraMotion(cursor: SIMD2<Float>, time: Float) -> CameraMotion {
+        let parallaxEnabled = camera.parallax
+            || AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
+        let parallaxAmount = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
+            * (camera.parallax ? camera.parallaxAmount * camera.parallaxMouseInfluence : 1)
+        // Two decorrelated frequencies so the shake reads as a jitter rather than a circle.
+        let shakeOffset: SIMD2<Float> = AudioReactiveScriptEngine.shared.cameraShakeEnabled || camera.shake
+            ? SIMD2<Float>(sin(time * 47.3) * 0.004 + sin(time * 71.9) * 0.002,
+                           cos(time * 53.1) * 0.004 + cos(time * 83.7) * 0.002) * sceneSize
+            : .zero
+        return CameraMotion(parallaxEnabled: parallaxEnabled, parallaxAmount: parallaxAmount,
+                            cursorDelta: (cursor - sceneSize / 2) / sceneSize, shakeOffset: shakeOffset,
+                            audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+    }
+
+    /// A visible layer's opacity, colour and placed quad this frame: user bindings, then
+    /// scripts, then script-set state, then timeline, then authored.
+    private func layerDraw(_ entry: PreparedLayer, baseSize: SIMD2<Float>, time: Float,
+                           motion: CameraMotion) -> LayerDraw {
+        let base = baseValues(entry, time: time)
+        var opacity = entry.layer.opacityScript.map {
+            AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.opacity, layerId: entry.stateId, time: Double(time))
+        } ?? timelineValue(entry.layer.opacityAnimation, at: time,
+                           fallback: AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "alpha", fallback: base.opacity))
+        if entry.layer.text != nil {
+            opacity *= AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
+        }
+        var local = evaluatedLocal(entry, time: time)
+        // Layers without an authored parallax depth stay put, as in Wallpaper Engine.
+        let parallaxDepth = entry.layer.parallaxDepth
+        let parallaxOffset = motion.parallaxEnabled
+            ? SIMD2<Float>(parallaxDepth.x * motion.cursorDelta.x * sceneSize.x * 0.18 * motion.parallaxAmount,
+                           parallaxDepth.y * motion.cursorDelta.y * sceneSize.y * 0.18 * motion.parallaxAmount)
+            : .zero
+        let perspectiveScale = motion.parallaxEnabled && entry.layer.perspective
+            ? 1 + parallaxDepth.z * simd_length(motion.cursorDelta) * 0.18 * motion.parallaxAmount
+            : 1
+        let musicSyncLevel = entry.layer.musicSync?.levelSource.map { $0() } ?? motion.audioLevel
+        local.scale *= perspectiveScale * (1 + (entry.layer.musicSync?.zoomAmount ?? 0) * Float(musicSyncLevel))
+        local.angle += entry.layer.musicSync.map { $0.tiltAmount * Float(musicSyncLevel) * .pi / 180 } ?? 0
+        let quad = SceneQuadGeometry(world: parentWorld(entry, time: time) * SceneAffineTransform(local),
+                                     size: baseSize, alignment: entry.layer.alignment)
+        let extent = quad.extent
+        let center = quad.center + parallaxOffset + motion.shakeOffset
+        let safeCenter = SIMD2<Float>(
+            safeParallaxPosition(center.x, baseSize: extent.x, sceneExtent: sceneSize.x),
+            safeParallaxPosition(center.y, baseSize: extent.y, sceneExtent: sceneSize.y)
+        )
+        let brightness = entry.layer.brightnessScript.map {
+            AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.brightness, layerId: entry.stateId, time: Double(time))
+        } ?? base.brightness
+        let color = entry.layer.colorScript.flatMap {
+            AudioReactiveScriptEngine.shared.evaluateVector3($0,
+                fallback: SIMD3<Float>(base.color.x, base.color.y, base.color.z),
+                layerId: entry.stateId, time: Double(time))
+        }.map { SIMD4<Float>($0.x, $0.y, $0.z, 1) } ?? base.color
+        return LayerDraw(opacity: opacity, color: color, brightness: brightness,
+                         quad: SceneQuadGeometry(center: safeCenter, axisX: quad.axisX, axisY: quad.axisY),
+                         musicSyncLevel: musicSyncLevel)
+    }
+
     /// The layer's unscaled size this frame: script, then script-set state, then timeline, then authored.
     private func layerBaseSize(_ entry: PreparedLayer, time: Float) -> SIMD2<Float> {
         entry.layer.sizeScript.flatMap {
-            AudioReactiveScriptEngine.shared.evaluateVector2($0, fallback: entry.layer.size, layerId: entry.stateId)
+            AudioReactiveScriptEngine.shared.evaluateVector2($0, fallback: entry.layer.size, layerId: entry.stateId,
+                                                             time: Double(time))
         }
             ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "size",
                 fallback: vector2(timelineVector3(entry.layer.sizeAnimation, at: time,
@@ -591,7 +639,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                                                   layerId: entry.stateId, time: Double(time))
             } ?? text.value
         }
-        return makeTextFrame(text, value: value, boxSize: boxSize, pixelsPerUnit: pixelsPerUnit, layerID: entry.layer.id)
+        return makeTextFrame(text, value: value, boxSize: boxSize, pixelsPerUnit: pixelsPerUnit,
+                             layerID: entry.layer.id, stateKey: entry.stateId)
             ?? (textureFrame(for: entry, time: time), boxSize)
     }
 
@@ -610,7 +659,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         entry.layer.bindings.isEmpty
             ? SceneLayerBaseValues(entry.layer)
             : entry.layer.bindings.baseValues(for: entry.layer,
-                                              in: LiveSceneValueContext(time: Double(time), layerId: entry.stateId))
+                                              in: LiveSceneValueContext(time: Double(time), scriptTime: Double(time),
+                                                                    layerId: entry.stateId))
     }
 
     private func evaluatedLocal(_ entry: PreparedLayer, time: Float) -> SceneLocalTransform {
@@ -621,7 +671,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let position = entry.layer.positionScript.flatMap { script -> SIMD2<Float>? in
             AudioReactiveScriptEngine.shared.evaluateVector3(script,
                 fallback: SIMD3<Float>(base.position.x, base.position.y, 0),
-                layerId: entry.stateId).map { SIMD2<Float>($0.x, $0.y) }
+                layerId: entry.stateId, time: Double(time)).map { SIMD2<Float>($0.x, $0.y) }
         }
             ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "origin",
                 fallback: vector2(timelineVector3(entry.layer.positionAnimation, at: time,
@@ -629,7 +679,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let scale = entry.layer.scaleScript.flatMap { script -> SIMD2<Float>? in
             AudioReactiveScriptEngine.shared.evaluateVector3(script,
                 fallback: SIMD3<Float>(base.scale.x, base.scale.y, 1),
-                layerId: entry.stateId).map { SIMD2<Float>($0.x, $0.y) }
+                layerId: entry.stateId, time: Double(time)).map { SIMD2<Float>($0.x, $0.y) }
         } ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "scale",
             fallback: vector2(timelineVector3(entry.layer.scaleAnimation, at: time,
                 fallback: SIMD3<Float>(base.scale.x, base.scale.y, 1))))
@@ -638,7 +688,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let rotation = entry.layer.rotationScript.flatMap {
             AudioReactiveScriptEngine.shared.evaluateVector3($0,
                 fallback: SIMD3<Float>(0, 0, base.rotation),
-                layerId: entry.stateId)?.z
+                layerId: entry.stateId, time: Double(time))?.z
         } ?? AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "angles.z",
             fallback: timelineVector3(entry.layer.rotationAnimation, at: time,
                 fallback: SIMD3<Float>(0, 0, base.rotation)).z)
@@ -670,16 +720,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         uniform.rotation = 0
     }
 
-    private func runEffects(_ entry: PreparedLayer, input: MTLTexture, snapshot: MTLTexture?,
+    private func runEffects(_ entry: PreparedLayer, draw: LayerDraw, input: MTLTexture, snapshot: MTLTexture?,
                             frame: BuiltinFrameContext, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         guard let effectGraph, !entry.layer.weEffects.isEmpty else { return nil }
         let context = EffectGraphRenderer.Context(
             frame: frame,
-            values: LiveSceneValueContext(time: frame.time, layerId: entry.stateId),
+            values: LiveSceneValueContext(time: frame.time, scriptTime: frame.time, layerId: entry.stateId),
             assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
             sceneSnapshot: snapshot,
-            layerColor: SIMD3(entry.layer.color.x, entry.layer.color.y, entry.layer.color.z),
-            layerAlpha: entry.layer.opacity)
+            // The scripted/animated values the layer is drawn with this frame, not the authored ones.
+            layerColor: SIMD3(draw.color.x, draw.color.y, draw.color.z),
+            layerAlpha: draw.opacity)
         return effectGraph.apply(entry.layer.weEffects, to: input, layerID: entry.stateId,
                                  context: context, commandBuffer: commandBuffer)
     }
@@ -696,23 +747,20 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return copy
     }
 
-    /// The part of the scene under a scene-input layer, as that layer's base image. Composition
-    /// and fullscreen layers usually cover the whole scene, which needs no copy.
-    private func sceneRegion(of snapshot: MTLTexture, under layer: SceneMetalLayer,
+    /// The part of the scene under a scene-input layer, as that layer's base image: the
+    /// bounding box of its world-space quad (parents, scripts, animation and rotation included).
+    /// Composition and fullscreen layers usually cover the whole scene, which needs no copy.
+    private func sceneRegion(of snapshot: MTLTexture, covering box: (min: SIMD2<Float>, max: SIMD2<Float>),
                              commandBuffer: MTLCommandBuffer) -> MTLTexture? {
-        let scale = Float(snapshot.width) / max(sceneSize.x, 1)
-        let extent = layer.size * layer.scale * scale
-        let left = Int(((layer.position.x * scale) - extent.x / 2).rounded())
-        let top = Int((Float(snapshot.height) - (layer.position.y * scale + extent.y / 2)).rounded())
-        let x0 = max(left, 0), y0 = max(top, 0)
-        let x1 = min(left + Int(extent.x.rounded()), snapshot.width), y1 = min(top + Int(extent.y.rounded()), snapshot.height)
-        if x0 <= 0, y0 <= 0, x1 >= snapshot.width, y1 >= snapshot.height { return snapshot }
-        guard x1 > x0, y1 > y0,
-              let region = renderTargetPool.texture(width: x1 - x0, height: y1 - y0,
+        guard let rect = SceneRenderResolution.pixelRect(of: box, sceneSize: sceneSize,
+                                                          targetSize: SIMD2(snapshot.width, snapshot.height)) else { return nil }
+        if rect.origin == .zero, rect.size == SIMD2(snapshot.width, snapshot.height) { return snapshot }
+        guard let region = renderTargetPool.texture(width: rect.size.x, height: rect.size.y,
                                                     pixelFormat: snapshot.pixelFormat, avoiding: snapshot),
               let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
         blit.copy(from: snapshot, sourceSlice: 0, sourceLevel: 0,
-                  sourceOrigin: MTLOrigin(x: x0, y: y0, z: 0), sourceSize: MTLSize(width: x1 - x0, height: y1 - y0, depth: 1),
+                  sourceOrigin: MTLOrigin(x: rect.origin.x, y: rect.origin.y, z: 0),
+                  sourceSize: MTLSize(width: rect.size.x, height: rect.size.y, depth: 1),
                   to: region, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
         blit.endEncoding()
         return region
@@ -738,28 +786,33 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
 
 
+    /// The scene target, at `renderPixelsPerUnit` pixels per scene unit.
     private func sceneRenderTarget(matching descriptor: MTLRenderPassDescriptor) -> MTLTexture? {
-        let pixelSize = SIMD2<Float>(max(1, sceneSize.x.rounded()), max(1, sceneSize.y.rounded()))
+        let pixelSize = SceneRenderResolution.targetSize(sceneSize: sceneSize, pixelsPerUnit: renderPixelsPerUnit)
         if let sceneRenderTarget, sceneRenderTargetSize == pixelSize { return sceneRenderTarget }
 
         let pixelFormat = descriptor.colorAttachments[0].texture?.pixelFormat ?? .bgra8Unorm
-        guard let texture = renderTargetPool.texture(width: Int(pixelSize.x), height: Int(pixelSize.y),
+        guard let texture = renderTargetPool.texture(width: pixelSize.x, height: pixelSize.y,
                                                      pixelFormat: pixelFormat) else { return nil }
         sceneRenderTarget = texture
         sceneRenderTargetSize = pixelSize
         return texture
     }
 
+    /// `layerID` is the authored layer (its user text settings); `stateKey` is this instance's
+    /// state id, which differs for script clones so they don't share cached text.
     private func makeTextFrame(_ text: SceneMetalText, value: String, boxSize: SIMD2<Float>, pixelsPerUnit: Float,
-                               layerID: String) -> (frame: RenderTextureFrame, baseSize: SIMD2<Float>)? {
+                               layerID: String, stateKey: String) -> (frame: RenderTextureFrame, baseSize: SIMD2<Float>)? {
         let fontName = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_font") ?? ""
         let sizeValue = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(layerID)_size", fallback: Float(text.pointSize))
         let bold = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_bold") == "true"
         let italic = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_italic") == "true"
         let colorValue = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_color") ?? "1 1 1"
-        let rasterScale = SceneTextRasterScale.quantized(pixelsPerUnit)
-        let cacheKey = "\(layerID)|\(value)|\(boxSize.x)|\(boxSize.y)|\(fontName)|\(sizeValue)|\(bold)|\(italic)|\(colorValue)|\(rasterScale)"
-        if let cached = textFrameCache[cacheKey] { return cached }
+        let rasterScale = SceneTextRasterScale.retained(SceneTextRasterScale.quantized(pixelsPerUnit),
+                                                        previous: textRasterScales[stateKey])
+        textRasterScales[stateKey] = rasterScale
+        let cacheKey = "\(stateKey)|\(value)|\(boxSize.x)|\(boxSize.y)|\(fontName)|\(sizeValue)|\(bold)|\(italic)|\(colorValue)|\(rasterScale)"
+        if let cached = textFrameCache.value(for: cacheKey) { return cached }
 
         let requestedFont = fontName.isEmpty ? (text.font ?? "System") : fontName
         let pixelSize = SceneTextLayout.pixelSize(pointSize: CGFloat(sizeValue))
@@ -780,16 +833,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             OWELog.error(.scene, "Text layer \(layerID): could not rasterise \(layout.boxSize) at \(pixels) px/unit")
             return nil
         }
-        // Strings change every second for clocks; keep the cache from growing without bound.
-        if textFrameCache.count > 128 { textFrameCache.removeAll(keepingCapacity: true) }
         let entry = (RenderTextureFrame(texture: texture, duration: .greatestFiniteMagnitude,
                                         uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1)), layout.boxSize)
-        textFrameCache[cacheKey] = entry
+        // Strings change every second for clocks; the LRU keeps the live ones and drops the rest.
+        textFrameCache.insert(entry, for: cacheKey)
         return entry
     }
 
+    /// Maps a scene-unit position and size onto `drawableSize` pixels. Scene draws use
+    /// `.stretch` (the target has the scene's aspect); the composite uses the user's placement.
     private func layerUniform(position: SIMD2<Float>, size: SIMD2<Float>, opacity: Float,
-                              drawableSize: SIMD2<Float>) -> LayerUniform {
+                              drawableSize: SIMD2<Float>, placement: WallpaperPlacement) -> LayerUniform {
         let scale: Float
         switch placement {
         case .stretch:
@@ -1370,7 +1424,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let width = system.configuration.refractive ? max(2, particle.size * 0.08) : particle.size
         var uniform = layerUniform(position: particle.position,
                                    size: SIMD2<Float>(width, length),
-                                   opacity: particleOpacity(particle, in: system), drawableSize: drawableSize)
+                                   opacity: particleOpacity(particle, in: system), drawableSize: drawableSize, placement: .stretch)
         uniform.rotation = speed > 0.01 ? atan2(particle.velocity.y, particle.velocity.x) - .pi / 2 : particle.rotation
         uniform.color = particle.color
         let uv = spriteSheetUV(for: particle, configuration: system.configuration)
@@ -1434,7 +1488,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             var uniform = layerUniform(position: (start + end) / 2,
                                        size: SIMD2<Float>(length, max(width, 0.01)),
                                        opacity: configuration.fadeTrailAlpha ? opacity * progress : opacity,
-                                       drawableSize: drawableSize)
+                                       drawableSize: drawableSize, placement: .stretch)
             uniform.rotation = atan2(delta.y, delta.x)
             uniform.color = particle.color
             uniform.uvOrigin = uv.origin
@@ -1475,7 +1529,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             var uniform = layerUniform(position: (start.position + end.position) / 2,
                                        size: SIMD2<Float>(length, averageSize),
                                        opacity: (start.opacity + end.opacity) / 2,
-                                       drawableSize: drawableSize)
+                                       drawableSize: drawableSize, placement: .stretch)
             uniform.rotation = atan2(delta.y, delta.x)
             uniform.color = (start.color + end.color) / 2
             particleInstances.append(uniform)
