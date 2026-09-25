@@ -28,6 +28,16 @@ final class BuiltinUniformTests: XCTestCase {
         XCTAssertEqual(value("g_TextureReductionScale"), [1])
     }
 
+    /// Like WE, `g_Time` is never wrapped: a week in, it is still the scene time (as a float),
+    /// and consecutive frames never jump backwards.
+    func testTimeIsNotWrappedOverLongRuns() {
+        let week = 7.0 * 24 * 3600
+        frame.time = week
+        XCTAssertEqual(value("g_Time"), [Float(week)])
+        frame.time = week + 1
+        XCTAssertGreaterThan(value("g_Time")[0], Float(week))
+    }
+
     func testPointerParallaxAndScreen() {
         frame.pointer = SIMD2(0.25, 0.75)
         frame.pointerLast = SIMD2(0.2, 0.7)

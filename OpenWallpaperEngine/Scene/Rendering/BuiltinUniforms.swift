@@ -4,6 +4,13 @@ import simd
 /// Per-frame inputs to WE's built-in uniforms (plan §2). Computed once per rendered frame.
 struct BuiltinFrameContext {
     /// Seconds since the scene started, no wrap.
+    ///
+    /// `g_Time` is this value as a 32-bit float, like WE's ("time the program has been running in
+    /// seconds"). WE never wraps it: its shaders scale it by arbitrary speeds (`g_Time * speed`,
+    /// `sin(g_Time * f)`, scrolling offsets), so no wrap period is seamless for all of them and any
+    /// wrap is a visible jump. Shaders that need precision after long runs reduce it themselves
+    /// (`frac(g_Time * g_FlowSpeed)`, WE's fix for `shake`). Float resolution is ~8 ms after a day
+    /// and ~60 ms after a week of one scene; the clock restarts whenever a scene loads.
     var time: Double = 0
     var frameTime: Double = 1.0 / 60.0
     /// `(h·60 + m) / 1440`; see `BuiltinFrameContext.daytime(at:calendar:)`.
