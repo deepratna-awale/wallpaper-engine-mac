@@ -54,20 +54,85 @@ final class ShaderVariantTranslator {
     static let revision = 6
 
     let compiler: ShaderCompiler
+    /// Root of the disk cache; variants go into its `generationDirectory`.
     let cacheDirectory: URL?
+    /// `<cacheDirectory>/<generation>`: every variant this revision and compiler can produce.
+    let generationDirectory: URL?
     /// The compiler's backend, versions and options (`ShaderCompiler.cacheFingerprint`).
-    var toolchainFingerprint: String { compiler.cacheFingerprint }
+    let toolchainFingerprint: String
     private let lock = NSLock()
     private var memory: [String: TranslatedShaderVariant] = [:]
 
     init(compiler: ShaderCompiler, cacheDirectory: URL? = ShaderVariantTranslator.defaultCacheDirectory) {
         self.compiler = compiler
         self.cacheDirectory = cacheDirectory
+        toolchainFingerprint = compiler.cacheFingerprint
+        let generation = Self.generation(toolchain: toolchainFingerprint)
+        generationDirectory = cacheDirectory?.appending(path: generation, directoryHint: .isDirectory)
+        if let cacheDirectory {
+            // Off the caller's thread: a stale generation can hold thousands of files.
+            DispatchQueue.global(qos: .utility).async {
+                Self.pruneStaleGenerations(in: cacheDirectory, keeping: generation)
+            }
+        }
     }
 
     static var defaultCacheDirectory: URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?
             .appending(path: "com.winddog.wallpaper-engine/shader-variants", directoryHint: .isDirectory)
+    }
+
+    /// Names the cache subdirectory of one translator revision and compiler. Variants of any other
+    /// can never be read again (their keys include both), so a change starts a new directory and
+    /// the old one is deleted (`pruneStaleGenerations`) instead of growing the cache forever.
+    static func generation(toolchain: String) -> String {
+        let digest = SHA256.hash(data: Data(toolchain.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
+        return "r\(revision)-\(digest)"
+    }
+
+    /// How long another generation is kept after its last use. Two builds used side by side
+    /// (a development build next to the installed app) each keep theirs.
+    static let staleGenerationAge: TimeInterval = 7 * 24 * 3600
+
+    /// Deletes variants in `root` from before generations (flat `<key>.json` files) and other
+    /// generations unused for `staleGenerationAge`, and marks `keeping` as used now.
+    static func pruneStaleGenerations(in root: URL, keeping: String, now: Date = Date()) {
+        let fileManager = FileManager.default
+        // Optional: no directory yet means nothing to prune.
+        let names = (try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []
+        for name in names where name != keeping {
+            let url = root.appending(path: name)
+            if !name.hasSuffix(".json") {
+                guard name.hasPrefix("r") else { continue } // not ours
+                // Optional: without a date the directory is left alone.
+                let modified = (try? fileManager.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date
+                guard let modified, now.timeIntervalSince(modified) > staleGenerationAge else { continue }
+            }
+            do {
+                try fileManager.removeItem(at: url)
+            } catch {
+                OWELog.error(.shader, "Could not delete the stale shader variant cache \(name): \(error)")
+            }
+        }
+        let current = root.appending(path: keeping).path
+        guard fileManager.fileExists(atPath: current) else { return }
+        do {
+            try fileManager.setAttributes([.modificationDate: now], ofItemAtPath: current)
+        } catch {
+            OWELog.error(.shader, "Could not mark the shader variant cache \(keeping) as used: \(error)")
+        }
+    }
+
+    /// Variants cached in `root`, over every generation.
+    static func cachedVariantCount(in root: URL) -> Int {
+        let fileManager = FileManager.default
+        // Optional: no directory yet means an empty cache.
+        let names = (try? fileManager.contentsOfDirectory(atPath: root.path)) ?? []
+        return names.reduce(0) { count, name in
+            if name.hasSuffix(".json") { return count + 1 }
+            let inner = (try? fileManager.contentsOfDirectory(atPath: root.appending(path: name).path)) ?? [] // not a directory: none
+            return count + inner.filter { $0.hasSuffix(".json") }.count
+        }
     }
 
     /// Combo values for a pass: declared defaults < material < effect pass < instance, plus sampler
@@ -166,7 +231,7 @@ final class ShaderVariantTranslator {
         lock.lock()
         memory[key] = variant
         lock.unlock()
-        guard persist, let directory = cacheDirectory else { return }
+        guard persist, let directory = generationDirectory else { return }
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try JSONEncoder().encode(variant).write(to: directory.appending(path: "\(key).json"), options: .atomic)
@@ -176,7 +241,7 @@ final class ShaderVariantTranslator {
     }
 
     private func loadFromDisk(_ key: String) -> TranslatedShaderVariant? {
-        guard let url = cacheDirectory?.appending(path: "\(key).json"),
+        guard let url = generationDirectory?.appending(path: "\(key).json"),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
         do {
             return try JSONDecoder().decode(TranslatedShaderVariant.self, from: Data(contentsOf: url))

@@ -27,17 +27,13 @@ struct DiagnosticsPage: SettingsPage {
             }
 
             Section {
+                row("Built-in compiler", InProcessShaderCompiler.libraryFingerprint
+                    .split(separator: "|").prefix(2).joined(separator: ", "))
                 if let toolchain {
-                    Label("Available", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-                    row("glslang", toolchain.glslang, monospaced: true)
-                    row("spirv-cross", toolchain.spirvCross, monospaced: true)
+                    row("Fallback glslang", toolchain.glslang, monospaced: true)
+                    row("Fallback spirv-cross", toolchain.spirvCross, monospaced: true)
                 } else {
-                    Label("Unavailable — Workshop effects fall back to built-in shaders",
-                          systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                    Text("Install with: brew install glslang spirv-cross")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.secondary)
+                    row("Fallback compiler", "Not installed")
                 }
                 Button("Re-detect") {
                     SceneShaderTranslator.invalidateToolchainCache()
@@ -46,8 +42,9 @@ struct DiagnosticsPage: SettingsPage {
             } header: {
                 Label("Shader Toolchain", systemImage: "hammer")
             } footer: {
-                Text("Shaders are translated from GLSL to Metal once and cached. A missing toolchain only "
-                     + "matters for effects that were never translated.")
+                Text("Shaders are translated from GLSL to Metal by the compiler built into the app, once, "
+                     + "and cached. The optional fallback (brew install glslang spirv-cross) is only used "
+                     + "after the built-in compiler crashed.")
             }
 
             Section {
@@ -79,8 +76,7 @@ struct DiagnosticsPage: SettingsPage {
 
     /// Shader variants translated so far (one per shader pair and option set).
     private static func shaderCacheCounts() -> Int {
-        guard let directory = ShaderVariantTranslator.defaultCacheDirectory,
-              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return 0 } // no cache yet
-        return names.filter { $0.hasSuffix(".json") }.count
+        guard let directory = ShaderVariantTranslator.defaultCacheDirectory else { return 0 }
+        return ShaderVariantTranslator.cachedVariantCount(in: directory)
     }
 }

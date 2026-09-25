@@ -40,7 +40,7 @@ There is **one type per file** unless the types are tiny and private to it. A fi
    - Pass dependencies in. State belongs to a wallpaper instance.
 4. **Typed keys.** Don't add new `"_owe_…"` string keys. Add a case to the typed settings or property identifiers instead.
 5. **Logging** goes through `OWELog`: `.debug` for per-frame detail, `.info` for lifecycle, `.error` for failures. Don't use `print` or raw `NSLog`, and don't log anything every frame at `.info` or above.
-6. **Caches are versioned.** Any on-disk cache is keyed on its inputs *and* a revision constant you bump whenever the producing code changes. `SceneShaderTranslator.pipelineRevision` is the example.
+6. **Caches are versioned.** Any on-disk cache is keyed on its inputs *and* a revision constant you bump whenever the producing code changes. `ShaderVariantTranslator.revision` is the example; `ShaderVariantCacheTests` fails when translated output changes without a bump.
 7. **Concurrency.** Mark UI types `@MainActor`. Don't share mutable state across threads without an owner: prefer actors, or one lock that is documented and owns specific fields. Don't add `nonisolated(unsafe)` without a comment explaining why it's safe.
 8. **Keep dead code out.** Delete it; git has history. Don't comment code out, and don't keep an unused alternate render path.
 
