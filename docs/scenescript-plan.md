@@ -496,10 +496,10 @@ Per-frame budget assertions go into the harness (§5, WP9) as `measure` tests, w
 
 ### 4.7 Audio, media and storage sources
 
-- **Audio buffers.** Take `AudioSpectrumAnalyzer`'s WE-style smoothed spectra, the same source `g_AudioSpectrum16/32/64` uses, split into left and right. Fill the registered `Float32Array`s in place each frame; `average` is (l+r)/2. Every `registerAudioBuffers` call in the corpus is at module scope, as WE requires.
+- **Audio buffers.** WE fills one buffer that both the shaders' `g_AudioSpectrum16/32/64` (`wallpaper64.exe` `0x1400d9bc4`) and SceneScript (host `0x14018e010`) read, so `AudioSpectrumAnalyzer` computes exactly that (WP5, done): the capture thread's block DFT and 64 bands per channel (`0x1400d02b0`) and the render loop's per-group gain, smoothing and 32/16 pair maxima (`0x140111654`). `average` is (l+r)/2 at 64 bands. Every `registerAudioBuffers` call in the corpus is at module scope, as WE requires.
 - **Media.**
-  - A `MediaSessionSource` protocol with one macOS implementation. The candidates are the MediaRemote framework (restricted for third-party bundles since macOS 15.4, so it needs the `/usr/bin/perl` adapter technique or a helper), or `ScriptingBridge` for Music and Spotify as a fallback.
-  - Thumbnail colours: primary, secondary and tertiary from a k-means/median-cut over the artwork, `textColor` and `highContrastColor` by contrast. LWE hardcodes these; we should compute them.
+  - A `MediaSessionSource` protocol with one macOS implementation, MediaRemote through `dlopen`/`dlsym` (WP6, done). It is restricted for third-party bundles since macOS 15.4, so on current macOS the info may never arrive; the `/usr/bin/perl` adapter technique or a helper is still open.
+  - Thumbnail colours: WE's media helper (`winrtutil64.exe`) scores 360 hue bins and picks primary, secondary and tertiary by score and hue distance; `textColor` and `highContrastColor` by WCAG contrast ≥ 2.5 (`ArtworkPalette`).
   - `BrowserMediaIntegration` is deleted.
 - **localStorage.** A per-wallpaper JSON file in Application Support: `scenestorage/<workshopId|dir-hash>/{global,screen-<displayID>}.json`. Values go through `_Internal.stringifyConfig`, so `Vec3` survives through `toConfigString`.
 
@@ -590,11 +590,11 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 - `setTimeout`/`setInterval` returning cancel functions, global-scope rules, `localStorage` per §4.7, `openUserShortcut` (logs "unsupported" until user shortcuts exist).
 - Tests: timer order and cancel (`lastHideEvent()` pattern); storage isolation between two instances and two wallpapers; the `'screen'` default; `Vec3` round-trip; quota.
 
-**WP5 — Audio buffers.** `Scripting/Engine/SceneScriptAudioBuffers.swift`, plus a read-only accessor on `AudioSpectrumAnalyzer`.
+**WP5 — Audio buffers.** *Done:* `Scripting/Audio/SceneScriptAudioBuffersExtension.swift` and `sceneScriptAudioBuffers.js`; `Audio/AudioSpectrum*.swift` and `BluesteinDFT.swift` compute WE's spectrum (§4.7). Like scenescript64.dll (`0x181655170`), each registration gets its own `Float32Array`s over the scene's one native store (no-op deallocator), refilled before every frame. WP11 passes `SceneScriptAudioBuffersExtension(spectrum: { capture.audioSpectrumSnapshot })` and keeps advancing the analyzer once per rendered frame.
 
 - Tests: feed a synthetic left-only tone and assert `left ≠ right` at 16/32/64; the arrays are the same objects every frame with values updated in place; a resolution of 128 throws WE's message; calling from a callback throws.
 
-**WP6 — Media.** `Scripting/Media/MediaSessionSource.swift`, `MacMediaSessionSource.swift`, `ArtworkPalette.swift`; delete `BrowserMediaIntegration.swift`.
+**WP6 — Media.** *Done:* `Scripting/Media/` (`MediaSessionState`, `MediaSessionSource`, `MacMediaSessionSource`, `MediaRemote`, `NowPlayingFramework`, `ArtworkPalette`, `SceneScriptMediaExtension`, `sceneScriptMedia.js`); `BrowserMediaIntegration.swift` deleted. WP11 keeps **one** `MacMediaSessionSource` for the process (MediaRemote registration is process-wide) and gives each runtime a `SceneScriptMediaExtension(source:)`. Pending changes are coalesced to the newest per kind and posted before each frame; each script gets the current state after its `init` (P8).
 
 - Tests: a fake source drives all five events with WE's field names; the palette on fixture images; no AppleScript anywhere.
 
