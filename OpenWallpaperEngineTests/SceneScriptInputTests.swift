@@ -37,6 +37,7 @@ final class SceneScriptInputTests: XCTestCase {
         let environment = SceneScriptEngineEnvironment(screenResolution: SIMD2(2000, 1000), canvasSize: SIMD2(1000, 1000),
                                                        placement: .stretch)
         let fixture = try SceneScriptEngineTestFixture(environment: environment)
+        defer { fixture.removeStorage() }
         fixture.add("cursor", """
             shared.log = [];
             function update() {

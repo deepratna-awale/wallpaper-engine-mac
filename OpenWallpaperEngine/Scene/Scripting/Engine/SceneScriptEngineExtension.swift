@@ -1,13 +1,13 @@
 import Foundation
 import JavaScriptCore
 
-/// WP4 of docs/scenescript-plan.md: the `engine`, `input` and `console` globals,
+/// WP4 of docs/scenescript-plan.md: the `engine`, `input`, `console` and `localStorage` globals,
 /// `engine.setTimeout`/`setInterval`, `engine.openUserShortcut` and the conversion of user
 /// properties through WE's `_Internal.convertUserProperties`.
 ///
 /// Per-frame numbers (`frametime`, `runtime`, `timeOfDay`, sizes, the cursor) sit in one shared
 /// `Float32Array` (float, like WE's own) that JS getters read, so a frame costs no bridging.
-/// Console and user shortcuts are narrow native functions on `__rt.native`.
+/// Storage, console and user shortcuts are narrow native functions on `__rt.native`.
 /// Confined to the runtime's thread, like the runtime; `environment` and `input` are set there.
 final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     /// Slots of the shared frame buffer (`__rt.native.engineFrame`); mirrored in sceneScriptEngine.js.
@@ -25,7 +25,11 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
         static let count = 16
     }
 
-    let scriptResources = ["sceneScriptEngine", "sceneScriptConsole", "sceneScriptTimers"]
+    /// Dirty `localStorage` stores are written at most this often (seconds of scene time), and
+    /// when the runtime goes away.
+    static let storageFlushInterval = 1.0
+
+    let scriptResources = ["sceneScriptEngine", "sceneScriptConsole", "sceneScriptTimers", "sceneScriptLocalStorage"]
 
     var environment: SceneScriptEngineEnvironment {
         didSet { publish() }
@@ -43,20 +47,27 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     /// `engine.runtime`: seconds of scene time since the runtime started.
     private(set) var runtimeSeconds = 0.0
 
+    private let storage: SceneScriptStorage
     private let now: () -> Date
     private let calendar: Calendar
     private let consoleSink: SceneScriptConsole.Sink
     private var frame: SceneScriptSharedBuffer<Float>?
     private var frametime = 0.0
+    private var lastFlush = 0.0
     private var unsupportedShortcuts = Set<String>()
 
-    init(environment: SceneScriptEngineEnvironment = .standard,
+    init(storage: SceneScriptStorage, environment: SceneScriptEngineEnvironment = .standard,
          now: @escaping () -> Date = Date.init, calendar: Calendar = .current,
          consoleSink: @escaping SceneScriptConsole.Sink = SceneScriptConsole.log) {
+        self.storage = storage
         self.environment = environment
         self.now = now
         self.calendar = calendar
         self.consoleSink = consoleSink
+    }
+
+    deinit {
+        storage.flush()
     }
 
     // MARK: - SceneScriptRuntimeExtension
@@ -71,6 +82,7 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
         self.frame = frame
         publish()
         native.setValue(frame.value, forProperty: "engineFrame")
+        installStorage(on: native, identity: runtime.identity)
         installConsole(on: native, identity: runtime.identity)
         let openUserShortcut: @convention(block) (String) -> Bool = { [weak self] name in
             self?.openUserShortcut(name) ?? false
@@ -82,6 +94,12 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
         frametime = deltaTime
         runtimeSeconds += deltaTime
         publish()
+    }
+
+    func didRunFrame(_ runtime: SceneScriptRuntime) {
+        guard runtimeSeconds - lastFlush >= Self.storageFlushInterval else { return }
+        lastFlush = runtimeSeconds
+        storage.flush()
     }
 
     // MARK: - Frame buffer
@@ -117,6 +135,28 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     }
 
     // MARK: - Native functions
+
+    /// `__rt.native.storage*`: the store of this runtime's wallpaper and screen. Values are JSON text.
+    private func installStorage(on native: JSValue, identity: SceneScriptIdentity) {
+        let storage = self.storage
+        func location(_ isGlobal: Bool) -> SceneScriptStorage.Location { isGlobal ? .global : .screen }
+        let get: @convention(block) (String, Bool) -> String? = { key, isGlobal in
+            storage.value(forKey: key, in: location(isGlobal), of: identity)
+        }
+        let set: @convention(block) (String, String, Bool) -> Bool = { key, json, isGlobal in
+            storage.setValue(json, forKey: key, in: location(isGlobal), of: identity)
+        }
+        let remove: @convention(block) (String, Bool) -> Bool = { key, isGlobal in
+            storage.removeValue(forKey: key, in: location(isGlobal), of: identity)
+        }
+        let clear: @convention(block) (Bool) -> Void = { isGlobal in
+            storage.removeAll(in: location(isGlobal), of: identity)
+        }
+        native.setValue(unsafeBitCast(get, to: AnyObject.self), forProperty: "storageGet")
+        native.setValue(unsafeBitCast(set, to: AnyObject.self), forProperty: "storageSet")
+        native.setValue(unsafeBitCast(remove, to: AnyObject.self), forProperty: "storageDelete")
+        native.setValue(unsafeBitCast(clear, to: AnyObject.self), forProperty: "storageClear")
+    }
 
     /// `__rt.native.consoleWrite(isError, message, scriptID)`.
     private func installConsole(on native: JSValue, identity: SceneScriptIdentity) {

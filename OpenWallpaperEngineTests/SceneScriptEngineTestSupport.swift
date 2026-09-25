@@ -21,24 +21,43 @@ struct AllCallbacksTestSceneScriptCompiler: SceneScriptModuleCompiling {
     }
 }
 
-/// A runtime with the WP4 extension, plus helpers.
+/// A runtime with the WP4 extension over a throwaway storage folder, plus helpers.
 final class SceneScriptEngineTestFixture {
+    let storageDirectory: URL
+    let storage: SceneScriptStorage
     let host: TestSceneScriptHost
     let engine: SceneScriptEngineExtension
     let runtime: SceneScriptRuntime
     private(set) var consoleLines: [(SceneScriptConsole.Level, String)] = []
 
     init(wallpaperID: String = "test-wallpaper", screenID: String = "screen-1",
+         storage sharedStorage: SceneScriptStorage? = nil,
          environment: SceneScriptEngineEnvironment = .standard,
          now: @escaping () -> Date = Date.init, calendar: Calendar = .current) throws {
+        storage = sharedStorage ?? SceneScriptStorage(directory: Self.makeStorageDirectory())
+        storageDirectory = storage.directory
         host = TestSceneScriptHost(wallpaperID: wallpaperID, screenID: screenID)
         var sink: SceneScriptConsole.Sink = { _, _ in }
-        let engine = SceneScriptEngineExtension(environment: environment, now: now,
+        let engine = SceneScriptEngineExtension(storage: storage, environment: environment, now: now,
                                                 calendar: calendar, consoleSink: { sink($0, $1) })
         self.engine = engine
         runtime = try SceneScriptRuntime(host: host, compiler: AllCallbacksTestSceneScriptCompiler(),
                                          extensions: [engine])
         sink = { [weak self] level, line in self?.consoleLines.append((level, line)) }
+    }
+
+    static func makeStorageDirectory() -> URL {
+        FileManager.default.temporaryDirectory.appending(path: "owe-scenescript-storage-\(UUID().uuidString)")
+    }
+
+    func removeStorage() {
+        do {
+            if FileManager.default.fileExists(atPath: storageDirectory.path) {
+                try FileManager.default.removeItem(at: storageDirectory)
+            }
+        } catch {
+            XCTFail("removing \(storageDirectory.path) failed: \(error)")
+        }
     }
 
     func add(_ id: String, _ source: String, initialValue: Any = NSNull()) {

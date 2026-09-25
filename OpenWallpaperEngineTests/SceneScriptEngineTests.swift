@@ -8,6 +8,7 @@ final class SceneScriptEngineTests: XCTestCase {
     private var fixtures: [SceneScriptEngineTestFixture] = []
 
     override func tearDown() {
+        fixtures.forEach { $0.removeStorage() }
         fixtures = []
         super.tearDown()
     }

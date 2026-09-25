@@ -12,6 +12,7 @@ final class SceneScriptTimerTests: XCTestCase {
     }
 
     override func tearDown() {
+        fixture.removeStorage()
         fixture = nil
         super.tearDown()
     }
