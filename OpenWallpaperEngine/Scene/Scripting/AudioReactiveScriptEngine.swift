@@ -262,6 +262,9 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     private override init() {
         super.init()
         _ = BrowserMediaIntegration.shared
+        // Unit tests run ad-hoc signed with this bundle id; a capture request from them is denied
+        // and that denial replaces the user's Screen Recording grant for the real app.
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
         observeCaptureInterruptions()
         startSystemAudioCapture()
     }
