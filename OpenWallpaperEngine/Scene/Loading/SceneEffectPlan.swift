@@ -134,8 +134,9 @@ struct SceneEffectPlanBuilder {
         }
         // Explicitly bound slots decide combos (MASK etc.); defaults below don't.
         let boundSlots = Set(inputs.keys)
+        let formats = formatCombos(samplers, names: names, materialPath: materialPath, effectDirectory: effectDirectory)
         let combos = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment,
-                                                           overrides: [materialPass.combos, instance?.combos ?? [:]],
+                                                           overrides: [formats, materialPass.combos, instance?.combos ?? [:]],
                                                            boundTextureSlots: boundSlots.union([0]))
         guard Self.conditionsHold(pass.conditions, combos: combos) else { return nil }
 
@@ -174,15 +175,37 @@ struct SceneEffectPlanBuilder {
                                    textures: inputs, constants: constants, textureFlags: textureFlags)
     }
 
-    /// The `.tex` flags of texture `name`, found where `loadTexture` finds it (then in the effect's
-    /// own `materials/`); nil for a texture that isn't a `.tex`.
+    /// The `.tex` flags of texture `name`; nil for a texture that isn't a `.tex`.
     private func textureFlags(named name: String, materialPath: String, effectDirectory: String) -> TEXFlags? {
-        var header = ParticleMaterialPlanBuilder.textureHeader(named: name, materialPath: materialPath, readFile: readFile)
-        if header == nil, !effectDirectory.isEmpty {
-            header = ParticleMaterialPlanBuilder.textureHeader(named: "\(effectDirectory)/materials/\(name)",
-                                                               materialPath: materialPath, readFile: readFile)
+        textureHeader(named: name, materialPath: materialPath, effectDirectory: effectDirectory).flatMap(TEXFlags.init(texData:))
+    }
+
+    /// The `.tex` header of texture `name`, found where `loadTexture` finds it (then in the
+    /// effect's own `materials/`); nil for a texture that isn't a `.tex`.
+    private func textureHeader(named name: String, materialPath: String, effectDirectory: String) -> Data? {
+        if let header = ParticleMaterialPlanBuilder.textureHeader(named: name, materialPath: materialPath, readFile: readFile) {
+            return header
         }
-        return header.flatMap(TEXFlags.init(texData:))
+        guard !effectDirectory.isEmpty else { return nil }
+        return ParticleMaterialPlanBuilder.textureHeader(named: "\(effectDirectory)/materials/\(name)",
+                                                         materialPath: materialPath, readFile: readFile)
+    }
+
+    /// `TEX<n>FORMAT` for the samplers annotated `"formatcombo": true`, from the format of the
+    /// texture bound there (or the sampler's default), as WE sets it: lightshafts reads an R8 or
+    /// RG88 gradient map as `.rrr`, refraction decodes a normal map by its format. Only formats
+    /// that load as the GPU samples them need it; the others are expanded to RGBA on load.
+    private func formatCombos(_ samplers: [ShaderUniformDeclaration], names: [Int: String], materialPath: String,
+                              effectDirectory: String) -> [String: Int] {
+        var combos: [String: Int] = [:]
+        for sampler in samplers where (sampler.annotation["formatcombo"] as? NSNumber)?.boolValue == true {
+            guard let slot = sampler.textureSlot, let name = names[slot] ?? sampler.defaultTexture,
+                  let header = textureHeader(named: name, materialPath: materialPath, effectDirectory: effectDirectory),
+                  let format = TEXImageFormat(texData: header),
+                  format.isChannelReduced || format.isBlockCompressed else { continue }
+            combos["TEX\(slot)FORMAT"] = Int(format.rawValue)
+        }
+        return combos
     }
 
     private func textureInput(named name: String, materialPath: String, fboNames: Set<String>,

@@ -233,6 +233,30 @@ final class EffectGraphTests: XCTestCase {
         }
     }
 
+    /// A sampler annotated `"formatcombo": true` gets `TEX<n>FORMAT` from its texture's format, as
+    /// WE sets it: refraction decodes an RG88 normal map by it, lightshafts reads an R8 gradient
+    /// map as `.rrr`. An RGBA texture (expanded on load) leaves it unset.
+    func testFormatComboSamplersTakeTheirTexturesFormat() throws {
+        let root = ShaderVariantTests.weAssets
+        let generated = ["materials/normal_rg88.tex": TextureRG88Tests.tex(format: 8, pixels: [128, 255]),
+                         "materials/gradient_r8.tex": TextureRG88Tests.tex(format: 9, pixels: [200]),
+                         "materials/gradient_rgba.tex": TextureRG88Tests.tex(format: 0, pixels: [1, 2, 3, 4])]
+        let formatBuilder = SceneEffectPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache),
+            readFile: { path in generated[path] ?? FileManager.default.contents(atPath: root.appending(path: path).path) },
+            loadTexture: { name, _ in
+                generated["materials/\(name).tex"].flatMap { TEXParser(data: $0).extractImage() }.map { .image($0) }
+            })
+        let refraction = try formatBuilder.build(try effect(
+            #"{"file":"effects/refraction/effect.json","passes":[{},{"textures":[null,"normal_rg88"]}]}"#))
+        XCTAssertEqual(refraction.passes.last?.variant?.combos["TEX1FORMAT"], 8)
+        let gradient = #"{"file":"effects/lightshafts/effect.json","passes":[{"combos":{"RENDERING":1},"textures":[null,null,"TEXTURE"]}]}"#
+        let r8 = try formatBuilder.build(try effect(gradient.replacingOccurrences(of: "TEXTURE", with: "gradient_r8")))
+        XCTAssertEqual(r8.passes.first?.variant?.combos["TEX2FORMAT"], 9)
+        let rgba = try formatBuilder.build(try effect(gradient.replacingOccurrences(of: "TEXTURE", with: "gradient_rgba")))
+        XCTAssertNil(rgba.passes.first?.variant?.combos["TEX2FORMAT"])
+    }
+
     func testEveryBuiltinEffectRunsWithDefaults() throws {
         let effects = ShaderVariantTests.weAssets.appending(path: "effects")
         var failures: [String] = []
