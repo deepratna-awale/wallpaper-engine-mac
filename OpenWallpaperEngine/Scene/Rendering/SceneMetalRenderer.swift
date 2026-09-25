@@ -34,10 +34,11 @@ private struct LayerDraw {
 
 /// Frame-wide camera motion applied to every layer.
 private struct CameraMotion {
-    let parallaxEnabled: Bool
-    let parallaxAmount: Float
-    let cursorDelta: SIMD2<Float>
-    let shakeOffset: SIMD2<Float>
+    /// This frame's parallax and `cameraparallaxamount` (times the app's amount), when objects
+    /// are displaced: parallax on in an orthographic scene.
+    let parallax: (state: SceneCameraParallax, amount: Float)?
+    /// How far camera shake moved the camera; the scene moves the other way.
+    let shake: SIMD2<Float>
     let audioLevel: Double
 }
 
@@ -95,6 +96,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var particleRequests: [ParticleGPUSimulator.Request] = []
     private var sceneScript: String?
     private var camera = SceneCameraEffects()
+    /// WE's parallax camera position, eased across frames (`SceneCameraParallax`).
+    private var cameraParallax = SceneCameraParallax(sceneSize: SIMD2<Float>(1920, 1080))
     /// Whose user properties this renderer's frames read (see `SceneMetalContent.wallpaperKey`).
     private var wallpaperKey = ""
     private var placement: WallpaperPlacement = .fill
@@ -251,6 +254,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             clock = SceneClock()
             transforms = .empty
             lastPointer = nil
+            cameraParallax = SceneCameraParallax(sceneSize: sceneSize)
             cursorTracker = SceneCursorTracker()
             deferredReleases.removeAll()
             lastCommandBuffer = nil
@@ -283,6 +287,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.objectMotions = content.motions
                 self.wallpaperKey = content.wallpaperKey
                 self.camera = content.camera
+                self.cameraParallax = SceneCameraParallax(sceneSize: content.size)
                 self.textFrameCache.removeAll()
                 self.textRasterScales.removeAll()
                 var scriptLayers: [String: [String: Any]] = [:]
@@ -442,8 +447,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             primaryDown: cursorSample.onDisplay && NSEvent.pressedMouseButtons & 1 != 0)
         effectFrame.screenSize = drawableSize
         effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
-        let motion = cameraMotion(cursor: cursor, time: time)
-        effectFrame.parallax = parallaxPosition(pointer: pointer)
+        let motion = cameraMotion(pointer: pointer, time: time, deltaTime: Float(clock.delta))
+        effectFrame.parallax = parallaxEnabled ? cameraParallax.shaderPosition(sceneSize: sceneSize) : SIMD2(0.5, 0.5)
         // Text is rasterised first so its effects run on the finished text, like an image layer's.
         var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
         // Only visible layers get an entry; the draw loop skips the rest.
@@ -736,29 +741,46 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         lastCommandBuffer = commandBuffer
     }
 
-    /// `g_ParallaxPosition`: `0.5 + (pointer − 0.5)·influence` while camera parallax is on, the
-    /// centre otherwise. The influence is the scene's `cameraparallaxmouseinfluence`, or 1 when
-    /// only the app's parallax toggle enabled it.
-    private func parallaxPosition(pointer: SIMD2<Float>) -> SIMD2<Float> {
-        if camera.parallax { return 0.5 + (pointer - 0.5) * camera.parallaxMouseInfluence }
-        let appToggle = AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
-        return appToggle ? pointer : SIMD2(0.5, 0.5)
+    /// The scene's own `general.cameraparallax` (possibly user-bound) or the app's parallax toggle.
+    private var parallaxEnabled: Bool {
+        camera.parallax || AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
     }
 
-    /// The scene's own `general.cameraparallax` / `camerashake` (possibly user-bound) or the app's toggles.
-    private func cameraMotion(cursor: SIMD2<Float>, time: Float) -> CameraMotion {
-        let parallaxEnabled = camera.parallax
-            || AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
-        let parallaxAmount = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
-            * (camera.parallax ? camera.parallaxAmount * camera.parallaxMouseInfluence : 1)
-        // Two decorrelated frequencies so the shake reads as a jitter rather than a circle.
-        let shakeOffset: SIMD2<Float> = AudioReactiveScriptEngine.shared.cameraShakeEnabled || camera.shake
-            ? SIMD2<Float>(sin(time * 47.3) * 0.004 + sin(time * 71.9) * 0.002,
-                           cos(time * 53.1) * 0.004 + cos(time * 83.7) * 0.002) * sceneSize
+    /// WE's camera shake, then its parallax (`SceneCameraShake`, `SceneCameraParallax`), in the
+    /// order its scene update runs them: the parallax target includes the shaken eye.
+    private func cameraMotion(pointer: SIMD2<Float>, time: Float, deltaTime: Float) -> CameraMotion {
+        let shaking = AudioReactiveScriptEngine.shared.cameraShakeEnabled || camera.shake
+        let shake = shaking
+            ? SceneCameraShake.cameraOffset(time: time, speed: camera.shakeSpeed, amplitude: camera.shakeAmplitude,
+                                            roughness: camera.shakeRoughness,
+                                            orthographicHeight: camera.orthographic ? sceneSize.y : nil)
             : .zero
-        return CameraMotion(parallaxEnabled: parallaxEnabled, parallaxAmount: parallaxAmount,
-                            cursorDelta: (cursor - sceneSize / 2) / sceneSize, shakeOffset: shakeOffset,
+        var parallax: (state: SceneCameraParallax, amount: Float)?
+        if parallaxEnabled {
+            cameraParallax.update(cursor: pointer, eye: SIMD2(shake.x, shake.y), sceneSize: sceneSize,
+                                  influence: camera.parallaxMouseInfluence, delay: camera.parallaxDelay,
+                                  deltaTime: deltaTime)
+            // `_owe_effect_parallax_amount` is an app extra, 1 (WE's amount) by default.
+            let amount = camera.parallaxAmount
+                * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
+            if camera.orthographic { parallax = (cameraParallax, amount) }
+        }
+        return CameraMotion(parallax: parallax, shake: SIMD2(shake.x, shake.y),
                             audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+    }
+
+    /// The parallax offset of a layer: its root object's live origin and `parallaxDepth`.
+    private func parallaxOffset(_ entry: PreparedLayer, local: SceneLocalTransform, time: Float,
+                                motion: CameraMotion) -> SIMD2<Float> {
+        guard let parallax = motion.parallax else { return .zero }
+        let rootID = transforms.root(of: entry.layer.id)
+        if rootID == entry.layer.id {
+            let depth = entry.layer.parallaxDepth
+            return parallax.state.offset(rootOrigin: local.origin, rootDepth: SIMD2(depth.x, depth.y), amount: parallax.amount)
+        }
+        guard let node = transforms.nodes[rootID] else { return .zero }
+        let rootLocal = liveLocal(rootID, time: time) ?? node.local
+        return parallax.state.offset(rootOrigin: rootLocal.origin, rootDepth: node.parallaxDepth, amount: parallax.amount)
     }
 
     /// A visible layer's opacity, colour and placed quad this frame: user bindings, then
@@ -774,23 +796,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             opacity *= AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
         }
         var local = evaluatedLocal(entry, time: time)
-        // WE's default depth is 1 1 (`WESceneObject.parallaxDepthValue`); an authored 0 0 stays put.
-        let parallaxDepth = entry.layer.parallaxDepth
-        let parallaxOffset = motion.parallaxEnabled
-            ? SIMD2<Float>(parallaxDepth.x * motion.cursorDelta.x * sceneSize.x * 0.18 * motion.parallaxAmount,
-                           parallaxDepth.y * motion.cursorDelta.y * sceneSize.y * 0.18 * motion.parallaxAmount)
-            : .zero
-        let perspectiveScale = motion.parallaxEnabled && entry.layer.perspective
-            ? 1 + parallaxDepth.z * simd_length(motion.cursorDelta) * 0.18 * motion.parallaxAmount
-            : 1
+        let parallaxOffset = parallaxOffset(entry, local: local, time: time, motion: motion)
         let musicSyncLevel = entry.layer.musicSync?.levelSource.map { $0() } ?? motion.audioLevel
-        local.scale *= perspectiveScale * (1 + (entry.layer.musicSync?.zoomAmount ?? 0) * Float(musicSyncLevel))
+        local.scale *= 1 + (entry.layer.musicSync?.zoomAmount ?? 0) * Float(musicSyncLevel)
         local.angle += entry.layer.musicSync.map { $0.tiltAmount * Float(musicSyncLevel) * .pi / 180 } ?? 0
         let quad = SceneQuadGeometry(world: parentWorld(entry, time: time) * SceneAffineTransform(local),
                                      size: baseSize, alignment: entry.layer.alignment)
         // WE draws a layer where its transform and the camera put it; an oversized layer (sized
         // to hide its edges while it moves) isn't pinned inside the scene.
-        let center = quad.center + parallaxOffset + motion.shakeOffset
+        let center = quad.center + parallaxOffset - motion.shake
         let brightness = entry.layer.brightnessScript.map {
             AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.brightness, layerId: entry.stateId, time: Double(time))
         } ?? base.brightness

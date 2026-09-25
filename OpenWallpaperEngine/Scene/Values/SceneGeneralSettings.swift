@@ -45,6 +45,9 @@ struct SceneCameraEffects: Equatable {
     var parallaxAmount = SceneGeneralDefaults.cameraParallaxAmount
     var parallaxDelay = SceneGeneralDefaults.cameraParallaxDelay
     var parallaxMouseInfluence = SceneGeneralDefaults.cameraParallaxMouseInfluence
+    /// False for a perspective scene (`orthogonalprojection: null`). WE displaces objects for
+    /// parallax only in an orthographic scene, and scales its shake by the projection height.
+    var orthographic = true
 
     init() {}
 
@@ -60,5 +63,6 @@ struct SceneCameraEffects: Equatable {
         parallaxAmount = float(.cameraparallaxamount, SceneGeneralDefaults.cameraParallaxAmount)
         parallaxDelay = float(.cameraparallaxdelay, SceneGeneralDefaults.cameraParallaxDelay)
         parallaxMouseInfluence = float(.cameraparallaxmouseinfluence, SceneGeneralDefaults.cameraParallaxMouseInfluence)
+        orthographic = !general.usesPerspectiveProjection
     }
 }

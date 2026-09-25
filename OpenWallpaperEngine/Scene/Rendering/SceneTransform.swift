@@ -140,6 +140,14 @@ struct SceneTransformHierarchy {
     struct Node {
         let parentID: String?
         let local: SceneLocalTransform
+        /// `parallaxDepth` x y; WE's default is 1 1 (`WESceneObject.parallaxDepthValue`).
+        let parallaxDepth: SIMD2<Float>
+
+        init(parentID: String?, local: SceneLocalTransform, parallaxDepth: SIMD2<Float> = SIMD2(1, 1)) {
+            self.parentID = parentID
+            self.local = local
+            self.parallaxDepth = parallaxDepth
+        }
     }
 
     private(set) var nodes: [String: Node]
@@ -151,15 +159,27 @@ struct SceneTransformHierarchy {
     init(objects: [WESceneObject], sceneSize: SIMD2<Float>) {
         var nodes: [String: Node] = [:]
         for (index, object) in objects.enumerated() {
+            let depth = object.parallaxDepthValue
             nodes[String(object.id ?? index)] = Node(parentID: object.parent.map(String.init),
-                                                     local: SceneLocalTransform(object: object, sceneSize: sceneSize))
+                                                     local: SceneLocalTransform(object: object, sceneSize: sceneSize),
+                                                     parallaxDepth: SIMD2(Float(depth.0), Float(depth.1)))
         }
         self.nodes = nodes
     }
 
     /// Fullscreen layers fill the scene whatever their parent is.
     mutating func makeRoot(_ id: String, local: SceneLocalTransform) {
-        nodes[id] = Node(parentID: nil, local: local)
+        nodes[id] = Node(parentID: nil, local: local, parallaxDepth: nodes[id]?.parallaxDepth ?? SIMD2(1, 1))
+    }
+
+    /// `id`'s topmost ancestor, or `id` itself when it has no parent. Cycles stop the walk.
+    func root(of id: String) -> String {
+        var root = id
+        var visited: Set<String> = [id]
+        while let parentID = nodes[root]?.parentID, nodes[parentID] != nil, visited.insert(parentID).inserted {
+            root = parentID
+        }
+        return root
     }
 
     /// The composed transform of `id`'s ancestors, root first. `live` supplies this frame's
