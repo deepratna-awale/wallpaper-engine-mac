@@ -11,12 +11,11 @@ final class EffectGraphTests: XCTestCase {
     private var cache: URL!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(SceneShaderTranslator.toolchain == nil, "glslang/spirv-cross not installed")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: ShaderVariantTests.weAssets.path), "WE install not present")
         device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         cache = FileManager.default.temporaryDirectory.appending(path: "owe-graph-\(UUID().uuidString)")
         renderer = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache.appending(path: "archives")))
-        let translator = ShaderVariantTranslator(compiler: try ProcessShaderCompiler(), cacheDirectory: cache)
+        let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache)
         let root = ShaderVariantTests.weAssets
         builder = SceneEffectPlanBuilder(
             translator: translator,
@@ -119,6 +118,46 @@ final class EffectGraphTests: XCTestCase {
         // The same chain on a new layer takes the released targets instead of allocating.
         _ = try run(json)
         XCTAssertEqual(renderer.targetsAllocated, allocated)
+    }
+
+    /// A layer released while its pipelines compile leaves no state behind; the compiles still
+    /// land in the shared cache, and a later layer with the same chain uses them.
+    func testReleaseLayerWhileItsPipelinesCompile() throws {
+        let plan = try builder.build(try effect(#"{"file":"effects/blur/effect.json","passes":[{},{},{},{}]}"#))
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let input = try checkerboard()
+        let context = EffectGraphRenderer.Context(frame: BuiltinFrameContext(time: 1.5), values: FixedValues(),
+                                                  assetTexture: { _, _ in nil }, sceneSnapshot: nil,
+                                                  layerColor: SIMD3(1, 1, 1), layerAlpha: 1)
+        let buffer = try XCTUnwrap(queue.makeCommandBuffer())
+        XCTAssertNil(renderer.apply([plan], to: input, layerID: "gone", context: context, commandBuffer: buffer),
+                     "pipelines are compiling")
+        renderer.releaseLayer("gone")
+        XCTAssertEqual(renderer.layerStateCount, 0)
+        XCTAssertTrue(renderer.waitUntilReady([plan], width: input.width, height: input.height))
+        XCTAssertEqual(renderer.layerStateCount, 0, "a finished compile doesn't bring the layer back")
+        let compiles = renderer.pipelineCompileCount
+        XCTAssertGreaterThan(compiles, 0)
+        XCTAssertNotNil(renderer.apply([plan], to: input, layerID: "next", context: context, commandBuffer: buffer))
+        buffer.commit()
+        buffer.waitUntilCompleted()
+        XCTAssertNil(buffer.error)
+        XCTAssertEqual(renderer.pipelineCompileCount, compiles, "the released layer's pipelines are reused")
+    }
+
+    /// Many callers asking for the same pipelines at once start one compile per pipeline.
+    func testConcurrentRequestsCompileEachPipelineOnce() throws {
+        let plan = try builder.build(try effect(#"{"file":"effects/blur/effect.json","passes":[{},{},{},{}]}"#))
+        let keys = Set(plan.passes.compactMap { pass -> String? in
+            guard case .render = pass.command, pass.variant != nil else { return nil }
+            return "\(pass.variantKey)|\(pass.target ?? "")|\(pass.blending)"
+        })
+        XCTAssertGreaterThan(keys.count, 1)
+        DispatchQueue.concurrentPerform(iterations: 16) { _ in
+            XCTAssertTrue(renderer.waitUntilReady([plan], width: 256, height: 256))
+        }
+        XCTAssertLessThanOrEqual(renderer.pipelineCompileCount, keys.count)
+        XCTAssertEqual(renderer.failedPipelineCount, 0)
     }
 
     func testFourPassBlurWithQuarterBuffersSoftensEdges() throws {

@@ -81,6 +81,9 @@ final class EffectGraphRenderer {
     private(set) var layersReused = 0
     private(set) var targetsAllocated = 0
     var failedPipelineCount: Int { pipelineLock.withLock { failedPipelines.count } }
+    /// Pipeline compiles started (at most one per pipeline key).
+    var pipelineCompileCount: Int { pipelineLock.withLock { pipelineCompiles } }
+    private var pipelineCompiles = 0 // guarded by pipelineLock
 
     static let positionBuffer = 30
     static let texCoordBuffer = 29
@@ -253,12 +256,14 @@ final class EffectGraphRenderer {
                 let format = pass.target.flatMap { fboFormats[$0] } ?? .rgba8Unorm
                 effectFormats.append(format)
                 let key = Self.pipelineKey(pass, format: format)
-                let state: (ready: Bool, failed: Bool, pending: Bool) = pipelineLock.withLock {
-                    (pipelines[key] != nil, failedPipelines.contains(key), pendingPipelines.contains(key))
+                // Checked and claimed in one step, so callers on two threads never both compile it.
+                let state: (done: Bool, start: Bool) = pipelineLock.withLock {
+                    if pipelines[key] != nil || failedPipelines.contains(key) { return (true, false) }
+                    return (false, pendingPipelines.insert(key).inserted)
                 }
-                if state.ready || state.failed { continue }
+                if state.done { continue }
                 ready = false
-                if !state.pending { compile(pass, variant: variant, format: format, key: key) }
+                if state.start { compile(pass, variant: variant, format: format, key: key) }
             }
             formats.append(effectFormats)
         }
@@ -274,8 +279,9 @@ final class EffectGraphRenderer {
         "\(pass.variantKey)|\(format.rawValue)|\(pass.blending)"
     }
 
+    /// Compiles a pipeline claimed in `pendingPipelines` by the caller.
     private func compile(_ pass: SceneEffectPassPlan, variant: TranslatedShaderVariant, format: MTLPixelFormat, key: String) {
-        pipelineLock.withLock { _ = pendingPipelines.insert(key) }
+        pipelineLock.withLock { pipelineCompiles += 1 }
         let device = self.device
         let blending = pass.blending
         let archive = pipelineArchive
