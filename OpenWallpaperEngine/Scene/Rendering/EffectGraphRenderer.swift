@@ -128,7 +128,9 @@ final class EffectGraphRenderer {
         }
 
         let inputID = ObjectIdentifier(input)
-        if let cached = state.staticOutput, cached.input == inputID {
+        // A scene snapshot keeps its texture identity while its contents change every frame.
+        let readsScene = context.sceneSnapshot != nil
+        if !readsScene, let cached = state.staticOutput, cached.input == inputID {
             layersReused += 1
             return cached.output
         }
@@ -175,7 +177,7 @@ final class EffectGraphRenderer {
         guard didRender else { return nil }
         // A chain with no time, audio, pointer or live-bound input produces the same image
         // every frame; skip it until the input changes (bandwidth is the main per-frame cost).
-        state.staticOutput = isStatic ? (inputID, current) : nil
+        state.staticOutput = isStatic && !readsScene ? (inputID, current) : nil
         return current
     }
 

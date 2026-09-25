@@ -404,18 +404,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
         for (layerIndex, entry) in layers.enumerated() {
             guard AudioReactiveScriptEngine.shared.layerBoolean(entry.stateId, property: "visible", fallback: true) else { continue }
-            if !entry.layer.weEffects.isEmpty, let effectGraph {
-                let context = EffectGraphRenderer.Context(
-                    frame: effectFrame,
-                    values: LiveSceneValueContext(time: effectFrame.time, layerId: entry.stateId),
-                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
-                    sceneSnapshot: nil,
-                    layerColor: SIMD3(entry.layer.color.x, entry.layer.color.y, entry.layer.color.z),
-                    layerAlpha: entry.layer.opacity)
-                if let output = effectGraph.apply(entry.layer.weEffects, to: textureFrame(for: entry, time: time).texture,
-                                                  layerID: entry.stateId, context: context, commandBuffer: commandBuffer) {
-                    dynamicTextures[layerIndex] = output
-                }
+            // Layers that read the scene run inside the scene pass, once what's beneath them is drawn.
+            if entry.layer.readsScene { continue }
+            if !entry.layer.weEffects.isEmpty {
+                dynamicTextures[layerIndex] = runEffects(entry, input: textureFrame(for: entry, time: time).texture,
+                                                         snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
                 continue
             }
             if let result = applyDynamicEffects(to: entry, time: time, audioLevel: Float(audioLevel),
@@ -431,7 +424,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         sceneRenderPass.colorAttachments[0].loadAction = .clear
         sceneRenderPass.colorAttachments[0].clearColor = clearColor
         sceneRenderPass.colorAttachments[0].storeAction = .store
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: sceneRenderPass) else { return }
+        guard var encoder = commandBuffer.makeRenderCommandEncoder(descriptor: sceneRenderPass) else { return }
         encoder.setRenderPipelineState(renderPipeline)
 
         let parallaxEnabled = AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
@@ -442,6 +435,28 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                            cos(time * 53.1) * 0.004 + cos(time * 83.7) * 0.002) * sceneSize
             : .zero
         for (layerIndex, entry) in layers.enumerated() {
+            if entry.layer.readsScene {
+                // Metal can't sample the attachment it's drawing into: pause the scene pass, copy
+                // what's drawn so far (`_rt_FullFrameBuffer`), run this layer's effects on it, resume.
+                guard AudioReactiveScriptEngine.shared.layerBoolean(entry.stateId, property: "visible", fallback: true) else { continue }
+                encoder.endEncoding()
+                let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
+                let input = entry.layer.sceneInput
+                    ? snapshot.flatMap { sceneRegion(of: $0, under: entry.layer, commandBuffer: commandBuffer) }
+                    : textureFrame(for: entry, time: time).texture
+                dynamicTextures[layerIndex] = input.flatMap {
+                    runEffects(entry, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
+                }
+                let resume = MTLRenderPassDescriptor()
+                resume.colorAttachments[0].texture = sceneTexture
+                resume.colorAttachments[0].loadAction = .load
+                resume.colorAttachments[0].storeAction = .store
+                guard let resumed = commandBuffer.makeRenderCommandEncoder(descriptor: resume) else { return }
+                encoder = resumed
+                encoder.setRenderPipelineState(renderPipeline)
+                // Until its effects are ready the layer has nothing of its own to draw.
+                if entry.layer.sceneInput, dynamicTextures[layerIndex] == nil { continue }
+            }
             var effectUniform = EffectUniform(time: time,
                                               pulse: effects.contains("pulse") ? Float(audioLevel) : 0)
             effectUniform.cursor = cursorDelta
@@ -699,6 +714,54 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    private func runEffects(_ entry: PreparedLayer, input: MTLTexture, snapshot: MTLTexture?,
+                            frame: BuiltinFrameContext, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        guard let effectGraph, !entry.layer.weEffects.isEmpty else { return nil }
+        let context = EffectGraphRenderer.Context(
+            frame: frame,
+            values: LiveSceneValueContext(time: frame.time, layerId: entry.stateId),
+            assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
+            sceneSnapshot: snapshot,
+            layerColor: SIMD3(entry.layer.color.x, entry.layer.color.y, entry.layer.color.z),
+            layerAlpha: entry.layer.opacity)
+        return effectGraph.apply(entry.layer.weEffects, to: input, layerID: entry.stateId,
+                                 context: context, commandBuffer: commandBuffer)
+    }
+
+    /// A copy of the scene drawn so far. Several scene-reading layers in one frame may share the
+    /// pooled texture: the GPU runs the command buffer in order, so each layer's effects read its
+    /// snapshot before the next layer's copy overwrites it.
+    private func sceneSnapshot(of scene: MTLTexture, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        guard let copy = renderTargetPool.texture(width: scene.width, height: scene.height,
+                                                  pixelFormat: scene.pixelFormat, avoiding: scene),
+              let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
+        blit.copy(from: scene, to: copy)
+        blit.endEncoding()
+        return copy
+    }
+
+    /// The part of the scene under a scene-input layer, as that layer's base image. Composition
+    /// and fullscreen layers usually cover the whole scene, which needs no copy.
+    private func sceneRegion(of snapshot: MTLTexture, under layer: SceneMetalLayer,
+                             commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        let scale = Float(snapshot.width) / max(sceneSize.x, 1)
+        let extent = layer.size * layer.scale * scale
+        let left = Int(((layer.position.x * scale) - extent.x / 2).rounded())
+        let top = Int((Float(snapshot.height) - (layer.position.y * scale + extent.y / 2)).rounded())
+        let x0 = max(left, 0), y0 = max(top, 0)
+        let x1 = min(left + Int(extent.x.rounded()), snapshot.width), y1 = min(top + Int(extent.y.rounded()), snapshot.height)
+        if x0 <= 0, y0 <= 0, x1 >= snapshot.width, y1 >= snapshot.height { return snapshot }
+        guard x1 > x0, y1 > y0,
+              let region = renderTargetPool.texture(width: x1 - x0, height: y1 - y0,
+                                                    pixelFormat: snapshot.pixelFormat, avoiding: snapshot),
+              let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
+        blit.copy(from: snapshot, sourceSlice: 0, sourceLevel: 0,
+                  sourceOrigin: MTLOrigin(x: x0, y: y0, z: 0), sourceSize: MTLSize(width: x1 - x0, height: y1 - y0, depth: 1),
+                  to: region, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
+        blit.endEncoding()
+        return region
     }
 
     private func effectAssetTexture(key: String, source: SceneMetalTextureSource) -> MTLTexture? {

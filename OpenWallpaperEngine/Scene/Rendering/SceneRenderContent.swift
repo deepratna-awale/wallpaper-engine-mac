@@ -58,6 +58,12 @@ struct SceneMetalLayer {
     /// Authored effects that run through Wallpaper Engine's own shaders (Phase 2). Effects that
     /// could not be planned stay in `sceneEffects` until the native stack is removed.
     var weEffects: [SceneEffectPlan] = []
+    /// Composition, fullscreen and project layers: the base image is the scene rendered so far
+    /// under the layer (`_rt_FullFrameBuffer`), not a texture.
+    var sceneInput = false
+
+    /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
+    var readsScene: Bool { sceneInput || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) } }
 }
 
 /// Audio-reactive transforms applied to a video layer each frame.

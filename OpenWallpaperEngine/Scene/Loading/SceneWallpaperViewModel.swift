@@ -633,8 +633,11 @@ class SceneWallpaperViewModel: ObservableObject {
         if model.puppet != nil {
             Self.log("Puppet Warp rig found for \(imagePath); rendering authored atlas until mesh rig data is available")
         }
+        let sceneInput = textureName == "_rt_FullFrameBuffer" || textureName == "_rt_MipMappedFrameBuffer"
         let size: SIMD2<Float>
-        if let sizeString = object.size {
+        if model.fullscreen == true {
+            size = sceneSize
+        } else if let sizeString = object.size {
             let value = sizeString.parseVector2()
             size = SIMD2<Float>(Float(value.0), Float(value.1))
         } else {
@@ -647,7 +650,9 @@ class SceneWallpaperViewModel: ObservableObject {
             case let .video(stream): size = stream.frameSize
             }
         }
-        let position: SIMD2<Float> = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        let position: SIMD2<Float> = model.fullscreen == true
+            ? sceneSize / 2
+            : effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
         let rotation = Float(object.angles?.parseVector3().2 ?? 0)
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let objectColor = object.color?.parseVector3() ?? (1, 1, 1)
@@ -692,6 +697,9 @@ class SceneWallpaperViewModel: ObservableObject {
                                rotationAnimation: object.anglesAnimation, effects: effects, sceneEffects: sceneEffects,
                                                xraySource: xraySource)
         layer.weEffects = effectPlans.plans
+        layer.sceneInput = sceneInput
+        // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
+        if sceneInput, effectPlans.plans.isEmpty { return nil }
         return layer
     }
 

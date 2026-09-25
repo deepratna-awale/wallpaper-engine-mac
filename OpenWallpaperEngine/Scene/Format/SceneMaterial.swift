@@ -2,6 +2,10 @@ import Foundation
 
 struct WEModel: Codable {
     var autosize: Bool?
+    /// Util models (fullscreenlayer): the layer covers the whole scene.
+    var fullscreen: Bool?
+    /// Util models (composelayer, projectlayer): the layer's image is the scene beneath it.
+    var passthrough: Bool?
     var material: String?    // path to material JSON
     var puppet: String?      // path to a Puppet Warp rig (.mdl); unsupported, rendered as a flat atlas otherwise
 }
