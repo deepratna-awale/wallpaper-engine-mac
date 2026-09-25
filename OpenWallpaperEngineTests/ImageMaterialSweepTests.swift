@@ -100,7 +100,7 @@ final class ImageMaterialSweepTests: XCTestCase {
                         guard case .image(let image) = source,
                               let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
                         return try? loader.newTexture(cgImage: cg, options: [.SRGB: false]) // test texture; nil fails the draw below
-                    }), pixelFormat: .bgra8Unorm, encoder: encoder)
+                    }), pixelFormat: .bgra8Unorm, encoder: encoder, commandBuffer: buffer)
                 encoder.endEncoding()
                 buffer.commit()
                 buffer.waitUntilCompleted()

@@ -17,6 +17,8 @@ final class ImageMaterialRenderer {
     private let zeroAttributes: MTLBuffer
     private let clampSampler: MTLSamplerState
     private let repeatSampler: MTLSamplerState
+    /// Uniform blocks over 4 KB. Render thread only (see `SceneUniformArena`).
+    let uniformArena: SceneUniformArena
 
     private let compileQueue = DispatchQueue(label: "owe.image-material-pipelines", qos: .userInitiated,
                                              attributes: .concurrent)
@@ -53,6 +55,7 @@ final class ImageMaterialRenderer {
     init?(device: MTLDevice, archive: EffectPipelineArchive?) {
         self.device = device
         self.archive = archive
+        uniformArena = SceneUniformArena(device: device)
         guard let zero = device.makeBuffer(length: 64) else { return nil }
         zeroAttributes = zero
         func sampler(_ mode: MTLSamplerAddressMode) -> MTLSamplerState? {
@@ -102,11 +105,11 @@ final class ImageMaterialRenderer {
         var ignoredAdjustments = false
     }
 
-    /// Encodes the layer into `encoder` (a pass on a `pixelFormat` target). False when the layer
-    /// must be drawn another way this frame: the pipeline is compiling or failed, or an input is
-    /// missing. Leaves the encoder's pipeline state changed.
+    /// Encodes the layer into `encoder` (a pass of `commandBuffer` on a `pixelFormat` target). False
+    /// when the layer must be drawn another way this frame: the pipeline is compiling or failed, or
+    /// an input is missing. Leaves the encoder's pipeline state changed.
     func draw(_ plan: ImageMaterialPlan, _ draw: Draw, pixelFormat: MTLPixelFormat,
-              encoder: MTLRenderCommandEncoder) -> Bool {
+              encoder: MTLRenderCommandEncoder, commandBuffer: MTLCommandBuffer) -> Bool {
         guard let variant = plan.pass.variant, let pipeline = pipeline(for: plan, pixelFormat: pixelFormat) else { return false }
         let extent = draw.quad.extent
         // A zero-area quad covers no pixels; nothing to draw, and nothing for a fallback to draw either.
@@ -185,13 +188,7 @@ final class ImageMaterialRenderer {
         }
         if uniforms.size > 0 {
             uniforms.bytes.withUnsafeBytes { raw in
-                if raw.count <= 4096 {
-                    encoder.setVertexBytes(raw.baseAddress!, length: raw.count, index: 0)
-                    encoder.setFragmentBytes(raw.baseAddress!, length: raw.count, index: 0)
-                } else if let buffer = device.makeBuffer(bytes: raw.baseAddress!, length: raw.count) {
-                    encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-                    encoder.setFragmentBuffer(buffer, offset: 0, index: 0)
-                }
+                uniformArena.bind(raw, index: 0, to: encoder, commandBuffer: commandBuffer)
             }
         }
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)

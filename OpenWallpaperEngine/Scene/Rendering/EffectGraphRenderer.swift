@@ -15,6 +15,8 @@ final class EffectGraphRenderer {
     private let zeroAttributes: MTLBuffer
     private let clampSampler: MTLSamplerState
     private let repeatSampler: MTLSamplerState
+    /// Uniform blocks over 4 KB. Render thread only (see `SceneUniformArena`).
+    let uniformArena: SceneUniformArena
 
     /// Pipelines compile off the render thread: a cold Metal compile costs tens of milliseconds
     /// per variant, which would otherwise stall frames. Guarded by `pipelineLock`.
@@ -93,6 +95,7 @@ final class EffectGraphRenderer {
     /// the device; nil keeps none.
     init?(device: MTLDevice, pipelineArchiveDirectory: URL? = EffectPipelineArchive.defaultDirectory) {
         self.device = device
+        uniformArena = SceneUniformArena(device: device)
         pipelineArchive = pipelineArchiveDirectory.map { EffectPipelineArchive.shared(device: device, directory: $0) }
         // Triangle strip over the full target; with the translator's GL-style y flip, texcoord
         // (0, 0) lands on the first row, so each pass maps its input 1:1.
@@ -400,13 +403,7 @@ final class EffectGraphRenderer {
             passContext.alpha = context.layerAlpha
             program.update(frame: context.frame, pass: passContext, values: context.values)
             program.bytes.withUnsafeBytes { raw in
-                if raw.count <= 4096 {
-                    encoder.setVertexBytes(raw.baseAddress!, length: raw.count, index: 0)
-                    encoder.setFragmentBytes(raw.baseAddress!, length: raw.count, index: 0)
-                } else if let buffer = device.makeBuffer(bytes: raw.baseAddress!, length: raw.count) {
-                    encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-                    encoder.setFragmentBuffer(buffer, offset: 0, index: 0)
-                }
+                uniformArena.bind(raw, index: 0, to: encoder, commandBuffer: commandBuffer)
             }
         }
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)

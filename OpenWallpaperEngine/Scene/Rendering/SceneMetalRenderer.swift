@@ -638,7 +638,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                    values: LiveSceneValueContext(time: sceneTime, scriptTime: sceneTime, layerId: entry.stateId),
                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
                    ignoredAdjustments: !ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: draw.brightness)),
-                   pixelFormat: sceneTexture.pixelFormat, encoder: encoder) {
+                   pixelFormat: sceneTexture.pixelFormat, encoder: encoder, commandBuffer: commandBuffer) {
                 encoder.setRenderPipelineState(renderPipeline)
                 continue
             }

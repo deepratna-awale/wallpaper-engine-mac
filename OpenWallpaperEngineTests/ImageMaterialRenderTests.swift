@@ -364,7 +364,7 @@ final class ImageMaterialRenderTests: XCTestCase {
                     layerID: "mirrored", quad: quad, sceneSize: Self.sceneSize, color: SIMD3(1, 1, 1), alpha: 1, brightness: 1,
                     texture: texture, contentSize: nil, uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1),
                     sceneSnapshot: nil, frame: BuiltinFrameContext(), values: EffectGraphTests.FixedValues(),
-                    assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder))
+                    assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder, commandBuffer: currentCommands!))
             }
             XCTAssertEqual(Self.pixel(pixels, x: 100, y: 64).red, 1, accuracy: 2 / 255, "mirrored \(mirror) is drawn")
         }
@@ -384,13 +384,34 @@ final class ImageMaterialRenderTests: XCTestCase {
                     layerID: id, quad: layer.quad, sceneSize: Self.sceneSize, color: layer.color, alpha: 1, brightness: 1,
                     texture: texture, contentSize: nil, uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1),
                     sceneSnapshot: nil, frame: BuiltinFrameContext(), values: EffectGraphTests.FixedValues(),
-                    assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder))
+                    assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder, commandBuffer: currentCommands!))
             }
         }
         XCTAssertEqual(renderer.programCount, 100)
         XCTAssertEqual(renderer.pipelineCount, 1, "one pipeline for every layer on the same material (risk I11)")
         for id in ids { renderer.releaseLayer(id) }
         XCTAssertEqual(renderer.programCount, 0)
+    }
+
+    /// Risk I11: uniform blocks over 4 KB come from the renderer's arena, not a buffer per draw,
+    /// and draw exactly what inline uniforms draw.
+    func testLargeUniformBlocksComeFromTheArena() throws {
+        let plan = try XCTUnwrap(try builder.build(materialPath: "materials/image4.json", colorBlendMode: nil))
+        let texture = try Self.checkerTexture(device: device)
+        var layer = Layer(size: SIMD2(120, 80), rotation: .pi / 5, color: SIMD3(0.9, 0.8, 1), alpha: 0.5, brightness: 1.2)
+        layer.center = SIMD2(250, 120)
+        let inline = try render { encoder, format in
+            XCTAssertTrue(self.drawMaterial(plan, layer, texture: texture, snapshot: nil, encoder: encoder, format: format))
+        }
+        XCTAssertEqual(renderer.uniformArena.chunksCreated, 0)
+        renderer.uniformArena.inlineLimit = 0
+        for _ in 0..<50 {
+            let viaArena = try render { encoder, format in
+                XCTAssertTrue(self.drawMaterial(plan, layer, texture: texture, snapshot: nil, encoder: encoder, format: format))
+            }
+            XCTAssertEqual(viaArena, inline)
+        }
+        XCTAssertEqual(renderer.uniformArena.chunksCreated, 1, "one chunk serves every frame")
     }
 
     // MARK: - Helpers
@@ -447,7 +468,7 @@ final class ImageMaterialRenderTests: XCTestCase {
             layerID: "layer", quad: layer.quad, sceneSize: Self.sceneSize, color: layer.color, alpha: layer.alpha, brightness: layer.brightness,
             texture: texture, contentSize: layer.contentSize, uvOrigin: layer.uvOrigin, uvAxisX: layer.uvAxisX,
             uvAxisY: layer.uvAxisY, sceneSnapshot: snapshot, frame: frame, values: EffectGraphTests.FixedValues(),
-            assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder)
+            assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder, commandBuffer: currentCommands!)
     }
 
     /// `SceneMetalRenderer`'s layer draw: `sceneVertex`/`sceneFragment`, translucent or additive.
@@ -486,6 +507,8 @@ final class ImageMaterialRenderTests: XCTestCase {
     /// Clears a bgra8 target (the scene target's format) to `background`, runs `body` and reads it back as RGBA bytes.
     /// The target of the last `render`, for a pass that reads it.
     private var lastTarget: MTLTexture?
+    /// The command buffer of the `render` running now.
+    private var currentCommands: MTLCommandBuffer?
 
     private func render(background: SIMD4<Float> = ImageMaterialRenderTests.background,
                         _ body: (MTLRenderCommandEncoder, MTLPixelFormat) throws -> Void) throws -> [UInt8] {
@@ -504,6 +527,8 @@ final class ImageMaterialRenderTests: XCTestCase {
         pass.colorAttachments[0].storeAction = .store
         let buffer = try XCTUnwrap(queue.makeCommandBuffer())
         let encoder = try XCTUnwrap(buffer.makeRenderCommandEncoder(descriptor: pass))
+        currentCommands = buffer
+        defer { currentCommands = nil }
         try body(encoder, format)
         encoder.endEncoding()
         let bytesPerRow = Self.targetSize.width * 4
