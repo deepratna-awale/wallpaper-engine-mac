@@ -49,6 +49,15 @@ final class ParticleOverrideTests: XCTestCase {
         XCTAssertEqual(changed.colorScale, SIMD3(0, 2, 0))
     }
 
+    func testControlPointOverridesPlaceControlPoints() throws {
+        let json = "{\"controlpoint1\": \"-3382.5 384 0\", \"controlpoint2\": {\"user\": \"spot\", \"value\": \"10 20 0\"}}"
+        let override = try JSONDecoder().decode(WEInstanceOverride.self, from: Data(json.utf8))
+        let defaults = SceneParticleOverrides(override, in: Properties())
+        XCTAssertEqual(defaults.controlPoints, [1: SIMD3(-3382.5, 384, 0), 2: SIMD3(10, 20, 0)])
+        let bound = SceneParticleOverrides(override, in: Properties(values: ["spot": "5 6 0"]))
+        XCTAssertEqual(bound.controlPoints[2], SIMD3(5, 6, 0))
+    }
+
     func testAChildThatKeepsItsColoursSkipsTheTint() throws {
         var configuration = ParticleTestSystem().configuration
         configuration.overrides = SceneParticleOverrides(try boundOverride(), in: Properties())

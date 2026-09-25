@@ -18,6 +18,14 @@ enum SceneGeneralValueField: String, CaseIterable {
 /// the emitter/initializer value of the particle file.
 enum SceneInstanceOverrideField: String, CaseIterable {
     case alpha, brightness, color, colorn, count, lifetime, rate, size, speed
+    /// Positions of the system's control points 0…7 (`ParticleControlPoint`).
+    case controlpoint0, controlpoint1, controlpoint2, controlpoint3
+    case controlpoint4, controlpoint5, controlpoint6, controlpoint7
+
+    /// `controlpoint<n>` for control point `id` (0…7).
+    static func controlPoint(_ id: Int) -> SceneInstanceOverrideField? {
+        SceneInstanceOverrideField(rawValue: "controlpoint\(id)")
+    }
 }
 
 extension SceneRawValue {

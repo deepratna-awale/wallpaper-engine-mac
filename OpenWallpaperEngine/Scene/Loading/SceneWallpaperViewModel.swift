@@ -1171,12 +1171,21 @@ class SceneWallpaperViewModel: ObservableObject {
             }
             return verbs
         }
-        let controlPoints: [ParticleControlPoint] = (particleSystem.controlpoint ?? []).map { controlPoint in
+        var controlPoints: [ParticleControlPoint] = (particleSystem.controlpoint ?? []).map { controlPoint in
             let offset = (controlPoint.offset ?? "0 0 0").parseVector3()
             return ParticleControlPoint(id: controlPoint.id ?? 0,
                                         offset: SIMD2<Float>(Float(offset.0), -Float(offset.1)),
                                         locksToCursor: controlPoint.locktopointer == true
                                             || ((controlPoint.flags ?? 0) & 1) != 0)
+        }
+        // The object's `controlpoint<n>` overrides place them.
+        for (id, position) in overrides.controlPoints.sorted(by: { $0.key < $1.key }) {
+            let offset = SIMD2<Float>(position.x, -position.y)
+            if let index = controlPoints.firstIndex(where: { $0.id == id }) {
+                controlPoints[index] = ParticleControlPoint(id: id, offset: offset, locksToCursor: controlPoints[index].locksToCursor)
+            } else {
+                controlPoints.append(ParticleControlPoint(id: id, offset: offset, locksToCursor: false))
+            }
         }
         let particleRenderer = particleSystem.renderer?.first
         for initializer in particleSystem.initializer ?? [] {
