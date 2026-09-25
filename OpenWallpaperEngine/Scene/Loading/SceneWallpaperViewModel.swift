@@ -668,7 +668,23 @@ class SceneWallpaperViewModel: ObservableObject {
         layer.fillsScene = model.fullscreen == true
         // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
         if sceneInput, effectPlans.plans.isEmpty { return nil }
+        if !sceneInput { layer.imageMaterial = buildImageMaterial(materialPath, object: object, wallpaperDir: wallpaperDir) }
         return layer
+    }
+
+    /// The image's own material through WE's shader; nil (logged when it's a failure) keeps the native draw.
+    private func buildImageMaterial(_ materialPath: String, object: WESceneObject, wallpaperDir: URL) -> ImageMaterialPlan? {
+        guard let translator = Self.effectTranslator else { return nil }
+        let builder = ImageMaterialPlanBuilder(
+            translator: translator,
+            readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
+            loadTexture: { [weak self] name, path in self?.loadMetalTexture(named: name, materialDir: path, wallpaperDir: wallpaperDir) })
+        do {
+            return try builder.build(materialPath: materialPath, colorBlendMode: object.colorBlendMode)
+        } catch {
+            OWELog.error(.scene, "Image layer \(object.id ?? -1) draws natively, material \(materialPath): \(error)")
+            return nil
+        }
     }
 
     /// `models/util/solidlayer*.json`: WE's `flat` shader fills the quad with the object's `color`.

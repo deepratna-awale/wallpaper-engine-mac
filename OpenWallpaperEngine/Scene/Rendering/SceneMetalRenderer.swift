@@ -103,6 +103,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let renderTargetPool: SceneRenderTargetPool
     /// Runs authored effects through Wallpaper Engine's own shaders.
     private lazy var effectGraph = EffectGraphRenderer(device: device)
+    /// Draws image layers through their own WE material.
+    private lazy var imageMaterials = ImageMaterialRenderer(device: device, archive: effectGraph?.pipelineArchive)
     /// Asset textures used by effect passes, materialised once per content.
     private var effectAssetTextures: [String: MTLTexture] = [:]
     /// Scene time since the content loaded, speed applied; drives animations, `g_Time`,
@@ -217,6 +219,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     func setContent(_ content: SceneMetalContent?) {
         effectAssetTextures.removeAll()
         effectGraph?.releaseTargets()
+        imageMaterials?.releaseAll()
         contentGenerationLock.lock()
         contentGeneration &+= 1
         let generation = contentGeneration
@@ -509,11 +512,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             drawParticleBatches(before: entry.layer.order)
             // Hidden layers (script `visible = false`) draw nothing, their raw texture included.
             guard let draw = draws[layerIndex] else { continue }
+            var layerSnapshot: MTLTexture?
             if entry.layer.readsScene {
                 // Metal can't sample the attachment it's drawing into: pause the scene pass, copy
                 // what's drawn so far (`_rt_FullFrameBuffer`), run this layer's effects on it, resume.
                 encoder.endEncoding()
                 let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
+                layerSnapshot = snapshot
                 let input = entry.layer.sceneInput
                     ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, commandBuffer: commandBuffer) }
                     : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)).texture
@@ -565,6 +570,19 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             uniform.uvOrigin = textureFrame.uvOrigin
             uniform.uvAxisX = textureFrame.uvAxisX
             uniform.uvAxisY = textureFrame.uvAxisY
+            if let plan = entry.layer.imageMaterial, ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform),
+               let imageMaterials, imageMaterials.draw(plan, ImageMaterialRenderer.Draw(
+                   quad: draw.quad, sceneSize: sceneSize, color: SIMD3(draw.color.x, draw.color.y, draw.color.z),
+                   alpha: draw.opacity, brightness: uniform.effects.x,
+                   texture: dynamicTextures[layerIndex] ?? textureFrame.texture, contentSize: entry.layer.source.contentSize,
+                   uvOrigin: textureFrame.uvOrigin, uvAxisX: textureFrame.uvAxisX, uvAxisY: textureFrame.uvAxisY,
+                   sceneSnapshot: layerSnapshot, frame: effectFrame,
+                   values: LiveSceneValueContext(time: sceneTime, scriptTime: sceneTime, layerId: entry.stateId),
+                   assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) }),
+                   pixelFormat: sceneTexture.pixelFormat, encoder: encoder) {
+                encoder.setRenderPipelineState(renderPipeline)
+                continue
+            }
             encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
             encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
             encoder.setFragmentTexture(dynamicTextures[layerIndex] ?? textureFrame.texture, index: 0)

@@ -66,9 +66,14 @@ struct SceneMetalLayer {
     var fillsScene = false
     /// User-bound transform/colour values, re-resolved each frame.
     var bindings = SceneLayerBindings()
+    /// The image object's own material, drawn through WE's shader; nil draws the layer natively.
+    var imageMaterial: ImageMaterialPlan? = nil
 
     /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
-    var readsScene: Bool { sceneInput || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) } }
+    var readsScene: Bool {
+        sceneInput || imageMaterial?.readsSceneSnapshot == true
+            || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) }
+    }
 }
 
 /// Audio-reactive transforms applied to a video layer each frame.
