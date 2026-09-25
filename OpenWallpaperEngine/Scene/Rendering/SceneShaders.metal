@@ -114,10 +114,9 @@ float4 gaussianBlur5(texture2d<float> texture, sampler samplerState, float2 coor
 }
 
 vertex VertexOut sceneVertex(uint vertexID [[vertex_id]], uint instanceID [[instance_id]],
-                             uint baseInstance [[base_instance]],
                              constant LayerUniform *layers [[buffer(0)]]) {
-    const uint instance = instanceID + baseInstance;
-    const LayerUniform layer = layers[instance];
+    // `instance_id` already counts from the draw's base instance.
+    const LayerUniform layer = layers[instanceID];
     constexpr float2 corners[] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
     const float2 corner = corners[vertexID] - 0.5;
     float2 offset;
@@ -135,7 +134,7 @@ vertex VertexOut sceneVertex(uint vertexID [[vertex_id]], uint instanceID [[inst
     out.position = float4(point.x / layer.sceneSize.x * 2 - 1, 1 - point.y / layer.sceneSize.y * 2, 0, 1);
     out.textureCoordinate = layer.uvOrigin + corners[vertexID].x * layer.uvAxisX + corners[vertexID].y * layer.uvAxisY;
     out.sceneCoordinate = point / layer.sceneSize;
-    out.instance = instance;
+    out.instance = instanceID;
     return out;
 }
 
