@@ -62,6 +62,8 @@ class SceneWallpaperViewModel: ObservableObject {
     private var loadedScene: WEScene?
     private var loadedWallpaperDirectory: URL?
     private var assetDataCache: [String: Data] = [:]
+    /// Other Workshop items' assets (`…/workshop/<id>/…`), loose or inside the item's `.pkg`.
+    private var workshopAssets = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())
 
     /// Decoded textures are identical for every screen showing the same wallpaper, so they live in
     /// one process-wide cache. NSCache lets the system reclaim them under pressure rather than
@@ -234,6 +236,7 @@ class SceneWallpaperViewModel: ObservableObject {
             videoStream?.stop()
             videoStream = nil
             builtVideoFrameSize = nil
+            workshopAssets = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())
         }
         // Symlink in any already-installed cross-workshop-item asset dependencies before parsing,
         // so paths like "effects/workshop/<id>/name/effect.json" resolve as ordinary loose files.
@@ -1431,8 +1434,10 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func assetData(named path: String, wallpaperDir: URL) -> Data? {
         if let cached = assetDataCache[path] { return cached }
+        // A missing loose file is an ordinary miss: the next source is tried.
         let data = pkgParser?.extractFile(named: path)
             ?? (try? Data(contentsOf: wallpaperDir.appending(path: path)))
+            ?? workshopAssets.data(for: path)
             ?? sharedAssetData(named: path)
         if let data { assetDataCache[path] = data }
         return data
