@@ -6,6 +6,7 @@
 //
 
 import Cocoa
+import Combine
 import SwiftUI
 import AVKit
 import WebKit
@@ -86,6 +87,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var contentViewModel = ContentViewModel()
     var wallpaperViewModel = WallpaperViewModel()
     var globalSettingsViewModel = GlobalSettingsViewModel()
+    /// Fetches the Workshop items shown wallpapers borrow assets from.
+    lazy var workshopDependencies = WorkshopDependencyService(steamCmd: contentViewModel.steamCmd)
+    private var workshopDependencyCancellable: AnyCancellable?
     
     var importOpenPanel: NSOpenPanel!
     
@@ -94,6 +98,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static var shared = AppDelegate()
     
     func applicationWillFinishLaunching(_ notification: Notification) {
+
+        workshopDependencyCancellable = wallpaperViewModel.$wallpapers.sink { [weak self] wallpapers in
+            for wallpaper in wallpapers.values {
+                self?.workshopDependencies.ensureDependencies(for: wallpaper)
+            }
+        }
 
         // 创建设置视窗
         setSettingsWindow()
