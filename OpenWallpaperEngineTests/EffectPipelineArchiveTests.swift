@@ -234,7 +234,7 @@ final class EffectPipelineArchiveTests: XCTestCase {
     /// `objc_retain`; so a failure is never retried in the same session, and it doesn't drop
     /// pipelines from later launches either.
     func testAFailedWriteIsNotRetried() throws {
-        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 1000)
+        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 1000, metalScratchDirectory: nil)
         try FileManager.default.removeItem(at: directory) // the move into place fails
         archive.add(try descriptor(red: 1), key: "a")
         archive.flush()
@@ -244,7 +244,7 @@ final class EffectPipelineArchiveTests: XCTestCase {
         XCTAssertEqual(archive.writeFailures, 1, "no second attempt")
         XCTAssertEqual(archive.writes, 0)
 
-        let next = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 1000)
+        let next = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 1000, metalScratchDirectory: nil)
         next.add(try descriptor(red: 1), key: "a")
         next.flush()
         XCTAssertEqual(next.writes, 1, "the next launch writes the pipeline the failed write had")
@@ -252,7 +252,7 @@ final class EffectPipelineArchiveTests: XCTestCase {
 
     /// Writes wait for the *last* addition, so a burst longer than the delay still writes once.
     func testABurstOfAdditionsWritesOnce() throws {
-        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.5)
+        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.5, metalScratchDirectory: nil)
         let descriptors = try (0..<12).map { try descriptor(red: $0) }
         for (index, descriptor) in descriptors.enumerated() {
             archive.add(descriptor, key: "\(index)")
@@ -265,6 +265,25 @@ final class EffectPipelineArchiveTests: XCTestCase {
         XCTAssertEqual(archive.writeFailures, 0)
     }
 
+    /// Metal leaves a `gpuarchiver-*` build directory behind for every serialization. Old ones
+    /// are deleted; one a write may still be using (recent contents) and anything else stay.
+    func testMetalBuildDirectoriesLeftBehindAreDeleted() throws {
+        let scratch = directory.appending(path: "gpuarchiver-root")
+        let old = scratch.appending(path: "gpuarchiver-0a1b2c"), busy = scratch.appending(path: "gpuarchiver-3d4e5f")
+        let other = scratch.appending(path: "PersistentState")
+        for folder in [old, busy, other] {
+            try FileManager.default.createDirectory(at: folder.appending(path: "air64_v29"), withIntermediateDirectories: true)
+        }
+        let past = Date().addingTimeInterval(-2 * EffectPipelineArchive.scratchAge)
+        for path in [old, old.appending(path: "air64_v29"), busy, other, other.appending(path: "air64_v29")] {
+            try FileManager.default.setAttributes([.modificationDate: past], ofItemAtPath: path.path)
+        }
+        EffectPipelineArchive.deleteMetalScratch(in: scratch, olderThan: EffectPipelineArchive.scratchAge)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: busy.path), "recently written contents")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: other.path), "not a build directory")
+    }
+
     /// Renderers come and go (wallpaper switches, tests) while their compiles still add pipelines
     /// and debounced writes fire; every write must still serialize, and the next archive for the
     /// file must find the pipelines.
@@ -272,7 +291,7 @@ final class EffectPipelineArchiveTests: XCTestCase {
         let device: MTLDevice = self.device
         var hits = 0
         for round in 0..<8 {
-            let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.01)
+            let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.01, metalScratchDirectory: nil)
             let descriptors = try (0..<6).map { try descriptor(red: round * 6 + $0) }
             let reused = round > 0 ? [try descriptor(red: (round - 1) * 6)] : []
             DispatchQueue.concurrentPerform(iterations: descriptors.count + reused.count) { index in
@@ -306,7 +325,7 @@ final class EffectPipelineArchiveTests: XCTestCase {
         let descriptors = try (0..<12).map { try descriptor(red: $0) }
         for round in 0..<10 {
             let folder = directory.appending(path: "round-\(round)")
-            let archive = EffectPipelineArchive(device: device, directory: folder, serializeDelay: 1000)
+            let archive = EffectPipelineArchive(device: device, directory: folder, serializeDelay: 1000, metalScratchDirectory: nil)
             for (index, descriptor) in descriptors.enumerated() { archive.add(descriptor, key: "\(index)") }
             let writing = DispatchGroup()
             DispatchQueue.global(qos: .utility).async(group: writing) { archive.flush() }

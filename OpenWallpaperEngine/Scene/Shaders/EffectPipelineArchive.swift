@@ -25,6 +25,10 @@ import Metal
 /// attempt is a chance of that crash, so the first failure keeps the file as it is until the next
 /// launch. Writes are also debounced on the *last* addition, so a burst of compiles writes once.
 ///
+/// Every serialization leaves a `gpuarchiver-*` build directory behind in the app's
+/// Darwin cache directory, which Metal never deletes (gigabytes after a day of test runs). Directories
+/// untouched for `scratchAge` are deleted, in the background, when an archive is created.
+///
 /// Thread-safe: `lock` owns `recorded`, `recordedKeys`, `written`, `writesStopped`,
 /// `lastAddition`, `serializeScheduled` and the counters; `serializeQueue` runs writes one at a
 /// time and builds them outside the lock; `lookup` is immutable.
@@ -59,7 +63,10 @@ final class EffectPipelineArchive {
     /// Writes wait until no pipeline was added for this long, so a burst of compiles writes once.
     let serializeDelay: TimeInterval
 
-    init(device: MTLDevice, directory: URL, serializeDelay: TimeInterval = 2) {
+    /// `metalScratchDirectory` is where Metal leaves its serialization build directories
+    /// (`defaultMetalScratchDirectory`); nil leaves them alone.
+    init(device: MTLDevice, directory: URL, serializeDelay: TimeInterval = 2,
+         metalScratchDirectory: URL? = EffectPipelineArchive.defaultMetalScratchDirectory) {
         self.device = device
         self.serializeDelay = serializeDelay
         let prefix = Self.devicePrefix(device)
@@ -70,6 +77,10 @@ final class EffectPipelineArchive {
             OWELog.error(.shader, "Could not create the pipeline archive directory \(directory.path): \(error)")
         }
         Self.deleteStale(in: directory, deviceName: Self.deviceName(device), prefix: prefix, keeping: url)
+        if let metalScratchDirectory {
+            // Off the caller's thread: there can be thousands of them.
+            serializeQueue.async { Self.deleteMetalScratch(in: metalScratchDirectory, olderThan: Self.scratchAge) }
+        }
         lookup = Self.open(url, device: device)
     }
 
@@ -243,6 +254,55 @@ final class EffectPipelineArchive {
             }
             return nil
         }
+    }
+
+    // MARK: - Metal's build directories
+
+    /// Where Metal builds serialized archives: `<Darwin user cache>/<bundle id>/com.apple.gpuarchiver`.
+    static var defaultMetalScratchDirectory: URL? {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return nil }
+        let length = confstr(_CS_DARWIN_USER_CACHE_DIR, nil, 0)
+        guard length > 0 else { return nil }
+        var buffer = [CChar](repeating: 0, count: length)
+        guard confstr(_CS_DARWIN_USER_CACHE_DIR, &buffer, length) > 0 else { return nil }
+        return URL(fileURLWithPath: String(cString: buffer), isDirectory: true)
+            .appending(path: "\(bundleID)/com.apple.gpuarchiver", directoryHint: .isDirectory)
+    }
+
+    /// How long a build directory stays untouched before it counts as left behind. Far longer
+    /// than any write takes, so a write in progress (in this or another process) keeps its own.
+    static let scratchAge: TimeInterval = 3600
+
+    /// Deletes Metal's `gpuarchiver-*` build directories in `directory` whose contents are all
+    /// older than `age`.
+    static func deleteMetalScratch(in directory: URL, olderThan age: TimeInterval, now: Date = Date()) {
+        let fileManager = FileManager.default
+        // Optional: no directory means Metal has not serialized anything for this app yet.
+        let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
+        for name in names where name.hasPrefix("gpuarchiver-") {
+            let path = directory.appending(path: name, directoryHint: .isDirectory)
+            guard let modified = newestModification(of: path), now.timeIntervalSince(modified) > age else { continue }
+            do {
+                try fileManager.removeItem(at: path)
+            } catch {
+                OWELog.error(.shader, "Could not delete Metal's archive build directory \(path.path): \(error)")
+            }
+        }
+    }
+
+    /// The latest modification date of `directory` and its direct children; nil when unreadable.
+    private static func newestModification(of directory: URL) -> Date? {
+        let fileManager = FileManager.default
+        // Optional: an entry that vanished or can't be read is skipped; the directory stays.
+        guard var newest = (try? fileManager.attributesOfItem(atPath: directory.path))?[.modificationDate] as? Date,
+              let children = try? fileManager.contentsOfDirectory(atPath: directory.path) else { return nil }
+        for child in children {
+            let path = directory.appending(path: child).path
+            if let date = (try? fileManager.attributesOfItem(atPath: path))?[.modificationDate] as? Date, date > newest {
+                newest = date
+            }
+        }
+        return newest
     }
 
     // MARK: - Keys

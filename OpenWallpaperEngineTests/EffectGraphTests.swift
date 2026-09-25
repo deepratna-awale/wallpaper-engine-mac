@@ -275,7 +275,7 @@ final class EffectGraphTests: XCTestCase {
         archive.flush()
         XCTAssertGreaterThan(archive.additions, 0)
         XCTAssertEqual(archive.writeFailures, 0)
-        let reopened = EffectPipelineArchive(device: device, directory: archive.url.deletingLastPathComponent())
+        let reopened = EffectPipelineArchive(device: device, directory: archive.url.deletingLastPathComponent(), metalScratchDirectory: nil)
         XCTAssertFalse(reopened.archives.isEmpty, "the written archive opens")
     }
 
