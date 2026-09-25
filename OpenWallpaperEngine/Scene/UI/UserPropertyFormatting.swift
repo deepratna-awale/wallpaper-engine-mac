@@ -125,8 +125,9 @@ enum UserPropertyHTML {
     }
 }
 
-/// Slider semantics from project.json: `fraction:false` means integer values, `step` snaps,
-/// `precision` is the number of decimals shown.
+/// Slider semantics from project.json, as WE's browse sidebar applies them
+/// (`ui/dist/scripts/scripts.js`: `rzslider … step:property.step||1, precision:property.precision||1`).
+/// `fraction:false` means whole numbers; WE's editor then drops `step` and `precision`.
 struct UserPropertySliderFormat: Equatable {
     var minimum: Double
     var maximum: Double
@@ -134,25 +135,24 @@ struct UserPropertySliderFormat: Equatable {
     var step: Double?
     var precision: Int?
 
-    /// Snap step: 1 for integer sliders (or the authored step if it is a whole number ≥ 1).
-    var effectiveStep: Double? {
-        if !fraction { return max(1, (step ?? 1).rounded()) }
+    /// Snap step: the authored step, else 1, as in WE.
+    var effectiveStep: Double {
         if let step, step > 0 { return step }
-        return nil
+        return 1
     }
 
+    /// Decimals shown. WE's editor saves `precision` as the decimals plus one (it adds 1 on save
+    /// and derives `step = 0.1^(precision-1)`), so precision 3 is a 0.01 slider.
     var fractionDigits: Int {
         if !fraction { return 0 }
-        if let precision { return max(0, min(precision, 6)) }
-        return 3
+        return max(0, min((precision ?? 1) - 1, 6))
     }
 
     func snap(_ value: Double) -> Double {
         var result = min(max(value, minimum), max(maximum, minimum))
-        if let step = effectiveStep {
-            result = minimum + ((result - minimum) / step).rounded() * step
-            result = min(max(result, minimum), max(maximum, minimum))
-        }
+        let step = effectiveStep
+        result = minimum + ((result - minimum) / step).rounded() * step
+        result = min(max(result, minimum), max(maximum, minimum))
         if !fraction { result = result.rounded() }
         return result
     }
@@ -161,12 +161,9 @@ struct UserPropertySliderFormat: Equatable {
     func storedString(_ value: Double) -> String {
         let snapped = snap(value)
         if !fraction { return String(Int(snapped)) }
-        if let step = effectiveStep {
-            // Remove float noise from the step multiplication (0.1 * 3 = 0.30000000000000004).
-            let decimals = max(0, min(10, Int((-log10(step)).rounded(.up)) + 1))
-            let factor = pow(10, Double(decimals))
-            return String((snapped * factor).rounded() / factor)
-        }
-        return String(snapped)
+        // Remove float noise from the step multiplication (0.1 * 3 = 0.30000000000000004).
+        let decimals = max(0, min(10, Int((-log10(effectiveStep)).rounded(.up)) + 1))
+        let factor = pow(10, Double(decimals))
+        return String((snapped * factor).rounded() / factor)
     }
 }

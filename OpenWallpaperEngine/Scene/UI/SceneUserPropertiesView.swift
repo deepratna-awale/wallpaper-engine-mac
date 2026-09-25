@@ -4,8 +4,10 @@ import UniformTypeIdentifiers
 /// Wallpaper Engine authors often put a localization key in a property's `text` field rather than
 /// a label. The translations live inside Wallpaper Engine's compiled binaries, so the key is turned
 /// into readable words here instead of being shown raw.
-private func sceneUserPropertyTitle(_ raw: String) -> String {
+private func sceneUserPropertyTitle(_ raw: String, labels: WallpaperEngineLabels = WallpaperEngineLabels()) -> String {
     let trimmed = raw.trimmingCharacters(in: .whitespaces)
+    // WE's own translation of a localisation key, when a WE install is configured.
+    if let translated = labels.translation(trimmed) { return translated }
     // Authors write these keys inconsistently — ui_browse_ vs ui_browser_, property vs properties,
     // and stray hyphens — so the prefix is matched loosely rather than from a fixed list.
     guard let range = trimmed.range(of: #"(?i)^ui[_-][a-z]+[_-]propert(y|ies)[_-]"#,
@@ -96,31 +98,24 @@ private final class SceneUserPropertiesModel: ObservableObject {
     private func load(_ wallpaper: WEWallpaper) {
           guard let data = try? Data(contentsOf: wallpaper.wallpaperDirectory.appending(path: "project.json")),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-          let rawProperties = ((root["general"] as? [String: Any])?["properties"] as? [String: [String: Any]]) ?? [:]
-                authoredPropertyIDs = Set(rawProperties.keys)
-        properties = rawProperties.compactMap { (key: String, raw: [String: Any]) -> SceneUserProperty? in
-            // Untyped entries are notice/header rows in WE ("text" type).
-            let type = (raw["type"] as? String)?.lowercased() ?? "text"
-            let rawText = raw["text"] as? String ?? ""
-            let plainTitle = UserPropertyHTML.containsMarkup(rawText) ? UserPropertyHTML.plainText(rawText) : rawText
-            let options = (raw["options"] as? [[String: Any]] ?? []).compactMap { option -> (String, String)? in
-                guard let label = option["label"] as? String, let optionValue = option["value"] else { return nil }
-                return (sceneUserPropertyTitle(label), sceneUserPropertyString(optionValue))
-            }
-            let defaultValue = raw["value"].map(sceneUserPropertyString)
-                ?? (type == "combo" ? options.first?.1 : nil)
-                ?? (type == "bool" ? "false" : "")
-            var property = SceneUserProperty(id: key, title: sceneUserPropertyTitle(plainTitle), type: type,
-                                             order: (raw["order"] as? NSNumber)?.intValue ?? Int.max,
-                                             defaultValue: defaultValue, options: options,
-                                             minimum: (raw["min"] as? NSNumber)?.doubleValue ?? 0,
-                                             maximum: (raw["max"] as? NSNumber)?.doubleValue ?? 1)
-            property.condition = (raw["condition"] as? String).flatMap(UserPropertyCondition.init)
-            property.rawText = rawText
-            property.fraction = (raw["fraction"] as? NSNumber)?.boolValue ?? true
-            property.step = (raw["step"] as? NSNumber)?.doubleValue
-            property.precision = (raw["precision"] as? NSNumber)?.intValue
-            property.editable = (raw["editable"] as? NSNumber)?.boolValue ?? false
+        let definitions = UserPropertyDefinition.all(projectJSON: root)
+        let labels = WallpaperEngineLabels.load()
+        authoredPropertyIDs = Set(definitions.map(\.key))
+        properties = definitions.map { definition in
+            let plainTitle = UserPropertyHTML.containsMarkup(definition.text)
+                ? UserPropertyHTML.plainText(definition.text) : definition.text
+            var property = SceneUserProperty(id: definition.key, title: sceneUserPropertyTitle(plainTitle, labels: labels),
+                                             type: definition.type, order: definition.order ?? Int.max,
+                                             defaultValue: definition.defaultValue,
+                                             options: definition.options.map { (sceneUserPropertyTitle($0.label, labels: labels), $0.value) },
+                                             minimum: definition.minimum, maximum: definition.maximum)
+            property.condition = definition.condition.flatMap(UserPropertyCondition.init)
+            // WE translates the whole `text` when it is a localisation key.
+            property.rawText = labels.translation(definition.text) ?? definition.text
+            property.fraction = definition.fraction
+            property.step = definition.step
+            property.precision = definition.precision
+            property.editable = definition.editable
             return property
         }
         .sorted { ($0.order, $0.id) < ($1.order, $1.id) }
@@ -179,6 +174,15 @@ private final class SceneUserPropertiesModel: ObservableObject {
                     SceneUserProperty(id: prefix + "opacity", title: "Transparency", type: "slider", order: trailingOrder(offset: 50, index: index), defaultValue: "1", options: [], minimum: 0, maximum: 1)
                 ])
             }
+        }
+        // App extras (`_owe_…`, not in WE) keep their app-made ranges and slide in 0.01 steps;
+        // at their defaults they leave WE's authored values untouched.
+        properties = properties.map { property in
+            guard property.id.hasPrefix("_owe_"), property.type == "slider", property.step == nil else { return property }
+            var extra = property
+            extra.step = 0.01
+            extra.precision = 3
+            return extra
         }
         values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
         for property in properties where values[property.id] == nil {
@@ -368,26 +372,19 @@ struct SceneUserPropertiesView: View {
                     Divider()
                 }
             case "slider":
-                let usesDegrees = property.id.hasSuffix("_direction")
+                // WE shows the authored range, step and precision as they are (no unit conversion).
                 let format = property.sliderFormat
-                let rawValue = Binding<Double>(
+                let value = Binding<Double>(
                     get: { Double(model.values[property.id] ?? property.defaultValue) ?? property.minimum },
                     set: { model.set(format.storedString($0), for: property) }
                 )
-                let value = Binding<Double>(
-                    get: { usesDegrees ? rawValue.wrappedValue * 180 / .pi : rawValue.wrappedValue },
-                    set: { rawValue.wrappedValue = usesDegrees ? $0 * .pi / 180 : $0 }
-                )
-                let minimum = usesDegrees ? property.minimum * 180 / .pi : property.minimum
-                let maximum = usesDegrees ? property.maximum * 180 / .pi : property.maximum
                 VStack(alignment: .leading, spacing: 4) {
-                    parameterLabel(property.title + (usesDegrees ? " (degrees)" : ""), help: parameterHelp(property))
-                    NumericSliderInput(value: value, range: minimum...max(maximum, minimum + 0.001),
-                                       defaultValue: usesDegrees
-                                           ? (Double(property.defaultValue) ?? property.minimum) * 180 / .pi
-                                           : Double(property.defaultValue) ?? property.minimum,
-                                       fractionDigits: usesDegrees ? 3 : format.fractionDigits, fieldWidth: 76)
-                    musicSyncControls(for: property, usesDegrees: usesDegrees)
+                    parameterLabel(property.title, help: parameterHelp(property))
+                    NumericSliderInput(value: value, range: property.minimum...max(property.maximum, property.minimum + 0.001),
+                                       defaultValue: Double(property.defaultValue) ?? property.minimum,
+                                       step: format.effectiveStep,
+                                       fractionDigits: format.fractionDigits, fieldWidth: 76)
+                    musicSyncControls(for: property)
                 }
             case "bool":
                 HStack {
@@ -489,7 +486,7 @@ struct SceneUserPropertiesView: View {
     }
 
     @ViewBuilder
-    private func musicSyncControls(for property: SceneUserProperty, usesDegrees: Bool) -> some View {
+    private func musicSyncControls(for property: SceneUserProperty) -> some View {
         let syncID = "\(property.id)_musicSync"
         let amountID = "\(property.id)_musicAmount"
         let isEnabled = Binding<Bool>(
@@ -500,16 +497,11 @@ struct SceneUserPropertiesView: View {
             .toggleStyle(.checkbox)
             .font(.caption)
         if isEnabled.wrappedValue {
-            let rawSpan = max(property.maximum - property.minimum, 0.001)
-            let displaySpan = usesDegrees ? rawSpan * 180 / .pi : rawSpan
+            // App extra (WE has no music sync): a modulation of up to the slider's own span.
+            let displaySpan = max(property.maximum - property.minimum, 0.001)
             let amount = Binding<Double>(
-                get: {
-                    let raw = Double(model.values[amountID] ?? "0") ?? 0
-                    return usesDegrees ? raw * 180 / .pi : raw
-                },
-                set: { value in
-                    model.set(String(usesDegrees ? value * .pi / 180 : value), forID: amountID)
-                }
+                get: { Double(model.values[amountID] ?? "0") ?? 0 },
+                set: { model.set(String($0), forID: amountID) }
             )
             HStack {
                 Text("Music Amount")

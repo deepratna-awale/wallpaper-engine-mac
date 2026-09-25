@@ -99,13 +99,15 @@ final class UserPropertySliderFormatTests: XCTestCase {
 
     func testStepSnapsAndCleansNoise() {
         let format = UserPropertySliderFormat(minimum: 0, maximum: 10, fraction: true, step: 0.1, precision: 2)
-        XCTAssertEqual(format.fractionDigits, 2)
+        XCTAssertEqual(format.fractionDigits, 1, "WE saves precision as decimals + 1")
         XCTAssertEqual(format.storedString(0.3049), "0.3")
         XCTAssertEqual(format.snap(-1), 0)
     }
 
-    func testDefaultFractionDigits() {
-        XCTAssertEqual(UserPropertySliderFormat(minimum: 0, maximum: 1).fractionDigits, 3)
-        XCTAssertEqual(UserPropertySliderFormat(minimum: 0, maximum: 1, precision: 4).fractionDigits, 4)
+    /// WE's slider without `step`/`precision` uses `step || 1` and `precision || 1`.
+    func testDefaultStepAndFractionDigits() {
+        XCTAssertEqual(UserPropertySliderFormat(minimum: 0, maximum: 1).fractionDigits, 0)
+        XCTAssertEqual(UserPropertySliderFormat(minimum: 0, maximum: 1).effectiveStep, 1)
+        XCTAssertEqual(UserPropertySliderFormat(minimum: 0, maximum: 1, precision: 4).fractionDigits, 3)
     }
 }
