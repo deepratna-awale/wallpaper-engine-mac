@@ -55,6 +55,9 @@ struct SceneMetalLayer {
     let xraySource: SceneMetalTextureSource?
     /// Set for video layers so the picture can pulse with the music the way the AVKit path does.
     var musicSync: VideoMusicSyncVisuals? = nil
+    /// Authored effects that run through Wallpaper Engine's own shaders (Phase 2). Effects that
+    /// could not be planned stay in `sceneEffects` until the native stack is removed.
+    var weEffects: [SceneEffectPlan] = []
 }
 
 /// Audio-reactive transforms applied to a video layer each frame.

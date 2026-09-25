@@ -105,7 +105,7 @@ struct SceneEffectPlanBuilder {
 
     fileprivate func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
                                instance: WEObjectEffectPass?, fbos: [EffectFBO],
-                               shaderRoots: [URL]) throws -> SceneEffectPassPlan? {
+                               shaderRoots: [URL], effectDirectory: String = "") throws -> SceneEffectPassPlan? {
         let loader = ShaderSourceLoader(roots: shaderRoots)
         let vertex = try loader.load(materialPass.shader, stage: .vertex)
         let fragment = try loader.load(materialPass.shader, stage: .fragment)
@@ -120,7 +120,8 @@ struct SceneEffectPlanBuilder {
         let samplers = vertex.samplers + fragment.samplers
         var inputs: [Int: SceneEffectTextureInput] = [:]
         for (slot, name) in names {
-            if let input = textureInput(named: name, materialPath: materialPath, fboNames: fboNames) {
+            if let input = textureInput(named: name, materialPath: materialPath, fboNames: fboNames,
+                                        effectDirectory: effectDirectory) {
                 inputs[slot] = input
             }
         }
@@ -129,7 +130,8 @@ struct SceneEffectPlanBuilder {
         for sampler in samplers {
             guard let slot = sampler.textureSlot, inputs[slot] == nil, slot != 0,
                   let name = sampler.defaultTexture,
-                  let input = textureInput(named: name, materialPath: materialPath, fboNames: fboNames) else { continue }
+                  let input = textureInput(named: name, materialPath: materialPath, fboNames: fboNames,
+                                           effectDirectory: effectDirectory) else { continue }
             inputs[slot] = input
         }
         if inputs[0] == nil { inputs[0] = .current }
@@ -153,7 +155,8 @@ struct SceneEffectPlanBuilder {
                                    textures: inputs, constants: constants)
     }
 
-    private func textureInput(named name: String, materialPath: String, fboNames: Set<String>) -> SceneEffectTextureInput? {
+    private func textureInput(named name: String, materialPath: String, fboNames: Set<String>,
+                              effectDirectory: String) -> SceneEffectTextureInput? {
         if name == "previous" { return .previous }
         if fboNames.contains(name) { return .fbo(name) }
         if Self.sceneSnapshotNames.contains(name) { return .sceneSnapshot }
@@ -161,7 +164,9 @@ struct SceneEffectPlanBuilder {
             OWELog.error(.scene, "Unsupported render target \(name) in \(materialPath)")
             return nil
         }
-        guard let source = loadTexture(name, materialPath) else {
+        // Effects ship some textures in their own `materials/` folder.
+        guard let source = loadTexture(name, materialPath)
+                ?? (effectDirectory.isEmpty ? nil : loadTexture("\(effectDirectory)/materials/\(name)", materialPath)) else {
             OWELog.error(.scene, "Texture \(name) not found for \(materialPath)")
             return nil
         }
@@ -208,6 +213,6 @@ private struct Scoped {
             directory.isEmpty ? [root] : [root.appending(path: directory, directoryHint: .isDirectory), root]
         }
         return try builder.buildPass(pass, materialPass: materialPass, materialPath: materialPath,
-                                     instance: instance, fbos: fbos, shaderRoots: roots)
+                                     instance: instance, fbos: fbos, shaderRoots: roots, effectDirectory: directory)
     }
 }

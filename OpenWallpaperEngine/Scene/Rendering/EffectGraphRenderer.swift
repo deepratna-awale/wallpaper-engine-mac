@@ -15,11 +15,26 @@ final class EffectGraphRenderer {
     private let zeroAttributes: MTLBuffer
     private let clampSampler: MTLSamplerState
     private let repeatSampler: MTLSamplerState
-    private var libraries: [String: (vertex: MTLFunction, fragment: MTLFunction)] = [:]
+
+    /// Pipelines compile off the render thread: a cold Metal compile costs tens of milliseconds
+    /// per variant, which would otherwise stall frames. Guarded by `pipelineLock`.
+    private let compileQueue = DispatchQueue(label: "owe.effect-pipelines", qos: .userInitiated, attributes: .concurrent)
+    private let pipelineLock = NSLock()
     private var pipelines: [String: MTLRenderPipelineState] = [:]
-    private var failedVariants = Set<String>()
+    private var pendingPipelines = Set<String>()
+    private var failedPipelines = Set<String>()
+
     /// Per layer: ping-pong pair and effect FBOs, reused across frames.
     private var targets: [String: MTLTexture] = [:]
+    /// Per layer and pass: uniform bytes with the static values already written.
+    private var programs: [String: UniformProgram] = [:]
+    /// Per layer: last output of a chain that doesn't change over time, and what produced it.
+    private var staticOutputs: [String: (input: ObjectIdentifier, output: MTLTexture)] = [:]
+
+    /// Counters for tests and diagnostics.
+    private(set) var passesEncoded = 0
+    private(set) var layersReused = 0
+    var failedPipelineCount: Int { pipelineLock.withLock { failedPipelines.count } }
 
     static let positionBuffer = 30
     static let texCoordBuffer = 29
@@ -51,8 +66,12 @@ final class EffectGraphRenderer {
         repeatSampler = wrap
     }
 
-    /// Drops per-layer targets, e.g. when the scene changes.
-    func releaseTargets() { targets.removeAll() }
+    /// Drops per-layer state, e.g. when the scene changes. Compiled pipelines are kept.
+    func releaseTargets() {
+        targets.removeAll()
+        programs.removeAll()
+        staticOutputs.removeAll()
+    }
 
     struct Context {
         let frame: BuiltinFrameContext
@@ -65,15 +84,25 @@ final class EffectGraphRenderer {
         let layerAlpha: Float
     }
 
-    /// Runs `effects` on `input` and returns the processed image, or nil if nothing rendered.
+    /// Runs `effects` on `input` and returns the processed image, or nil when nothing rendered —
+    /// including while the chain's pipelines are still compiling (the layer then draws plain).
     func apply(_ effects: [SceneEffectPlan], to input: MTLTexture, layerID: String,
                context: Context, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         let width = input.width
         let height = input.height
+        guard let formats = readyFormats(effects, width: width, height: height) else { return nil }
+
+        let inputID = ObjectIdentifier(input)
+        if let cached = staticOutputs[layerID], cached.input == inputID {
+            layersReused += 1
+            return cached.output
+        }
+
         guard let pingA = target("\(layerID)|A", width: width, height: height, format: .rgba8Unorm),
               let pingB = target("\(layerID)|B", width: width, height: height, format: .rgba8Unorm) else { return nil }
         var current = input
         var didRender = false
+        var isStatic = true
         for (effectIndex, effect) in effects.enumerated() {
             let previous = current
             var fbos: [String: MTLTexture] = [:]
@@ -82,14 +111,13 @@ final class EffectGraphRenderer {
                 fbos[fbo.name] = target("\(layerID)|\(effectIndex)|\(fbo.name)", width: size.x, height: size.y,
                                         format: Self.pixelFormat(fbo.format))
             }
-            for pass in effect.passes {
+            for (passIndex, pass) in effect.passes.enumerated() {
                 switch pass.command {
                 case .copy(let source, let destination):
                     guard let from = fbos[source] ?? (source == "previous" ? previous : nil), let to = fbos[destination],
+                          from.width == to.width, from.height == to.height, from.pixelFormat == to.pixelFormat,
                           let blit = commandBuffer.makeBlitCommandEncoder() else { continue }
-                    if from.width == to.width, from.height == to.height, from.pixelFormat == to.pixelFormat {
-                        blit.copy(from: from, to: to)
-                    }
+                    blit.copy(from: from, to: to)
                     blit.endEncoding()
                 case .swap(let first, let second):
                     let a = fbos[first]
@@ -99,37 +127,133 @@ final class EffectGraphRenderer {
                     guard let variant = pass.variant else { continue }
                     let output: MTLTexture
                     if let name = pass.target {
-                        guard let fbo = fbos[name] else {
-                            OWELog.error(.scene, "\(effect.file): pass targets undeclared FBO \(name)")
-                            continue
-                        }
+                        guard let fbo = fbos[name] else { continue }
                         output = fbo
                     } else {
                         output = current === pingA ? pingB : pingA
                     }
-                    guard encode(pass, variant: variant, output: output, current: current, previous: previous,
-                                 fbos: fbos, context: context, commandBuffer: commandBuffer) else { continue }
+                    let format = formats["\(effectIndex)|\(passIndex)"] ?? output.pixelFormat
+                    guard let pipeline = readyPipeline(pass, format: format) else { continue }
+                    let program = self.program("\(layerID)|\(effectIndex)|\(passIndex)", pass: pass, variant: variant)
+                    isStatic = isStatic && program.isStatic && !pass.textures.values.contains {
+                        if case .sceneSnapshot = $0 { return true } else { return false }
+                    }
+                    encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
+                           current: current, previous: previous, fbos: fbos, context: context,
+                           commandBuffer: commandBuffer)
                     didRender = true
                     if pass.target == nil { current = output }
                 }
             }
         }
-        return didRender ? current : nil
+        guard didRender else { return nil }
+        // A chain with no time, audio, pointer or live-bound input produces the same image
+        // every frame; skip it until the input changes (bandwidth is the main per-frame cost).
+        if isStatic {
+            staticOutputs[layerID] = (inputID, current)
+        } else {
+            staticOutputs[layerID] = nil
+        }
+        return current
+    }
+
+    // MARK: - Pipelines
+
+    /// Target format of every render pass, or nil while any pipeline is still compiling.
+    /// Compiles are started here; a pipeline that failed to build just skips its pass.
+    private func readyFormats(_ effects: [SceneEffectPlan], width: Int, height: Int) -> [String: MTLPixelFormat]? {
+        var formats: [String: MTLPixelFormat] = [:]
+        var ready = true
+        for (effectIndex, effect) in effects.enumerated() {
+            let fboFormats = Dictionary(effect.fbos.map { ($0.name, Self.pixelFormat($0.format)) }, uniquingKeysWith: { a, _ in a })
+            for (passIndex, pass) in effect.passes.enumerated() {
+                guard case .render = pass.command, let variant = pass.variant else { continue }
+                let format = pass.target.flatMap { fboFormats[$0] } ?? .rgba8Unorm
+                formats["\(effectIndex)|\(passIndex)"] = format
+                let key = Self.pipelineKey(pass, format: format)
+                let state: (ready: Bool, failed: Bool, pending: Bool) = pipelineLock.withLock {
+                    (pipelines[key] != nil, failedPipelines.contains(key), pendingPipelines.contains(key))
+                }
+                if state.ready || state.failed { continue }
+                ready = false
+                if !state.pending { compile(pass, variant: variant, format: format, key: key) }
+            }
+        }
+        return ready ? formats : nil
+    }
+
+    private func readyPipeline(_ pass: SceneEffectPassPlan, format: MTLPixelFormat) -> MTLRenderPipelineState? {
+        let key = Self.pipelineKey(pass, format: format)
+        return pipelineLock.withLock { pipelines[key] }
+    }
+
+    private static func pipelineKey(_ pass: SceneEffectPassPlan, format: MTLPixelFormat) -> String {
+        "\(pass.variantKey)|\(format.rawValue)|\(pass.blending)"
+    }
+
+    private func compile(_ pass: SceneEffectPassPlan, variant: TranslatedShaderVariant, format: MTLPixelFormat, key: String) {
+        pipelineLock.withLock { _ = pendingPipelines.insert(key) }
+        let device = self.device
+        let blending = pass.blending
+        compileQueue.async { [weak self] in
+            let result: MTLRenderPipelineState?
+            do {
+                let vertexLibrary = try device.makeLibrary(source: variant.vertexMSL, options: nil)
+                let fragmentLibrary = try device.makeLibrary(source: variant.fragmentMSL, options: nil)
+                guard let vertex = vertexLibrary.makeFunction(name: "main0"),
+                      let fragment = fragmentLibrary.makeFunction(name: "main0") else {
+                    throw ShaderCompilerError.failed(step: "metal", output: "entry point main0 missing")
+                }
+                let descriptor = MTLRenderPipelineDescriptor()
+                descriptor.vertexFunction = vertex
+                descriptor.fragmentFunction = fragment
+                descriptor.colorAttachments[0].pixelFormat = format
+                if let blend = Self.blendMode(blending) {
+                    let attachment = descriptor.colorAttachments[0]!
+                    attachment.isBlendingEnabled = true
+                    attachment.sourceRGBBlendFactor = blend.source
+                    attachment.sourceAlphaBlendFactor = blend.source
+                    attachment.destinationRGBBlendFactor = blend.destination
+                    attachment.destinationAlphaBlendFactor = blend.destination
+                }
+                descriptor.vertexDescriptor = Self.vertexDescriptor(for: vertex)
+                result = try device.makeRenderPipelineState(descriptor: descriptor)
+            } catch {
+                OWELog.error(.shader, "Effect pipeline failed (\(key.prefix(12))): \(error)")
+                result = nil
+            }
+            guard let self else { return }
+            self.pipelineLock.withLock {
+                self.pendingPipelines.remove(key)
+                if let result { self.pipelines[key] = result } else { self.failedPipelines.insert(key) }
+            }
+        }
+    }
+
+    /// Blocks until every pipeline these effects need has compiled or failed (tests, prewarming).
+    func waitUntilReady(_ effects: [SceneEffectPlan], width: Int, height: Int, timeout: TimeInterval = 60) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while readyFormats(effects, width: width, height: height) == nil {
+            if Date() > deadline { return false }
+            Thread.sleep(forTimeInterval: 0.005)
+        }
+        return true
     }
 
     // MARK: - Passes
 
-    private func encode(_ pass: SceneEffectPassPlan, variant: TranslatedShaderVariant, output: MTLTexture,
+    private func encode(_ pass: SceneEffectPassPlan, pipeline: MTLRenderPipelineState, program: UniformProgram,
+                        variant: TranslatedShaderVariant, output: MTLTexture,
                         current: MTLTexture, previous: MTLTexture, fbos: [String: MTLTexture],
-                        context: Context, commandBuffer: MTLCommandBuffer) -> Bool {
-        guard let pipeline = pipeline(for: pass, variant: variant, format: output.pixelFormat) else { return false }
+                        context: Context, commandBuffer: MTLCommandBuffer) {
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = output
         // Blended passes composite over what's already there; others overwrite every pixel.
         descriptor.colorAttachments[0].loadAction = Self.blendMode(pass.blending) == nil ? .dontCare : .load
         descriptor.colorAttachments[0].storeAction = .store
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return false }
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
         defer { encoder.endEncoding() }
+        passesEncoded += 1
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBuffer(quadPositions, offset: 0, index: Self.positionBuffer)
         encoder.setVertexBuffer(quadTexCoords, offset: 0, index: Self.texCoordBuffer)
@@ -154,26 +278,20 @@ final class EffectGraphRenderer {
             encoder.setFragmentSamplerState(sampler, index: slot)
             encoder.setVertexTexture(texture, index: slot)
             encoder.setVertexSamplerState(sampler, index: slot)
-            let size = SIMD2<Float>(Float(texture.width), Float(texture.height))
-            textureInfo[slot] = BuiltinTextureInfo(allocatedSize: size, contentSize: size, spriteRotation: nil,
-                                                   spriteTranslation: nil, mipCount: texture.mipmapLevelCount)
+            if program.needsTextureInfo {
+                let size = SIMD2<Float>(Float(texture.width), Float(texture.height))
+                textureInfo[slot] = BuiltinTextureInfo(allocatedSize: size, contentSize: size, spriteRotation: nil,
+                                                       spriteTranslation: nil, mipCount: texture.mipmapLevelCount)
+            }
         }
 
-        if let layout = variant.uniforms, layout.size > 0 {
+        if program.size > 0 {
             var passContext = BuiltinPassContext(targetSize: SIMD2<Float>(Float(output.width), Float(output.height)))
             passContext.textures = textureInfo
             passContext.color = context.layerColor
             passContext.alpha = context.layerAlpha
-            let values = pass.constants.values(in: context.values)
-            var bytes = [UInt8](repeating: 0, count: layout.size)
-            for member in layout.members.values {
-                let components = values[member.name]?.components
-                    ?? BuiltinUniforms.value(named: member.name, frame: context.frame, pass: passContext,
-                                             arrayCount: member.count > 1 ? member.count : nil)
-                guard let components else { continue }
-                UniformWriter.write(components, member: member, into: &bytes)
-            }
-            bytes.withUnsafeBytes { raw in
+            program.update(frame: context.frame, pass: passContext, values: context.values)
+            program.bytes.withUnsafeBytes { raw in
                 if raw.count <= 4096 {
                     encoder.setVertexBytes(raw.baseAddress!, length: raw.count, index: 0)
                     encoder.setFragmentBytes(raw.baseAddress!, length: raw.count, index: 0)
@@ -184,49 +302,13 @@ final class EffectGraphRenderer {
             }
         }
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        return true
     }
 
-    private func pipeline(for pass: SceneEffectPassPlan, variant: TranslatedShaderVariant,
-                          format: MTLPixelFormat) -> MTLRenderPipelineState? {
-        let key = "\(pass.variantKey)|\(format.rawValue)|\(pass.blending)"
-        if let pipeline = pipelines[key] { return pipeline }
-        guard !failedVariants.contains(key) else { return nil }
-        do {
-            let functions = try self.functions(for: pass.variantKey, variant: variant)
-            let descriptor = MTLRenderPipelineDescriptor()
-            descriptor.vertexFunction = functions.vertex
-            descriptor.fragmentFunction = functions.fragment
-            descriptor.colorAttachments[0].pixelFormat = format
-            if let blend = Self.blendMode(pass.blending) {
-                let attachment = descriptor.colorAttachments[0]!
-                attachment.isBlendingEnabled = true
-                attachment.sourceRGBBlendFactor = blend.source
-                attachment.sourceAlphaBlendFactor = blend.source
-                attachment.destinationRGBBlendFactor = blend.destination
-                attachment.destinationAlphaBlendFactor = blend.destination
-            }
-            descriptor.vertexDescriptor = Self.vertexDescriptor(for: functions.vertex)
-            let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-            pipelines[key] = pipeline
-            return pipeline
-        } catch {
-            failedVariants.insert(key)
-            OWELog.error(.shader, "Effect pipeline failed (\(pass.variantKey.prefix(12))): \(error)")
-            return nil
-        }
-    }
-
-    private func functions(for key: String, variant: TranslatedShaderVariant) throws -> (vertex: MTLFunction, fragment: MTLFunction) {
-        if let cached = libraries[key] { return cached }
-        let vertexLibrary = try device.makeLibrary(source: variant.vertexMSL, options: nil)
-        let fragmentLibrary = try device.makeLibrary(source: variant.fragmentMSL, options: nil)
-        guard let vertex = vertexLibrary.makeFunction(name: "main0"),
-              let fragment = fragmentLibrary.makeFunction(name: "main0") else {
-            throw ShaderCompilerError.failed(step: "metal", output: "entry point main0 missing")
-        }
-        libraries[key] = (vertex, fragment)
-        return (vertex, fragment)
+    private func program(_ key: String, pass: SceneEffectPassPlan, variant: TranslatedShaderVariant) -> UniformProgram {
+        if let existing = programs[key] { return existing }
+        let program = UniformProgram(layout: variant.uniforms, constants: pass.constants)
+        programs[key] = program
+        return program
     }
 
     /// Position and texcoord come from the quad; any other attribute a shader reads is zero.
@@ -305,6 +387,59 @@ final class EffectGraphRenderer {
         case "translucent": return (.sourceAlpha, .oneMinusSourceAlpha)
         case "additive": return (.sourceAlpha, .one)
         default: return nil
+        }
+    }
+}
+
+/// A pass's `WEUniforms` bytes: static values written once, dynamic constants and live built-ins
+/// patched each frame. Avoids per-frame dictionaries and allocations on the render thread.
+final class UniformProgram {
+    private(set) var bytes: [UInt8]
+    let size: Int
+    /// True when nothing changes between frames (no time/audio/pointer/live-bound value).
+    let isStatic: Bool
+    let needsTextureInfo: Bool
+    private let dynamic: [(member: UniformMember, constant: ShaderConstantResolver.DynamicConstant)]
+    private let builtins: [UniformMember]
+
+    /// Built-ins whose value changes from frame to frame.
+    static let timeVarying: Set<String> = ["g_Time", "g_Frametime", "g_Daytime", "g_DayTime", "g_PointerPosition",
+                                           "g_PointerPositionLast", "g_PointerState", "g_ParallaxPosition"]
+
+    init(layout: UniformLayout?, constants: ShaderConstantResolver.ResolvedConstants) {
+        size = layout?.size ?? 0
+        bytes = [UInt8](repeating: 0, count: size)
+        let dynamicByName = Dictionary(constants.dynamic.map { ($0.uniform, $0) }, uniquingKeysWith: { a, _ in a })
+        var dynamic: [(UniformMember, ShaderConstantResolver.DynamicConstant)] = []
+        var builtins: [UniformMember] = []
+        for member in (layout?.members.values).map(Array.init) ?? [] {
+            if let constant = dynamicByName[member.name] {
+                dynamic.append((member, constant))
+            } else if let value = constants.staticValues[member.name] {
+                UniformWriter.write(value.components, member: member, into: &bytes)
+            } else if BuiltinUniforms.isBuiltin(member.name) {
+                builtins.append(member)
+            }
+        }
+        self.dynamic = dynamic
+        self.builtins = builtins
+        needsTextureInfo = builtins.contains { $0.name.hasPrefix("g_Texture") }
+        isStatic = dynamic.isEmpty && !builtins.contains {
+            Self.timeVarying.contains($0.name) || $0.name.hasPrefix("g_AudioSpectrum")
+        }
+    }
+
+    func update(frame: BuiltinFrameContext, pass: BuiltinPassContext, values: SceneValueContext) {
+        for (member, constant) in dynamic {
+            let value = ShaderConstantResolver.shape(SceneValueResolver.resolve(constant.source, in: values),
+                                                     count: constant.count, isInt: constant.isInt)
+            UniformWriter.write(value.components, member: member, into: &bytes)
+        }
+        for member in builtins {
+            if let components = BuiltinUniforms.value(named: member.name, frame: frame, pass: pass,
+                                                      arrayCount: member.count > 1 ? member.count : nil) {
+                UniformWriter.write(components, member: member, into: &bytes)
+            }
         }
     }
 }

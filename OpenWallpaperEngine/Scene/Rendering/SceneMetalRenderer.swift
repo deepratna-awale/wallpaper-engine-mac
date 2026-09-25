@@ -97,6 +97,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
+    /// Runs authored effects through Wallpaper Engine's own shaders.
+    private lazy var effectGraph = EffectGraphRenderer(device: device)
+    /// Asset textures used by effect passes, materialised once per content.
+    private var effectAssetTextures: [String: MTLTexture] = [:]
+    /// `g_Time` counts from when the scene appeared, as in Wallpaper Engine.
+    private var effectTimeOrigin = CACurrentMediaTime()
     private let dynamicEffectPipelines: DynamicEffectPipelineCache
     private let contentQueue = DispatchQueue(label: "SceneMetalRenderer.content", qos: .userInitiated)
     private let contentGenerationLock = NSLock()
@@ -210,6 +216,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     func setContent(_ content: SceneMetalContent?) {
+        effectAssetTextures.removeAll()
+        effectGraph?.releaseTargets()
+        effectTimeOrigin = CACurrentMediaTime()
         contentGenerationLock.lock()
         contentGeneration &+= 1
         let generation = contentGeneration
@@ -385,8 +394,30 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         materializeScriptCreatedLayers()
         var dynamicTextures: [Int: MTLTexture] = [:]
         var dynamicHandledEffects: [Int: Set<String>] = [:]
+        // Advanced once per frame: every advance smooths the spectrum one step further.
+        var effectFrame = BuiltinFrameContext()
+        effectFrame.time = CACurrentMediaTime() - effectTimeOrigin
+        effectFrame.frameTime = Double(frameDelta)
+        effectFrame.daytime = BuiltinFrameContext.daytime(at: Date())
+        effectFrame.pointer = simd_clamp(cursor / max(sceneSize, SIMD2(1, 1)), SIMD2(0, 0), SIMD2(1, 1))
+        effectFrame.screenSize = drawableSize
+        effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
         for (layerIndex, entry) in layers.enumerated() {
             guard AudioReactiveScriptEngine.shared.layerBoolean(entry.stateId, property: "visible", fallback: true) else { continue }
+            if !entry.layer.weEffects.isEmpty, let effectGraph {
+                let context = EffectGraphRenderer.Context(
+                    frame: effectFrame,
+                    values: LiveSceneValueContext(time: effectFrame.time, layerId: entry.stateId),
+                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
+                    sceneSnapshot: nil,
+                    layerColor: SIMD3(entry.layer.color.x, entry.layer.color.y, entry.layer.color.z),
+                    layerAlpha: entry.layer.opacity)
+                if let output = effectGraph.apply(entry.layer.weEffects, to: textureFrame(for: entry, time: time).texture,
+                                                  layerID: entry.stateId, context: context, commandBuffer: commandBuffer) {
+                    dynamicTextures[layerIndex] = output
+                }
+                continue
+            }
             if let result = applyDynamicEffects(to: entry, time: time, audioLevel: Float(audioLevel),
                                                 drawableSize: drawableSize, commandBuffer: commandBuffer) {
                 dynamicTextures[layerIndex] = result.texture
@@ -668,6 +699,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    private func effectAssetTexture(key: String, source: SceneMetalTextureSource) -> MTLTexture? {
+        if let cached = effectAssetTextures[key] { return cached }
+        guard let texture = makeTextureFrames(from: source)?.first?.texture else { return nil }
+        effectAssetTextures[key] = texture
+        return texture
     }
 
     private func safeParallaxPosition(_ position: Float, baseSize: Float, sceneExtent: Float) -> Float {

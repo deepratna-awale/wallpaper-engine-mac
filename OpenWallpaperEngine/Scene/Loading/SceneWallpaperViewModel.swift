@@ -653,8 +653,9 @@ class SceneWallpaperViewModel: ObservableObject {
         let objectColor = object.color?.parseVector3() ?? (1, 1, 1)
         let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
         let effects = materialEffects(material.passes?.first)
+        let effectPlans = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
         var sceneEffects = buildSceneEffects(object.effects ?? [], objectID: object.id ?? -1,
-                             wallpaperDir: wallpaperDir)
+                             wallpaperDir: wallpaperDir, skipping: effectPlans.handled)
         if object.name?.localizedCaseInsensitiveContains("cloud") == true {
             sceneEffects.append(SceneMetalEffect(name: "volumetricfog", constants: [:], mask: nil, scripts: [:]))
         }
@@ -675,7 +676,7 @@ class SceneWallpaperViewModel: ObservableObject {
         } else {
             xraySource = nil
         }
-        return SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
+        var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
                        scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
                        opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript,
@@ -690,6 +691,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                rotation: rotation, rotationScript: object.anglesScript,
                                rotationAnimation: object.anglesAnimation, effects: effects, sceneEffects: sceneEffects,
                                                xraySource: xraySource)
+        layer.weEffects = effectPlans.plans
+        return layer
     }
 
     private func buildMetalTextLayer(_ object: WESceneObject, sceneSize: SIMD2<Float>,
@@ -934,11 +937,53 @@ class SceneWallpaperViewModel: ObservableObject {
         if !unrenderable.isEmpty { OWELog.error(.scene, "Effects with no implementation: \(unrenderable.joined(separator: ", "))") }
     }
 
+    /// Shared by every scene: translated variants are cached in memory and on disk.
+    private static let effectTranslator: ShaderVariantTranslator? = {
+        do {
+            return ShaderVariantTranslator(compiler: try ProcessShaderCompiler())
+        } catch {
+            OWELog.error(.shader, "WE shader toolchain unavailable, effects use built-in approximations: \(error)")
+            return nil
+        }
+    }()
+
+    /// Plans each visible effect for Wallpaper Engine's own shaders. `handled` holds the indices
+    /// the native approximations must skip: planned effects and hidden ones. Effects that can't be
+    /// planned (no toolchain, sources missing) fall back to the native stack until it is removed.
+    private func buildEffectPlans(_ effects: [WEObjectEffect], objectID: Int,
+                                  wallpaperDir: URL) -> (plans: [SceneEffectPlan], handled: Set<Int>) {
+        guard !effects.isEmpty, let translator = Self.effectTranslator else { return ([], []) }
+        let roots = [wallpaperDir] + (WallpaperEngineAssets.directory.map { [$0] } ?? [])
+        let builder = SceneEffectPlanBuilder(
+            roots: roots, translator: translator,
+            readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
+            loadTexture: { [weak self] name, materialPath in
+                self?.loadMetalTexture(named: name, materialDir: materialPath, wallpaperDir: wallpaperDir)
+            })
+        var plans: [SceneEffectPlan] = []
+        var handled = Set<Int>()
+        for (index, effect) in effects.enumerated() {
+            let enabled = AudioReactiveScriptEngine.shared.userPropertyString(
+                sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: index)) != "false"
+            guard isEffectVisible(effect), enabled else {
+                handled.insert(index)
+                continue
+            }
+            do {
+                plans.append(try builder.build(effect))
+                handled.insert(index)
+            } catch {
+                OWELog.error(.scene, "Effect \(effect.file) on object \(objectID) can't use WE shaders: \(error)")
+            }
+        }
+        return (plans, handled)
+    }
+
     private func buildSceneEffects(_ effects: [WEObjectEffect], objectID: Int,
-                                   wallpaperDir: URL) -> [SceneMetalEffect] {
+                                   wallpaperDir: URL, skipping handled: Set<Int> = []) -> [SceneMetalEffect] {
         var metalEffects: [SceneMetalEffect] = []
         for (effectIndex, effect) in effects.enumerated() {
-            guard isEffectVisible(effect),
+            guard !handled.contains(effectIndex), isEffectVisible(effect),
                                     AudioReactiveScriptEngine.shared.userPropertyString(
                                         sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: effectIndex)
                                     ) != "false",

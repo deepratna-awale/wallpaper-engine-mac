@@ -89,6 +89,7 @@ final class EffectGraphTests: XCTestCase {
                 return try? loader.newTexture(cgImage: cg, options: [.SRGB: false])
             },
             sceneSnapshot: nil, layerColor: SIMD3(1, 1, 1), layerAlpha: 1)
+        XCTAssertTrue(renderer.waitUntilReady([plan], width: input.width, height: input.height), "pipelines still compiling")
         let output = try XCTUnwrap(renderer.apply([plan], to: input, layerID: "test", context: context, commandBuffer: buffer),
                                    "no pass rendered")
         buffer.commit()
@@ -132,5 +133,32 @@ final class EffectGraphTests: XCTestCase {
             }
         }
         XCTAssertEqual(failures, [], failures.joined(separator: "\n"))
+    }
+
+    /// Chains that don't change over time are rendered once and reused while the input is the same.
+    func testStaticChainIsReusedAndAnimatedChainIsNot() throws {
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let input = try checkerboard()
+        let context = EffectGraphRenderer.Context(frame: BuiltinFrameContext(time: 1), values: FixedValues(),
+                                                  assetTexture: { _, _ in nil }, sceneSnapshot: nil,
+                                                  layerColor: SIMD3(1, 1, 1), layerAlpha: 1)
+        func frames(_ json: String, layer: String) throws -> (encoded: Int, reused: Int) {
+            let plan = try builder.build(try effect(json))
+            XCTAssertTrue(renderer.waitUntilReady([plan], width: 256, height: 256))
+            let encodedBefore = renderer.passesEncoded
+            let reusedBefore = renderer.layersReused
+            for _ in 0..<3 {
+                let buffer = try XCTUnwrap(queue.makeCommandBuffer())
+                XCTAssertNotNil(renderer.apply([plan], to: input, layerID: layer, context: context, commandBuffer: buffer))
+                buffer.commit()
+            }
+            return (renderer.passesEncoded - encodedBefore, renderer.layersReused - reusedBefore)
+        }
+        let tint = try frames(#"{"file":"effects/tint/effect.json"}"#, layer: "static")
+        XCTAssertEqual(tint.encoded, 1, "tint has no time input: one render, then reuse")
+        XCTAssertEqual(tint.reused, 2)
+        let shake = try frames(#"{"file":"effects/shake/effect.json","passes":[{"textures":[null,"util/clouds_256"]}]}"#, layer: "animated")
+        XCTAssertEqual(shake.encoded, 3, "shake reads g_Time and must render every frame")
+        XCTAssertEqual(shake.reused, 0)
     }
 }
