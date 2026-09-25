@@ -71,6 +71,14 @@ enum ShaderPairRewriter {
         }
         // A fragment input the vertex stage never writes would fail pipeline creation.
         let missing = fragmentInputs.filter { input in !vertexOutputs.contains { $0.name == input.name } }
+        // WE's HLSL linkage tolerates a varying declared with different vector sizes in the two
+        // stages; Metal doesn't. The fragment stage reads the vertex stage's type and converts.
+        var resized: [String: (vertexType: String, fragmentType: String)] = [:]
+        for input in fragmentInputs where input.arrayCount == nil {
+            guard let output = vertexOutputs.first(where: { $0.name == input.name }), output.arrayCount == nil,
+                  output.type != input.type, vectorSize(output.type) != nil, vectorSize(input.type) != nil else { continue }
+            resized[input.name] = (output.type, input.type)
+        }
 
         let block = members.isEmpty ? "" : "layout(std140, binding = 0) uniform \(uniformBlockName) {\n"
             + members.map { "    \($0.type) \($0.name)\($0.arrayCount.map { "[\($0)]" } ?? "");\n" }.joined() + "};\n"
@@ -102,7 +110,15 @@ enum ShaderPairRewriter {
                 }
                 if name == "out_FragColor" { return "layout(location = 0) out \(type) \(name);" }
                 guard let location = locations[name] else { return group(match, 0, result)! }
+                if stage == .fragment, let types = resized[name] {
+                    return "layout(location = \(location)) \(qualifier)in \(types.vertexType) \(name)_weVarying;\n\(type) \(name);"
+                }
                 return "layout(location = \(location)) \(qualifier)\(direction) \(type) \(name)\(array);"
+            }
+            if stage == .fragment, !resized.isEmpty {
+                result = insertAtMainEntry(result, resized.sorted { $0.key < $1.key }.map { name, types in
+                    "\(name) = \(convert("\(name)_weVarying", from: types.vertexType, to: types.fragmentType));"
+                }.joined(separator: " "))
             }
             if stage == .vertex, !missing.isEmpty {
                 result = insertAfterHeader(result, missing.map {
@@ -121,6 +137,35 @@ enum ShaderPairRewriter {
         }
         return Result(vertex: decoratedVertex, fragment: decoratedFragment, uniforms: members,
                       textureSlots: slots.sorted(), attributes: attributes)
+    }
+
+    /// Components of a float scalar/vector type; nil for anything else.
+    static func vectorSize(_ type: String) -> Int? {
+        switch type {
+        case "float": return 1
+        case "vec2": return 2
+        case "vec3": return 3
+        case "vec4": return 4
+        default: return nil
+        }
+    }
+
+    /// Truncates or zero-pads `expression` from one float vector type to another.
+    static func convert(_ expression: String, from source: String, to target: String) -> String {
+        let from = vectorSize(source)!, to = vectorSize(target)!
+        if to < from { return "\(expression).\("xyzw".prefix(to))" }
+        return "\(target)(\(expression)\(String(repeating: ", 0.0", count: to - from)))"
+    }
+
+    private static let mainPattern = try! NSRegularExpression(pattern: #"\bvoid\s+main\s*\(\s*(?:void)?\s*\)\s*\{"#)
+
+    /// Inserts statements at the start of `main`.
+    private static func insertAtMainEntry(_ text: String, _ statements: String) -> String {
+        guard let match = mainPattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+              let range = Range(match.range, in: text) else { return text }
+        var result = text
+        result.insert(contentsOf: "\n" + statements + "\n", at: range.upperBound)
+        return result
     }
 
     /// Interface slots a varying of this type occupies.

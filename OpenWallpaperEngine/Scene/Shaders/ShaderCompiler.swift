@@ -69,6 +69,9 @@ struct ProcessShaderCompiler: ShaderCompiler {
         return try body(directory)
     }
 
+    /// A single translation step normally takes milliseconds; anything this long is stuck.
+    static let timeout: TimeInterval = 30
+
     private func run(_ executable: String, _ arguments: [String], step: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
@@ -77,11 +80,31 @@ struct ProcessShaderCompiler: ShaderCompiler {
         let errors = Pipe()
         process.standardOutput = output
         process.standardError = errors
+        // Drain both pipes concurrently: a tool that fills one while we block reading the other
+        // would never exit.
+        let group = DispatchGroup()
+        var stdout = Data()
+        var stderr = Data()
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            stdout = output.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            stderr = errors.fileHandleForReading.readDataToEndOfFile()
+            group.leave()
+        }
+        let exited = DispatchSemaphore(value: 0)
+        process.terminationHandler = { _ in exited.signal() }
         try process.run()
-        // Read before waiting: a full pipe would otherwise block the tool forever.
-        let stdout = output.fileHandleForReading.readDataToEndOfFile()
-        let stderr = errors.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        if exited.wait(timeout: .now() + Self.timeout) == .timedOut {
+            process.terminate()
+            _ = exited.wait(timeout: .now() + 2)
+            group.wait()
+            throw ShaderCompilerError.failed(step: step, output: "timed out after \(Int(Self.timeout)) s")
+        }
+        group.wait()
         let text = String(decoding: stdout, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             let message = (text + String(decoding: stderr, as: UTF8.self))

@@ -51,7 +51,7 @@ enum ShaderVariantError: Error, CustomStringConvertible {
 /// hundreds of thousands possible, so nothing is precompiled.
 final class ShaderVariantTranslator {
     /// Bump whenever translated output for the same input can change.
-    static let revision = 2
+    static let revision = 3
 
     let compiler: ShaderCompiler
     let cacheDirectory: URL?
@@ -116,8 +116,8 @@ final class ShaderVariantTranslator {
                            combos: [String: Int]) throws -> TranslatedShaderVariant {
         let label = "\(vertex.path) + \(fragment.path)"
         do {
-            let vertexText = try compiler.preprocess(ShaderPrelude.text(for: .vertex, combos: combos) + vertex.text, stage: .vertex)
-            let fragmentText = try compiler.preprocess(ShaderPrelude.text(for: .fragment, combos: combos) + fragment.text, stage: .fragment)
+            let vertexText = try compiler.preprocess(ShaderPrelude.text(for: .vertex, combos: combos, source: vertex.text) + vertex.text, stage: .vertex)
+            let fragmentText = try compiler.preprocess(ShaderPrelude.text(for: .fragment, combos: combos, source: fragment.text) + fragment.text, stage: .fragment)
             let pair = ShaderPairRewriter.rewrite(vertex: ShaderPrelude.fixupAfterPreprocess(vertexText),
                                                   fragment: ShaderPrelude.fixupAfterPreprocess(fragmentText))
             let vertexOut = try compiler.compileToMSL(pair.vertex, stage: .vertex)
@@ -126,6 +126,20 @@ final class ShaderVariantTranslator {
             return TranslatedShaderVariant(vertexMSL: vertexOut.msl, fragmentMSL: fragmentOut.msl, uniforms: layout,
                                            textureSlots: pair.textureSlots, attributes: pair.attributes, combos: combos)
         } catch {
+            if let dir = ProcessInfo.processInfo.environment["OWE_DUMP"] { // TEMPDUMP
+                let base = URL(fileURLWithPath: dir).appending(path: fragment.path.replacingOccurrences(of: "/", with: "_"))
+                try? FileManager.default.createDirectory(at: URL(fileURLWithPath: dir), withIntermediateDirectories: true)
+                let v = ShaderPrelude.text(for: .vertex, combos: combos, source: vertex.text) + vertex.text
+                let f = ShaderPrelude.text(for: .fragment, combos: combos, source: fragment.text) + fragment.text
+                try? v.write(to: base.appendingPathExtension("vert"), atomically: true, encoding: .utf8)
+                try? f.write(to: base.appendingPathExtension("frag"), atomically: true, encoding: .utf8)
+                if let pv = try? compiler.preprocess(v, stage: .vertex), let pf = try? compiler.preprocess(f, stage: .fragment) {
+                    let pair = ShaderPairRewriter.rewrite(vertex: ShaderPrelude.fixupAfterPreprocess(pv), fragment: ShaderPrelude.fixupAfterPreprocess(pf))
+                    try? pair.vertex.write(to: base.appendingPathExtension("rw.vert"), atomically: true, encoding: .utf8)
+                    try? pair.fragment.write(to: base.appendingPathExtension("rw.frag"), atomically: true, encoding: .utf8)
+                }
+                try? "\(error)".write(to: base.appendingPathExtension("err.txt"), atomically: true, encoding: .utf8)
+            }
             throw ShaderVariantError.translation(label, underlying: error)
         }
     }

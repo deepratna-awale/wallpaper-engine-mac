@@ -63,6 +63,76 @@ final class ShaderVariantTests: XCTestCase {
         XCTAssertNoThrow(try Self.makePipeline(variant, device: try XCTUnwrap(MTLCreateSystemDefaultDevice())))
     }
 
+    // MARK: - Dialect (M8): each case below comes from a library wallpaper that failed to translate.
+
+    /// Translates `effects/dialect/shaders/effects/<name>` and builds its pipeline.
+    private func translateDialectFixture(_ name: String) throws -> TranslatedShaderVariant {
+        let loader = ShaderSourceLoader(roots: [Fixtures.url("ShaderAssets")])
+        let path = "effects/dialect/shaders/effects/\(name)"
+        let vertex = try loader.load(path, stage: .vertex)
+        let fragment = try loader.load(path, stage: .fragment)
+        let combos = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment, overrides: [], boundTextureSlots: [0])
+        let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)
+        XCTAssertNoThrow(try Self.makePipeline(variant, device: try XCTUnwrap(MTLCreateSystemDefaultDevice())))
+        return variant
+    }
+
+    /// Scalar splat, vector truncation, float→int, float `%`, float and packed-float4 array
+    /// indices, `mix` of different sizes, a `vec4` sampling coordinate.
+    func testHLSLImplicitConversionsTranslate() throws {
+        _ = try translateDialectFixture("conversions")
+    }
+
+    func testDeclarationsGetHLSLInitialiserConversions() {
+        let out = ShaderPrelude.fixupAfterPreprocess("void main() {\n vec2 a = 0.0, b, c = d.xyz;\n for (int i = f; i < 3; i++) {}\n}")
+        XCTAssertTrue(out.contains("vec2 a = weCast_vec2(0.0), b, c = weCast_vec2(d.xyz);"), out)
+        XCTAssertTrue(out.contains("for (int i = weCast_int(f);"), out)
+        let global = "const vec3 k = vec3(1.0);\nvec2 g = vec2(0.0);\n"
+        XCTAssertEqual(ShaderPrelude.fixupAfterPreprocess(global), global, "globals and consts must stay constant expressions")
+    }
+
+    func testModuloAndSubscriptsFollowHLSL() {
+        let out = ShaderPrelude.fixupAfterPreprocess("void main() { x = a * b.y % 4 + (c + 1) % d[2]; y = s[i / 4]; z = s[3]; }")
+        let compact = out.replacingOccurrences(of: " ", with: "")
+        XCTAssertTrue(compact.contains("weMod(a*b.y,4)+weMod((c+1),d[2])"), out)
+        XCTAssertTrue(out.contains("s[int(i / 4)]"), out)
+        XCTAssertTrue(out.contains("z = s[3]"), out)
+        let packed = ShaderPrelude.fixupAfterPreprocess("uniform float g[64];\nvoid main() { v = g[i / 4][j]; }")
+        XCTAssertTrue(packed.contains("g[int(int(i / 4) * 4 + int(j))]"), packed)
+        XCTAssertTrue(packed.contains("uniform float g[64];"), packed)
+    }
+
+    /// A shader's own `M_PI`/`log10` replace the prelude's instead of clashing with them.
+    func testShaderDefinitionsOverridePreludeMacros() throws {
+        let prelude = ShaderPrelude.text(for: .fragment, combos: [:], source: "#define M_PI 3.14\nfloat log10(float x) { return x; }")
+        XCTAssertFalse(prelude.contains("#define M_PI "))
+        XCTAssertFalse(prelude.contains("#define log10("), "the shader's own log10 replaces the prelude's")
+        XCTAssertTrue(prelude.contains("#define log10 we_log10"), "and is renamed away from Metal's built-in")
+        XCTAssertTrue(prelude.contains("#define M_PI_2 "))
+        _ = try translateDialectFixture("redefines")
+    }
+
+    func testUnmatchedEndifIsDropped() {
+        let text = ShaderSourceLoader.dropUnmatchedEndifs(in: "#if A\n#endif\n#endif\n#ifdef B\n#endif")
+        XCTAssertEqual(text, "#if A\n#endif\n// (unmatched) #endif\n#ifdef B\n#endif")
+    }
+
+    /// `vec4` out of the vertex stage, `vec2` into the fragment stage: Metal needs matching types.
+    func testVaryingDeclaredWithDifferentSizesLinks() throws {
+        let variant = try translateDialectFixture("varyings")
+        XCTAssertTrue(variant.fragmentMSL.contains("float4 v_TexCoord_weVarying"), variant.fragmentMSL)
+    }
+
+    /// A header's own include is emitted before the header that uses it.
+    func testNestedIncludesComeBeforeTheirIncluder() throws {
+        let source = try ShaderSourceLoader(roots: [Fixtures.url("ShaderAssets")])
+            .load("effects/dialect/shaders/effects/includes", stage: .fragment)
+        let inner = try XCTUnwrap(source.text.range(of: "vec3 Inner("))
+        let outer = try XCTUnwrap(source.text.range(of: "vec3 Outer("))
+        XCTAssertLessThan(inner.lowerBound, outer.lowerBound)
+        _ = try translateDialectFixture("includes")
+    }
+
     func testShakeTexturesLandInTheirOwnSlots() throws {
         try XCTSkipUnless(FileManager.default.fileExists(atPath: Self.weAssets.path), "WE install not present")
         let loader = ShaderSourceLoader(roots: [Self.weAssets])

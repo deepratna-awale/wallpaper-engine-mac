@@ -108,29 +108,47 @@ struct ShaderSourceLoader {
     static func inlineIncludes(in text: String, path: String,
                                resolve: (String) throws -> String) throws -> String {
         var seen = Set<String>()
+        // Dependencies first: a header's own includes are emitted before the header itself, and
+        // sibling includes keep their order.
         var bodies: [String] = []
         func collect(_ source: String) throws -> String {
             var result = source
-            for match in includePattern.matches(in: source, range: NSRange(source.startIndex..., in: source)).reversed() {
+            let matches = includePattern.matches(in: source, range: NSRange(source.startIndex..., in: source))
+            for match in matches {
                 let name = String(source[Range(match.range(at: 1), in: source)!])
-                if seen.insert(name).inserted {
-                    let body: String
-                    do { body = try resolve(name) } catch { throw ShaderSourceError.missingInclude(name, in: path) }
-                    bodies.append(try collect(body))
-                }
+                guard seen.insert(name).inserted else { continue }
+                let body: String
+                do { body = try resolve(name) } catch { throw ShaderSourceError.missingInclude(name, in: path) }
+                bodies.append(try collect(body))
+            }
+            for match in matches.reversed() {
+                let name = String(source[Range(match.range(at: 1), in: source)!])
                 result.replaceSubrange(Range(match.range, in: result)!, with: "// (included) #include \"\(name)\"")
             }
             return result
         }
         var main = try collect(text)
-        main = stubRequires(in: main)
+        main = dropUnmatchedEndifs(in: stubRequires(in: main))
         guard !bodies.isEmpty else { return main }
-        // Nested headers were appended after the header that included them; they must come first.
-        let blob = "\n" + bodies.reversed().joined(separator: "\n") + "\n"
+        let blob = "\n" + bodies.joined(separator: "\n") + "\n"
         let insertion = includeInsertionOffset(in: main)
         let index = main.utf16.index(main.utf16.startIndex, offsetBy: insertion)
         main.insert(contentsOf: blob, at: index)
         return main
+    }
+
+    /// WE's compiler ignores an `#endif` that closes nothing; glslang rejects the whole shader.
+    static func dropUnmatchedEndifs(in text: String) -> String {
+        var depth = 0
+        var lines = text.components(separatedBy: "\n")
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.range(of: #"^#\s*if"#, options: .regularExpression) != nil { depth += 1 }
+            if trimmed.range(of: #"^#\s*endif\b"#, options: .regularExpression) != nil {
+                if depth == 0 { lines[index] = "// (unmatched) " + lines[index] } else { depth -= 1 }
+            }
+        }
+        return lines.joined(separator: "\n")
     }
 
     /// Character offset (UTF-16) where includes go.

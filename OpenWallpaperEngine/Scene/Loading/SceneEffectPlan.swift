@@ -131,21 +131,24 @@ struct SceneEffectPlanBuilder {
         }
         // Explicitly bound slots decide combos (MASK etc.); defaults below don't.
         let boundSlots = Set(inputs.keys)
-        for sampler in samplers {
-            guard let slot = sampler.textureSlot, inputs[slot] == nil, slot != 0,
-                  let name = sampler.defaultTexture,
-                  let input = textureInput(named: name, materialPath: materialPath, fboNames: fboNames,
-                                           effectDirectory: effectDirectory) else { continue }
-            inputs[slot] = input
-        }
-        if inputs[0] == nil { inputs[0] = .current }
-
         let combos = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment,
                                                            overrides: [materialPass.combos, instance?.combos ?? [:]],
                                                            boundTextureSlots: boundSlots.union([0]))
         guard Self.conditionsHold(pass.conditions, combos: combos) else { return nil }
 
         let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)
+        // Only slots the compiled variant samples need a texture: a sampler behind a disabled
+        // combo (e.g. a lighting atlas) is declared but never read.
+        let sampled = Set(variant.textureSlots)
+        inputs = inputs.filter { sampled.contains($0.key) }
+        for sampler in samplers {
+            guard let slot = sampler.textureSlot, sampled.contains(slot), inputs[slot] == nil, slot != 0,
+                  let name = sampler.defaultTexture,
+                  let input = textureInput(named: name, materialPath: materialPath, fboNames: fboNames,
+                                           effectDirectory: effectDirectory) else { continue }
+            inputs[slot] = input
+        }
+        if inputs[0] == nil { inputs[0] = .current }
         let uniforms = (vertex.uniforms + fragment.uniforms).filter { !$0.isSampler }.reduce(into: [ShaderUniformDeclaration]()) { result, uniform in
             if !result.contains(where: { $0.name == uniform.name }) { result.append(uniform) }
         }
