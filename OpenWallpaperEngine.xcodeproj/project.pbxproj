@@ -11,6 +11,7 @@
 		4923DF97305D13130038BE65 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4923DF95305D13130038BE65 /* MetalKit.framework */; };
 		EE1000000000000000000403 /* we-assets in Resources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000404 /* we-assets */; };
 		AA1B2C3D4E5F600200ABCD05 /* SpriteKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */; };
+		EE3000000000000000000001 /* ShaderToolchain in Frameworks */ = {isa = PBXBuildFile; productRef = EE3000000000000000000002 /* ShaderToolchain */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -68,6 +69,7 @@
 				4923DF97305D13130038BE65 /* MetalKit.framework in Frameworks */,
 				4923DF96305D13130038BE65 /* MetalFX.framework in Frameworks */,
 				AA1B2C3D4E5F600200ABCD05 /* SpriteKit.framework in Frameworks */,
+				EE3000000000000000000001 /* ShaderToolchain in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -149,6 +151,9 @@
 				5EC47E782A2DB2E600120CCC /* OpenWallpaperEngine */,
 			);
 			name = OpenWallpaperEngine;
+			packageProductDependencies = (
+				EE3000000000000000000002 /* ShaderToolchain */,
+			);
 			productName = OpenWallpaperEngine;
 			productReference = 5EC47E762A2DB2E600120CCC /* Open Wallpaper Engine.app */;
 			productType = "com.apple.product-type.application";
@@ -214,6 +219,9 @@
 				en,
 				Base,
 				"zh-Hans",
+			);
+			packageReferences = (
+				EE3000000000000000000003 /* XCLocalSwiftPackageReference "Vendor/ShaderToolchain" */,
 			);
 			preferredProjectObjectVersion = 77;
 			mainGroup = 5EC47E6D2A2DB2E600120CCC;
@@ -439,7 +447,7 @@
 				);
 				MACOSX_DEPLOYMENT_TARGET = 14.0;
 				MARKETING_VERSION = 0.8.1;
-				ONLY_ACTIVE_ARCH = NO;
+				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.winddog.wallpaper-engine";
 				PRODUCT_MODULE_NAME = OpenWallpaperEngine;
 				PRODUCT_NAME = "Open Wallpaper Engine";
@@ -554,6 +562,19 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+/* Begin XCLocalSwiftPackageReference section */
+		EE3000000000000000000003 /* XCLocalSwiftPackageReference "Vendor/ShaderToolchain" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/ShaderToolchain;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		EE3000000000000000000002 /* ShaderToolchain */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ShaderToolchain;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 5EC47E6E2A2DB2E600120CCC /* Project object */;
 }
