@@ -48,7 +48,7 @@ Licensed under [GPL-3.0](LICENSE), same as the original project.
 - **~48 native Metal effects** covering distortion, blur (standard/precise/radial/motion), bloom, godrays and light shafts, water waves/ripples/caustics/flow, clouds and fog, film grain, glitch/VHS, chromatic aberration, colour key, transform/skew/spin/twirl/perspective, reflection, refraction, shine/shimmer/glitter, edge detection, and more.
 - **Audio-reactive effects** — pulse, audio bars, audio-synced hue shift, and hyperdrive driven by live system-audio spectrum data.
 - **Semantic material effects** — brightness, contrast, saturation, exposure, gamma, hue, bloom threshold, bloom, and blur mapped to native Metal passes.
-- **GLSL → SPIR-V → MSL translation** at import time via `glslangValidator` and SPIRV-Cross, with COMBO defines, include resolution, and Metal buffer-slot renumbering.
+- **GLSL → SPIR-V → MSL translation** at load time by glslang and SPIRV-Cross linked into the app, with COMBO defines, include resolution, and Metal buffer-slot renumbering.
 - **Precompiled shader cache** — translated `.metal`, compiled `.metallib`, and `.reflection.json` sidecars are cached under `.open-wallpaper-engine/shaders`, hash-gated so only changed shaders are retranslated, and compiled in the background so rendering is never blocked.
 - **Dynamic effect catalog** read from the Wallpaper Engine `assets/effects/*/effect.json` manifests, including multi-pass effects and reflected uniform bindings.
 - **Effect masking** (up to 4 mask textures per layer), additive and alpha blending, and a pooled render-target system.
@@ -157,7 +157,7 @@ Scene wallpapers (the most common type on Steam Workshop) were completely unimpl
 - **User properties** — Exposes documented slider, checkbox, combo, text, and color project settings in the scene sidebar and makes numeric and boolean values available to SceneScript
 - **Built-in scene effects** — Executes authored `pulse`, `shake`, `iris`, and `waterwaves` effect graph entries in the Metal renderer
 - **Semantic material effects** — Maps common material constants and scripts for brightness, contrast, saturation, exposure, gamma, hue, bloom threshold, bloom, and blur to native Metal effects
-- **GLSL shader translation** — Converts packaged Wallpaper Engine GLSL shaders to SPIR-V and MSL at import time with `glslangValidator` and SPIRV-Cross; generated MSL is cached under `.open-wallpaper-engine/shaders` in the wallpaper directory
+- **GLSL shader translation** — Converts packaged Wallpaper Engine GLSL shaders to SPIR-V and MSL at load time with glslang and SPIRV-Cross linked into the app; translated variants are cached under `~/Library/Caches/com.winddog.wallpaper-engine/shader-variants`
 - **Preview fallback** — Falls back to preview.jpg/png/gif when textures can't be extracted
 
 ### Import — Fixed folder import
@@ -207,24 +207,15 @@ The import panel now correctly handles both individual wallpaper folders and par
 
 | Feature | Requirement | Install |
 |---------|-------------|---------|
-| Workshop scene effects (blur, bloom, caustics, light shafts…) | `glslang` + `spirv-cross` | `brew install glslang spirv-cross` |
 | Browsing / downloading from Steam Workshop | `steamcmd` | `brew install steamcmd` |
 | Scene effect library | A Wallpaper Engine `assets/` folder | See below |
 | Audio visualizers & audio-reactive SceneScript | Screen Recording permission | Settings → Permissions |
 
-#### Shader toolchain (`glslang` + `spirv-cross`)
+#### Shader toolchain
 
-Wallpaper Engine ships its effects as GLSL. They are translated to Metal (GLSL → SPIR-V → MSL) the first time an assets folder or wallpaper is loaded, then cached on disk and reused until the source changes.
+Wallpaper Engine ships its effects as GLSL. They are translated to Metal (GLSL → SPIR-V → MSL) by glslang and SPIRV-Cross, which are built into the app (`Vendor/ShaderToolchain`), the first time a wallpaper uses them, then cached on disk. Nothing needs to be installed.
 
-```sh
-brew install glslang spirv-cross
-```
-
-The app searches its own bundle, `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin`, `/usr/bin`, and then your `PATH`. Without these tools the app still runs, but Workshop effects fall back to the built-in native Metal effects only. The resolved paths are logged at launch:
-
-```
-[ShaderTranslator] Shader toolchain: /opt/homebrew/bin/glslangValidator + /opt/homebrew/bin/spirv-cross
-```
+`brew install glslang spirv-cross` is optional: those executables are only used as a fallback after the built-in compiler crashed twice.
 
 #### Wallpaper Engine assets folder
 
@@ -250,7 +241,6 @@ Without it, video and web wallpapers still work, and scene wallpapers render —
 - macOS >= 13.0
 - Xcode >= 14.4
 - Xcode Command Line Tools
-- `glslang` and `spirv-cross` (see [Requirements](#requirements)) if you are working on scene effects
 
 ### Steps
 ```sh
@@ -280,12 +270,12 @@ In Xcode, change the signing certificate to your own or select "Sign to Run Loca
 
 - `OpenWallpaperEngine/Services/SceneParsers/` — PKG, TEX/TEXS, and scene.json parsers and models
 - `OpenWallpaperEngine/Services/SceneEffects/` — dynamic effect catalog and authored effect parameter ranges
-- `OpenWallpaperEngine/Scene/Shaders/SceneShaderTranslator.swift` — GLSL → SPIR-V → MSL translation, `.metallib` compilation, and caching
+- `OpenWallpaperEngine/Scene/Shaders/` — GLSL → SPIR-V → MSL translation (`ShaderVariant.swift`, `InProcessShaderCompiler.swift`), caching and the pipeline archive
+- `Vendor/ShaderToolchain/` — glslang and SPIRV-Cross sources, built into the app as a local package
 - `OpenWallpaperEngine/Scene/Scripting/AudioReactiveScriptEngine.swift` — SceneScript runtime and audio/FFT bindings
 - `OpenWallpaperEngine/Audio/AudioLevelTap.swift` — ScreenCaptureKit system audio capture
 - `OpenWallpaperEngine/Scene/Rendering/SceneMetalRenderer.swift`, `SceneShaders.metal` — the Metal scene renderer and shader library
 - `OpenWallpaperEngine/Workshop/SteamCmdService.swift`, `WorkshopAPIService.swift`, `WorkshopViewModel.swift` — Steam Workshop browsing and downloads
 - `OpenWallpaperEngine/Library/WallpaperDirectory.swift`, `ZipImporter.swift`, `WallpaperPackageConverter.swift` — library storage, import, and package conversion
-- `Scripts/vendor-shader-tools.sh` — vendors `glslang` and `spirv-cross` into the app bundle
 - `Scripts/vendor-we-assets.sh` — vendors translated effect shaders and manifests into `we-assets/`
 - `Scripts/scene-api-coverage.py` — reports which SceneScript APIs installed wallpapers use versus what is implemented

@@ -1,10 +1,13 @@
 import Foundation
 import CryptoKit
 
-/// Finds glslang and SPIRV-Cross for `ProcessShaderCompiler`.
+/// Finds glslang and SPIRV-Cross for `ProcessShaderCompiler`, the fallback compiler.
+///
+/// The app ships no copies of these tools: it translates with the linked libraries
+/// (`InProcessShaderCompiler`) and uses installed tools only after those crashed
+/// (`ShaderCompilerFactory`).
 enum SceneShaderTranslator {
-    /// Resolved once per launch. Bundled copies win so a packaged build works without Homebrew;
-    /// otherwise fall back to the usual install locations and finally the user's PATH.
+    /// Resolved once per launch: the usual install locations, then the user's PATH.
     struct Toolchain {
         let glslang: String
         let spirvCross: String
@@ -14,7 +17,6 @@ enum SceneShaderTranslator {
     nonisolated(unsafe) private static var resolvedToolchain: Toolchain??
 
     private static let searchDirectories: [String] = [
-        Bundle.main.bundleURL.appending(path: "Contents/Resources/shader-tools").path,
         "/opt/homebrew/bin",
         "/usr/local/bin",
         "/opt/local/bin",
@@ -30,7 +32,8 @@ enum SceneShaderTranslator {
         if let resolved {
             OWELog.info(.shader, "Shader toolchain: \(resolved.glslang) + \(resolved.spirvCross)")
         } else {
-            OWELog.error(.shader, "Shader toolchain unavailable; Workshop effects will fall back to native shaders only. Install with: brew install glslang spirv-cross")
+            OWELog.info(.shader, "No glslang/spirv-cross executables for the fallback shader compiler "
+                        + "(optional: brew install glslang spirv-cross)")
         }
         return resolved
     }

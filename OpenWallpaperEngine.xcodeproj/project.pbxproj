@@ -141,7 +141,6 @@
 				5EC47E722A2DB2E600120CCC /* Sources */,
 				5EC47E732A2DB2E600120CCC /* Frameworks */,
 				5EC47E742A2DB2E600120CCC /* Resources */,
-				EE1000000000000000000200 /* Vendor Shader Tools */,
 			);
 			buildRules = (
 			);
@@ -234,28 +233,6 @@
 			);
 		};
 /* End PBXProject section */
-
-/* Begin PBXShellScriptBuildPhase section */
-		EE1000000000000000000200 /* Vendor Shader Tools */ = {
-			isa = PBXShellScriptBuildPhase;
-			alwaysOutOfDate = 1;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-			);
-			name = "Vendor Shader Tools";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/bash;
-			shellScript = "\"$SRCROOT/Scripts/vendor-shader-tools.sh\" \"$BUILT_PRODUCTS_DIR/$FULL_PRODUCT_NAME\"\n";
-		};
-/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */		5EC47E742A2DB2E600120CCC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;

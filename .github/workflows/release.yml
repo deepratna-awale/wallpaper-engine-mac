@@ -44,10 +44,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v7.0.1
 
-      - name: Install shader toolchain
-        # Vendored into the app by the "Vendor Shader Tools" build phase, so Workshop effects
-        # work on machines without Homebrew.
-        run: brew install glslang spirv-cross
+      - name: Use the supported Xcode
+        # The same Xcode as CI (the oldest the project supports), so a release builds what CI tested.
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app || { echo "::error::Xcode 16.4 not on the runner"; exit 1; }
+          xcodebuild -version
 
       - name: Import signing certificate
         env:
@@ -121,19 +122,34 @@ jobs:
             -exportPath "$RUNNER_TEMP/export"
 
       - name: Verify bundle before notarizing
+        # Shaders compile with glslang/SPIRV-Cross linked into the app, and the WE assets are
+        # bundled: the app must need nothing from Homebrew or a Wallpaper Engine install.
         run: |
           set -euo pipefail
           APP="$RUNNER_TEMP/export/$APP_NAME.app"
-          TOOLS="$APP/Contents/Resources/shader-tools"
+          BINARY="$APP/Contents/MacOS/$APP_NAME"
 
-          test -x "$TOOLS/glslangValidator" || { echo "::error::glslangValidator missing"; exit 1; }
-          test -x "$TOOLS/spirv-cross" || { echo "::error::spirv-cross missing"; exit 1; }
-          test -f "$TOOLS/LICENSE-glslang.txt" || echo "::warning::glslang license missing"
+          test ! -e "$APP/Contents/Resources/shader-tools" \
+            || { echo "::error::stale shader-tools in the bundle"; exit 1; }
+          test -f "$APP/Contents/Resources/we-assets/shaders/common.h" \
+            || { echo "::error::bundled WE assets missing"; exit 1; }
 
-          # Nested binaries must carry the same identity, or notarization rejects the bundle.
           codesign --verify --deep --strict --verbose=2 "$APP"
-          codesign -dv --verbose=4 "$TOOLS/glslangValidator" 2>&1 | grep -q "Developer ID" \
-            || { echo "::error::shader tools are not Developer ID signed"; exit 1; }
+          codesign -dv --verbose=4 "$APP" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q "Authority=Developer ID Application" "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::not Developer ID signed"; exit 1; }
+          grep -Eq "flags=.*runtime" "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::hardened runtime is off"; exit 1; }
+
+          # Only system libraries: nothing from Homebrew or elsewhere.
+          # (A universal binary lists each architecture under a "<path> (architecture …):" line.)
+          if otool -L "$BINARY" | grep -v ':$' | awk '{print $1}' \
+               | grep -Ev '^(/usr/lib/|/System/Library/)'; then
+            echo "::error::the app links a non-system library"; exit 1
+          fi
+          # No executables besides the app's own.
+          extra=$(find "$APP/Contents" -type f -perm -u+x ! -path "$BINARY" -print)
+          test -z "$extra" || { echo "::error::unexpected executables: $extra"; exit 1; }
 
       - name: Notarize and staple
         env:
