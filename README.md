@@ -257,7 +257,7 @@ In Xcode, change the signing certificate to your own or select "Sign to Run Loca
 
 1. Install steamcmd (`brew install steamcmd`) or point the app to an existing binary
 2. Switch to the **Workshop** tab and log in with your Steam account (must own Wallpaper Engine)
-3. Enter a [Steam Web API key](https://steamcommunity.com/dev/apikey) when prompted
+3. Enter a [Steam Web API key](https://steamcommunity.com/dev/apikey) when prompted, or in *Settings → General*. It is checked with Steam and kept in your keychain; your Steam password is never stored (steamcmd reuses its own cached session)
 4. Search, filter, and click **Download** on any wallpaper
 
 ### Import from Local Files
