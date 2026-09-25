@@ -99,6 +99,9 @@ enum ShaderPairRewriter {
                 }
                 return "layout(binding = \(slot)) uniform \(group(match, 1, result)!) \(name);"
             }
+            // HLSL vertex inputs are ordinary parameters that a shader may assign to; GLSL inputs
+            // are read-only, so a written attribute is copied into a global of the same name.
+            var writtenAttributes: [String] = []
             result = replace(varyingPattern, in: result) { match in
                 let name = group(match, 4, result)!
                 let direction = group(match, 2, result)!
@@ -106,7 +109,12 @@ enum ShaderPairRewriter {
                 let array = group(match, 5, result).map { "[\($0)]" } ?? ""
                 let qualifier = group(match, 1, result) ?? ""
                 if stage == .vertex, direction == "in", name.hasPrefix("a_") {
-                    return "layout(location = \(attributeLocations[name] ?? 15)) in \(type) \(name)\(array);"
+                    let location = attributeLocations[name] ?? 15
+                    if array.isEmpty, isAssigned(name, in: result) {
+                        writtenAttributes.append(name)
+                        return "layout(location = \(location)) in \(type) \(name)_weIn;\n\(type) \(name);"
+                    }
+                    return "layout(location = \(location)) in \(type) \(name)\(array);"
                 }
                 if name == "out_FragColor" { return "layout(location = 0) out \(type) \(name);" }
                 guard let location = locations[name] else { return group(match, 0, result)! }
@@ -114,6 +122,9 @@ enum ShaderPairRewriter {
                     return "layout(location = \(location)) \(qualifier)in \(types.vertexType) \(name)_weVarying;\n\(type) \(name);"
                 }
                 return "layout(location = \(location)) \(qualifier)\(direction) \(type) \(name)\(array);"
+            }
+            if !writtenAttributes.isEmpty {
+                result = insertAtMainEntry(result, writtenAttributes.map { "\($0) = \($0)_weIn;" }.joined(separator: " "))
             }
             if stage == .fragment, !resized.isEmpty {
                 result = insertAtMainEntry(result, resized.sorted { $0.key < $1.key }.map { name, types in
@@ -137,6 +148,11 @@ enum ShaderPairRewriter {
         }
         return Result(vertex: decoratedVertex, fragment: decoratedFragment, uniforms: members,
                       textureSlots: slots.sorted(), attributes: attributes)
+    }
+
+    /// Whether `name` (or a swizzle of it) is the target of `=` or a compound assignment.
+    static func isAssigned(_ name: String, in text: String) -> Bool {
+        text.range(of: #"(?<![\w.])"# + name + #"\s*(?:\.\w+)?\s*[-+*/]?=(?!=)"#, options: .regularExpression) != nil
     }
 
     /// Components of a float scalar/vector type; nil for anything else.

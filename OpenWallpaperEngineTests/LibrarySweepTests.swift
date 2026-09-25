@@ -95,7 +95,6 @@ final class LibrarySweepTests: XCTestCase {
                     }
                     guard !renderPasses.isEmpty else { continue }
 
-                    fputs("SWEEP \(id) \(label)\n", stderr) // TEMP
                     let failedBefore = renderer.failedPipelineCount
                     let buffer = try XCTUnwrap(queue.makeCommandBuffer())
                     let context = EffectGraphRenderer.Context(

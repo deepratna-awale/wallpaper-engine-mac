@@ -93,8 +93,7 @@ final class ShaderVariantTests: XCTestCase {
 
     func testModuloAndSubscriptsFollowHLSL() {
         let out = ShaderPrelude.fixupAfterPreprocess("void main() { x = a * b.y % 4 + (c + 1) % d[2]; y = s[i / 4]; z = s[3]; }")
-        let compact = out.replacingOccurrences(of: " ", with: "")
-        XCTAssertTrue(compact.contains("weMod(a*b.y,4)+weMod((c+1),d[2])"), out)
+        XCTAssertTrue(out.contains("weMod(a * b.y, 4) + weMod((c + 1), d[2])"), out)
         XCTAssertTrue(out.contains("s[int(i / 4)]"), out)
         XCTAssertTrue(out.contains("z = s[3]"), out)
         let packed = ShaderPrelude.fixupAfterPreprocess("uniform float g[64];\nvoid main() { v = g[i / 4][j]; }")
@@ -106,10 +105,71 @@ final class ShaderVariantTests: XCTestCase {
     func testShaderDefinitionsOverridePreludeMacros() throws {
         let prelude = ShaderPrelude.text(for: .fragment, combos: [:], source: "#define M_PI 3.14\nfloat log10(float x) { return x; }")
         XCTAssertFalse(prelude.contains("#define M_PI "))
-        XCTAssertFalse(prelude.contains("#define log10("), "the shader's own log10 replaces the prelude's")
-        XCTAssertTrue(prelude.contains("#define log10 we_log10"), "and is renamed away from Metal's built-in")
+        XCTAssertFalse(prelude.contains("#define log10(x)"))
+        XCTAssertTrue(prelude.contains("#define log10 we_log10"), "clear of metal::log10")
         XCTAssertTrue(prelude.contains("#define M_PI_2 "))
         _ = try translateDialectFixture("redefines")
+    }
+
+    func testReturnsAndCompoundAssignmentsConvertLikeHLSL() {
+        let out = ShaderPrelude.fixupAfterPreprocess("""
+        vec3 f(vec2 uv) {
+         vec4 col = vec4(uv, 0.0, 1.0);
+         return col;
+        }
+        void main() {
+         int bar = 1; bool left = true; float level = 1.0; vec2 uv = vec2(0.0);
+         bar *= level * 0.5; level *= left; uv += 1.0; uv.x -= 2.0;
+        }
+        """)
+        XCTAssertTrue(out.contains("return weCast_vec3(col);"), out)
+        XCTAssertTrue(out.contains("bar = weCast_int(bar * (level * 0.5));"), out)
+        XCTAssertTrue(out.contains("level *= weCast_float(left);"), out)
+        XCTAssertTrue(out.contains("uv += weCast_vec2(1.0);"), out)
+        XCTAssertTrue(out.contains("uv.x -= 2.0;"), out)
+    }
+
+    /// `vec4 * vec2` is a `vec2` in HLSL; only whole operands of evident size are truncated.
+    func testMismatchedVectorOperandsTruncateTheWiderOne() {
+        let out = ShaderPrelude.fixupAfterPreprocess("""
+        uniform vec2 scale; in vec3 v_uv; uniform float u;
+        void main() {
+         vec4 p = vec4(1.0);
+         vec2 a = p * scale * 0.5; vec2 b = abs(v_uv - (vec2(u))); vec4 c = p * u + p; vec2 d = p.xy * scale;
+        }
+        """)
+        XCTAssertTrue(out.contains("p.xy * scale * 0.5"), out)
+        XCTAssertTrue(out.contains("v_uv.xy - (vec2(u))"), out)
+        XCTAssertTrue(out.contains("p * u + p)"), out)
+        XCTAssertTrue(out.contains("p.xy * scale)"), out)
+    }
+
+    /// HLSL lets a vertex shader modify its inputs; GLSL doesn't.
+    func testWrittenAttributeBecomesAGlobalCopy() {
+        let vertex = "#version 450\nin vec2 a_TexCoord;\nout vec2 v_TexCoord;\nvoid main() {\n a_TexCoord *= 2.0;\n v_TexCoord = a_TexCoord;\n}\n"
+        let fragment = "#version 450\nin vec2 v_TexCoord;\nout vec4 out_FragColor;\nvoid main() { out_FragColor = vec4(v_TexCoord, 0.0, 1.0); }\n"
+        let pair = ShaderPairRewriter.rewrite(vertex: vertex, fragment: fragment)
+        XCTAssertTrue(pair.vertex.contains("layout(location = 1) in vec2 a_TexCoord_weIn;\nvec2 a_TexCoord;"), pair.vertex)
+        XCTAssertTrue(pair.vertex.contains("a_TexCoord = a_TexCoord_weIn;"), pair.vertex)
+        XCTAssertEqual(pair.attributes["a_TexCoord"], 1)
+    }
+
+    /// A header goes after a top-level `struct`, never inside its braces.
+    func testIncludesAreNotInsertedInsideAStruct() {
+        let text = "uniform float u;\nstruct Grid {\n vec2 id;\n};\nvoid main() {}\n"
+        let offset = ShaderSourceLoader.includeInsertionOffset(in: text)
+        XCTAssertEqual(offset, (text as NSString).range(of: "void main").location)
+    }
+
+    /// Locals and functions named with C++ keywords are renamed; a uniform keeps its name, since
+    /// values bind to it by name.
+    func testCppKeywordNamesCompileAndUniformsKeepTheirNames() throws {
+        let source = "uniform float new;\nfloat operator(float this) { return this; }\nvoid main() { vec2 or = vec2(0.0); }"
+        let prelude = ShaderPrelude.text(for: .fragment, combos: [:], source: source)
+        for name in ["or", "this", "operator"] { XCTAssertTrue(prelude.contains("#define \(name) we_\(name)"), name) }
+        XCTAssertFalse(prelude.contains("#define new "))
+        XCTAssertFalse(prelude.contains("#define not "), "`not` is a GLSL built-in")
+        _ = try translateDialectFixture("reserved")
     }
 
     func testUnmatchedEndifIsDropped() {
