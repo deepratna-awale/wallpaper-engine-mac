@@ -238,6 +238,17 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertEqual(Double(tripled.bytes[index]), 0.75 * 255, accuracy: 2, "and follows the property")
     }
 
+    func testBlockCompressedTexturesAfterTheFirstSetTheirFormatCombo() {
+        func header(format: UInt8) -> Data {
+            Data("TEXV0005\u{0}TEXI0001\u{0}".utf8) + Data([format, 0, 0, 0, 2, 0, 0, 0])
+        }
+        XCTAssertEqual(TEXImageFormat(texData: header(format: 4)), TEXImageFormat(rawValue: 4))
+        XCTAssertEqual(TEXFlags(texData: header(format: 4)), .clampUVs, "the flags follow the format word")
+        let combos = ParticleMaterialPlanBuilder.textureFormatCombos([0: header(format: 4), 1: header(format: 4),
+                                                                      2: header(format: 8), 3: header(format: 0)])
+        XCTAssertEqual(combos, ["TEX1FORMAT": 4], "a DXT5 normal map; RG88, RGBA and texture 0 are expanded on load")
+    }
+
     func testRefractionFallsBackToTheBuiltInDraw() throws {
         let plan = try builder.build(materialPath: "materials/refract.json", renderer: nil, flags: 0,
                                      baseTexture: .image(NSImage()), spriteSheet: nil)

@@ -43,8 +43,13 @@ struct ParticleMaterialPlanBuilder {
         let format: ParticleVertexFormat = rendererName.hasPrefix("rope") ? .rope : .sprite
         // WE's engine swaps its sprite shader for the rope one when a rope renderer draws it.
         let shader = format == .rope && Self.isBuiltinSpriteShader(pass.shader) ? "genericropeparticle" : pass.shader
-        let engineCombos = Self.engineCombos(format: format, rendererName: rendererName, renderer: renderer,
+        var engineCombos = Self.engineCombos(format: format, rendererName: rendererName, renderer: renderer,
                                              flags: flags, spriteSheet: spriteSheet, baseTexture: baseTexture)
+        var headers: [Int: Data] = [:]
+        for (slot, name) in pass.textures.enumerated() {
+            if let name, let header = textureHeader(named: name, materialPath: materialPath) { headers[slot] = header }
+        }
+        engineCombos.merge(Self.textureFormatCombos(headers)) { _, new in new }
 
         var stages: [ParticleMaterialPlan.Stage] = []
         var failures: [String] = []
@@ -71,23 +76,35 @@ struct ParticleMaterialPlanBuilder {
         var plan = ParticleMaterialPlan(materialPath: materialPath, shader: shader, format: format,
                                         blending: pass.blending?.lowercased() ?? "translucent", stages: stages,
                                         trailLengths: Self.trailLengths(renderer), spriteSheet: spriteSheet)
-        for (slot, name) in pass.textures.enumerated() {
-            if let name, let flags = textureFlags(named: name, materialPath: materialPath) { plan.textureFlags[slot] = flags }
+        for (slot, header) in headers {
+            if let flags = TEXFlags(texData: header) { plan.textureFlags[slot] = flags }
         }
         return plan
     }
 
-    /// The `.tex` flags of a material texture, found where the scene loader looks for it: next to
-    /// the material, under its root folder, then under `materials/`. Nil for a texture that isn't
-    /// a `.tex` (render targets, generated textures).
-    private func textureFlags(named name: String, materialPath: String) -> TEXFlags? {
+    /// A material texture's `.tex` file, found where the scene loader looks for it: next to the
+    /// material, under its root folder, then under `materials/`. Nil for a texture that isn't a
+    /// `.tex` (render targets, generated textures).
+    private func textureHeader(named name: String, materialPath: String) -> Data? {
         guard !name.hasPrefix("_rt_") else { return nil }
         let directory = (materialPath as NSString).deletingLastPathComponent
         let root = directory.split(separator: "/").first.map(String.init) ?? "materials"
         for path in ["\(directory)/\(name).tex", "\(root)/\(name).tex", "materials/\(name).tex", "\(name).tex"] {
-            if let data = readFile(path) { return TEXFlags(texData: data) }
+            if let data = readFile(path) { return data }
         }
         return nil
+    }
+
+    /// `TEX<n>FORMAT` for the textures after the first that the GPU samples as stored, as WE sets
+    /// it from each bound texture (`DecompressNormal` reads a DXT normal map's channels by it).
+    /// Texture 0 and the formats `TEXParser` expands to RGBA stay `FORMAT_RGBA8888`.
+    static func textureFormatCombos(_ headers: [Int: Data]) -> [String: Int] {
+        var combos: [String: Int] = [:]
+        for (slot, header) in headers where slot > 0 {
+            guard let format = TEXImageFormat(texData: header), format.isBlockCompressed else { continue }
+            combos["TEX\(slot)FORMAT"] = Int(format.rawValue)
+        }
+        return combos
     }
 
     static func isBuiltinSpriteShader(_ shader: String) -> Bool {
