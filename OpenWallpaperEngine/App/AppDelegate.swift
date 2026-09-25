@@ -87,6 +87,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var contentViewModel = ContentViewModel()
     var wallpaperViewModel = WallpaperViewModel()
     var globalSettingsViewModel = GlobalSettingsViewModel()
+    lazy var safeRestart = SafeRestart()
     /// Fetches the Workshop items shown wallpapers borrow assets from.
     lazy var workshopDependencies = WorkshopDependencyService(steamCmd: contentViewModel.steamCmd)
     private var workshopDependencyCancellable: AnyCancellable?
@@ -104,6 +105,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 self?.workshopDependencies.ensureDependencies(for: wallpaper)
             }
         }
+
+        // Before the wallpaper windows exist, so a wallpaper behind an unclean exit never loads.
+        safeRestart.attach(to: wallpaperViewModel)
 
         // 创建设置视窗
         setSettingsWindow()
@@ -150,6 +154,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             window.orderFront(nil)
         }
         
+        safeRestart.showPendingNotice()
+
         if globalSettingsViewModel.isFirstLaunch {
             self.mainWindowController.window.center()
             self.mainWindowController.window.makeKeyAndOrderFront(nil)
@@ -181,6 +187,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
     
     func applicationWillTerminate(_ notification: Notification) {
+        safeRestart.applicationWillTerminate()
         if let wallpaper = UserDefaults.standard.url(forKey: "OSWallpaper") {
             for screen in NSScreen.screens {
                 try? NSWorkspace.shared.setDesktopImageURL(wallpaper, for: screen)

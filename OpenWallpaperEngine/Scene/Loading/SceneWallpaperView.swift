@@ -49,6 +49,9 @@ struct SceneWallpaperView: NSViewRepresentable {
     func makeNSView(context: Context) -> MTKView {
         let metalView = MTKView(frame: .zero)
         context.coordinator.renderer = SceneMetalRenderer(view: metalView)
+        if let watchdog = wallpaperViewModel.renderWatchdog {
+            context.coordinator.renderer?.frameTimeObserver = { watchdog.recordFrame(duration: $0) }
+        }
         context.coordinator.propertyObserver = NotificationCenter.default.addObserver(
             forName: .sceneUserPropertiesDidChange, object: nil, queue: .main
         ) { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] notification in

@@ -145,6 +145,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var lastCommandBuffer: MTLCommandBuffer?
     /// Removed clones' state ids, freed once `after` completes.
     private var pendingEffectReleases: [(ids: [String], after: MTLCommandBuffer?)] = []
+    /// Told how long each frame took on the CPU, including the wait for a drawable.
+    var frameTimeObserver: ((CFTimeInterval) -> Void)?
 
     init?(view: MTKView) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -348,6 +350,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         defer {
             AudioReactiveScriptEngine.shared.endFrame()
             frameSignpost.end()
+            frameTimeObserver?(CACurrentMediaTime() - frameStart)
             if OWEFrameMetrics.isReportingEnabled {
                 OWEFrameMetrics.recordFrame(seconds: CACurrentMediaTime() - frameStart,
                                             layers: layers.count,

@@ -22,6 +22,7 @@ class WallpaperViewModel: ObservableObject {
     @Published var nextCurrentWallpaper: WEWallpaper =
     WEWallpaper(using: .invalid, where: Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!) {
         willSet {
+            guard confirmApply?(newValue) ?? true else { return }
             if ["web", "application"].contains(newValue.project.type) {
                 if let trustedWallpapers = UserDefaults.standard.array(forKey: "TrustedWallpapers") as? [String],
                    trustedWallpapers.contains(newValue.wallpaperDirectory.path(percentEncoded: false)) {
@@ -96,6 +97,15 @@ class WallpaperViewModel: ObservableObject {
     }
 
     private var playlistTimer: Timer?
+
+    /// Holds the playlist still after safe restart stopped a wallpaper; the setting is untouched.
+    var isPlaylistSuspended = false {
+        didSet { restartPlaylistTimer() }
+    }
+    /// Asked before a wallpaper is applied; returning false cancels it. Set by `SafeRestart`.
+    var confirmApply: ((WEWallpaper) -> Bool)?
+    /// Receives wallpaper frame times. Set by `SafeRestart`.
+    var renderWatchdog: RenderWatchdog?
     private var playlistIndex = 0
 
     private func loadRecents() {
@@ -520,7 +530,7 @@ class WallpaperViewModel: ObservableObject {
     private func restartPlaylistTimer() {
         playlistTimer?.invalidate()
         playlistTimer = nil
-          guard persistsWallpapers, playlistEnabled, let playlist = activePlaylist,
+          guard persistsWallpapers, playlistEnabled, !isPlaylistSuspended, let playlist = activePlaylist,
               let item = playlist.items[safe: playlistIndex] else { return }
           let type = item.wallpaper.project.type.lowercased()
           if playlist.changeWhenVideoEnds && (type == "video" || type == "remote-video") { return }
