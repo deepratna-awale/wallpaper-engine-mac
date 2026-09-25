@@ -1,30 +1,33 @@
 import simd
 
 /// How many render-target pixels one scene unit gets. The scene is drawn at the output's
-/// density (so Retina text and edges stay sharp) rather than at its authored size and then
-/// upscaled; it is never drawn below its authored size, and the target is capped so a large
-/// scene on a large display doesn't take unbounded memory.
+/// density, as WE draws at the display's resolution, so Retina text and edges stay sharp rather
+/// than being upscaled. It is never drawn below its authored size, unless that exceeds what
+/// Metal can allocate.
 enum SceneRenderResolution {
-    /// About a 5K frame.
-    static let maximumPixelCount: Float = 5120 * 2880
-    static let maximumDimension: Float = 8192
+    /// The largest 2D texture side every Mac GPU the app runs on can allocate. A target that
+    /// would be larger is fitted into it rather than failing to allocate every frame.
+    static let maximumTextureDimension: Float = 16384
 
     /// Pixels per scene unit for a scene of `sceneSize` shown on `drawableSize` pixels.
     /// Quantised to eighths so a live window resize doesn't reallocate the target every frame.
     static func pixelsPerUnit(sceneSize: SIMD2<Float>, drawableSize: SIMD2<Float>) -> Float {
         let scene = simd_max(sceneSize, SIMD2(1, 1))
+        let fitsTexture = maximumTextureDimension / max(scene.x, scene.y)
+        guard fitsTexture.isFinite, fitsTexture > 0 else { return 1 }
+        // The hardware limit is the only thing that draws a scene below its authored size.
+        guard fitsTexture >= 1 else { return fitsTexture }
         guard drawableSize.x > 0, drawableSize.y > 0 else { return 1 }
         let wanted = max(drawableSize.x / scene.x, drawableSize.y / scene.y)
-        let cap = min(sqrt(maximumPixelCount / (scene.x * scene.y)), maximumDimension / max(scene.x, scene.y))
-        let scale = min(max(wanted, 1), max(cap, 1))
-        guard scale.isFinite else { return 1 }
-        let quantized = (scale * 8).rounded(.up) / 8
-        return max(1, quantized > cap ? (cap * 8).rounded(.down) / 8 : quantized)
+        guard wanted.isFinite else { return 1 }
+        let quantized = (max(wanted, 1) * 8).rounded(.up) / 8
+        return quantized > fitsTexture ? max(1, (fitsTexture * 8).rounded(.down) / 8) : quantized
     }
 
     /// The render target's size in pixels.
     static func targetSize(sceneSize: SIMD2<Float>, pixelsPerUnit: Float) -> SIMD2<Int> {
         let size = (simd_max(sceneSize, SIMD2(1, 1)) * pixelsPerUnit).rounded(.toNearestOrAwayFromZero)
-        return SIMD2(Int(size.x), Int(size.y))
+        func side(_ pixels: Float) -> Int { pixels.isFinite ? Int(min(max(pixels, 1), maximumTextureDimension)) : 1 }
+        return SIMD2(side(size.x), side(size.y))
     }
 }

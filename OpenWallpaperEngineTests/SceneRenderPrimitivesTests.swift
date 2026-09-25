@@ -54,6 +54,43 @@ final class SceneRenderPrimitivesTests: XCTestCase {
 
     // MARK: Retina target
 
+    /// Risk #11: target size for the displays and scene shapes people use. The target never
+    /// exceeds what Metal can allocate (16384 px per side), keeps the scene's aspect, and follows
+    /// the drawable's density up to about a 5K frame.
+    func testTargetSizeTable() {
+        struct Case { let scene: SIMD2<Float>; let drawable: SIMD2<Float> }
+        let cases = [
+            Case(scene: SIMD2(1920, 1080), drawable: SIMD2(5120, 2880)),   // 5K
+            Case(scene: SIMD2(1920, 1080), drawable: SIMD2(6016, 3384)),   // 6K XDR
+            Case(scene: SIMD2(5120, 1440), drawable: SIMD2(5120, 1440)),   // 32:9
+            Case(scene: SIMD2(1080, 1920), drawable: SIMD2(2880, 1800)),   // portrait scene, landscape display
+            Case(scene: SIMD2(1920, 1080), drawable: .zero),                // no drawable yet
+            Case(scene: SIMD2(1, 1), drawable: SIMD2(3840, 2160)),
+            Case(scene: SIMD2(20000, 20000), drawable: SIMD2(3840, 2160)),
+            Case(scene: SIMD2(1920, 1080), drawable: SIMD2(.nan, .infinity)),
+        ]
+        for item in cases {
+            let scale = SceneRenderResolution.pixelsPerUnit(sceneSize: item.scene, drawableSize: item.drawable)
+            let size = SceneRenderResolution.targetSize(sceneSize: item.scene, pixelsPerUnit: scale)
+            let label = "scene \(item.scene), drawable \(item.drawable)"
+            XCTAssertTrue(scale.isFinite && scale > 0, label)
+            XCTAssertGreaterThanOrEqual(size.x, 1, label)
+            XCTAssertGreaterThanOrEqual(size.y, 1, label)
+            XCTAssertLessThanOrEqual(max(size.x, size.y), Int(SceneRenderResolution.maximumTextureDimension), label)
+            XCTAssertEqual(Float(size.x) / Float(size.y), item.scene.x / item.scene.y,
+                           accuracy: 0.01 * item.scene.x / item.scene.y, label)
+        }
+        // WE draws at the display's resolution: 5K and 6K get their full density (eighths, rounded up).
+        let fiveK = SceneRenderResolution.pixelsPerUnit(sceneSize: SIMD2(1920, 1080), drawableSize: SIMD2(5120, 2880))
+        XCTAssertEqual(fiveK, 2.75, accuracy: 1e-6)
+        let sixK = SceneRenderResolution.pixelsPerUnit(sceneSize: SIMD2(1920, 1080), drawableSize: SIMD2(6016, 3384))
+        XCTAssertEqual(sixK, 3.25, accuracy: 1e-6)
+        // A scene bigger than Metal's largest texture is fitted into it rather than failing to allocate.
+        let huge = SceneRenderResolution.pixelsPerUnit(sceneSize: SIMD2(20000, 20000), drawableSize: SIMD2(3840, 2160))
+        XCTAssertEqual(SceneRenderResolution.targetSize(sceneSize: SIMD2(20000, 20000), pixelsPerUnit: huge),
+                       SIMD2(16384, 16384))
+    }
+
     func testTargetFollowsDrawableDensity() {
         let scene = SIMD2<Float>(1920, 1080)
         XCTAssertEqual(SceneRenderResolution.pixelsPerUnit(sceneSize: scene, drawableSize: SIMD2(3840, 2160)), 2)
@@ -62,12 +99,13 @@ final class SceneRenderPrimitivesTests: XCTestCase {
         XCTAssertEqual(SceneRenderResolution.pixelsPerUnit(sceneSize: scene, drawableSize: SIMD2(640, 360)), 1)
     }
 
-    func testTargetIsCapped() {
+    /// Only the hardware limits the target: no memory budget caps the density.
+    func testTargetIsLimitedOnlyByTheLargestTexture() {
         let scale = SceneRenderResolution.pixelsPerUnit(sceneSize: SIMD2(1920, 1080), drawableSize: SIMD2(15360, 8640))
-        let size = SceneRenderResolution.targetSize(sceneSize: SIMD2(1920, 1080), pixelsPerUnit: scale)
-        XCTAssertLessThanOrEqual(Float(size.x * size.y), SceneRenderResolution.maximumPixelCount)
-        XCTAssertGreaterThan(scale, 2)
-        // A scene already bigger than the cap is drawn at its own size.
+        XCTAssertEqual(scale, 8)
+        XCTAssertEqual(SceneRenderResolution.targetSize(sceneSize: SIMD2(1920, 1080), pixelsPerUnit: scale), SIMD2(15360, 8640))
+        let beyond = SceneRenderResolution.pixelsPerUnit(sceneSize: SIMD2(1920, 1080), drawableSize: SIMD2(30720, 17280))
+        XCTAssertEqual(beyond, 8.5, "the largest eighth whose target fits 16384 px")
         XCTAssertEqual(SceneRenderResolution.pixelsPerUnit(sceneSize: SIMD2(7680, 4320), drawableSize: SIMD2(7680, 4320)), 1)
     }
 
