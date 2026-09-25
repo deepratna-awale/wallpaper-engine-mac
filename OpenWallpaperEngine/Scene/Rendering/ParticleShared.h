@@ -58,6 +58,8 @@ struct ParticleParameters {
     float4 link;             // probability
     uint4 inherit;           // `ParticleInheritance` at spawn, every step
     float4 audioVelocity;    // audio-responsive turbulentvelocityrandom: minimum xy, maximum xy
+    float4 emitterTiming;    // `ParticleEmitterTiming`: delay, duration, periodic duration min, max
+    float4 emitterPeriod;    // periodic delay min, max, periodic
 };
 
 /// A collision shape in scene space (`ParticleCollisionPlacement`).
@@ -76,6 +78,7 @@ struct ParticleInstanceState {
     float4 emission;    // source angular velocity, emission remainder
     uint4 state;        // flags (`iActive`…), source serial, live particles, first spawn
     uint4 spawn;        // spawned this step
+    float4 clock;       // `ParticleEmitterClock.state`
 };
 
 struct ParticleFrame {
@@ -97,6 +100,7 @@ struct ParticleFrame {
     float4 spawnScale;       // instance overrides: size, alpha, lifetime, speed
     float4 colorScale;       // instance overrides: tint times brightness
     float4 audioScales;      // audio responses: turbulentvelocityrandom, turbulence, vortex
+    uint4 emission;          // period limit (~0: none), starts a period, one per frame
 };
 
 // `ParticleSpriteInstance` and `ParticleRopeSegmentInstance` (ParticleInstanceLayout.swift).
@@ -150,7 +154,8 @@ constant uint aSpawnOrigin = 1u << 0, aAttractor = 1u << 1, aSequenceStart = 1u 
 constant uint aRemapAnchor = 1u << 4;
 
 // Control words (`ParticleGPUSystem.Control`).
-constant uint cCount = 0, cEmit = 1, cTotal = 2, cSerial = 3, cRemainder = 4, cTrailTotal = 6, cSerialBase = 7;
+constant uint cCount = 0, cEmit = 1, cTotal = 2, cSerial = 3, cRemainder = 4, cPeriodEmitted = 5, cTrailTotal = 6;
+constant uint cSerialBase = 7;
 constant uint cDispatch = 8, cMaterialDraw = 12, cFallbackDraw = 16, cEventTotal = 20;
 
 // Draw kinds (`ParticleGPUDrawKind`); 0 (sprite records) and 3 (built-in sprites) need no case.
@@ -185,6 +190,8 @@ constant uint sEmitterSpeed = 19;
 constant uint sEventProbability = 20;
 constant uint sAudioVelocityX = 21;
 constant uint sAudioVelocityY = 22;
+constant uint sPeriodDuration = 23;
+constant uint sPeriodDelay = 24;
 
 static uint pcg(uint value) {
     const uint state = value * 747796405u + 2891336453u;
@@ -327,6 +334,29 @@ static uint groupExclusiveScan(uint value, uint lid, uint lane, uint simdIndex, 
     const uint result = prefix + totals[simdIndex];
     threadgroup_barrier(mem_flags::mem_threadgroup);
     return result;
+}
+
+// MARK: - Emission
+
+/// `ParticleEmitterClock.rateLimit`, with `~0u` for no limit.
+static uint rateLimit(constant ParticleFrame &f, uint emitted) {
+    uint limit = f.emission.x == 0xFFFFFFFFu ? 0xFFFFFFFFu : (f.emission.x > emitted ? f.emission.x - emitted : 0u);
+    if (f.emission.z != 0) limit = min(limit, 1u);
+    return limit;
+}
+
+/// `ParticleCPUSimulation.emission`: the burst and the rate's spawns (at most `limit`), updating
+/// the carry-over.
+static uint2 emission(int live, int maximum, float rate, float deltaTime, thread float &carry, int burst, uint limit) {
+    const int available = max(maximum - live, 0);
+    const int taken = min(max(burst, 0), available);
+    carry += max(rate, 0.0f) * deltaTime;
+    // Clamped before the conversion, which is undefined past int's range; the maximum caps it anyway.
+    const int allowed = int(min(uint(max(available - taken, 0)), limit));
+    const int count = max(0, min(int(min(carry, 2147483520.0f)), allowed));
+    carry -= float(count);
+    if (live + taken + count >= maximum || uint(count) >= limit) carry = fmod(carry, 1.0f);
+    return uint2(taken, count);
 }
 
 #endif

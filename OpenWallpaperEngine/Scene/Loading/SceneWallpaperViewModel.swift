@@ -1520,6 +1520,7 @@ class SceneWallpaperViewModel: ObservableObject {
         system.inheritEachStep = inheritEachStep
         if let emitter {
             system.instantaneous = max(emitter.instantaneous ?? 0, 0)
+            system.emitterTiming = ParticleEmitterTiming(emitter)
             let speeds = (Float(emitter.speedmin ?? 0), Float(emitter.speedmax ?? emitter.speedmin ?? 0))
             system.emitterSpeed = min(speeds.0, speeds.1)...max(speeds.0, speeds.1)
             let sign = emitter.sign?.vectorValue ?? (0, 0, 0)

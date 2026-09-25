@@ -56,6 +56,10 @@ final class ParticleSystemRuntime {
     var gpu: ParticleGPUSystem?
     /// The emitter's world transform at the last step (`ParticleFrameInputs.motion`).
     var lastEmitter: SceneAffineTransform?
+    /// The emitter's timing (`ParticleEmitterTiming`) for a system that isn't instanced.
+    var emitterClock = ParticleEmitterClock()
+    /// What the rate emitted in the current period (`ParticleFrameInputs.periodLimit`), on the CPU.
+    var periodEmitted = 0
     /// The system this one is a child of (`SceneMetalParticleSystem.link`).
     weak var parent: ParticleSystemRuntime?
     /// An instanced system's instances (`ParticleChildLink`), on the CPU.
@@ -101,20 +105,21 @@ enum ParticleCPUSimulation {
         }
     }
 
-    /// How many particles to spawn this step: `burst` first, then the rate, updating the
-    /// fractional carry-over. Spawns a full system could not take are skipped, not queued into a
-    /// later burst.
-    static func emissionCount(liveCount: Int, maximum: Int, rate: Float, deltaTime: Float,
-                              remainder: inout Float, burst: Int = 0) -> Int {
+    /// How many particles to spawn this step: `burst` first, then the rate (at most `rateLimit`),
+    /// updating the fractional carry-over. Spawns a full system or the limit could not take are
+    /// skipped, not queued into a later step.
+    static func emission(liveCount: Int, maximum: Int, rate: Float, deltaTime: Float,
+                         remainder: inout Float, burst: Int = 0, rateLimit: Int = .max) -> (burst: Int, rate: Int) {
         let available = max(maximum - liveCount, 0)
         let burst = min(max(burst, 0), available)
         remainder += max(rate, 0) * deltaTime
-        let count = max(0, min(Int(remainder), available - burst))
+        let allowed = min(available - burst, max(rateLimit, 0))
+        let count = max(0, min(Int(min(remainder, 2_147_483_520)), allowed))
         remainder -= Float(count)
-        if liveCount + burst + count >= maximum {
+        if liveCount + burst + count >= maximum || count >= rateLimit {
             remainder = remainder.truncatingRemainder(dividingBy: 1)
         }
-        return burst + count
+        return (burst, count)
     }
 
     static func step(_ system: ParticleSystemRuntime, inputs: ParticleFrameInputs) {
@@ -124,6 +129,7 @@ enum ParticleCPUSimulation {
         if inputs.clears {
             system.particles.removeAll(keepingCapacity: true)
             system.emissionRemainder = 0
+            system.periodEmitted = 0
             for index in system.instances.indices { system.instances[index] = ParticleInstance() }
             return
         }
@@ -154,10 +160,14 @@ enum ParticleCPUSimulation {
                     follow(&system.particles[index], motion: motion, scale: scale, angle: angle)
                 }
             }
-            let emitted = emissionCount(liveCount: system.particles.count, maximum: inputs.maximum,
-                                        rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
-                                        remainder: &system.emissionRemainder, burst: inputs.burst)
-            for _ in 0..<emitted {
+            if inputs.startsPeriod { system.periodEmitted = 0 }
+            let limit = ParticleEmitterClock.rateLimit(periodLimit: inputs.periodLimit, emitted: system.periodEmitted,
+                                                       onePerFrame: inputs.onePerFrame)
+            let emitted = emission(liveCount: system.particles.count, maximum: inputs.maximum,
+                                   rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
+                                   remainder: &system.emissionRemainder, burst: inputs.burst, rateLimit: limit)
+            system.periodEmitted += emitted.rate
+            for _ in 0..<(emitted.burst + emitted.rate) {
                 system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: inputs))
                 system.nextSerial &+= 1
             }

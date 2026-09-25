@@ -30,8 +30,15 @@ struct ParticleFrameInputs {
     /// The system emits nothing and shows nothing this frame: every particle is removed.
     var clears = false
     /// Particles emitted at once this step on top of the rate: the emitter's `instantaneous`
-    /// burst on the system's first step.
+    /// burst when it starts or starts a period (`ParticleEmitterClock`).
     var burst = 0
+    /// A period of a periodic emitter starts this step: the per-period count restarts.
+    var startsPeriod = false
+    /// The most the rate emits in one period (`ParticleEmitterTiming.periodLimit`), for the system
+    /// or each instance; nil without a limit.
+    var periodLimit: Int?
+    /// The rate emits at most one particle a step.
+    var onePerFrame = false
     /// Where particles spawn: the emitter, or its cursor-locked control point.
     var spawnOrigin = SIMD2<Float>.zero
     var attractorOrigin = SIMD2<Float>.zero
@@ -100,8 +107,6 @@ struct ParticleFrameInputs {
         inputs.emissionRate = configuration.emissionRateScript.map {
             AudioReactiveScriptEngine.shared.evaluate($0, fallback: rate, time: time)
         } ?? rate
-        // An instanced system bursts per instance instead (`ParticleCPUSimulation.updateInstances`).
-        inputs.burst = system.frameIndex == 1 && !configuration.isInstanced ? max(configuration.instantaneous, 0) : 0
         // Without a rate a system only shows its burst, if it has one.
         let idle = inputs.emissionRate <= 0.0001 && configuration.instantaneous <= 0
         if idle || configuration.opacityMultiplier <= 0.0001 {
@@ -109,6 +114,16 @@ struct ParticleFrameInputs {
             inputs.fadeIn = system.fadeIn
             inputs.fadeOut = system.fadeOut
             return inputs
+        }
+        let timing = configuration.emitterTiming
+        inputs.periodLimit = timing.periodLimit(countScale: inputs.overrideCount)
+        inputs.onePerFrame = timing.onePerFrame
+        // An instanced system times each instance instead (`ParticleCPUSimulation.updateInstances`).
+        if !configuration.isInstanced {
+            let step = system.emitterClock.advance(deltaTime, timing: timing, seed: system.seed, key: 0)
+            inputs.burst = step.bursts ? max(configuration.instantaneous, 0) : 0
+            inputs.startsPeriod = step.startsPeriod
+            if !step.emits { inputs.emissionRate = 0 }
         }
         inputs.drag = configuration.dragScript.map {
             AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.drag, time: time)
@@ -136,13 +151,15 @@ struct ParticleFrameInputs {
         return inputs
     }
 
-    /// The instance overrides' rate factor (`applyOverrides`).
+    /// The instance overrides' rate and count factors (`applyOverrides`).
     private var overrideRate: Float = 1
+    private var overrideCount: Float = 1
 
     /// The system's instance overrides this frame: resolved again when bound to user properties.
     private mutating func applyOverrides(_ configuration: SceneMetalParticleSystem, values: SceneValueContext) {
         let overrides = configuration.liveOverrides.map { SceneParticleOverrides($0, in: values) } ?? configuration.overrides
         overrideRate = overrides.rate
+        overrideCount = overrides.count
         maximum = max(Int((Float(configuration.maximumParticleCount) * overrides.count).rounded()), 0)
         // Negative multipliers would invert the ranges; WE treats them as 0.
         spawnScale = SIMD4(overrides.size, max(overrides.alpha, 0), max(overrides.lifetime, 0), overrides.speed)

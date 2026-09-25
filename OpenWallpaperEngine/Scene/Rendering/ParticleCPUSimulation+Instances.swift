@@ -71,12 +71,23 @@ extension ParticleCPUSimulation {
         }
         for index in system.instances.indices where system.instances[index].active && system.instances[index].emitting {
             var instance = system.instances[index]
-            instance.spawnCount = emissionCount(liveCount: instance.live, maximum: inputs.maximum,
-                                                rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
-                                                remainder: &instance.remainder,
-                                                burst: instance.fresh ? configuration.instantaneous : 0)
+            let step = instance.clock.advance(inputs.deltaTime, timing: configuration.emitterTiming, seed: system.seed,
+                                              key: clockKey(instance, slot: index))
+            let limit = ParticleEmitterClock.rateLimit(periodLimit: inputs.periodLimit, emitted: Int(instance.clock.state.w),
+                                                       onePerFrame: inputs.onePerFrame)
+            let emitted = emission(liveCount: instance.live, maximum: inputs.maximum,
+                                   rate: step.emits ? inputs.emissionRate : 0, deltaTime: inputs.deltaTime,
+                                   remainder: &instance.remainder,
+                                   burst: step.bursts ? configuration.instantaneous : 0, rateLimit: limit)
+            instance.clock.state.w += Float(emitted.rate)
+            instance.spawnCount = emitted.burst + emitted.rate
             system.instances[index] = instance
         }
+    }
+
+    /// Names an instance's random periods: its event (the parent particle's serial) and its slot.
+    static func clockKey(_ instance: ParticleInstance, slot: Int) -> UInt32 {
+        instance.sourceSerial &* 31 &+ UInt32(slot) &+ 1
     }
 
     /// The live particle with `serial`: particles stay in spawn order, so serials increase.

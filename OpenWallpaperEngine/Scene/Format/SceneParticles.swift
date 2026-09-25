@@ -49,8 +49,18 @@ struct WEParticleEmitter: Codable {
     @WEFlexibleDouble var speedmax: Double?
     @WEFlexibleDouble var speedmin: Double?
     @WEFlexibleInt var controlpoint: Int?
-    /// Particles emitted at once when the emitter starts.
+    /// Particles emitted at once when the emitter starts (and at each period, when periodic).
     @WEFlexibleInt var instantaneous: Int?
+    /// Timing (`ParticleEmitterTiming`): seconds before it starts, seconds it emits (0: for ever).
+    @WEFlexibleDouble var delay: Double?
+    @WEFlexibleDouble var duration: Double?
+    /// Bit 1: at most one particle a frame; bit 2: random periodic emission.
+    @WEFlexibleInt var flags: Int?
+    @WEFlexibleDouble var minperiodicduration: Double?
+    @WEFlexibleDouble var maxperiodicduration: Double?
+    @WEFlexibleDouble var minperiodicdelay: Double?
+    @WEFlexibleDouble var maxperiodicdelay: Double?
+    @WEFlexibleInt var maxtoemitperperiod: Int?
     /// Per-axis scale of the spawn shape ("1 1 0" by default).
     var directions: WEFlexValue?
     /// Per-axis sign the spawn offset is forced to (0 keeps both).

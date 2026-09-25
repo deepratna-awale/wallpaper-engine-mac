@@ -6,7 +6,7 @@ import Metal
 final class ParticleGPUSystem {
     /// Word indices into `control` (`ParticleSimulation.metal`'s `c…` constants).
     enum Control {
-        static let count = 0, emitted = 1, total = 2, serial = 3, remainder = 4, trailTotal = 6
+        static let count = 0, emitted = 1, total = 2, serial = 3, remainder = 4, periodEmitted = 5, trailTotal = 6
         static let dispatchOffset = 8 * 4
         /// `MTLDrawPrimitivesIndirectArguments` for the material draw and the built-in draw.
         static let materialDrawOffset = 12 * 4

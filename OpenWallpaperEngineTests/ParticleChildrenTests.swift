@@ -290,6 +290,50 @@ final class ParticleChildrenTests: XCTestCase {
         XCTAssertGreaterThan(cpu.runtimes[5].particles.count, 0)
     }
 
+    /// Each instance keeps its own emitter clock: a periodic follow child, and under it a delayed,
+    /// time-limited static child that emits 8 a period (WE's thunderbolt beam).
+    func testTimedChildInstancesRunTheSameOnTheGPU() throws {
+        var trail = ParticleTestSystem()
+        trail.emissionRate = 60
+        trail.maximum = 30
+        trail.lifetime = 0.3...0.6
+        trail.instantaneous = 2
+        trail.emitterTiming.periodic = true
+        trail.emitterTiming.periodDuration = 0.1...0.3
+        trail.emitterTiming.periodDelay = 0.05...0.2
+        trail.emitterTiming.maximumPerPeriod = 6
+        var beam = ParticleTestSystem()
+        beam.emissionRate = 100
+        beam.maximum = 16
+        beam.lifetime = 0.6...0.6
+        beam.emitterTiming.delay = 0.2
+        beam.emitterTiming.duration = 1
+        beam.emitterTiming.periodic = true
+        beam.emitterTiming.periodDuration = 1...1
+        beam.emitterTiming.periodDelay = 9999...9999
+        beam.emitterTiming.maximumPerPeriod = 8
+        let links: [(ParticleTestSystem.Linked, Int)] = [
+            (trail.link(.follow, instances: 6, probability: 1), 0),
+            (beam.link(.static, instances: 6, probability: 1, instanced: true), 1),
+        ]
+        let cpu = try Family(root: rocketTestSystem(), children: links)
+        let gpu = try Family(root: rocketTestSystem(), children: links)
+        cpu.stepCPU(frames: 90, root: translation(SIMD2(500, 300)))
+        try gpu.stepGPU(frames: 90, root: translation(SIMD2(500, 300)))
+        for index in cpu.runtimes.indices {
+            let expected = cpu.runtimes[index].particles
+            let actual = gpu.simulator.snapshot(gpu.runtimes[index], queue: gpu.queue)
+            XCTAssertEqual(actual.map(\.identity.x), expected.map(\.serial), "system \(index): the same particles")
+            let instances: [Int] = actual.map { Int($0.trail.z) }
+            XCTAssertEqual(instances, expected.map(\.instance), "system \(index)")
+        }
+        let beams = cpu.runtimes[2].particles
+        XCTAssertGreaterThan(beams.count, 0)
+        for slot in 0..<6 {
+            XCTAssertLessThanOrEqual(beams.filter { $0.instance == slot }.count, 8, "8 a period, one period")
+        }
+    }
+
     func testTheFixtureFamilyRunsTheSameOnTheGPU() throws {
         let systems = try content().particleSystems
         let cpu = try Family(systems)

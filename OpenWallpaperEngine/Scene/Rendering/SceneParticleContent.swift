@@ -86,8 +86,11 @@ struct SceneMetalParticleSystem {
     var worldSpace = false
     /// `movement` flag bit 0: gravity is a scene-space vector, not turned with the emitter.
     var worldGravity = false
-    /// The emitter's `instantaneous` burst: particles spawned at once when the system starts.
+    /// The emitter's `instantaneous` burst: particles spawned at once when the emitter starts (and
+    /// each period, when periodic).
     var instantaneous = 0
+    /// When the emitter emits: `delay`, `duration`, periodic emission, one per frame.
+    var emitterTiming = ParticleEmitterTiming()
     /// Emitter `speedmin`…`speedmax`: speed away from the emitter's centre along the spawn offset.
     var emitterSpeed: ClosedRange<Float> = 0...0
     /// `sphererandom` `distancemin` over `distancemax`: the spawn ring's inner radius.

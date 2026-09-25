@@ -15,6 +15,8 @@ struct ParticleInstance {
     var translation = SIMD2<Float>.zero
     var previousTranslation = SIMD2<Float>.zero
     var remainder: Float = 0
+    /// Its emitter's timing, from when the instance was made (`ParticleEmitterClock`).
+    var clock = ParticleEmitterClock()
     /// Its particles alive after the last step.
     var live = 0
     /// Spawned this step.

@@ -39,6 +39,8 @@ struct ParticleGPUInstance {
     var state: SIMD4<UInt32>
     /// Spawned this step.
     var spawn: SIMD4<UInt32>
+    /// `ParticleEmitterClock.state`.
+    var clock: SIMD4<Float>
 
     var flags: Flag { Flag(rawValue: state.x) }
 }
@@ -106,8 +108,11 @@ struct ParticleGPUFrame {
     var colorScale: SIMD4<Float>
     /// Audio velocity, turbulence and vortex scales.
     var audioScales: SIMD4<Float>
+    /// `ParticleFrameInputs.periodLimit` (`noLimit`: none), starts a period, one per frame.
+    var emission: SIMD4<UInt32>
 
     static let noRenderVar = UInt32.max
+    static let noLimit = UInt32.max
 
     init(_ inputs: ParticleFrameInputs, sceneSize: SIMD2<Float>, targetSize: SIMD2<Float>, kind: ParticleGPUDrawKind,
          materialVertexCount: Int, renderVarOffset: Int?) {
@@ -134,6 +139,8 @@ struct ParticleGPUFrame {
         audioScales = SIMD4(inputs.audioVelocityScale, inputs.turbulenceScale, inputs.vortexScale, 0)
         spawnScale = inputs.spawnScale
         colorScale = SIMD4(inputs.colorScale, 1)
+        emission = SIMD4(inputs.periodLimit.map { UInt32(clamping: $0) } ?? Self.noLimit,
+                         inputs.startsPeriod ? 1 : 0, inputs.onePerFrame ? 1 : 0, 0)
     }
 
     static func columns(_ matrix: simd_float2x2) -> SIMD4<Float> {
@@ -205,6 +212,10 @@ struct ParticleGPUParameters {
     var inherit = SIMD4<UInt32>.zero
     /// An audio-responsive `turbulentvelocityrandom`: minimum xy, maximum xy.
     var audioVelocity = SIMD4<Float>.zero
+    /// `ParticleEmitterTiming` for instances: delay, duration, periodic duration minimum and
+    /// maximum; periodic delay minimum and maximum, periodic.
+    var emitterTiming = SIMD4<Float>.zero
+    var emitterPeriod = SIMD4<Float>.zero
 
     /// Samples each `ropetrail` particle keeps.
     var historyLimit: Int { Int(counts.w) }
@@ -323,6 +334,9 @@ struct ParticleGPUParameters {
             self.link = SIMD4(link.probability, 0, 0, 0)
             inherit = SIMD4(c.inheritOnSpawn.rawValue, c.inheritEachStep.rawValue, 0, 0)
         }
+        let timing = c.emitterTiming
+        emitterTiming = SIMD4(timing.delay, timing.duration, timing.periodDuration.lowerBound, timing.periodDuration.upperBound)
+        emitterPeriod = SIMD4(timing.periodDelay.lowerBound, timing.periodDelay.upperBound, timing.periodic ? 1 : 0, 0)
         counts = SIMD4(UInt32(clamping: c.maximumParticleCount), flags.rawValue, seed, UInt32(historyLimit))
     }
 }

@@ -66,18 +66,57 @@ static uint findSerial(device const ParticleState *particles, uint count, uint s
     return low < count && particles[low].identity.x == serial ? low : count;
 }
 
-/// `ParticleCPUSimulation.emissionCount` for one instance.
-static uint instanceEmission(thread ParticleInstanceState &instance, int maximum, float rate, float deltaTime,
-                             int burst) {
-    const int live = int(instance.state.z);
-    const int available = max(maximum - live, 0);
-    const int taken = min(max(burst, 0), available);
-    float carry = instance.emission.y + max(rate, 0.0f) * deltaTime;
-    const int count = max(0, min(int(min(carry, 2147483520.0f)), available - taken));
-    carry -= float(count);
-    if (live + taken + count >= maximum) carry = fmod(carry, 1.0f);
+/// `ParticleEmitterClock.phaseLength`.
+static float phaseLength(uint phase, constant ParticleParameters &p, uint key) {
+    const bool emitting = phase % 2 == 0;
+    const float2 range = emitting ? p.emitterTiming.zw : p.emitterPeriod.xy;
+    return randomValue(range.x, range.y, p.counts.z + key * 0x9E3779B9u, phase, emitting ? sPeriodDuration : sPeriodDelay);
+}
+
+/// `ParticleEmitterClock.advance`: whether the rate emits (x), the burst goes out (y) and a
+/// period starts (z).
+static uint3 advanceClock(thread float4 &clock, float deltaTime, constant ParticleParameters &p, uint key) {
+    const float delay = p.emitterTiming.x, duration = p.emitterTiming.y;
+    const bool periodic = p.emitterPeriod.z > 0.5;
+    clock.x += deltaTime;
+    const bool running = duration <= 0 || clock.x - delay < duration;
+    if (clock.z == 0) {
+        if (clock.x < delay) return uint3(0);
+        clock.z = 1;
+        clock.y = periodic ? phaseLength(0, p, key) : 0;
+        clock.w = 0;
+        return uint3(running ? 1 : 0, 1, 1);
+    }
+    uint3 step = uint3(0);
+    if (periodic) {
+        clock.y -= deltaTime;
+        if (clock.y <= 0) {
+            const uint phase = uint(clock.z);
+            clock.z += 1;
+            clock.y = phaseLength(phase, p, key);
+            if (phase % 2 == 0) {
+                clock.w = 0;
+                step.z = 1;
+                step.y = running ? 1 : 0;
+            }
+        }
+    }
+    step.x = running && (!periodic || uint(clock.z - 1) % 2 == 0) ? 1 : 0;
+    return step;
+}
+
+/// `ParticleCPUSimulation.updateInstances`' emission for one instance.
+static uint instanceEmission(thread ParticleInstanceState &instance, uint slot, constant ParticleParameters &p,
+                             constant ParticleFrame &f) {
+    // `ParticleCPUSimulation.clockKey`.
+    const uint key = instance.state.y * 31u + slot + 1u;
+    const uint3 step = advanceClock(instance.clock, f.time.x, p, key);
+    float carry = instance.emission.y;
+    const uint2 spawned = emission(int(instance.state.z), int(f.extra.y), step.x ? f.time.z : 0.0f, f.time.x, carry,
+                                   step.y ? int(p.instancing.w) : 0, rateLimit(f, uint(instance.clock.w)));
     instance.emission.y = carry;
-    return uint(taken + count);
+    instance.clock.w += float(spawned.y);
+    return spawned.x + spawned.y;
 }
 
 /// `ParticleCPUSimulation.updateInstances`, then the step's counters as `particleBegin` sets them.
@@ -157,13 +196,11 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
                 instances[slot] = instance;
             }
         }
-        const int maximum = int(f.extra.y);
         for (uint slot = 0; slot < slots; ++slot) {
             ParticleInstanceState instance = instances[slot];
             instance.state.w = emitted;
             if ((instance.state.x & iActive) && (instance.state.x & iEmitting)) {
-                const int burst = (instance.state.x & iFresh) ? int(p.instancing.w) : 0;
-                instance.spawn.x = instanceEmission(instance, maximum, f.time.z, f.time.x, burst);
+                instance.spawn.x = instanceEmission(instance, slot, p, f);
                 emitted += instance.spawn.x;
             }
             // Counted afresh by this step's simulation.

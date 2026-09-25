@@ -114,6 +114,24 @@ final class ParticleSimulationParityTests: XCTestCase {
         try assertParity(system, positionTolerance: 3)
     }
 
+    func testEmitterTimingRunsTheSameOnTheGPU() throws {
+        var periodic = ParticleTestSystem()
+        periodic.instantaneous = 3
+        periodic.emitterTiming.periodic = true
+        periodic.emitterTiming.periodDuration = 0.2...0.5
+        periodic.emitterTiming.periodDelay = 0.1...0.3
+        periodic.emitterTiming.maximumPerPeriod = 40
+        try assertParity(periodic, "periodic")
+        var delayed = ParticleTestSystem()
+        delayed.emitterTiming.delay = 0.4
+        delayed.emitterTiming.duration = 0.8
+        try assertParity(delayed, "delay and duration")
+        var single = ParticleTestSystem()
+        single.lifetime = 5...5
+        single.emitterTiming.onePerFrame = true
+        try assertParity(single, "one per frame")
+    }
+
     func testInitialRemapOfSizeAlphaAndVelocity() throws {
         for output in [ParticleInitialRemap.Output.size, .alpha, .velocity] {
             var system = ParticleTestSystem()

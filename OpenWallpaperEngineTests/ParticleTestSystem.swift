@@ -20,6 +20,7 @@ struct ParticleTestSystem {
     var worldSpace = false
     var worldGravity = false
     var instantaneous = 0
+    var emitterTiming = ParticleEmitterTiming()
     var emitterSpeed: ClosedRange<Float> = 0...0
     var minimumSpawnRatio: Float = 0
     var emitterSign = SIMD2<Float>.zero
@@ -94,6 +95,7 @@ struct ParticleTestSystem {
         system.worldSpace = worldSpace
         system.worldGravity = worldGravity
         system.instantaneous = instantaneous
+        system.emitterTiming = emitterTiming
         system.emitterSpeed = emitterSpeed
         system.minimumSpawnRatio = minimumSpawnRatio
         system.emitterSign = emitterSign

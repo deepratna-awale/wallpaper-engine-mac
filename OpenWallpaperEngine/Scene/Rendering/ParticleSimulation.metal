@@ -12,7 +12,7 @@
 
 // MARK: - Step
 
-/// Emission count and the frame's dispatch size (`ParticleCPUSimulation.emissionCount`).
+/// Emission count and the frame's dispatch size (`ParticleCPUSimulation.step`'s emission).
 kernel void particleBegin(device uint *control [[buffer(0)]],
                           constant ParticleParameters &p [[buffer(1)]],
                           constant ParticleFrame &f [[buffer(2)]]) {
@@ -22,17 +22,15 @@ kernel void particleBegin(device uint *control [[buffer(0)]],
     if (f.fade.z > 0.5) {
         count = 0;
         *remainder = 0;
+        control[cPeriodEmitted] = 0;
     } else {
-        float carry = *remainder + max(f.time.z, 0.0f) * f.time.x;
-        const int maximum = int(f.extra.y);
-        const int available = max(maximum - int(count), 0);
-        const int burst = min(int(f.fade.w), available);
-        // Clamped before the conversion, which is undefined past int's range; the maximum caps it anyway.
-        const int taken = max(0, min(int(min(carry, 2147483520.0f)), available - burst));
-        carry -= float(taken);
-        if (int(count) + burst + taken >= maximum) carry = fmod(carry, 1.0f);
+        if (f.emission.y != 0) control[cPeriodEmitted] = 0;
+        float carry = *remainder;
+        const uint2 spawned = emission(int(count), int(f.extra.y), f.time.z, f.time.x, carry, int(f.fade.w),
+                                       rateLimit(f, control[cPeriodEmitted]));
         *remainder = carry;
-        emitted = uint(burst + taken);
+        control[cPeriodEmitted] += spawned.y;
+        emitted = spawned.x + spawned.y;
     }
     const uint total = count + emitted;
     control[cCount] = count;

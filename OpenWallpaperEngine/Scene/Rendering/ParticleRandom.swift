@@ -17,6 +17,8 @@ enum ParticleRandom {
         case eventProbability
         /// An audio-responsive `turbulentvelocityrandom`.
         case audioVelocityX, audioVelocityY
+        /// A periodic emitter's emitting and paused phases (keyed by the phase, `ParticleEmitterClock`).
+        case periodDuration, periodDelay
     }
 
     /// Per-frame draws (turbulence): the frame index with the high bit set, so they never meet a
