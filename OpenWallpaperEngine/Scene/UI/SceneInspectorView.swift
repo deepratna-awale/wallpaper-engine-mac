@@ -27,6 +27,20 @@ private struct SceneInspectorEffect: Identifiable {
     let title: String
     let maskPath: String?
     let controls: [SceneInspectorEffectControl]
+    var combos: [SceneInspectorEffectCombo] = []
+}
+
+/// A `// [COMBO]` switch of the effect's shaders that WE's editor shows.
+private struct SceneInspectorEffectCombo: Identifiable {
+    let id: String
+    let effectID: String
+    /// The preprocessor name, which the override is stored under.
+    let combo: String
+    let title: String
+    /// WE's options as (title, value); an on/off switch when empty.
+    let options: [(title: String, value: Int)]
+    /// Other combos' values this one is shown for, as WE's `require`.
+    var requirements: [String: Int] = [:]
 }
 
 private struct SceneInspectorEffectControl: Identifiable {
@@ -39,6 +53,11 @@ private struct SceneInspectorEffectControl: Identifiable {
     let maximum: Double
     let defaultValue: Double
     let displaysDegrees: Bool
+    /// From the uniform's annotation (`int`, `"type":"color"`, `linked`).
+    var isInteger = false
+    var isColor = false
+    var isLinked = false
+    var componentCount = 1
 }
 
 private struct SceneInspectorTexture: Identifiable {
@@ -62,6 +81,9 @@ private final class SceneInspectorModel: ObservableObject {
     @Published var decodedMasks: [String: SceneInspectorTexture] = [:]
     @Published var effectValues: [String: Double] = [:]
     @Published var effectEnabled: [String: Bool] = [:]
+    @Published var comboValues: [String: Int] = [:]
+    /// Linked vec2 parameters (by `effectID:key`) currently edited as one value.
+    @Published var linkedParameters: Set<String> = []
     @Published var decodedItemID: String?
     @Published var loadingItemID: String?
     private(set) var initiallySelectedID: String?
@@ -226,6 +248,7 @@ private final class SceneInspectorModel: ObservableObject {
                              storedValues: [String: String]) -> [SceneInspectorEffect] {
         let wallpaperDirectory = directory
         let assets = WallpaperEngineAssets.directory
+        let labels = WallpaperEngineLabels.load()
         let readFile: (String) -> Data? = { path in
             FileManager.default.contents(atPath: wallpaperDirectory.appending(path: path).path)
                 ?? assets.flatMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }
@@ -236,7 +259,8 @@ private final class SceneInspectorModel: ObservableObject {
             let enabledKey = sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: effectIndex)
             effectEnabled[effectID] = storedValues[enabledKey].map { $0.lowercased() != "false" }
                 ?? effect.visible.map { $0 != false } ?? true
-            // Parameters come from the effect's own shaders, as in WE's editor.
+            // Parameters come from the effect's own shaders, as in WE's editor: its ranges,
+            // defaults and labels, nothing widened or renamed.
             let parameters = SceneEffectParameters.parameters(for: effect.file, readFile: readFile)
             let authored = effect.passes?.first?.constants ?? [:]
             var controls: [SceneInspectorEffectControl] = []
@@ -252,24 +276,43 @@ private final class SceneInspectorModel: ObservableObject {
                 let overrideValues = storedValues[overrideKey]?
                     .split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Double($0) }
                 let values = overrideValues?.isEmpty == false ? overrideValues! : baseValues
+                let title = labels.translation(parameter.label) ?? parameter.title
+                let count = parameter.defaultValue.count
+                if parameter.isLinked, count == 2, values.count >= 2, values[0] == values[1] {
+                    linkedParameters.insert("\(effectID):\(parameter.materialKey)")
+                }
                 for component in parameter.defaultValue.indices {
                     let controlID = "\(effectID):\(parameter.materialKey):\(component)"
                     let value = values.indices.contains(component) ? values[component] : parameter.defaultValue[component]
                     effectValues[controlID] = value
-                    let suffix = parameter.defaultValue.count > 1
-                        ? " " + (parameter.isColor ? ["R", "G", "B", "A"] : ["X", "Y", "Z", "W"])[min(component, 3)] : ""
+                    // A colour is one picker, titled as WE titles it.
+                    let suffix = count > 1 && !parameter.isColor ? " " + ["X", "Y", "Z", "W"][min(component, 3)] : ""
                     controls.append(SceneInspectorEffectControl(
                         id: controlID, effectID: effectID, key: parameter.materialKey, component: component,
-                        title: parameter.title + suffix,
-                        minimum: min(parameter.minimum, value), maximum: max(parameter.maximum, value),
+                        title: title + suffix,
+                        minimum: parameter.minimum, maximum: parameter.maximum,
                         defaultValue: baseValues.indices.contains(component) ? baseValues[component] : 0,
-                        displaysDegrees: false))
+                        displaysDegrees: false, isInteger: parameter.isInteger, isColor: parameter.isColor,
+                        isLinked: parameter.isLinked, componentCount: count))
                 }
+            }
+            let authoredCombos = effect.passes?.first?.combos ?? [:]
+            var combos: [SceneInspectorEffectCombo] = []
+            for combo in SceneEffectParameters.combos(for: effect.file, readFile: readFile) where combo.isEditable {
+                let comboID = "\(effectID):combo:\(combo.combo)"
+                let key = sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: effectIndex, parameter: SceneEffectParameters.comboOverrideKey(combo.combo))
+                let authoredValue = authoredCombos.first { $0.key.caseInsensitiveCompare(combo.combo) == .orderedSame }?.value
+                comboValues[comboID] = storedValues[key].flatMap { Int($0) } ?? authoredValue ?? combo.defaultValue
+                combos.append(SceneInspectorEffectCombo(
+                    id: comboID, effectID: effectID, combo: combo.combo,
+                    title: labels.translation(combo.label) ?? SceneEffectParameters.title(combo.label),
+                    options: combo.options.map { (labels.translation($0.label) ?? SceneEffectParameters.title($0.label), $0.value) },
+                    requirements: combo.requirements))
             }
             let maskPath = effect.passes?.first?.textures?.compactMap { $0 }.first
             return SceneInspectorEffect(id: effectID, name: name,
                                         title: name.replacingOccurrences(of: "_", with: " ").capitalized,
-                                        maskPath: maskPath, controls: controls)
+                                        maskPath: maskPath, controls: controls, combos: combos)
         }
     }
 
@@ -279,6 +322,12 @@ private final class SceneInspectorModel: ObservableObject {
 
     func setEffectValue(_ value: Double, control: SceneInspectorEffectControl) {
         effectValues[control.id] = value
+        // A linked vec2 moves both components together, as WE's linked slider does.
+        if control.isLinked, linkedParameters.contains("\(control.effectID):\(control.key)") {
+            for component in 0..<control.componentCount {
+                effectValues["\(control.effectID):\(control.key):\(component)"] = value
+            }
+        }
         let prefix = "\(control.effectID):\(control.key):"
         let components = effectValues.keys.filter { $0.hasPrefix(prefix) }
             .sorted { (Int($0.split(separator: ":").last!) ?? 0) < (Int($1.split(separator: ":").last!) ?? 0) }
@@ -292,6 +341,42 @@ private final class SceneInspectorModel: ObservableObject {
         persist(values)
     }
 
+    func isLinked(_ control: SceneInspectorEffectControl) -> Bool {
+        linkedParameters.contains("\(control.effectID):\(control.key)")
+    }
+
+    /// WE's link toggle: linking copies X into Y.
+    func setLinked(_ linked: Bool, control: SceneInspectorEffectControl) {
+        let id = "\(control.effectID):\(control.key)"
+        if linked {
+            linkedParameters.insert(id)
+            setEffectValue(effectValues["\(id):0"] ?? control.defaultValue, control: control)
+        } else {
+            linkedParameters.remove(id)
+        }
+    }
+
+    /// WE shows a combo only while the combos it `require`s have those values.
+    func requirementsHold(_ combo: SceneInspectorEffectCombo, in effect: SceneInspectorEffect) -> Bool {
+        combo.requirements.allSatisfy { name, value in
+            effect.combos.first { $0.combo == name }.map { comboValue($0) == value } ?? true
+        }
+    }
+
+    func comboValue(_ combo: SceneInspectorEffectCombo) -> Int {
+        comboValues[combo.id] ?? 0
+    }
+
+    func setComboValue(_ value: Int, combo: SceneInspectorEffectCombo) {
+        comboValues[combo.id] = value
+        let parts = combo.effectID.split(separator: ":")
+        guard parts.count == 2, let objectID = Int(parts[0]), let effectIndex = Int(parts[1]) else { return }
+        let key = sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: effectIndex, parameter: SceneEffectParameters.comboOverrideKey(combo.combo))
+        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        values[key] = String(value)
+        persist(values)
+    }
+
     func displayedEffectValue(for control: SceneInspectorEffectControl) -> Double {
         let value = effectValues[control.id] ?? control.defaultValue
         return control.displaysDegrees ? value * 180 / .pi : value
@@ -300,10 +385,10 @@ private final class SceneInspectorModel: ObservableObject {
     func effectColor(for control: SceneInspectorEffectControl) -> Color {
         let prefix = "\(control.effectID):\(control.key):"
         let values = effectValues.keys.filter { $0.hasPrefix(prefix) }.sorted().compactMap { effectValues[$0] }
-        let scale = (values.max() ?? 1) > 1 ? 255.0 : 1.0
-        return Color(red: (values.indices.contains(0) ? values[0] : 1) / scale,
-                 green: (values.indices.contains(1) ? values[1] : 1) / scale,
-                 blue: (values.indices.contains(2) ? values[2] : 1) / scale)
+        // WE's colour uniforms are normalised 0...1.
+        return Color(red: values.indices.contains(0) ? values[0] : 1,
+                     green: values.indices.contains(1) ? values[1] : 1,
+                     blue: values.indices.contains(2) ? values[2] : 1)
     }
 
     func setEffectColor(_ color: Color, control: SceneInspectorEffectControl) {
@@ -925,8 +1010,11 @@ struct SceneInspectorView: View {
                             } else {
                                 Text("No mask").font(.caption).foregroundStyle(.secondary)
                             }
+                            ForEach(effect.combos.filter { model.requirementsHold($0, in: effect) }) { combo in
+                                effectComboControl(combo, effect: effect)
+                            }
                             ForEach(effect.controls) { control in
-                                if control.key.localizedCaseInsensitiveContains("color") {
+                                if control.isColor {
                                     if control.component == 0 {
                                         ColorPicker(selection: Binding(
                                             get: { model.effectColor(for: control) },
@@ -937,19 +1025,7 @@ struct SceneInspectorView: View {
                                         .anchorsColorPanel()
                                     }
                                 } else {
-                                    let value = Binding<Double>(
-                                        get: { model.displayedEffectValue(for: control) },
-                                        set: { model.setDisplayedEffectValue($0, control: control) }
-                                    )
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        parameterLabel(control.title + (control.displaysDegrees ? " (degrees)" : isPercentage(control) ? " (%)" : ""), help: parameterHelp(control, effect: effect.name))
-                                        NumericSliderInput(value: value,
-                                                           range: control.minimum...max(control.maximum, control.minimum + 0.001),
-                                                           defaultValue: control.displaysDegrees
-                                                               ? control.defaultValue * 180 / .pi : control.defaultValue,
-                                                           fractionDigits: 3, fieldWidth: 76)
-                                        inspectorMusicSyncControls(for: control)
-                                    }
+                                    effectSlider(control, effect: effect)
                                 }
                             }
                         }
@@ -967,6 +1043,48 @@ struct SceneInspectorView: View {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    /// WE's material slider: the annotation's range, step 0.01 (1 for `int`), and a number field
+    /// that accepts values past the range.
+    @ViewBuilder private func effectSlider(_ control: SceneInspectorEffectControl, effect: SceneInspectorEffect) -> some View {
+        let value = Binding<Double>(
+            get: { model.displayedEffectValue(for: control) },
+            set: { model.setDisplayedEffectValue($0, control: control) }
+        )
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                parameterLabel(control.title, help: parameterHelp(control, effect: effect.name))
+                if control.isLinked, control.component == 0 {
+                    Toggle(isOn: Binding(get: { model.isLinked(control) },
+                                         set: { model.setLinked($0, control: control) })) {
+                        Image(systemName: "link")
+                    }
+                    .toggleStyle(.button)
+                    .help("Edit X and Y together")
+                }
+            }
+            NumericSliderInput(value: value,
+                               range: control.minimum...max(control.maximum, control.minimum + 0.001),
+                               defaultValue: control.defaultValue,
+                               step: control.isInteger ? 1 : 0.01,
+                               fractionDigits: control.isInteger ? 0 : 2, fieldWidth: 76,
+                               clampsTypedValue: false)
+            inspectorMusicSyncControls(for: control)
+        }
+    }
+
+    @ViewBuilder private func effectComboControl(_ combo: SceneInspectorEffectCombo, effect: SceneInspectorEffect) -> some View {
+        let selection = Binding<Int>(get: { model.comboValue(combo) }, set: { model.setComboValue($0, combo: combo) })
+        if combo.options.isEmpty {
+            Toggle(combo.title, isOn: Binding(get: { selection.wrappedValue != 0 },
+                                              set: { selection.wrappedValue = $0 ? 1 : 0 }))
+                .toggleStyle(.checkbox)
+        } else {
+            Picker(combo.title, selection: selection) {
+                ForEach(combo.options, id: \.value) { option in Text(option.title).tag(option.value) }
             }
         }
     }
@@ -1220,13 +1338,6 @@ struct SceneInspectorView: View {
                             displaysDegrees: control.displaysDegrees)
     }
 
-    private func isPercentage(_ control: SceneInspectorEffectControl) -> Bool {
-        let key = control.key.lowercased()
-        return key.contains("strength") || key.contains("intensity") || key.contains("amount")
-            || key.contains("alpha") || key.contains("opacity") || key.contains("density")
-            || key.contains("threshold") || key.contains("fuzziness") || key.contains("tolerance")
-            || key.contains("smoothness")
-    }
 
     @ViewBuilder private func decodedTextureList(for item: SceneInspectorItem) -> some View {
         if model.loadingItemID == item.id {

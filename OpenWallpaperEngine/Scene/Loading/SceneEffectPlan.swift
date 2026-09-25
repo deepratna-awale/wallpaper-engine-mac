@@ -136,7 +136,8 @@ struct SceneEffectPlanBuilder {
         let boundSlots = Set(inputs.keys)
         let formats = formatCombos(samplers, names: names, materialPath: materialPath, effectDirectory: effectDirectory)
         let combos = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment,
-                                                           overrides: [formats, materialPass.combos, instance?.combos ?? [:]],
+                                                           overrides: [formats, materialPass.combos, instance?.combos ?? [:],
+                                                                       Self.comboOverrides(overrides, declared: vertex.combos + fragment.combos)],
                                                            boundTextureSlots: boundSlots.union([0]))
         guard Self.conditionsHold(pass.conditions, combos: combos) else { return nil }
 
@@ -240,6 +241,19 @@ struct SceneEffectPlanBuilder {
             result[key] = override.isMusicSynced
                 ? .user(name: override.property, condition: nil, fallback: .literal(value))
                 : .literal(value)
+        }
+        return result
+    }
+
+    /// The user's inspector choice for a combo the shaders declare wins over the material and the
+    /// scene (stored under `SceneEffectParameters.comboOverrideKey`).
+    static func comboOverrides(_ overrides: (String) -> SceneEffectOverride?,
+                               declared: [ShaderComboDeclaration]) -> [String: Int] {
+        var result: [String: Int] = [:]
+        for combo in declared where result[combo.name] == nil {
+            guard let stored = overrides(SceneEffectParameters.comboOverrideKey(combo.name)),
+                  let value = Int(stored.value) else { continue }
+            result[combo.name] = value
         }
         return result
     }

@@ -46,6 +46,8 @@ struct NumericSliderInput<Value: BinaryFloatingPoint>: View where Value.Stride: 
     var fractionDigits = 2
     var sliderWidth: CGFloat? = nil
     var fieldWidth: CGFloat = 64
+    /// False lets a typed value go past the slider's range, as WE's editor number field does.
+    var clampsTypedValue = true
 
     /// `TextField(value:format:)` only writes back on commit, so typing needed a click elsewhere to
     /// take effect and dragging the slider left the field stale. The text is mirrored manually to
@@ -63,7 +65,8 @@ struct NumericSliderInput<Value: BinaryFloatingPoint>: View where Value.Stride: 
         guard let parsed = Double(string.trimmingCharacters(in: .whitespaces)) else { return }
         let lowerBound = Double(range.lowerBound) * displayScale
         let upperBound = Double(range.upperBound) * displayScale
-        value = Value(min(max(parsed, lowerBound), upperBound) / displayScale)
+        let clamped = clampsTypedValue ? min(max(parsed, lowerBound), upperBound) : parsed
+        value = Value(clamped / displayScale)
     }
 
     var body: some View {
