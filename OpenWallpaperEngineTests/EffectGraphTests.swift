@@ -14,7 +14,7 @@ final class EffectGraphTests: XCTestCase {
         try XCTSkipIf(SceneShaderTranslator.toolchain == nil, "glslang/spirv-cross not installed")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: ShaderVariantTests.weAssets.path), "WE install not present")
         device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        renderer = try XCTUnwrap(EffectGraphRenderer(device: device))
+        renderer = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: nil))
         cache = FileManager.default.temporaryDirectory.appending(path: "owe-graph-\(UUID().uuidString)")
         let translator = ShaderVariantTranslator(compiler: try ProcessShaderCompiler(), cacheDirectory: cache)
         let root = ShaderVariantTests.weAssets

@@ -23,6 +23,8 @@ final class EffectGraphRenderer {
     private var pipelines: [String: MTLRenderPipelineState] = [:]
     private var pendingPipelines = Set<String>()
     private var failedPipelines = Set<String>()
+    /// Backend binaries of compiled pipelines, persisted across launches; nil disables it.
+    let pipelineArchive: EffectPipelineArchive?
 
     /// Per layer: targets, uniform programs and readiness, resolved once and reused every frame
     /// so the steady state does no string building or dictionary work per pass.
@@ -84,8 +86,10 @@ final class EffectGraphRenderer {
     static let texCoordBuffer = 29
     static let zeroBuffer = 28
 
-    init?(device: MTLDevice) {
+    /// `pipelineArchiveDirectory` holds the persisted pipeline archive; nil keeps none.
+    init?(device: MTLDevice, pipelineArchiveDirectory: URL? = EffectPipelineArchive.defaultDirectory) {
         self.device = device
+        pipelineArchive = pipelineArchiveDirectory.map { EffectPipelineArchive(device: device, directory: $0) }
         // Triangle strip over the full target; with the translator's GL-style y flip, texcoord
         // (0, 0) lands on the first row, so each pass maps its input 1:1.
         let positions: [Float] = [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0]
@@ -260,6 +264,7 @@ final class EffectGraphRenderer {
         pipelineLock.withLock { _ = pendingPipelines.insert(key) }
         let device = self.device
         let blending = pass.blending
+        let archive = pipelineArchive
         compileQueue.async { [weak self] in
             let result: MTLRenderPipelineState?
             do {
@@ -282,7 +287,7 @@ final class EffectGraphRenderer {
                     attachment.destinationAlphaBlendFactor = blend.destination
                 }
                 descriptor.vertexDescriptor = Self.vertexDescriptor(for: vertex)
-                result = try device.makeRenderPipelineState(descriptor: descriptor)
+                result = try Self.makePipeline(descriptor, device: device, archive: archive)
             } catch {
                 OWELog.error(.shader, "Effect pipeline failed (\(key.prefix(12))): \(error)")
                 result = nil
@@ -293,6 +298,21 @@ final class EffectGraphRenderer {
                 if let result { self.pipelines[key] = result } else { self.failedPipelines.insert(key) }
             }
         }
+    }
+
+    /// Takes the pipeline from the archive when it has it; otherwise compiles it and adds it.
+    static func makePipeline(_ descriptor: MTLRenderPipelineDescriptor, device: MTLDevice,
+                             archive: EffectPipelineArchive?) throws -> MTLRenderPipelineState {
+        guard let archive else { return try device.makeRenderPipelineState(descriptor: descriptor) }
+        descriptor.binaryArchives = archive.archives
+        // Optional: a miss is the normal first-launch case and falls through to a full compile.
+        if let hit = try? device.makeRenderPipelineState(descriptor: descriptor, options: [.failOnBinaryArchiveMiss]).0 {
+            archive.recordHit()
+            return hit
+        }
+        let pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        archive.add(descriptor)
+        return pipeline
     }
 
     /// Blocks until every pipeline these effects need has compiled or failed (tests, prewarming).
