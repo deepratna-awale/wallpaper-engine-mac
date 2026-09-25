@@ -250,6 +250,21 @@ final class EffectPipelineArchiveTests: XCTestCase {
         XCTAssertEqual(next.writes, 1, "the next launch writes the pipeline the failed write had")
     }
 
+    /// Writes wait for the *last* addition, so a burst longer than the delay still writes once.
+    func testABurstOfAdditionsWritesOnce() throws {
+        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.5)
+        let descriptors = try (0..<12).map { try descriptor(red: $0) }
+        for (index, descriptor) in descriptors.enumerated() {
+            archive.add(descriptor, key: "\(index)")
+            Thread.sleep(forTimeInterval: 0.1)
+        }
+        let deadline = Date().addingTimeInterval(20)
+        while archive.writes == 0, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        Thread.sleep(forTimeInterval: 0.8)
+        XCTAssertEqual(archive.writes, 1)
+        XCTAssertEqual(archive.writeFailures, 0)
+    }
+
     /// Renderers come and go (wallpaper switches, tests) while their compiles still add pipelines
     /// and debounced writes fire; every write must still serialize, and the next archive for the
     /// file must find the pipelines.

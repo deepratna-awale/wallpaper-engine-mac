@@ -23,10 +23,10 @@ import Metal
 /// `NSError` it has already freed, and retaining that crashes the process (SIGSEGV in
 /// `objc_retain` under `-[_MTLBinaryArchive airntSerializeToURL:options:error:]`). Every failed
 /// attempt is a chance of that crash, so the first failure keeps the file as it is until the next
-/// launch.
+/// launch. Writes are also debounced on the *last* addition, so a burst of compiles writes once.
 ///
 /// Thread-safe: `lock` owns `recorded`, `recordedKeys`, `written`, `writesStopped`,
-/// `serializeScheduled` and the counters; `serializeQueue` runs writes one at a
+/// `lastAddition`, `serializeScheduled` and the counters; `serializeQueue` runs writes one at a
 /// time and builds them outside the lock; `lookup` is immutable.
 final class EffectPipelineArchive {
     /// Bump when what goes into the archive changes (e.g. descriptor fields).
@@ -43,6 +43,7 @@ final class EffectPipelineArchive {
     private var written = true
     /// Set by a failed write: no further writes this session (see the type's comment).
     private var writesStopped = false
+    private var lastAddition = DispatchTime.now()
     private var writeCount = 0
     private var writeFailureCount = 0
     private var hitCount = 0
@@ -55,7 +56,7 @@ final class EffectPipelineArchive {
     var writeFailures: Int { lock.withLock { writeFailureCount } }
     private var serializeScheduled = false
     private let serializeQueue = DispatchQueue(label: "owe.effect-pipeline-archive", qos: .utility)
-    /// Writes wait this long after the last addition, so a burst of compiles writes once.
+    /// Writes wait until no pipeline was added for this long, so a burst of compiles writes once.
     let serializeDelay: TimeInterval
 
     init(device: MTLDevice, directory: URL, serializeDelay: TimeInterval = 2) {
@@ -118,11 +119,10 @@ final class EffectPipelineArchive {
         guard record(descriptor, key: key) else { return }
         additionCount += 1
         written = false
+        lastAddition = .now()
         guard !serializeScheduled, !writesStopped else { return }
         serializeScheduled = true
-        serializeQueue.asyncAfter(deadline: .now() + serializeDelay) { [weak self] in
-            self?.serialize()
-        }
+        scheduleSerialize(at: lastAddition + serializeDelay)
     }
 
     /// A pipeline served from the file: it goes into the next write too.
@@ -148,10 +148,30 @@ final class EffectPipelineArchive {
         return true
     }
 
+    /// Caller holds `lock` and has set `serializeScheduled`.
+    private func scheduleSerialize(at deadline: DispatchTime) {
+        serializeQueue.asyncAfter(deadline: deadline) { [weak self] in
+            self?.serializeWhenIdle()
+        }
+    }
+
+    /// Writes once no pipeline was added for `serializeDelay`; waits longer while they still come.
+    private func serializeWhenIdle() {
+        let due: Bool = lock.withLock {
+            let deadline = lastAddition + serializeDelay
+            guard DispatchTime.now() >= deadline else {
+                scheduleSerialize(at: deadline)
+                return false
+            }
+            serializeScheduled = false
+            return true
+        }
+        if due { serialize() }
+    }
+
     private func serialize() {
         let batch: [(key: String, descriptor: MTLRenderPipelineDescriptor)] = lock.withLock {
-            serializeScheduled = false
-            return written || writesStopped ? [] : recorded
+            written || writesStopped ? [] : recorded
         }
         guard !batch.isEmpty else { return }
         do {
