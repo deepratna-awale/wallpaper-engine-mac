@@ -29,16 +29,18 @@ final class EffectGraphRenderer {
     private var layers: [String: LayerState] = [:]
 
     private final class LayerState {
-        let width: Int
-        let height: Int
+        var width: Int
+        var height: Int
         var formats: [[MTLPixelFormat?]] = []
         var ready = false
+        /// Variant keys of the chain the programs were built for; a different chain rebuilds them.
+        var chain: [[String]] = []
         var pingA: MTLTexture?
         var pingB: MTLTexture?
         var fbos: [[String: MTLTexture]] = []
         var programs: [[UniformProgram?]] = []
-        /// Last output of a chain that doesn't change over time, and the input that produced it.
-        var staticOutput: (input: ObjectIdentifier, output: MTLTexture)?
+        /// Last output of a chain that doesn't change over time, and what produced it.
+        var staticOutput: (key: StaticChainKey, output: MTLTexture)?
 
         init(width: Int, height: Int) {
             self.width = width
@@ -46,9 +48,36 @@ final class EffectGraphRenderer {
         }
     }
 
+    /// Everything a static chain's output depends on besides its plan. The input is held (not just
+    /// its `ObjectIdentifier`, which can be reused once a texture is freed) and compared by identity.
+    struct StaticChainKey {
+        let input: MTLTexture
+        let inputVersion: UInt64
+        let color: SIMD3<Float>
+        let alpha: Float
+
+        func matches(_ other: StaticChainKey) -> Bool {
+            input === other.input && inputVersion == other.inputVersion
+                && color == other.color && alpha == other.alpha
+        }
+    }
+
+    /// Targets a layer gave back when its size changed, by size and format. Layers whose size
+    /// alternates (text on a clock) take them back instead of allocating new ones.
+    private struct TargetKey: Hashable {
+        let width: Int
+        let height: Int
+        let format: MTLPixelFormat
+    }
+    private var spareTargets: [TargetKey: [MTLTexture]] = [:]
+    private var spareOrder: [TargetKey] = []
+    /// Upper bound on spare textures kept; the oldest sizes go first.
+    static let maxSpareTargets = 32
+
     /// Counters for tests and diagnostics.
     private(set) var passesEncoded = 0
     private(set) var layersReused = 0
+    private(set) var targetsAllocated = 0
     var failedPipelineCount: Int { pipelineLock.withLock { failedPipelines.count } }
 
     static let positionBuffer = 30
@@ -84,6 +113,8 @@ final class EffectGraphRenderer {
     /// Drops per-layer state, e.g. when the scene changes. Compiled pipelines are kept.
     func releaseTargets() {
         layers.removeAll()
+        spareTargets.removeAll()
+        spareOrder.removeAll()
     }
 
     struct Context {
@@ -95,6 +126,11 @@ final class EffectGraphRenderer {
         let sceneSnapshot: MTLTexture?
         let layerColor: SIMD3<Float>
         let layerAlpha: Float
+        /// Bump when `input`'s contents change while the texture object stays the same.
+        var inputVersion: UInt64 = 0
+        /// Image size inside a padded asset texture (the `.tex` width/height), when known; used
+        /// for `g_TextureNResolution.zw`. nil means the whole texture is content.
+        var assetContentSize: ((String, SceneMetalTextureSource) -> SIMD2<Float>?)? = nil
     }
 
     /// Runs `effects` on `input` and returns the processed image, or nil when nothing rendered —
@@ -104,33 +140,33 @@ final class EffectGraphRenderer {
         let width = input.width
         let height = input.height
         let state: LayerState
-        if let existing = layers[layerID], existing.width == width, existing.height == height {
+        let chain = effects.map { $0.passes.map(\.variantKey) }
+        if let existing = layers[layerID], existing.chain == chain {
             state = existing
         } else {
+            if let stale = layers[layerID] { recycleTargets(stale) }
             state = LayerState(width: width, height: height)
+            state.chain = chain
             layers[layerID] = state
         }
         if !state.ready {
             guard let formats = readyFormats(effects) else { return nil }
             state.formats = formats
-            state.pingA = makeTarget(width: width, height: height, format: .rgba8Unorm)
-            state.pingB = makeTarget(width: width, height: height, format: .rgba8Unorm)
-            state.fbos = effects.map { effect in
-                Dictionary(effect.fbos.compactMap { fbo -> (String, MTLTexture)? in
-                    let size = Self.fboSize(fbo, width: width, height: height)
-                    return makeTarget(width: size.x, height: size.y, format: Self.pixelFormat(fbo.format)).map { (fbo.name, $0) }
-                }, uniquingKeysWith: { a, _ in a })
-            }
             state.programs = effects.map { effect in
                 effect.passes.map { pass in pass.variant.map { UniformProgram(layout: $0.uniforms, constants: pass.constants) } }
             }
+            allocateTargets(state, effects: effects, width: width, height: height)
             state.ready = true
+        } else if state.width != width || state.height != height {
+            recycleTargets(state)
+            allocateTargets(state, effects: effects, width: width, height: height)
         }
 
-        let inputID = ObjectIdentifier(input)
+        let staticKey = StaticChainKey(input: input, inputVersion: context.inputVersion,
+                                       color: context.layerColor, alpha: context.layerAlpha)
         // A scene snapshot keeps its texture identity while its contents change every frame.
         let readsScene = context.sceneSnapshot != nil
-        if !readsScene, let cached = state.staticOutput, cached.input == inputID {
+        if !readsScene, let cached = state.staticOutput, cached.key.matches(staticKey) {
             layersReused += 1
             return cached.output
         }
@@ -177,7 +213,7 @@ final class EffectGraphRenderer {
         guard didRender else { return nil }
         // A chain with no time, audio, pointer or live-bound input produces the same image
         // every frame; skip it until the input changes (bandwidth is the main per-frame cost).
-        state.staticOutput = isStatic && !readsScene ? (inputID, current) : nil
+        state.staticOutput = isStatic && !readsScene ? (staticKey, current) : nil
         return current
     }
 
@@ -292,6 +328,7 @@ final class EffectGraphRenderer {
         for slot in variant.textureSlots {
             guard let input = pass.textures[slot] else { continue }
             let texture: MTLTexture?
+            var contentSize: SIMD2<Float>?
             var sampler = clampSampler
             switch input {
             case .current: texture = current
@@ -300,6 +337,7 @@ final class EffectGraphRenderer {
             case .sceneSnapshot: texture = context.sceneSnapshot
             case .asset(let key, let source):
                 texture = context.assetTexture(key, source)
+                contentSize = context.assetContentSize?(key, source)
                 sampler = repeatSampler
             }
             guard let texture else { continue }
@@ -308,9 +346,7 @@ final class EffectGraphRenderer {
             encoder.setVertexTexture(texture, index: slot)
             encoder.setVertexSamplerState(sampler, index: slot)
             if program.needsTextureInfo {
-                let size = SIMD2<Float>(Float(texture.width), Float(texture.height))
-                textureInfo[slot] = BuiltinTextureInfo(allocatedSize: size, contentSize: size, spriteRotation: nil,
-                                                       spriteTranslation: nil, mipCount: texture.mipmapLevelCount)
+                textureInfo[slot] = Self.textureInfo(for: texture, contentSize: contentSize)
             }
         }
 
@@ -367,6 +403,65 @@ final class EffectGraphRenderer {
     }
 
     // MARK: - Targets
+
+    /// Built-in texture info: allocated size is the GPU texture, content size the image inside it
+    /// (clamped to the allocation; the allocation when unknown).
+    static func textureInfo(for texture: MTLTexture, contentSize: SIMD2<Float>?) -> BuiltinTextureInfo {
+        let allocated = SIMD2<Float>(Float(texture.width), Float(texture.height))
+        var content = allocated
+        if let contentSize, contentSize.x > 0, contentSize.y > 0 {
+            content = simd_min(contentSize, allocated)
+        }
+        return BuiltinTextureInfo(allocatedSize: allocated, contentSize: content, spriteRotation: nil,
+                                  spriteTranslation: nil, mipCount: texture.mipmapLevelCount)
+    }
+
+    private func allocateTargets(_ state: LayerState, effects: [SceneEffectPlan], width: Int, height: Int) {
+        state.width = width
+        state.height = height
+        state.staticOutput = nil
+        state.pingA = target(width: width, height: height, format: .rgba8Unorm)
+        state.pingB = target(width: width, height: height, format: .rgba8Unorm)
+        state.fbos = effects.map { effect in
+            Dictionary(effect.fbos.compactMap { fbo -> (String, MTLTexture)? in
+                let size = Self.fboSize(fbo, width: width, height: height)
+                return target(width: size.x, height: size.y, format: Self.pixelFormat(fbo.format)).map { (fbo.name, $0) }
+            }, uniquingKeysWith: { a, _ in a })
+        }
+    }
+
+    /// Hands a layer's targets to the spare list. Contents don't matter: every pass either
+    /// overwrites its target or (blended) runs after one that did.
+    private func recycleTargets(_ state: LayerState) {
+        let owned = [state.pingA, state.pingB].compactMap { $0 } + state.fbos.flatMap(\.values)
+        state.pingA = nil
+        state.pingB = nil
+        state.fbos = []
+        state.staticOutput = nil
+        for texture in owned {
+            let key = TargetKey(width: texture.width, height: texture.height, format: texture.pixelFormat)
+            spareTargets[key, default: []].append(texture)
+            spareOrder.removeAll { $0 == key }
+            spareOrder.append(key)
+        }
+        var count = spareTargets.values.reduce(0) { $0 + $1.count }
+        while count > Self.maxSpareTargets, let oldest = spareOrder.first {
+            count -= spareTargets[oldest]?.count ?? 0
+            spareTargets[oldest] = nil
+            spareOrder.removeFirst()
+        }
+    }
+
+    private func target(width: Int, height: Int, format: MTLPixelFormat) -> MTLTexture? {
+        let key = TargetKey(width: max(width, 1), height: max(height, 1), format: format)
+        if var spares = spareTargets[key], let texture = spares.popLast() {
+            spareTargets[key] = spares.isEmpty ? nil : spares
+            if spares.isEmpty { spareOrder.removeAll { $0 == key } }
+            return texture
+        }
+        targetsAllocated += 1
+        return makeTarget(width: width, height: height, format: format)
+    }
 
     private func makeTarget(width: Int, height: Int, format: MTLPixelFormat) -> MTLTexture? {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: max(width, 1),
@@ -465,7 +560,7 @@ final class UniformProgram {
                                   pass.color.x, pass.color.y, pass.color.z]
         for slot in pass.textures.keys.sorted() {
             let info = pass.textures[slot]!
-            signature += [Float(slot), info.allocatedSize.x, info.allocatedSize.y]
+            signature += [Float(slot), info.allocatedSize.x, info.allocatedSize.y, info.contentSize.x, info.contentSize.y]
         }
         if signature != passSignature {
             passSignature = signature
@@ -492,7 +587,7 @@ enum UniformWriter {
         let columns = matrixColumns(member.type)
         func put(_ value: Float, at offset: Int) {
             guard offset >= 0, offset + 4 <= bytes.count else { return }
-            withUnsafeBytes(of: isInteger ? UInt32(bitPattern: Int32(value.rounded())) : value.bitPattern) { raw in
+            withUnsafeBytes(of: isInteger ? integerBits(value) : value.bitPattern) { raw in
                 for (index, byte) in raw.enumerated() { bytes[offset + index] = byte }
             }
         }
@@ -509,6 +604,16 @@ enum UniformWriter {
                 }
             }
         }
+    }
+
+    /// Rounds to the nearest Int32, clamping out-of-range values; NaN becomes 0.
+    static func integerBits(_ value: Float) -> UInt32 {
+        guard !value.isNaN else { return 0 }
+        let rounded = value.rounded()
+        // Float(Int32.max) rounds up to 2^31, so compare against that, not the Int32.
+        if rounded >= 2_147_483_648 { return UInt32(bitPattern: Int32.max) }
+        if rounded <= -2_147_483_648 { return UInt32(bitPattern: Int32.min) }
+        return UInt32(bitPattern: Int32(rounded))
     }
 
     static func componentsPerElement(_ type: String) -> Int {
