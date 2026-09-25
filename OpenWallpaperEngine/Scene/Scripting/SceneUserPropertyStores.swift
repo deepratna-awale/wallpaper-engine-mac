@@ -16,11 +16,8 @@ struct SceneUserPropertyStores {
 
     private(set) var entries: [String: Entry] = [:]
     /// The wallpaper un-keyed reads and writes go to: the one being rendered, or else the one
-    /// most recently configured.
+    /// most recently written.
     var activeKey = ""
-    /// The wallpaper whose properties were last set with an explicit key. Un-keyed writes that
-    /// happen outside a frame (UI edits) target it.
-    private(set) var lastConfiguredKey = ""
 
     var active: Entry {
         get { entries[activeKey] ?? Entry() }
@@ -48,7 +45,6 @@ struct SceneUserPropertyStores {
             entry.numbers[name] = Self.number(value)
         }
         entries[key] = entry
-        lastConfiguredKey = key
         return changed
     }
 

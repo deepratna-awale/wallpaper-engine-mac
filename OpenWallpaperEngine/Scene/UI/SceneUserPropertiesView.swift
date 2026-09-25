@@ -77,7 +77,7 @@ private final class SceneUserPropertiesModel: ObservableObject {
         values[id] = value
         NotificationCenter.default.post(name: .wallpaperUserPropertyChanged, object: wallpaperPath,
                                         userInfo: ["key": id, "value": value])
-        AudioReactiveScriptEngine.shared.setUserProperties(values)
+        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
         pendingSave?.cancel()
         let snapshot = values
         let work = DispatchWorkItem { [storageKey, explicitKey] in
@@ -183,23 +183,7 @@ private final class SceneUserPropertiesModel: ObservableObject {
         for property in properties where values[property.id] == nil {
             values[property.id] = property.defaultValue
         }
-        let additionalControlsVersionKey = "SceneAdditionalControlsVersion.\(wallpaper.wallpaperDirectory.path)"
-        if UserDefaults.standard.integer(forKey: additionalControlsVersionKey) < 1 {
-            for key in values.keys where key.hasPrefix("_owe_effect_enabled_")
-                || (key.hasPrefix("_owe_text_") && key.hasSuffix("_enabled") && values[key] == "false") {
-                values[key] = "false"
-            }
-            UserDefaults.standard.set(values, forKey: storageKey)
-            UserDefaults.standard.set(1, forKey: additionalControlsVersionKey)
-        }
-        if UserDefaults.standard.integer(forKey: additionalControlsVersionKey) < 2 {
-            for key in values.keys where key.hasPrefix("_owe_text_") && key.hasSuffix("_enabled") {
-                values[key] = "true"
-            }
-            UserDefaults.standard.set(values, forKey: storageKey)
-            UserDefaults.standard.set(2, forKey: additionalControlsVersionKey)
-        }
-        AudioReactiveScriptEngine.shared.setUserProperties(values)
+        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
     }
 
     /// Simple on/off `visibleUserProperty` gates (no string variant condition) that the author never
@@ -227,23 +211,6 @@ private final class SceneUserPropertiesModel: ObservableObject {
             SceneUserProperty(id: entry.key, title: entry.key.capitalized, type: "bool",
                               order: trailingOrder(offset: 45, index: index), defaultValue: entry.value, options: [], minimum: 0, maximum: 1)
         }
-    }
-
-    private func authoredEffectNames(for wallpaper: WEWallpaper) -> Set<String> {
-        let sceneFile = wallpaper.project.file
-        let packageURL = wallpaper.wallpaperDirectory.appending(path: (sceneFile as NSString).deletingPathExtension + ".pkg")
-        guard let package = try? PKGParser(url: packageURL),
-              let scene = try? package.extractJSON(named: sceneFile, as: WEScene.self) else { return [] }
-        var names = Set((scene.effects ?? []).map { $0.lowercased() })
-        for object in scene.objects {
-            if let depth = object.parallaxDepth?.parseVector3(), depth.0 != 0 || depth.1 != 0 || depth.2 != 0 || object.perspective == true {
-                names.insert("parallax")
-            }
-            for effect in object.effects ?? [] {
-                names.insert(((effect.file as NSString).deletingLastPathComponent as NSString).lastPathComponent.lowercased())
-            }
-        }
-        return names
     }
 
     private func textObjectsInScene(for wallpaper: WEWallpaper) -> [SceneTextControl] {
@@ -567,20 +534,6 @@ struct SceneUserPropertiesView: View {
 
     private func parameterHelp(_ property: SceneUserProperty) -> String {
         if property.type == "color" { return SceneHelp.parameter(key: "color") }
-        // Effect controls are stored as "_owe_effect_<effect>_<parameter>"; effect names never
-        // contain an underscore, so the first one separates the two.
-        let prefix = "_owe_effect_"
-        if property.id.hasPrefix(prefix) {
-            let rest = property.id.dropFirst(prefix.count)
-            if rest.hasPrefix("enabled_") {
-                return SceneHelp.effect(String(rest.dropFirst("enabled_".count)))
-            }
-            let parts = rest.split(separator: "_", maxSplits: 1, omittingEmptySubsequences: false)
-            if parts.count == 2 {
-                return SceneHelp.parameter(effect: String(parts[0]), key: String(parts[1]),
-                                           title: property.title)
-            }
-        }
         return SceneHelp.parameter(key: property.id, title: property.title)
     }
 

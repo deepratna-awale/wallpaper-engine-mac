@@ -26,7 +26,6 @@ final class SceneUserPropertyStoreTests: XCTestCase {
         stores.set(["a": "1"], for: "/a", replacing: true)
         stores.set(["b": "2"], for: "/a", replacing: false)
         XCTAssertEqual(stores.entry(for: "/a").strings, ["a": "1", "b": "2"])
-        XCTAssertEqual(stores.lastConfiguredKey, "/a")
     }
 
     func testActiveEntryFollowsActiveKey() {

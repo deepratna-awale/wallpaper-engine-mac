@@ -52,7 +52,7 @@ enum SceneChangeImpact: Int, Comparable {
             // Per-object constants are captured when effects are built.
             return .rebuildContent
         }
-        if key.hasPrefix("_owe_effect_enabled_") { return .rebuildContent }
+        // Mouse parallax (the only remaining "_owe_effect_" keys) is read by the renderer every frame.
         if key.hasPrefix("_owe_effect_") { return .none }
 
         if key.hasPrefix("_owe_text_") {

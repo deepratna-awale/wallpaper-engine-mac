@@ -382,15 +382,6 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         scriptLock.unlock()
     }
 
-    /// Merges `values` into the properties of the wallpaper most recently configured with
-    /// `setUserProperties(_:wallpaper:replacing:)`.
-    func setUserProperties(_ values: [String: String]) {
-        levelLock.lock()
-        let key = propertyStores.lastConfiguredKey
-        levelLock.unlock()
-        setUserProperties(values, wallpaper: key, replacing: false)
-    }
-
     /// Sets the user properties of one wallpaper instance (keyed by its directory path). With
     /// `replacing`, properties missing from `values` are dropped, so nothing from a previous
     /// configuration of that wallpaper lingers.
