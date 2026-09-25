@@ -17,12 +17,17 @@ final class ImageMaterialPlan {
     /// Material-authored factors of the uniforms the layer's live values drive (`g_Brightness`,
     /// `g_UserAlpha`); the live value is multiplied by them.
     let liveFactors: [String: Float]
+    /// Texture slots sampled with clamp-to-edge (the `.tex` ClampUVs flag, or the object's
+    /// `clampuvs` for the layer image); every other slot repeats, as in WE.
+    let clampedSlots: Set<Int>
 
-    init(materialPath: String, pass: SceneEffectPassPlan, usesSpriteSheetUniforms: Bool, liveFactors: [String: Float]) {
+    init(materialPath: String, pass: SceneEffectPassPlan, usesSpriteSheetUniforms: Bool, liveFactors: [String: Float],
+         clampedSlots: Set<Int> = [0]) {
         self.materialPath = materialPath
         self.pass = pass
         self.usesSpriteSheetUniforms = usesSpriteSheetUniforms
         self.liveFactors = liveFactors
+        self.clampedSlots = clampedSlots
     }
 
     var readsSceneSnapshot: Bool { pass.readsSceneSnapshot }
@@ -60,8 +65,9 @@ struct ImageMaterialPlanBuilder {
 
     /// nil when the material has no image to draw: no texture in slot 0 (solid layers' `flat`) or a
     /// render target there (composition layers), which keep their own paths.
-    /// `colorBlendMode` is the object's WE blend mode (`BLENDMODE` combo), when authored.
-    func build(materialPath: String, colorBlendMode: Int?) throws -> ImageMaterialPlan? {
+    /// `colorBlendMode` is the object's WE blend mode (`BLENDMODE` combo), when authored; `clampUVs`
+    /// is the object's `clampuvs`.
+    func build(materialPath: String, colorBlendMode: Int?, clampUVs: Bool? = nil) throws -> ImageMaterialPlan? {
         guard let data = readFile(materialPath) else { throw ImageMaterialPlanError.missing(materialPath) }
         let material: MaterialDocument
         do {
@@ -70,7 +76,13 @@ struct ImageMaterialPlanBuilder {
             throw ImageMaterialPlanError.invalid(materialPath, error)
         }
         guard let materialPass = material.passes.first else { throw ImageMaterialPlanError.missing("\(materialPath) passes") }
-        guard let image = materialPass.textures.first ?? nil, !image.hasPrefix("_rt_") else { return nil }
+        guard let image = materialPass.textures.first ?? nil, !image.hasPrefix("_rt_") else {
+            // Such a layer keeps its own draw, which has no scene blend: say so rather than drop it quietly.
+            if let colorBlendMode, colorBlendMode != 0 {
+                throw ImageMaterialPlanError.unsupported("colorBlendMode \(colorBlendMode) on \(materialPass.shader), which draws no image")
+            }
+            return nil
+        }
 
         let loader = ShaderSourceLoader(readFile: readFile)
         let vertex = try loader.load(materialPass.shader, stage: .vertex)
@@ -130,9 +142,47 @@ struct ImageMaterialPlanBuilder {
                                        variantKey: ShaderVariantTranslator.cacheKey(vertex: vertex, fragment: fragment, combos: combos),
                                        variant: variant, blending: materialPass.blending ?? "normal", target: nil,
                                        textures: inputs, constants: constants)
+        var clampedSlots = Set<Int>()
+        if clampUVs == true || textureClamps(image, materialPath: materialPath) { clampedSlots.insert(0) }
+        for (slot, input) in inputs {
+            switch input {
+            case .sceneSnapshot: clampedSlots.insert(slot)
+            case .asset(let key, _):
+                if textureClamps(String(key.dropFirst(materialPath.count + 1)), materialPath: materialPath) {
+                    clampedSlots.insert(slot)
+                }
+            default: break
+            }
+        }
         return ImageMaterialPlan(materialPath: materialPath, pass: pass,
                                  usesSpriteSheetUniforms: (variant.combos["SPRITESHEET"] ?? 0) != 0,
-                                 liveFactors: liveFactors)
+                                 liveFactors: liveFactors, clampedSlots: clampedSlots)
+    }
+
+    /// The `.tex` ClampUVs flag (TEXI flags bit 2) of texture `name`, looked up like the texture
+    /// loader does. A texture that isn't a `.tex` (or can't be read) clamps.
+    func textureClamps(_ name: String, materialPath: String) -> Bool {
+        let directory = (materialPath as NSString).deletingLastPathComponent
+        let root = directory.split(separator: "/").first.map(String.init) ?? "materials"
+        for path in ["\(directory)/\(name).tex", "\(root)/\(name).tex", "materials/\(name).tex", "\(name).tex"] {
+            guard let data = readFile(path) else { continue }
+            guard let flags = Self.texFlags(data) else { return true }
+            return flags & Self.texClampUVsFlag != 0
+        }
+        return true
+    }
+
+    static let texClampUVsFlag: UInt32 = 2
+
+    /// The flags word of a `.tex` header: `TEXV…\0TEXI…\0` then format, flags.
+    static func texFlags(_ data: Data) -> UInt32? {
+        let bytes = [UInt8](data.prefix(64))
+        guard let texi = bytes.indices.first(where: { index in
+            index + 4 <= bytes.count && bytes[index..<index + 4].elementsEqual("TEXI".utf8)
+        }), let end = bytes[texi...].firstIndex(of: 0) else { return nil }
+        let offset = end + 1 + 4
+        guard offset + 4 <= bytes.count else { return nil }
+        return bytes[offset..<offset + 4].reversed().reduce(0) { $0 << 8 | UInt32($1) }
     }
 
     /// nil (logged) for a texture that isn't there: the slot stays unbound, and so does its combo.

@@ -611,8 +611,9 @@ class SceneWallpaperViewModel: ObservableObject {
             return nil
         }
         if model.solidlayer == true {
-            return buildSolidLayer(object, material: material, wallpaperDir: wallpaperDir,
-                                   sceneSize: sceneSize)
+            var layer = buildSolidLayer(object, material: material, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+            layer.imageMaterial = buildImageMaterial(materialPath, object: object, wallpaperDir: wallpaperDir)
+            return layer
         }
         guard let textureName = material.passes?.first?.textures?.first,
               let source = loadMetalTexture(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir) else {
@@ -680,7 +681,8 @@ class SceneWallpaperViewModel: ObservableObject {
             readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
             loadTexture: { [weak self] name, path in self?.loadMetalTexture(named: name, materialDir: path, wallpaperDir: wallpaperDir) })
         do {
-            return try builder.build(materialPath: materialPath, colorBlendMode: object.colorBlendMode)
+            return try builder.build(materialPath: materialPath, colorBlendMode: object.colorBlendMode,
+                                     clampUVs: object.clampuvs)
         } catch {
             OWELog.error(.scene, "Image layer \(object.id ?? -1) draws natively, material \(materialPath): \(error)")
             return nil

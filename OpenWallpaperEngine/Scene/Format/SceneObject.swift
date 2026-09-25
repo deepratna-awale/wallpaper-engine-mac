@@ -57,6 +57,8 @@ struct WESceneObject: Decodable {
     var color: String?
     var colorScript: String?
     var colorBlendMode: Int?
+    /// Sample the image with clamp-to-edge rather than WE's default repeat.
+    var clampuvs: Bool?
     var size: String?
     var sizeScript: String?
     var sizeAnimation: WEVectorKeyframeAnimation?
@@ -82,7 +84,7 @@ struct WESceneObject: Decodable {
     enum CodingKeys: String, CodingKey {
         case id, parent, name, origin, scale, angles, visible, effects, text, font, pointsize, horizontalalign, verticalalign
         case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis, anchor, blockalign
-        case image, alpha, brightness, color, colorBlendMode, size, alignment, shape
+        case image, alpha, brightness, color, colorBlendMode, clampuvs, size, alignment, shape
         case solid, copybackground, parallaxDepth, perspective
         case particle, instanceoverride
     }
@@ -178,6 +180,7 @@ struct WESceneObject: Decodable {
             colorScript = nil
         }
         colorBlendMode = try? c.decodeIfPresent(Int.self, forKey: .colorBlendMode)
+        clampuvs = c.decodeLogged(Bool.self, forKey: .clampuvs, userInfo: decoder.userInfo)
         let scriptedSize = try? c.decode(WEScriptedProperty.self, forKey: .size)
         size = (try? c.decodeIfPresent(String.self, forKey: .size)) ?? scriptedSize?.stringValue
         sizeScript = scriptedSize?.script

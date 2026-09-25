@@ -179,6 +179,104 @@ final class ImageMaterialRenderTests: XCTestCase {
         XCTAssertEqual(Self.pixel(pixels, x: 128, y: 8).red, 1, accuracy: 2 / 255, "top of the scene")
     }
 
+    /// A legacy material's `Brightness` scales the texel once: 0.4 × 1.5 = 0.6 over black.
+    func testMaterialBrightnessIsAppliedOnce() throws {
+        let plan = try XCTUnwrap(try builder.build(materialPath: "materials/image2legacybright.json", colorBlendMode: nil))
+        XCTAssertEqual(plan.liveFactors["g_Brightness"], 1.5)
+        let texture = try Self.solidTexture(device: device, color: [102, 102, 102, 255])
+        let pixels = try render(background: SIMD4(0, 0, 0, 1)) { encoder, format in
+            XCTAssertTrue(self.drawMaterial(plan, Layer(rotation: 0), texture: texture, snapshot: nil,
+                                            encoder: encoder, format: format))
+        }
+        XCTAssertEqual(Self.pixel(pixels, x: 100, y: 64).red, 0.6, accuracy: 2 / 255)
+    }
+
+    /// The legacy material heuristics that the material now draws for itself (its `Brightness`)
+    /// don't count as an adjustment the native draw would add on top.
+    func testObjectBrightnessAloneIsNotANativeAdjustment() {
+        var uniform = LayerUniform(position: .zero, size: .zero, sceneSize: SIMD2(1, 1), opacity: 1, particleShape: 0,
+                                   rotation: 0, color: SIMD4(repeating: 1), uvOrigin: .zero, uvAxisX: SIMD2(1, 0),
+                                   uvAxisY: SIMD2(0, 1), effects: SIMD4(0.8, 1, 1, 0), blur: 0,
+                                   colorEffects: SIMD4(0, 1, 0, 0.7), transform: SIMD4(0, 0, 0, 1), transformScaleY: 1)
+        XCTAssertTrue(ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: 0.8))
+        XCTAssertFalse(ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: 1), "a material Brightness heuristic")
+        uniform.effects.y = 1.2
+        XCTAssertFalse(ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: 0.8), "a contrast heuristic")
+    }
+
+    /// WE presents the scene's colour only: a `normal` layer whose texture has α = 0.25 shows its
+    /// full colour on screen, not a quarter of it over the drawable's clear colour.
+    func testCompositeIgnoresTheSceneAlpha() throws {
+        let plan = try XCTUnwrap(try builder.build(materialPath: "materials/normal.json", colorBlendMode: nil))
+        let texture = try Self.solidTexture(device: device, color: [0, 200, 0, 64])
+        let scene = try render { encoder, format in
+            XCTAssertTrue(self.drawMaterial(plan, Layer(center: Self.sceneSize / 2, size: Self.sceneSize, rotation: 0),
+                                            texture: texture, snapshot: nil, encoder: encoder, format: format))
+        }
+        let sceneTexture = try XCTUnwrap(lastTarget)
+        XCTAssertEqual(Self.pixel(scene, x: 128, y: 64).alpha, 64 / 255, accuracy: 2 / 255)
+        let library = try XCTUnwrap(device.makeDefaultLibrary())
+        let layerDescriptor = MTLRenderPipelineDescriptor()
+        layerDescriptor.vertexFunction = library.makeFunction(name: "sceneVertex")
+        layerDescriptor.fragmentFunction = library.makeFunction(name: "sceneFragment")
+        layerDescriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+        layerDescriptor.colorAttachments[0].isBlendingEnabled = true
+        layerDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
+        layerDescriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
+        let composite = try device.makeRenderPipelineState(descriptor: SceneComposite.pipelineDescriptor(basedOn: layerDescriptor))
+        let target = SIMD2<Float>(Float(Self.targetSize.width), Float(Self.targetSize.height))
+        let screen = try render(background: SIMD4(0, 0, 0, 1)) { encoder, _ in
+            var uniform = LayerUniform(position: target / 2, size: target, sceneSize: target, opacity: 1, particleShape: 0,
+                                       rotation: 0, color: SIMD4(repeating: 1), uvOrigin: .zero, uvAxisX: SIMD2(1, 0),
+                                       uvAxisY: SIMD2(0, 1), effects: SIMD4(1, 1, 1, 0), blur: 0,
+                                       colorEffects: SIMD4(0, 1, 0, 0.7), transform: SIMD4(0, 0, 0, 1), transformScaleY: 1)
+            encoder.setRenderPipelineState(composite)
+            encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
+            encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
+            encoder.setFragmentTexture(sceneTexture, index: 0)
+            encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        }
+        let center = Self.pixel(screen, x: 128, y: 64)
+        XCTAssertEqual(center.green, 200 / 255, accuracy: 2 / 255)
+        XCTAssertEqual(center.alpha, 1, accuracy: 1 / 255, "the drawable stays opaque")
+    }
+
+    /// WE repeats a layer image unless its `.tex` (ClampUVs) or the object (`clampuvs`) clamps it:
+    /// genericimage's scroll wraps around instead of smearing the edge.
+    func testScrollingImageWrapsUnlessClamped() throws {
+        // Left half red, right half blue.
+        let texture = try Self.texture(device: device, size: 4, pixels: (0..<16).flatMap { $0 % 4 < 2 ? [255, 0, 0, 255] : [0, 0, 255, 255] as [UInt8] })
+        let frame = BuiltinFrameContext(time: 0.25)
+        func rightEdge(_ material: String, clampUVs: Bool?) throws -> Float {
+            let plan = try XCTUnwrap(try builder.build(materialPath: "materials/\(material).json", colorBlendMode: nil, clampUVs: clampUVs))
+            let pixels = try render { encoder, format in
+                XCTAssertTrue(self.drawMaterial(plan, Layer(rotation: 0), texture: texture, snapshot: nil,
+                                                encoder: encoder, format: format, frame: frame))
+            }
+            // u = 0.9 of the quad (scene x 264, target column 132) samples u + 0.25 = 1.15.
+            return Self.pixel(pixels, x: 132, y: 64).red
+        }
+        XCTAssertEqual(try rightEdge("scrollwrap", clampUVs: nil), 1, accuracy: 2 / 255, "wraps to the red left half")
+        XCTAssertEqual(try rightEdge("scrollclamp", clampUVs: nil), 0, accuracy: 2 / 255, ".tex ClampUVs")
+        XCTAssertEqual(try rightEdge("scrollwrap", clampUVs: true), 0, accuracy: 2 / 255, "object clampuvs")
+    }
+
+    func testTexFlagsAreReadFromTheHeader() {
+        var bytes = Array("TEXV0005\0TEXI0001\0".utf8)
+        bytes += [7, 0, 0, 0, 2, 0, 0, 0, 16, 0, 0, 0]
+        XCTAssertEqual(ImageMaterialPlanBuilder.texFlags(Data(bytes)), 2)
+        XCTAssertNil(ImageMaterialPlanBuilder.texFlags(Data("PNG".utf8)))
+    }
+
+    /// A solid layer's `flat` material has no image and no scene blend; a blend mode on it is
+    /// reported rather than dropped quietly.
+    func testBlendModeOnAFlatMaterialIsReported() throws {
+        XCTAssertNil(try builder.build(materialPath: "materials/flat.json", colorBlendMode: 0))
+        XCTAssertThrowsError(try builder.build(materialPath: "materials/flat.json", colorBlendMode: 2)) { error in
+            guard case ImageMaterialPlanError.unsupported = error else { return XCTFail("\(error)") }
+        }
+    }
+
     func testStillLayerRewritesNoPlacementUniforms() throws {
         let plan = try XCTUnwrap(try builder.build(materialPath: "materials/image4.json", colorBlendMode: nil))
         let texture = try Self.checkerTexture(device: device)
@@ -245,12 +343,13 @@ final class ImageMaterialRenderTests: XCTestCase {
     }
 
     private func drawMaterial(_ plan: ImageMaterialPlan, _ layer: Layer, texture: MTLTexture, snapshot: MTLTexture?,
-                              encoder: MTLRenderCommandEncoder, format: MTLPixelFormat) -> Bool {
+                              encoder: MTLRenderCommandEncoder, format: MTLPixelFormat,
+                              frame: BuiltinFrameContext = BuiltinFrameContext()) -> Bool {
         guard renderer.waitUntilReady(plan, pixelFormat: format) else { return false }
         return renderer.draw(plan, ImageMaterialRenderer.Draw(
-            quad: layer.quad, sceneSize: Self.sceneSize, color: layer.color, alpha: layer.alpha, brightness: layer.brightness,
+            layerID: "layer", quad: layer.quad, sceneSize: Self.sceneSize, color: layer.color, alpha: layer.alpha, brightness: layer.brightness,
             texture: texture, contentSize: layer.contentSize, uvOrigin: layer.uvOrigin, uvAxisX: layer.uvAxisX,
-            uvAxisY: layer.uvAxisY, sceneSnapshot: snapshot, frame: BuiltinFrameContext(), values: EffectGraphTests.FixedValues(),
+            uvAxisY: layer.uvAxisY, sceneSnapshot: snapshot, frame: frame, values: EffectGraphTests.FixedValues(),
             assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder)
     }
 
@@ -279,7 +378,7 @@ final class ImageMaterialRenderTests: XCTestCase {
                                    colorEffects: SIMD4(0, 1, 0, 0.7), transform: SIMD4(0, 0, 0, 1), transformScaleY: 1)
         uniform.quadAxisX = quad.axisX * scale
         uniform.quadAxisY = quad.axisY * scale
-        XCTAssertTrue(ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform))
+        XCTAssertTrue(ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: layer.brightness))
         encoder.setRenderPipelineState(pipeline)
         encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
         encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
@@ -288,7 +387,11 @@ final class ImageMaterialRenderTests: XCTestCase {
     }
 
     /// Clears a bgra8 target (the scene target's format) to `background`, runs `body` and reads it back as RGBA bytes.
-    private func render(_ body: (MTLRenderCommandEncoder, MTLPixelFormat) throws -> Void) throws -> [UInt8] {
+    /// The target of the last `render`, for a pass that reads it.
+    private var lastTarget: MTLTexture?
+
+    private func render(background: SIMD4<Float> = ImageMaterialRenderTests.background,
+                        _ body: (MTLRenderCommandEncoder, MTLPixelFormat) throws -> Void) throws -> [UInt8] {
         let format = MTLPixelFormat.bgra8Unorm
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: Self.targetSize.width,
                                                                   height: Self.targetSize.height, mipmapped: false)
@@ -298,7 +401,8 @@ final class ImageMaterialRenderTests: XCTestCase {
         let pass = MTLRenderPassDescriptor()
         pass.colorAttachments[0].texture = target
         pass.colorAttachments[0].loadAction = .clear
-        let b = Self.background
+        lastTarget = target
+        let b = background
         pass.colorAttachments[0].clearColor = MTLClearColor(red: Double(b.x), green: Double(b.y), blue: Double(b.z), alpha: Double(b.w))
         pass.colorAttachments[0].storeAction = .store
         let buffer = try XCTUnwrap(queue.makeCommandBuffer())

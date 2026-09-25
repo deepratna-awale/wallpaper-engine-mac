@@ -55,12 +55,13 @@ final class ImageMaterialSweepTests: XCTestCase {
             for object in scene.objects {
                 guard let modelPath = object.image, let modelData = read(modelPath),
                       let model = try? decodeTolerant(WEModel.self, from: modelData), // an undecodable model has no layer to draw; skip it
-                      model.solidlayer != true, let materialPath = model.material else { continue }
+                      let materialPath = model.material else { continue }
                 layers += 1
                 let label = "\(id) \(object.name ?? "#\(object.id ?? -1)") \(materialPath)"
                 let plan: ImageMaterialPlan
                 do {
-                    guard let built = try builder.build(materialPath: materialPath, colorBlendMode: object.colorBlendMode) else {
+                    guard let built = try builder.build(materialPath: materialPath, colorBlendMode: object.colorBlendMode,
+                                                         clampUVs: object.clampuvs) else {
                         withoutImage += 1
                         continue
                     }
@@ -91,7 +92,7 @@ final class ImageMaterialSweepTests: XCTestCase {
                 pass.colorAttachments[0].storeAction = .store
                 let encoder = try XCTUnwrap(buffer.makeRenderCommandEncoder(descriptor: pass))
                 let ok = renderer.draw(plan, ImageMaterialRenderer.Draw(
-                    quad: SceneQuadGeometry(center: SIMD2(128, 128), axisX: SIMD2(200, 0), axisY: SIMD2(0, 120)),
+                    layerID: label, quad: SceneQuadGeometry(center: SIMD2(128, 128), axisX: SIMD2(200, 0), axisY: SIMD2(0, 120)),
                     sceneSize: SIMD2(256, 256), color: SIMD3(1, 1, 1), alpha: 1, brightness: 1, texture: image,
                     contentSize: nil, uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1), sceneSnapshot: snapshot,
                     frame: BuiltinFrameContext(time: 1.5), values: EffectGraphTests.FixedValues(),

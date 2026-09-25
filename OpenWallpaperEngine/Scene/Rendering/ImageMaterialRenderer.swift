@@ -26,9 +26,22 @@ final class ImageMaterialRenderer {
     private var pending = Set<String>()
     private var failed = Set<String>()
 
-    /// Uniform programs per plan, keyed by the plan's identity (the plan is held, so the key is
-    /// never reused while the entry lives). Render thread only.
-    private var programs: [ObjectIdentifier: (plan: ImageMaterialPlan, uniforms: ImageMaterialUniforms)] = [:]
+    /// Uniform programs per layer instance (script clones share a plan but not a placement), rebuilt
+    /// when the layer's plan changes. Render thread only.
+    private var programs: [String: Program] = [:]
+
+    private final class Program {
+        let plan: ImageMaterialPlan
+        let uniforms: ImageMaterialUniforms
+        /// Ignored native adjustments have been logged for this layer.
+        var reportedIgnoredAdjustments = false
+
+        init(plan: ImageMaterialPlan) {
+            self.plan = plan
+            uniforms = ImageMaterialUniforms(layout: plan.pass.variant?.uniforms, constants: plan.pass.constants,
+                                             liveFactors: plan.liveFactors)
+        }
+    }
 
     /// Layers drawn through their material, for tests and diagnostics.
     private(set) var drawsEncoded = 0
@@ -59,6 +72,8 @@ final class ImageMaterialRenderer {
 
     /// One layer's draw this frame.
     struct Draw {
+        /// The layer instance (its state id); per-layer uniform state is kept under it.
+        let layerID: String
         /// World-space quad in scene units (y up), parents, scripts, animation and parallax included.
         let quad: SceneQuadGeometry
         let sceneSize: SIMD2<Float>
@@ -78,6 +93,9 @@ final class ImageMaterialRenderer {
         let frame: BuiltinFrameContext
         let values: SceneValueContext
         let assetTexture: (String, SceneMetalTextureSource) -> MTLTexture?
+        /// The renderer's own adjustments (legacy material heuristics) are not neutral for this
+        /// layer; the material's shader draws it without them. Logged once per layer.
+        var ignoredAdjustments = false
     }
 
     /// Encodes the layer into `encoder` (a pass on a `pixelFormat` target). False when the layer
@@ -93,21 +111,27 @@ final class ImageMaterialRenderer {
         var textureInfo: [(slot: Int, texture: MTLTexture, sampler: MTLSamplerState, contentSize: SIMD2<Float>?)] = []
         for slot in variant.textureSlots {
             guard let input = plan.pass.textures[slot] else { return false }
+            let sampler = plan.clampedSlots.contains(slot) ? clampSampler : repeatSampler
             switch input {
             case .current, .previous:
-                textureInfo.append((slot, draw.texture, clampSampler, draw.contentSize))
+                textureInfo.append((slot, draw.texture, sampler, draw.contentSize))
             case .sceneSnapshot:
                 guard let snapshot = draw.sceneSnapshot else { return false }
                 textureInfo.append((slot, snapshot, clampSampler, nil))
             case .asset(let key, let source):
                 guard let texture = draw.assetTexture(key, source) else { return false }
-                textureInfo.append((slot, texture, repeatSampler, source.contentSize))
+                textureInfo.append((slot, texture, sampler, source.contentSize))
             case .fbo:
                 return false
             }
         }
 
-        let uniforms = program(for: plan)
+        let program = program(for: plan, layerID: draw.layerID)
+        if draw.ignoredAdjustments, !program.reportedIgnoredAdjustments {
+            program.reportedIgnoredAdjustments = true
+            OWELog.info(.scene, "Layer \(draw.layerID) draws through \(plan.materialPath); its legacy material adjustments are not applied")
+        }
+        let uniforms = program.uniforms
         if uniforms.size > 0 {
             let model = Self.modelMatrix(draw.quad)
             let viewProjection = Self.viewProjection(sceneSize: draw.sceneSize)
@@ -171,12 +195,12 @@ final class ImageMaterialRenderer {
         return true
     }
 
-    /// Whether the renderer's own image adjustments (the app's saturation/hue/blur controls and
-    /// music sync, plus legacy material heuristics) leave this layer unchanged, so drawing it
-    /// through its material instead of `sceneFragment` loses nothing. Brightness (`effects.x`)
-    /// is not an adjustment: the material applies it.
-    static func nativeAdjustmentsAreIdentity(_ uniform: LayerUniform) -> Bool {
-        uniform.effects.y == 1 && uniform.effects.z == 1 && uniform.effects.w <= 0 && uniform.blur <= 0
+    /// Whether `sceneFragment`'s per-layer adjustments (legacy material heuristics, music sync) leave
+    /// this layer unchanged, i.e. whether the native draw would apply nothing besides the object's
+    /// own `brightness`, which the material applies.
+    static func nativeAdjustmentsAreIdentity(_ uniform: LayerUniform, brightness: Float) -> Bool {
+        uniform.effects.x == brightness
+            && uniform.effects.y == 1 && uniform.effects.z == 1 && uniform.effects.w <= 0 && uniform.blur <= 0
             && uniform.colorEffects.x == 0 && uniform.colorEffects.y == 1 && abs(uniform.colorEffects.z) <= 0.0001
             && uniform.transform == SIMD4(0, 0, 0, 1) && uniform.transformScaleY == 1
     }
@@ -212,13 +236,16 @@ final class ImageMaterialRenderer {
 
     // MARK: - Uniforms
 
-    private func program(for plan: ImageMaterialPlan) -> ImageMaterialUniforms {
-        let key = ObjectIdentifier(plan)
-        if let existing = programs[key] { return existing.uniforms }
-        let uniforms = ImageMaterialUniforms(layout: plan.pass.variant?.uniforms, constants: plan.pass.constants,
-                                             liveFactors: plan.liveFactors)
-        programs[key] = (plan, uniforms)
-        return uniforms
+    private func program(for plan: ImageMaterialPlan, layerID: String) -> Program {
+        if let existing = programs[layerID], existing.plan === plan { return existing }
+        let program = Program(plan: plan)
+        programs[layerID] = program
+        return program
+    }
+
+    /// Frees one layer's uniform state (e.g. a removed script clone).
+    func releaseLayer(_ layerID: String) {
+        programs.removeValue(forKey: layerID)
     }
 
     // MARK: - Pipelines

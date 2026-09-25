@@ -98,6 +98,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let additiveRenderPipeline: MTLRenderPipelineState
     /// Unblended resample of a texture through per-vertex UVs (`sceneRegion`).
     private let copyPipeline: MTLRenderPipelineState
+    /// The scene target onto the drawable: colour only, as WE presents it (scene alpha is ignored).
+    private let compositePipeline: MTLRenderPipelineState
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
@@ -189,6 +191,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
+        guard let compositePipeline = try? device.makeRenderPipelineState(
+            descriptor: SceneComposite.pipelineDescriptor(basedOn: descriptor)) else {
+            return nil
+        }
+
         let copyDescriptor = MTLRenderPipelineDescriptor()
         copyDescriptor.vertexFunction = vertex
         copyDescriptor.fragmentFunction = copyFragment
@@ -199,6 +206,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
         self.device = device
         self.copyPipeline = copyPipeline
+        self.compositePipeline = compositePipeline
         self.commandQueue = commandQueue
         self.renderPipeline = renderPipeline
         self.additiveRenderPipeline = additiveRenderPipeline
@@ -344,7 +352,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let live = Set(layers.map(\.stateId))
         pendingEffectReleases.removeAll { pending in
             if let buffer = pending.after, buffer.status != .completed, buffer.status != .error { return false }
-            for id in pending.ids where !live.contains(id) { effectGraph?.releaseLayer(id) }
+            for id in pending.ids where !live.contains(id) {
+                effectGraph?.releaseLayer(id)
+                imageMaterials?.releaseLayer(id)
+            }
             return true
         }
     }
@@ -570,14 +581,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.bloom, layerId: entry.stateId, time: sceneTime)
                 } ?? materialEffects.bloom)
             uniform.effects = SIMD4<Float>(brightness * draw.brightness, contrast,
-                                           saturation * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_saturation", fallback: 1)
-                                               * (1 + (entry.layer.musicSync?.saturationAmount ?? 0) * Float(draw.musicSyncLevel)),
+                                           saturation * (1 + (entry.layer.musicSync?.saturationAmount ?? 0) * Float(draw.musicSyncLevel)),
                                            bloom * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1))
             uniform.blur = materialEffects.scripts["blur"].map {
                 AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.blur, layerId: entry.stateId, time: sceneTime)
             } ?? materialEffects.blur * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_blur", fallback: 1)
             uniform.colorEffects = SIMD4<Float>(materialEffects.exposure, materialEffects.gamma,
-                                                materialEffects.hue + AudioReactiveScriptEngine.shared.userPropertyValue("_owe_hue", fallback: 0), materialEffects.bloomThreshold)
+                                                materialEffects.hue, materialEffects.bloomThreshold)
             uniform.transform = SIMD4<Float>(materialEffects.transformAngle, materialEffects.transformOffset.x,
                                              materialEffects.transformOffset.y, materialEffects.transformScale.x)
             uniform.transformScaleY = materialEffects.transformScale.y
@@ -585,15 +595,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             uniform.uvOrigin = textureFrame.uvOrigin
             uniform.uvAxisX = textureFrame.uvAxisX
             uniform.uvAxisY = textureFrame.uvAxisY
-            if let plan = entry.layer.imageMaterial, ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform),
-               let imageMaterials, imageMaterials.draw(plan, ImageMaterialRenderer.Draw(
-                   quad: draw.quad, sceneSize: sceneSize, color: SIMD3(draw.color.x, draw.color.y, draw.color.z),
-                   alpha: draw.opacity, brightness: uniform.effects.x,
+            if let plan = entry.layer.imageMaterial, let imageMaterials, imageMaterials.draw(plan, ImageMaterialRenderer.Draw(
+                   layerID: entry.stateId, quad: draw.quad, sceneSize: sceneSize,
+                   color: SIMD3(draw.color.x, draw.color.y, draw.color.z), alpha: draw.opacity, brightness: draw.brightness,
                    texture: dynamicTextures[layerIndex] ?? textureFrame.texture, contentSize: entry.layer.source.contentSize,
                    uvOrigin: textureFrame.uvOrigin, uvAxisX: textureFrame.uvAxisX, uvAxisY: textureFrame.uvAxisY,
                    sceneSnapshot: layerSnapshot, frame: effectFrame,
                    values: LiveSceneValueContext(time: sceneTime, scriptTime: sceneTime, layerId: entry.stateId),
-                   assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) }),
+                   assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
+                   ignoredAdjustments: !ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: draw.brightness)),
                    pixelFormat: sceneTexture.pixelFormat, encoder: encoder) {
                 encoder.setRenderPipelineState(renderPipeline)
                 continue
@@ -613,14 +623,18 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             lastCommandBuffer = commandBuffer
             return
         }
-        compositeEncoder.setRenderPipelineState(renderPipeline)
+        compositeEncoder.setRenderPipelineState(compositePipeline)
         var compositeUniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
                                             placement: placement)
         let bloomMultiplier = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1)
         let authoredBloom = bloom.enabled ? bloom.strength * bloomMultiplier : 0
         let userBloom = max(bloomMultiplier - 1, 0) * 1.2
         let bloomStrength = max(authoredBloom, userBloom)
-        compositeUniform.effects = SIMD4<Float>(1, 1, 1, max(bloomStrength, 0))
+        // The app's saturation and hue are linear in colour, so on the composite they equal applying
+        // them to every layer, and layers keep drawing through their WE materials.
+        compositeUniform.effects = SIMD4<Float>(1, 1, AudioReactiveScriptEngine.shared.userPropertyValue("_owe_saturation", fallback: 1),
+                                                max(bloomStrength, 0))
+        compositeUniform.colorEffects.z = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_hue", fallback: 0)
         compositeUniform.colorEffects.w = bloom.enabled ? bloom.threshold : 0.55
         compositeUniform.bloomTint = SIMD4<Float>(bloom.tint.x, bloom.tint.y, bloom.tint.z, 1)
         // "_owe_blur" defaults to 1 (no extra blur); raising it above 1 blurs the whole composited scene,
