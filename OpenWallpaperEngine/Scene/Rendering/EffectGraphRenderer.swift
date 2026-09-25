@@ -86,10 +86,11 @@ final class EffectGraphRenderer {
     static let texCoordBuffer = 29
     static let zeroBuffer = 28
 
-    /// `pipelineArchiveDirectory` holds the persisted pipeline archive; nil keeps none.
+    /// `pipelineArchiveDirectory` holds the persisted pipeline archive, shared by every renderer of
+    /// the device; nil keeps none.
     init?(device: MTLDevice, pipelineArchiveDirectory: URL? = EffectPipelineArchive.defaultDirectory) {
         self.device = device
-        pipelineArchive = pipelineArchiveDirectory.map { EffectPipelineArchive(device: device, directory: $0) }
+        pipelineArchive = pipelineArchiveDirectory.map { EffectPipelineArchive.shared(device: device, directory: $0) }
         // Triangle strip over the full target; with the translator's GL-style y flip, texcoord
         // (0, 0) lands on the first row, so each pass maps its input 1:1.
         let positions: [Float] = [-1, -1, 0, 1, -1, 0, -1, 1, 0, 1, 1, 0]
@@ -322,7 +323,7 @@ final class EffectGraphRenderer {
             descriptor.binaryArchives = archives
             // Optional: a miss is the normal case for a new pipeline and falls through to a full compile.
             if let hit = try? device.makeRenderPipelineState(descriptor: descriptor, options: [.failOnBinaryArchiveMiss]).0 {
-                archive.recordHit()
+                archive.recordHit(descriptor, key: key)
                 return hit
             }
         }

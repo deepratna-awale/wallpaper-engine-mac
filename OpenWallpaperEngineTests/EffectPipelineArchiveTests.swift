@@ -143,4 +143,60 @@ final class EffectPipelineArchiveTests: XCTestCase {
         XCTAssertTrue(archive.url.lastPathComponent.hasPrefix(prefix))
         XCTAssertTrue(archive.url.lastPathComponent.contains("--r\(EffectPipelineArchive.revision)"))
     }
+
+    /// Renderers of one device share one archive, so they don't overwrite each other's file.
+    func testRenderersOfADeviceShareOneArchive() throws {
+        let a = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: directory))
+        let b = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: directory))
+        XCTAssertTrue(a.pipelineArchive === b.pipelineArchive)
+        let other = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: directory.appending(path: "other")))
+        XCTAssertFalse(a.pipelineArchive === other.pipelineArchive)
+    }
+
+    /// Metal fails to serialize an archive that grew after a write for some sets of WE's built-in
+    /// pipelines ("missing 'vertex' stage in pipeline no. N"); every write is built afresh, so
+    /// frequent writes across two launches keep every pipeline.
+    func testBuiltinEffectPipelinesSurviveRepeatedWritesAndLaunches() throws {
+        let assets = ShaderVariantTests.weAssets
+        let loader = ShaderSourceLoader(roots: [assets])
+        let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil)
+        let effects = try FileManager.default.contentsOfDirectory(atPath: assets.appending(path: "effects").path).sorted()
+        var descriptors: [(key: String, descriptor: MTLRenderPipelineDescriptor)] = []
+        for effect in effects {
+            let shaders = assets.appending(path: "effects/\(effect)/shaders/effects")
+            // Optional: an effect without its own shaders uses shared ones.
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: shaders.path)) ?? []
+            for name in names.sorted() where name.hasSuffix(".vert") {
+                let path = "effects/\(effect)/shaders/effects/\(name.dropLast(5))"
+                let vertex = try loader.load(path, stage: .vertex), fragment = try loader.load(path, stage: .fragment)
+                let base = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment, overrides: [], boundTextureSlots: [0])
+                for combo in [nil] + Set((vertex.combos + fragment.combos).map(\.name)).sorted() {
+                    var combos = base
+                    if let combo { combos[combo] = 1 }
+                    // Optional: a combo that doesn't translate is another test's concern.
+                    guard let variant = try? translator.variant(vertex: vertex, fragment: fragment, combos: combos) else { continue }
+                    let descriptor = MTLRenderPipelineDescriptor()
+                    descriptor.vertexFunction = try device.makeLibrary(source: variant.vertexMSL, options: nil).makeFunction(name: "main0")
+                    descriptor.fragmentFunction = try device.makeLibrary(source: variant.fragmentMSL, options: nil).makeFunction(name: "main0")
+                    descriptor.colorAttachments[0].pixelFormat = .rgba8Unorm
+                    descriptor.vertexDescriptor = EffectGraphRenderer.vertexDescriptor(for: try XCTUnwrap(descriptor.vertexFunction))
+                    descriptors.append(("\(path)|\(combos.sorted { $0.key < $1.key })", descriptor))
+                }
+            }
+        }
+        XCTAssertGreaterThan(descriptors.count, 100)
+        let split = descriptors.count * 2 / 3
+        for (launch, range) in [(0, 0..<split), (1, (descriptors.count / 3)..<descriptors.count)] {
+            let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 1000)
+            for index in range {
+                _ = try EffectGraphRenderer.makePipeline(descriptors[index].descriptor.copy() as! MTLRenderPipelineDescriptor, // copy() returns its own class
+                                                         device: device, archive: archive, key: descriptors[index].key)
+                if index % 5 == 4 { archive.flush() }
+            }
+            archive.flush()
+            XCTAssertEqual(archive.writeFailures, 0, "launch \(launch)")
+            XCTAssertEqual(archive.skippedCount, 0, "launch \(launch)")
+            if launch == 1 { XCTAssertGreaterThanOrEqual(archive.hits, split - descriptors.count / 3, "the first launch's pipelines are found") }
+        }
+    }
 }
