@@ -85,11 +85,20 @@ final class AudioLevelTap {
             unprepare: nil,
             process: audioLevelTapProcess
         )
+        // The SDK in Xcode 26+ returns the tap directly; earlier SDKs (CI's Xcode 16) as Unmanaged.
+        #if compiler(>=6.2)
         var tap: MTAudioProcessingTap?
         let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,
                                                 kMTAudioProcessingTapCreationFlag_PostEffects, &tap)
         guard status == noErr else { return nil }
         return tap
+        #else
+        var tap: Unmanaged<MTAudioProcessingTap>?
+        let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,
+                                                kMTAudioProcessingTapCreationFlag_PostEffects, &tap)
+        guard status == noErr else { return nil }
+        return tap?.takeRetainedValue()
+        #endif
     }
 }
 
