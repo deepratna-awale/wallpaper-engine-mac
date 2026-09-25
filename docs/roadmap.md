@@ -29,7 +29,7 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 2. Child particle systems (`children`).
 3. Audio-reactive particle properties and collision operators.
 4. Particles through WE's `genericparticle` shaders and materials: blend modes, sprite and trail material options, refraction.
-5. Effects on particle systems.
+5. ~~Effects on particle systems~~: WE has no per-particle-system effects; wallpapers use composition layers, which already work.
 
 ### 3. Timeline animations (partly implemented)
 
