@@ -67,6 +67,15 @@ struct WESceneObject: Decodable {
     var particle: String?    // path to particle JSON
     var instanceoverride: WEInstanceOverride?
 
+    /// Every value-bearing field in its full authored form (literal, `user`, `script`, `animation`).
+    /// The typed fields above hold only the literal fallback.
+    var values: [SceneObjectValueField: SceneRawValue] = [:]
+    /// `text` bound to a user property (`{"user":"name","value":"…"}`): the property's text replaces the value.
+    var textUserProperty: String?
+    /// `scriptproperties` of the origin/text scripts as authored, so `{"user",…}` entries can be resolved.
+    var originScriptPropertiesJSON: [String: SceneJSON] = [:]
+    var textScriptPropertiesJSON: [String: SceneJSON] = [:]
+
     enum CodingKeys: String, CodingKey {
         case id, parent, name, origin, scale, angles, visible, effects, text, font, pointsize, horizontalalign, verticalalign
         case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis
@@ -77,25 +86,33 @@ struct WESceneObject: Decodable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        for field in SceneObjectValueField.allCases {
+            guard let key = CodingKeys(rawValue: field.rawValue) else { continue }
+            if let raw = c.decodeLogged(SceneRawValue.self, forKey: key, userInfo: decoder.userInfo) {
+                values[field] = raw
+            }
+        }
+        textUserProperty = c.decodeLogged(SceneRawValue.self, forKey: .text, userInfo: decoder.userInfo)?.userPropertyName
         // Fields that are always simple types
         id = try? c.decodeIfPresent(Int.self, forKey: .id)
         parent = try? c.decodeIfPresent(Int.self, forKey: .parent)
         name = try? c.decodeIfPresent(String.self, forKey: .name)
         image = try? c.decodeIfPresent(String.self, forKey: .image)
         particle = try? c.decodeIfPresent(String.self, forKey: .particle)
-        instanceoverride = try? c.decodeIfPresent(WEInstanceOverride.self, forKey: .instanceoverride)
+        instanceoverride = c.decodeLogged(WEInstanceOverride.self, forKey: .instanceoverride, userInfo: decoder.userInfo)
         effects = c.decodeElements(WEObjectEffect.self, forKey: .effects, userInfo: decoder.userInfo)
         shape = try? c.decodeIfPresent(String.self, forKey: .shape)
             if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {
             textValue = scriptedText.stringValue
             textScript = scriptedText.script
             textScriptProperties = scriptedText.scriptProperties
+            textScriptPropertiesJSON = scriptedText.scriptPropertiesJSON
         } else {
             textValue = try? c.decodeIfPresent(String.self, forKey: .text)
             textScript = nil
         }
         font = try? c.decodeIfPresent(String.self, forKey: .font)
-        pointsize = try? c.decodeIfPresent(Double.self, forKey: .pointsize)
+        pointsize = values[.pointsize]?.literalDouble
         horizontalalign = try? c.decodeIfPresent(String.self, forKey: .horizontalalign)
         verticalalign = try? c.decodeIfPresent(String.self, forKey: .verticalalign)
         padding = (try? c.decodeIfPresent(String.self, forKey: .padding))
@@ -111,6 +128,7 @@ struct WESceneObject: Decodable {
         origin = (try? c.decodeIfPresent(String.self, forKey: .origin)) ?? scriptedOrigin?.stringValue
         originScript = scriptedOrigin?.script
         originScriptProperties = scriptedOrigin?.scriptProperties ?? [:]
+        originScriptPropertiesJSON = scriptedOrigin?.scriptPropertiesJSON ?? [:]
         originAnimation = scriptedOrigin?.vectorAnimation
         let scriptedScale = try? c.decode(WEScriptedProperty.self, forKey: .scale)
         scale = (try? c.decodeIfPresent(String.self, forKey: .scale)) ?? scriptedScale?.stringValue
@@ -373,23 +391,14 @@ struct WEAnimatedScalar: Decodable {
     let animation: WEKeyframeAnimation?
 }
 
-struct FlexibleScriptValue: Decodable {
-    let stringValue: String
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let string = try? container.decode(String.self) { stringValue = string }
-        else if let number = try? container.decode(Double.self) { stringValue = String(number) }
-        else if let bool = try? container.decode(Bool.self) { stringValue = bool ? "true" : "false" }
-        else { stringValue = "" }
-    }
-}
-
 struct WEScriptedProperty: Decodable {
     let script: String?
     let stringValue: String?
     let vectorAnimation: WEVectorKeyframeAnimation?
+    /// Authored defaults as text; `{"user",…}` entries give their literal `value`.
     let scriptProperties: [String: String]
+    /// `scriptproperties` exactly as authored.
+    let scriptPropertiesJSON: [String: SceneJSON]
 
     enum CodingKeys: String, CodingKey { case script, value, animation, scriptproperties }
 
@@ -397,8 +406,9 @@ struct WEScriptedProperty: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         script = try container.decodeIfPresent(String.self, forKey: .script)
         vectorAnimation = try? container.decodeIfPresent(WEVectorKeyframeAnimation.self, forKey: .animation)
-        scriptProperties = (try? container.decode([String: FlexibleScriptValue].self, forKey: .scriptproperties))?
-            .mapValues(\.stringValue) ?? [:]
+        scriptPropertiesJSON = container.decodeEntries(SceneJSON.self, forKey: .scriptproperties,
+                                                       userInfo: decoder.userInfo) ?? [:]
+        scriptProperties = scriptPropertiesJSON.compactMapValues(\.scriptPropertyLiteral)
         if let string = try? container.decode(String.self, forKey: .value) {
             stringValue = string
         } else if let number = try? container.decode(Double.self, forKey: .value) {
@@ -409,16 +419,45 @@ struct WEScriptedProperty: Decodable {
     }
 }
 
-struct WEInstanceOverride: Codable {
-    @WEFlexibleInt var id: Int?
-    var colorn: String?
-    var rate: WEScriptValue?
-    @WEFlexibleDouble var size: Double?
+/// A particle object's `instanceoverride`. Every field may be a literal or bound to a user
+/// property or script; `values` keeps the authored forms.
+struct WEInstanceOverride: Decodable {
+    var id: Int?
+    var values: [SceneInstanceOverrideField: SceneRawValue] = [:]
+
+    /// Literal fallbacks, for callers that don't resolve bindings.
+    var colorn: String? { values[.colorn]?.literalString }
+    var size: Double? { values[.size]?.literalDouble }
+    var rate: WEScriptValue? {
+        values[.rate].map { WEScriptValue(script: $0.scriptSource, value: $0.literalDouble) }
+    }
+
+    init(values: [SceneInstanceOverrideField: SceneRawValue] = [:], id: Int? = nil) {
+        self.values = values
+        self.id = id
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyCodingKey.self)
+        id = c.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "id"), userInfo: decoder.userInfo)?
+            .literalDouble.map { Int($0) }
+        for field in SceneInstanceOverrideField.allCases {
+            if let raw = c.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: field.rawValue),
+                                        userInfo: decoder.userInfo) {
+                values[field] = raw
+            }
+        }
+    }
 }
 
 struct WEScriptValue: Codable {
     var script: String?
     var value: Double?
+
+    init(script: String?, value: Double?) {
+        self.script = script
+        self.value = value
+    }
 
     init(from decoder: Decoder) throws {
         // Can be just a number or an object with script+value

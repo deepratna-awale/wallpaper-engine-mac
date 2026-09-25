@@ -547,6 +547,9 @@ class SceneWallpaperViewModel: ObservableObject {
         if let projection = scene.general.orthogonalprojection {
             return SIMD2<Float>(Float(projection.width), Float(projection.height))
         }
+        // `orthogonalprojection: null` is a perspective scene: objects are in world units, so their
+        // bounds say nothing about the canvas. Render at WE's default canvas.
+        if scene.general.usesPerspectiveProjection { return SIMD2<Float>(1920, 1080) }
         let imageBounds = scene.objects.compactMap { object -> SIMD2<Float>? in
             guard let origin = object.origin?.parseVector3(), let size = object.size?.parseVector2() else { return nil }
             return SIMD2<Float>(Float(origin.0 + size.0 / 2), Float(origin.1 + size.1 / 2))

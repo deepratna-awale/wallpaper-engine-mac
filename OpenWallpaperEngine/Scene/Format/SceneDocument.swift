@@ -95,44 +95,46 @@ struct WECamera: Codable {
     var up: String?
 }
 
-struct WESceneGeneral: Codable {
-    var clearcolor: String?
+struct WESceneGeneral: Decodable {
     var orthogonalprojection: WEOrthogonalProjection?
-    var ambientcolor: String?
-    var skylightcolor: String?
-    var bloom: Bool?
-    var bloomstrength: Double?
-    var bloomthreshold: Double?
+    /// `orthogonalprojection` is present but `null`: WE renders the scene with its perspective camera.
+    var usesPerspectiveProjection = false
     var bloomtint: String?
     var fov: Double?
     var nearz: Double?
     var farz: Double?
     var zoom: Double?
+    /// Every bindable field in its full authored form (literal, `user`, `script`, `animation`).
+    var values: [SceneGeneralValueField: SceneRawValue] = [:]
 
-    // These fields can be Bool, Int, or an object {"user":..,"value":..} in different wallpapers.
-    // We only need the String fields above for rendering, so skip strict decoding of the rest.
+    // Literal fallbacks of the bindable fields.
+    var clearcolor: String? { values[.clearcolor]?.literalString }
+    var ambientcolor: String? { values[.ambientcolor]?.literalString }
+    var skylightcolor: String? { values[.skylightcolor]?.literalString }
+    var bloom: Bool? { values[.bloom]?.literalBool }
+    var bloomstrength: Double? { values[.bloomstrength]?.literalDouble }
+    var bloomthreshold: Double? { values[.bloomthreshold]?.literalDouble }
 
     init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        // Use try? because these fields can be plain strings OR {"user":..,"value":..} objects
-        clearcolor = try? container.decodeIfPresent(String.self, forKey: .clearcolor)
-        orthogonalprojection = try? container.decodeIfPresent(WEOrthogonalProjection.self, forKey: .orthogonalprojection)
-        ambientcolor = try? container.decodeIfPresent(String.self, forKey: .ambientcolor)
-        skylightcolor = try? container.decodeIfPresent(String.self, forKey: .skylightcolor)
-        bloom = try? container.decodeIfPresent(Bool.self, forKey: .bloom)
-        bloomstrength = try? container.decodeIfPresent(Double.self, forKey: .bloomstrength)
-        bloomthreshold = try? container.decodeIfPresent(Double.self, forKey: .bloomthreshold)
-        bloomtint = try? container.decodeIfPresent(String.self, forKey: .bloomtint)
-        fov = try? container.decodeIfPresent(Double.self, forKey: .fov)
-        nearz = try? container.decodeIfPresent(Double.self, forKey: .nearz)
-        farz = try? container.decodeIfPresent(Double.self, forKey: .farz)
-        zoom = try? container.decodeIfPresent(Double.self, forKey: .zoom)
-    }
-
-    enum CodingKeys: String, CodingKey {
-        case clearcolor, orthogonalprojection, ambientcolor, skylightcolor
-        case bloom, bloomstrength, bloomthreshold, bloomtint
-        case fov, nearz, farz, zoom
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        let info = decoder.userInfo
+        for field in SceneGeneralValueField.allCases {
+            if let raw = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: field.rawValue), userInfo: info) {
+                values[field] = raw
+            }
+        }
+        let projectionKey = AnyCodingKey(stringValue: "orthogonalprojection")
+        if container.contains(projectionKey), (try? container.decodeNil(forKey: projectionKey)) == true {
+            // `try?`: decodeNil only fails when the key is missing, which `contains` just ruled out.
+            usesPerspectiveProjection = true
+        } else {
+            orthogonalprojection = container.decodeLogged(WEOrthogonalProjection.self, forKey: projectionKey, userInfo: info)
+        }
+        bloomtint = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "bloomtint"), userInfo: info)?.literalString
+        fov = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "fov"), userInfo: info)?.literalDouble
+        nearz = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "nearz"), userInfo: info)?.literalDouble
+        farz = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "farz"), userInfo: info)?.literalDouble
+        zoom = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "zoom"), userInfo: info)?.literalDouble
     }
 }
 
