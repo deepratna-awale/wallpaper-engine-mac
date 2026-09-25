@@ -24,9 +24,9 @@ enum Fixtures {
 
 extension Fixtures {
     /// True when WE's effect shader sources are reachable (a configured install or a bundled copy
-    /// with GLSL). CI has neither, so tests that need an effect to plan skip there.
+    /// with GLSL). Tests that need an effect to plan skip without them.
     static var hasWEShaderSources: Bool {
-        guard SceneShaderTranslator.toolchain != nil, let assets = WallpaperEngineAssets.directory else { return false }
+        guard let assets = WallpaperEngineAssets.directory else { return false }
         return FileManager.default.fileExists(atPath: assets.appending(path: "effects/tint/shaders/effects/tint.frag").path)
     }
 }

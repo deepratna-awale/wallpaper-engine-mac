@@ -19,7 +19,6 @@ final class LibrarySweepTests: XCTestCase {
     }
 
     func testEveryLibraryEffectPlansTranslatesAndRuns() throws {
-        try XCTSkipIf(SceneShaderTranslator.toolchain == nil, "glslang/spirv-cross not installed")
         let assets = ShaderVariantTests.weAssets
         let library = Self.libraryRoot
         try XCTSkipUnless(FileManager.default.fileExists(atPath: assets.path), "WE install not present")
@@ -27,10 +26,11 @@ final class LibrarySweepTests: XCTestCase {
 
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         let queue = try XCTUnwrap(device.makeCommandQueue())
-        let renderer = try XCTUnwrap(EffectGraphRenderer(device: device))
         let cache = FileManager.default.temporaryDirectory.appending(path: "owe-sweep-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: cache) } // scratch cleanup
-        let translator = ShaderVariantTranslator(compiler: try ProcessShaderCompiler(), cacheDirectory: cache)
+        // Not the user's pipeline archive: tests must not write to the app's caches.
+        let renderer = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache.appending(path: "archives")))
+        let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache)
         let input = try Self.checkerboard(device: device)
         let loader = MTKTextureLoader(device: device)
 

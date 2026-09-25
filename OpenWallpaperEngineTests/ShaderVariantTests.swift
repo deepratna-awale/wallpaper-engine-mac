@@ -11,9 +11,8 @@ final class ShaderVariantTests: XCTestCase {
     private var cache: URL!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(SceneShaderTranslator.toolchain == nil, "glslang/spirv-cross not installed")
         cache = FileManager.default.temporaryDirectory.appending(path: "owe-variants-\(UUID().uuidString)")
-        translator = ShaderVariantTranslator(compiler: try ProcessShaderCompiler(), cacheDirectory: cache)
+        translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache)
     }
 
     override func tearDownWithError() throws {

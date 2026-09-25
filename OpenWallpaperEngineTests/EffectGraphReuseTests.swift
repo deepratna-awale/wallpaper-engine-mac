@@ -11,13 +11,13 @@ final class EffectGraphReuseTests: XCTestCase {
     private var cache: URL!
 
     override func setUpWithError() throws {
-        try XCTSkipIf(SceneShaderTranslator.toolchain == nil, "glslang/spirv-cross not installed")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: ShaderVariantTests.weAssets.path), "WE install not present")
         device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         queue = try XCTUnwrap(device.makeCommandQueue())
-        renderer = try XCTUnwrap(EffectGraphRenderer(device: device))
         cache = FileManager.default.temporaryDirectory.appending(path: "owe-reuse-\(UUID().uuidString)")
-        let translator = ShaderVariantTranslator(compiler: try ProcessShaderCompiler(), cacheDirectory: cache)
+        // Not the user's pipeline archive: tests must not write to the app's caches.
+        renderer = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache.appending(path: "archives")))
+        let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache)
         let root = ShaderVariantTests.weAssets
         builder = SceneEffectPlanBuilder(
             translator: translator,
