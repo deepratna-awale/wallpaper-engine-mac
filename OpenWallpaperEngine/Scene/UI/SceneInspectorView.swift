@@ -550,9 +550,11 @@ private final class SceneInspectorModel: ObservableObject {
     }
 
     private static func originString(_ origin: SIMD3<Double>) -> String {
-        [origin.x, origin.y, origin.z].map { value in
+        let components: [Double] = [origin.x, origin.y, origin.z]
+        let parts: [String] = components.map { value -> String in
             value.rounded() == value ? String(Int(value)) : String(value)
-        }.joined(separator: " ")
+        }
+        return parts.joined(separator: " ")
     }
 
     func saveObjectJSON(_ text: String, item: SceneInspectorItem) {

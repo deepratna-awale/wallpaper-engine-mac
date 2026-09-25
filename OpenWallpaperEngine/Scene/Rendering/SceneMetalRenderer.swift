@@ -1185,8 +1185,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 if let turbulence = configuration.turbulence {
                     let position = system.particles[index].position * turbulence.scale
                     let phase = system.elapsedTime * turbulence.timeScale + turbulence.phase
-                    let force = SIMD2<Float>(sin(position.y + phase), cos(position.x - phase))
-                        * Float.random(in: turbulence.speed) * turbulence.mask
+                    // Spelled out step by step: older Swift compilers mis-resolve the chained operators.
+                    let direction = SIMD2<Float>(sin(position.y + phase), cos(position.x - phase))
+                    let magnitude: Float = Float.random(in: turbulence.speed)
+                    let force: SIMD2<Float> = direction * magnitude * turbulence.mask
                     system.particles[index].velocity += force * deltaTime
                 }
                 if let attractor = configuration.attractor {
@@ -1445,9 +1447,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func catmullRom(_ previous: SIMD2<Float>, _ start: SIMD2<Float>, _ end: SIMD2<Float>,
                             _ following: SIMD2<Float>, _ t: Float) -> SIMD2<Float> {        let t2 = t * t
         let t3 = t2 * t
-        return 0.5 * ((2 * start) + (-previous + end) * t
-            + (2 * previous - 5 * start + 4 * end - following) * t2
-            + (-previous + 3 * start - 3 * end + following) * t3)
+        // Split into terms so older compilers type-check it in reasonable time.
+        let a: SIMD2<Float> = 2 * start
+        let b: SIMD2<Float> = (end - previous) * t
+        let c1: SIMD2<Float> = 2 * previous - 5 * start
+        let c: SIMD2<Float> = (c1 + 4 * end - following) * t2
+        let d1: SIMD2<Float> = 3 * start - previous
+        let d: SIMD2<Float> = (d1 - 3 * end + following) * t3
+        return 0.5 * (a + b + c + d)
     }
 
     private func particleOpacity(_ particle: Particle, in system: ParticleSystemRuntime) -> Float {
