@@ -180,7 +180,7 @@ struct ParticleMaterialPlanBuilder {
             }
         let constants = ShaderConstantResolver.resolve(
             uniforms: uniforms.map { .init(name: $0.name, glslType: $0.type, arrayCount: $0.arrayCount ?? 1, annotation: $0.annotation) },
-            material: pass.constantshadervalues.compactMapValues(\.valueSource), instance: [:])
+            material: pass.constantSources(uniforms: uniforms), instance: [:])
         return ParticleMaterialPlan.Stage(geometry: stageGeometry, variant: variant,
                                           variantKey: ShaderVariantTranslator.cacheKey(vertex: vertex, fragment: fragment, combos: combos),
                                           textures: inputs, constants: constants)

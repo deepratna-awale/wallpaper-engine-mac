@@ -225,6 +225,19 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertGreaterThan(pixels.red(x: 133, y: 128), 250, "overlap: both added")
     }
 
+    func testUserShaderValuesDriveTheMaterialLive() throws {
+        let plan = try self.plan("materials/user_overbright.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        var dim = particle(at: SIMD2(128, 128), size: 80)
+        dim.color = SIMD4(0.25, 0.25, 0.25, 1)
+        let index = (128 * Self.size + 128) * 4
+        let unset = try render(plan, particles: [dim])
+        XCTAssertEqual(Double(unset.bytes[index]), 0.25 * 255, accuracy: 2, "the constant is the fallback")
+        let doubled = try render(plan, particles: [dim], values: UserValues(values: ["glow": "2"]))
+        XCTAssertEqual(Double(doubled.bytes[index]), 0.5 * 255, accuracy: 2, "`glow` drives g_Overbright")
+        let tripled = try render(plan, particles: [dim], values: UserValues(values: ["glow": "3"]))
+        XCTAssertEqual(Double(tripled.bytes[index]), 0.75 * 255, accuracy: 2, "and follows the property")
+    }
+
     func testRefractionFallsBackToTheBuiltInDraw() throws {
         let plan = try builder.build(materialPath: "materials/refract.json", renderer: nil, flags: 0,
                                      baseTexture: .image(NSImage()), spriteSheet: nil)
@@ -492,9 +505,17 @@ final class ParticleMaterialRenderTests: XCTestCase {
         var time: Double { 0 }
     }
 
+    struct UserValues: SceneValueContext {
+        let values: [String: String]
+        func userProperty(_ name: String) -> String? { values[name] }
+        func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? { nil }
+        var time: Double { 0 }
+    }
+
     private func render(_ plan: ParticleMaterialPlan, particles: [Particle], texture: MTLTexture? = nil,
                         animationMode: String = "sequence", cull: (MTLCullMode, MTLWinding)? = nil,
-                        pixelFormat: MTLPixelFormat = .rgba8Unorm) throws -> Pixels {
+                        pixelFormat: MTLPixelFormat = .rgba8Unorm,
+                        values: SceneValueContext = NoValues()) throws -> Pixels {
         let size = Self.size
         XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: pixelFormat), "pipelines still compiling")
         for stage in plan.stages {
@@ -521,7 +542,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
             encoder.setFrontFacing(cull.1)
         }
         renderer.draw(system, encoder: encoder, context: .init(
-            sceneSize: SIMD2(Float(size), Float(size)), frame: BuiltinFrameContext(), values: NoValues(),
+            sceneSize: SIMD2(Float(size), Float(size)), frame: BuiltinFrameContext(), values: values,
             assetTexture: { _, _ in nil }))
         encoder.endEncoding()
         buffer.commit()

@@ -119,16 +119,9 @@ struct ImageMaterialPlanBuilder {
             .reduce(into: [ShaderUniformDeclaration]()) { result, uniform in
                 if !result.contains(where: { $0.name == uniform.name }) { result.append(uniform) }
             }
-        var materialValues = materialPass.constantshadervalues.compactMapValues(\.valueSource)
-        // `usershadervalues` binds a material key to a user property; the constant stays the fallback.
-        for (key, property) in materialPass.usershadervalues ?? [:] {
-            let fallback = materialValues[key] ?? uniforms.first { $0.materialKey == key }
-                .flatMap { $0.annotation["default"] }.flatMap(ShaderValue.init(json:)).map(SceneValueSource.literal)
-            materialValues[key] = .user(name: property, condition: nil, fallback: fallback ?? .literal(.zero))
-        }
         let resolved = ShaderConstantResolver.resolve(
             uniforms: uniforms.map { .init(name: $0.name, glslType: $0.type, arrayCount: $0.arrayCount ?? 1, annotation: $0.annotation) },
-            material: materialValues, instance: [:])
+            material: materialPass.constantSources(uniforms: uniforms), instance: [:])
         // The layer's live values drive these; a static material value scales them.
         var liveFactors: [String: Float] = [:]
         for name in ["g_Brightness", "g_UserAlpha"] {
