@@ -39,6 +39,8 @@ enum SceneChangeImpact: Int, Comparable {
     }
 
     static func impact(of key: String) -> SceneChangeImpact {
+        // Syncing an effect parameter turns its baked literal into a live binding.
+        if key.hasPrefix("_owe_authored_effect_"), key.hasSuffix("_musicSync") { return .rebuildContent }
         // Music-sync companions only modulate values that are already sampled live.
         if key.hasSuffix("_musicSync") || key.hasSuffix("_musicAmount") { return .none }
 

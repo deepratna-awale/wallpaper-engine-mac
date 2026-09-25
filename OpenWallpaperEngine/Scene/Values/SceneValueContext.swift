@@ -34,9 +34,34 @@ struct LiveSceneValueContext: SceneValueContext {
         self.wallpaper = wallpaper
     }
 
+    /// Reads outside a frame (`wallpaper` set) are the stored value; reads while rendering follow
+    /// the music like the engine's numeric reads do.
     func userProperty(_ name: String) -> String? {
         if let wallpaper { return engine.userPropertyString(name, wallpaper: wallpaper) }
-        return engine.userPropertyString(name)
+        guard let raw = engine.userPropertyString(name) else { return nil }
+        return Self.musicSynced(raw, name: name, isSynced: engine.isMusicSynced,
+                                modulate: { engine.userPropertyValue($0, fallback: $1) })
+    }
+
+    /// Applies music sync to a numeric property string. A scalar syncs under `<name>`, each vector
+    /// component `i` under `<name>_<i>`; `modulate(key, base)` is the engine's numeric path
+    /// (base + level × `<key>_musicAmount`). Non-numeric and unsynced values pass through.
+    static func musicSynced(_ raw: String, name: String, isSynced: (String) -> Bool,
+                            modulate: (String, Float) -> Float) -> String {
+        guard let value = ShaderValue(string: raw) else { return raw }
+        let components = value.components
+        if components.count == 1 {
+            guard isSynced(name) else { return raw }
+            return String(modulate(name, components[0]))
+        }
+        var changed = false
+        let modulated = components.enumerated().map { index, component -> Float in
+            let key = "\(name)_\(index)"
+            guard isSynced(key) else { return component }
+            changed = true
+            return modulate(key, component)
+        }
+        return changed ? modulated.map { String($0) }.joined(separator: " ") : raw
     }
 
     func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? {

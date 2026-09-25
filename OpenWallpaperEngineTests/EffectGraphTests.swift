@@ -177,7 +177,9 @@ final class EffectGraphTests: XCTestCase {
 
     func testInspectorOverrideWinsOverAuthoredValue() throws {
         let effect = try effect(#"{"file":"effects/shake/effect.json","passes":[{"constantshadervalues":{"strength":0.2}}]}"#)
-        let plan = try builder.build(effect, overrides: { $0 == "strength" ? "0.4" : nil })
+        let plan = try builder.build(effect, overrides: {
+            $0 == "strength" ? SceneEffectOverride(property: "p", value: "0.4") : nil
+        })
         let constants = try XCTUnwrap(plan.passes.first?.constants)
         XCTAssertEqual(constants.staticValues["g_Amp"]?.components.first ?? 0, 0.4, accuracy: 1e-6)
         XCTAssertTrue(constants.dynamic.isEmpty, "an override is a static literal")

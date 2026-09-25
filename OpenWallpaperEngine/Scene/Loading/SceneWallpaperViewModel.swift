@@ -886,9 +886,9 @@ class SceneWallpaperViewModel: ObservableObject {
             }
             do {
                 plans.append(try builder.build(effect, overrides: { key in
-                    AudioReactiveScriptEngine.shared.userPropertyString(
-                        sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key),
-                        wallpaper: storeKey)
+                    SceneEffectOverride.stored(
+                        property: sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key),
+                        lookup: { AudioReactiveScriptEngine.shared.userPropertyString($0, wallpaper: storeKey) })
                 }))
                 handled.insert(index)
             } catch {

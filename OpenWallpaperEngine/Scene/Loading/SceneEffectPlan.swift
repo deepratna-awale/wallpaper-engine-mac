@@ -70,7 +70,7 @@ struct SceneEffectPlanBuilder {
     private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
 
     /// `overrides` returns the user's edit for a WE material key (inspector), as a WE value string.
-    func build(_ effect: WEObjectEffect, overrides: (String) -> String? = { _ in nil }) throws -> SceneEffectPlan {
+    func build(_ effect: WEObjectEffect, overrides: (String) -> SceneEffectOverride? = { _ in nil }) throws -> SceneEffectPlan {
         // An effect's materials, shaders and textures live under its own folder
         // (`effects/tint/materials/...`), like a small asset root of its own.
         let effectDirectory = (effect.file as NSString).deletingLastPathComponent
@@ -108,7 +108,7 @@ struct SceneEffectPlanBuilder {
     }
 
     fileprivate func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
-                               instance: WEObjectEffectPass?, fbos: [EffectFBO], overrides: (String) -> String?,
+                               instance: WEObjectEffectPass?, fbos: [EffectFBO], overrides: (String) -> SceneEffectOverride?,
                                shaderReader: @escaping (String) -> Data?, effectDirectory: String = "") throws -> SceneEffectPassPlan? {
         let loader = ShaderSourceLoader(readFile: shaderReader)
         let vertex = try loader.load(materialPass.shader, stage: .vertex)
@@ -181,15 +181,20 @@ struct SceneEffectPlanBuilder {
         return .asset(key: "\(materialPath)|\(name)", source: source)
     }
 
-    /// The user's inspector edits win over the scene's authored value; they're static literals, so
-    /// an edited chain can still be reused frame to frame (an edit rebuilds the scene content).
-    static func applyingOverrides(_ overrides: (String) -> String?, to instance: [String: SceneValueSource],
+    /// The user's inspector edits win over the scene's authored value. A plain edit is a static
+    /// literal, so an edited chain can still be reused frame to frame (an edit rebuilds the scene
+    /// content). A music-synced edit is bound to its user property instead, so it's resolved every
+    /// frame and modulated by the audio level like any other synced numeric value.
+    static func applyingOverrides(_ overrides: (String) -> SceneEffectOverride?, to instance: [String: SceneValueSource],
                                   uniforms: [ShaderUniformDeclaration]) -> [String: SceneValueSource] {
         var result = instance
         for uniform in uniforms {
-            guard let key = uniform.materialKey, let raw = overrides(key), let value = ShaderValue(string: raw) else { continue }
+            guard let key = uniform.materialKey, let override = overrides(key),
+                  let value = ShaderValue(string: override.value) else { continue }
             result = result.filter { $0.key.caseInsensitiveCompare(key) != .orderedSame }
-            result[key] = .literal(value)
+            result[key] = override.isMusicSynced
+                ? .user(name: override.property, condition: nil, fallback: .literal(value))
+                : .literal(value)
         }
         return result
     }
@@ -230,7 +235,7 @@ private struct Scoped {
 
     func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
                    instance: WEObjectEffectPass?, fbos: [EffectFBO],
-                   overrides: (String) -> String?) throws -> SceneEffectPassPlan? {
+                   overrides: (String) -> SceneEffectOverride?) throws -> SceneEffectPassPlan? {
         let read = builder.readFile
         let scopes = candidates
         return try builder.buildPass(pass, materialPass: materialPass, materialPath: materialPath,
