@@ -42,8 +42,8 @@ final class BuiltinUniformTests: XCTestCase {
     }
 
     func testTexelSizeFromTarget() {
-        XCTAssertEqual(value("g_TexelSize"), [1 / 256, 1 / 128])
-        XCTAssertEqual(value("g_TexelSizeHalf"), [0.5 / 256, 0.5 / 128])
+        XCTAssertEqual(value("g_TexelSize"), [Float(1) / 256, Float(1) / 128])
+        XCTAssertEqual(value("g_TexelSizeHalf"), [Float(0.5) / 256, Float(0.5) / 128])
     }
 
     func testTextureMetadata() {
@@ -54,7 +54,7 @@ final class BuiltinUniformTests: XCTestCase {
                                               spriteTranslation: SIMD2(0.5, 0.25))
         XCTAssertEqual(value("g_Texture0Resolution"), [1024, 512, 1000, 500])
         XCTAssertEqual(value("g_Texture0MipMapInfo"), [4])
-        XCTAssertEqual(value("g_Texture0Texel"), [1 / 1024, 1 / 512])
+        XCTAssertEqual(value("g_Texture0Texel"), [Float(1) / 1024, Float(1) / 512])
         XCTAssertEqual(value("g_Texture0Rotation"), [1, 0, 0, 1])
         XCTAssertEqual(value("g_Texture0Translation"), [0, 0])
         XCTAssertEqual(value("g_Texture3Rotation"), [0.5, 0, 0, 0.25])
