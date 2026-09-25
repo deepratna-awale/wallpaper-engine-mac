@@ -122,7 +122,7 @@ The app's `_owe_effect_enabled_parallax` toggle and `_owe_effect_parallax_amount
 | `SceneInspectorView` move / scale | 0.05…5×, 1/10/50 px steps | keep: app editing tools, not a WE value |
 | video music sync (`VideoMusicSyncSettings`) | zoom 0…0.5, pace ±1, tilt ±15°, saturation −1…2 | keep: app-only feature |
 | inspector and sidebar "Music Amount" | ± the slider span | keep: app-only feature |
-| `AudioSpectrum` (`maxStep 0.3`, `0.35·log10`, tilt) | our FFT shaping | unknown: WE's `g_AudioSpectrum` scaling needs a capture (see test-risks) |
+| `AudioSpectrum` (was LWE's `maxStep 0.3`, `0.35·log10`, tilt) | LWE's FFT shaping | fixed: WE's pipeline from `wallpaper64.exe` (block DFT and bands `0x1400d02b0`, gain and smoothing `0x140111654`; `Audio/AudioSpectrum*.swift`) |
 | `SceneMetalRenderer` `_owe_speed` | scales the scene clock | keep: app extra; roadmap 8.4 covers the clock problems |
 
 ## 6. Particles — handoff to the particle agent
