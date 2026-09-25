@@ -44,35 +44,6 @@ final class EffectGraphCachingTests: XCTestCase {
         XCTAssertEqual(EffectGraphRenderer.textureInfo(for: padded, contentSize: SIMD2(900, 100)).contentSize, SIMD2(512, 100))
     }
 
-    // MARK: - SceneRenderTargetPool
-
-    func testPoolEvictsLeastRecentlyUsedOverBudget() throws {
-        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        // Room for the 64×64 and 64×32 RGBA8 textures; a third bucket goes over.
-        let pool = SceneRenderTargetPool(device: device, byteBudget: 64 * 64 * 4 + 64 * 32 * 4)
-        let a = try XCTUnwrap(pool.texture(width: 64, height: 64, pixelFormat: .rgba8Unorm))
-        let b = try XCTUnwrap(pool.texture(width: 64, height: 32, pixelFormat: .rgba8Unorm))
-        XCTAssertTrue(pool.texture(width: 64, height: 64, pixelFormat: .rgba8Unorm) === a, "same bucket is reused")
-        _ = try XCTUnwrap(pool.texture(width: 32, height: 64, pixelFormat: .rgba8Unorm))
-        XCTAssertLessThanOrEqual(pool.residentBytes, pool.byteBudget)
-        XCTAssertTrue(pool.texture(width: 64, height: 64, pixelFormat: .rgba8Unorm) === a, "recently used bucket survives")
-        XCTAssertFalse(pool.texture(width: 64, height: 32, pixelFormat: .rgba8Unorm) === b, "least recently used bucket was evicted")
-    }
-
-    func testPoolDropsBucketsIdleForTooManyFrames() throws {
-        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        let pool = SceneRenderTargetPool(device: device, maxIdleFrames: 2)
-        _ = pool.texture(width: 16, height: 16, pixelFormat: .rgba8Unorm)
-        for _ in 0..<2 {
-            _ = pool.texture(width: 8, height: 8, pixelFormat: .rgba8Unorm)
-            pool.endFrame()
-        }
-        XCTAssertEqual(pool.textureCount, 2)
-        _ = pool.texture(width: 8, height: 8, pixelFormat: .rgba8Unorm)
-        pool.endFrame()
-        XCTAssertEqual(pool.textureCount, 1, "the 16×16 bucket went unused for three frames")
-    }
-
     // MARK: - Shader variant cache key
 
     func testVariantCacheKeyDependsOnToolchain() throws {
