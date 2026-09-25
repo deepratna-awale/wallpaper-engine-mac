@@ -19,6 +19,9 @@ struct LayerUniform {
     var transform: SIMD4<Float>
     var transformScaleY: Float
     var bloomTint: SIMD4<Float> = SIMD4<Float>(repeating: 1)
+    /// Full-extent quad axes (y-up scene space). Zero means build the quad from size and rotation.
+    var quadAxisX: SIMD2<Float> = .zero
+    var quadAxisY: SIMD2<Float> = .zero
 }
 
 struct DXTDecodeUniform {

@@ -18,6 +18,8 @@ struct LayerUniform {
     float4 transform;
     float transformScaleY;
     float4 bloomTint;
+    float2 quadAxisX;
+    float2 quadAxisY;
 };
 
 struct VertexOut {
@@ -117,10 +119,18 @@ vertex VertexOut sceneVertex(uint vertexID [[vertex_id]], uint instanceID [[inst
     const uint instance = instanceID + baseInstance;
     const LayerUniform layer = layers[instance];
     constexpr float2 corners[] = { float2(0, 0), float2(1, 0), float2(0, 1), float2(1, 1) };
-    const float2 local = (corners[vertexID] - 0.5) * layer.size;
-    const float2 rotated = float2(local.x * cos(layer.rotation) - local.y * sin(layer.rotation),
-                                  local.x * sin(layer.rotation) + local.y * cos(layer.rotation));
-    const float2 point = float2(layer.position.x, layer.sceneSize.y - layer.position.y) + rotated;
+    const float2 corner = corners[vertexID] - 0.5;
+    float2 offset;
+    if (any(layer.quadAxisX != 0.0) || any(layer.quadAxisY != 0.0)) {
+        // Axes are y-up and the corner's y runs down the texture: flip both into this y-down space.
+        const float2 up = corner.x * layer.quadAxisX - corner.y * layer.quadAxisY;
+        offset = float2(up.x, -up.y);
+    } else {
+        const float2 local = corner * layer.size;
+        offset = float2(local.x * cos(layer.rotation) - local.y * sin(layer.rotation),
+                        local.x * sin(layer.rotation) + local.y * cos(layer.rotation));
+    }
+    const float2 point = float2(layer.position.x, layer.sceneSize.y - layer.position.y) + offset;
     VertexOut out;
     out.position = float4(point.x / layer.sceneSize.x * 2 - 1, 1 - point.y / layer.sceneSize.y * 2, 0, 1);
     out.textureCoordinate = layer.uvOrigin + corners[vertexID].x * layer.uvAxisX + corners[vertexID].y * layer.uvAxisY;

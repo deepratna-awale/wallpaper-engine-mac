@@ -14,6 +14,7 @@ struct SceneMetalLayer {
     let id: String
     let name: String
     let source: SceneMetalTextureSource
+    /// `origin`, relative to the parent object (see `SceneMetalContent.transforms`).
     let position: SIMD2<Float>
     let size: SIMD2<Float>
     let scale: SIMD2<Float>
@@ -47,6 +48,10 @@ struct SceneMetalLayer {
     var sceneInput = false
     /// Index of the object in scene.json: layers and particle systems draw in that order.
     var order = 0
+    /// `alignment` (images) or the text block's aligned edge: where the quad sits against `position`.
+    var alignment: String? = nil
+    /// `fullscreen` models cover the scene whatever their parent is.
+    var fillsScene = false
 
     /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
     var readsScene: Bool { sceneInput || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) } }
@@ -75,18 +80,10 @@ struct SceneMetalText {
     let maxWidth: Float?
     let maxRows: Int?
     let useEllipsis: Bool
-    let clock: SceneClock?
-}
-
-struct SceneClock {
-    enum Kind { case time, date, countdown }
-    let kind: Kind
-    let use24HourFormat: Bool
-    let showSeconds: Bool
-    let delimiter: String
-    let targetDate: String?
-    let recurring: Bool
-    let finalMessage: String?
+    /// Dynamic screen anchor. The scene is always drawn with its authored projection, so every
+    /// anchor resolves to the authored position.
+    let anchor: String?
+    let blockAlign: Bool
 }
 
 struct SceneMaterialEffects {
@@ -118,4 +115,6 @@ struct SceneMetalContent {
     let particleSystems: [SceneMetalParticleSystem]
     let sceneScript: String?
     let bloom: SceneBloomSettings
+    /// Every object's parent and authored transform; layer positions are relative to their parent.
+    var transforms: SceneTransformHierarchy = .empty
 }
