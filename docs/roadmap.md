@@ -70,3 +70,33 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 1. Puppet rigs from `.mdl` (bones, weights, mesh).
 2. Skinned rendering of the puppet mesh (shares skinning with area 6).
 3. Puppet animation layers (`getAnimationLayer`, blend, rate) and the script bone API.
+
+### 8. Regressions and gaps from the review (2026-09-25)
+
+Ranked; the area each item belongs to is in brackets.
+
+1. Retina scene target: the scene renders at scene size and is upscaled, which defeats sharp text; `g_Screen` reports the scene size. [new, Phase 5]
+2. `sceneRegion` crops with the local position (no parent, script, animation or rotation). [new, Phase 3/5]
+3. Hidden layers (script `visible=false`) still draw their raw texture. [4]
+4. Animation time is `Float(CACurrentMediaTime())`: precision drifts with uptime, the speed slider makes time jump, effects and particles ignore `_owe_speed`. [3]
+5. Static-chain cache is keyed on the input's `ObjectIdentifier` and ignores scripted colour and alpha; `g_Color`/`g_Alpha` use authored values. [1]
+6. Effects on text reallocate their buffers whenever the text's size changes (clocks). [1]
+7. Render target pool never evicts; `sceneRegion` sizes grow it. [1]
+8. `Int32(value.rounded())` traps on NaN/inf in integer uniforms. [1]
+9. Name heuristics left: `isSnowParticle`, the "4k" particle scale, parallax `fallbackDepth`. [2]
+10. Effect `visible` bound to a missing user property hides the effect (objects default to visible). [4]
+11. Inspector effect overrides are baked in as literals, so music sync on effect parameters is probably lost. [4]
+12. Particles ignore parent scale, rotation and animation after load; image children of particle systems use the authored transform. [2]
+13. Text `size`: a non-stub size is a fixed box, and the stub test (≤ 2 inside the padding) is a guess. `anchor` and `blockalign` are not applied. [new, Phase 5]
+14. Unsupported `_rt_*` inputs (composite, half/quarter buffers) leave the slot unbound. [1/5]
+15. Built-ins never set: `g_PointerPositionLast`, `g_PointerState`, `g_ParallaxPosition`; `g_Texture*Resolution` reports the allocated size; spritesheet effect textures don't animate. [1]
+16. Camera shake and parallax: amplitude, speed, roughness and delay are unused; parallax is our own model (0.18 factor). [new]
+17. Clear, ambient and skylight colours are decoded but not applied. [5]
+18. The sidebar writes to the un-keyed property store, so with two displays an edit can land on the other wallpaper. [4]
+19. Scene audio cache names use `hashValue` (random per launch), so copies pile up in Caches. [new]
+20. Pipeline compiles are unbounded, with no eviction or retry; the variant cache key ignores toolchain versions; a `TEMPDUMP` debug block is left in. [1]
+21. The text cache clears completely past 128 entries and thrashes with animated scale. [new]
+22. Script clones share `layer.id` with their source (text and effect state), and effect state is never pruned. [4]
+23. Objects without an `id`: the hierarchy uses the index, layers use −1, so the parent link is lost. [new]
+24. Dead `_owe_effect_*` UI code; toggling parallax triggers a full rebuild. [new]
+25. Library sweep: 7 Workshop failures (`iris_movement__`, `cutout_vignette` type mismatches; `or` as an identifier in `dot_matrix_mobile_fix`). The M8 agent is fixing these. [1]
