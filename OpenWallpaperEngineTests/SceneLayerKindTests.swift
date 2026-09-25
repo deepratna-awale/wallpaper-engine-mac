@@ -78,6 +78,17 @@ final class SceneLayerKindTests: XCTestCase {
         XCTAssertEqual(green.y, 1, accuracy: 0.01)
     }
 
+    /// A material's constants reach its own WE shader; they aren't read by name ("brightness",
+    /// "blur", "strength"…), nor a shader's name ("bloom", "blur"), into native adjustments.
+    func testMaterialConstantsAreNotGuessedIntoNativeAdjustments() throws {
+        let layer = try XCTUnwrap(try content("material-constants").layers.first)
+        XCTAssertEqual(layer.effects.brightness, 1)
+        XCTAssertEqual(layer.effects.blur, 0)
+        XCTAssertEqual(layer.effects.bloom, 0)
+        XCTAssertEqual(layer.effects.exposure, 0)
+        XCTAssertTrue(layer.effects.scripts.isEmpty)
+    }
+
     /// WE's objects default `parallaxDepth` to 1 1 and its writer leaves defaults out: a layer
     /// without the key moves with camera parallax; an authored depth, even 0 0, is kept.
     func testAbsentParallaxDepthIsWEsDefault() throws {

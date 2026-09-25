@@ -497,9 +497,7 @@ class SceneWallpaperViewModel: ObservableObject {
             parallaxDepth: .zero, perspective: false,
             positionScript: nil, positionScriptProperties: [:], positionAnimation: nil, sizeScript: nil, sizeAnimation: nil,
             rotation: 0, rotationScript: nil, rotationAnimation: nil,
-                effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
-                                          exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
-                                          transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
+                effects: .identity,
             )], particleSystems: [], sceneScript: sceneScript,
             bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1)))
     }
@@ -544,10 +542,7 @@ class SceneWallpaperViewModel: ObservableObject {
             positionScript: nil, positionScriptProperties: [:], positionAnimation: nil,
             sizeScript: nil, sizeAnimation: nil,
             rotation: 0, rotationScript: nil, rotationAnimation: nil,
-            effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
-                                          exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
-                                          transformAngle: 0, transformOffset: .zero,
-                                          transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
+            effects: .identity)
         layer.musicSync = musicSync
         return SceneMetalContent(size: sceneSize, layers: [layer], particleSystems: [], sceneScript: nil,
                                  bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7,
@@ -628,7 +623,7 @@ class SceneWallpaperViewModel: ObservableObject {
             return nil
         }
         if model.solidlayer == true {
-            var layer = buildSolidLayer(object, material: material, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+            var layer = buildSolidLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
             layer.imageMaterial = buildImageMaterial(materialPath, object: object, wallpaperDir: wallpaperDir)
             return layer
         }
@@ -658,7 +653,6 @@ class SceneWallpaperViewModel: ObservableObject {
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let objectColor = object.color?.parseVector3() ?? (1, 1, 1)
         let parallaxValue = object.parallaxDepthValue
-        let effects = materialEffects(material.passes?.first)
         let effectPlans = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
@@ -673,7 +667,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        positionScript: object.originScript, positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
                        sizeScript: object.sizeScript, sizeAnimation: nil,
                                rotation: rotation, rotationScript: object.anglesScript,
-                               rotationAnimation: object.anglesAnimation, effects: effects)
+                               rotationAnimation: object.anglesAnimation, effects: .identity)
         layer.weEffects = effectPlans.plans
         layer.sceneInput = sceneInput
         layer.alignment = model.fullscreen == true ? nil : object.alignment
@@ -703,7 +697,7 @@ class SceneWallpaperViewModel: ObservableObject {
     /// `models/util/solidlayer*.json`: WE's `flat` shader fills the quad with the object's `color`.
     /// The colour is baked into a generated texture so authored effects see the coloured image, as
     /// they do in WE; `alpha` stays on the layer and is applied when the quad is drawn.
-    private func buildSolidLayer(_ object: WESceneObject, material: WEMaterial, wallpaperDir: URL,
+    private func buildSolidLayer(_ object: WESceneObject, wallpaperDir: URL,
                                  sceneSize: SIMD2<Float>) -> SceneMetalLayer {
         let authoredSize = object.size.map { value -> SIMD2<Float> in
             let parsed = value.parseVector2()
@@ -730,7 +724,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        positionAnimation: object.originAnimation,
                        sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
                        rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
-                       rotationAnimation: object.anglesAnimation, effects: materialEffects(material.passes?.first))
+                       rotationAnimation: object.anglesAnimation, effects: .identity)
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         layer.alignment = object.alignment
         return layer
@@ -790,9 +784,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
                                rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
                                rotationAnimation: object.anglesAnimation,
-                               effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
-                                                             exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
-                                                             transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
+                               effects: .identity)
         layer.alignment = SceneAlignment.text(horizontal: object.horizontalalign, vertical: object.verticalalign)
         // WE runs a text object's effects on its rasterised text; the renderer rasterises before effects run.
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
@@ -846,9 +838,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
                        rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
                        rotationAnimation: object.anglesAnimation,
-                       effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
-                                                     exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
-                                                     transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
+                       effects: .identity)
         layer.weEffects = plans
         layer.alignment = object.alignment
         return layer
@@ -1057,34 +1047,6 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private static func normalizeVariant(_ value: String) -> String {
         value.lowercased().filter { $0.isLetter || $0.isNumber }
-    }
-
-    private func materialEffects(_ pass: WEMaterialPass?) -> SceneMaterialEffects {
-        let constants = pass?.constants ?? [:]
-        var scripts: [String: String] = [:]
-        func value(_ names: [String], default fallback: Float) -> Float {
-            for (key, constant) in constants where names.contains(key.lowercased()) {
-            if let script = constant.script { scripts[names[0]] = script }
-                return Float(constant.value ?? Double(fallback))
-            }
-            return fallback
-        }
-        let shader = pass?.shader?.lowercased() ?? ""
-        return SceneMaterialEffects(
-            brightness: value(["brightness", "intensity", "overbright", "gain"], default: 1),
-            contrast: value(["contrast", "contrastamount"], default: 1),
-            saturation: value(["saturation", "saturationamount"], default: 1),
-            bloom: value(["bloom", "bloomstrength", "glow", "strength"], default: shader.contains("bloom") ? 1 : 0),
-            blur: value(["blur", "bluramount", "blurradius", "radius", "sigma"], default: shader.contains("blur") ? 1 : 0),
-            exposure: value(["exposure", "exposurevalue"], default: 0),
-            gamma: value(["gamma", "gammavalue"], default: 1),
-            hue: value(["hue", "huerotation"], default: 0),
-            bloomThreshold: value(["bloomthreshold", "threshold", "glowthreshold"], default: 0.7),
-            transformAngle: value(["angle", "rotation"], default: 0),
-            transformOffset: SIMD2<Float>(value(["offsetx", "xoffset"], default: 0), value(["offsety", "yoffset"], default: 0)),
-            transformScale: SIMD2<Float>(value(["scalex", "xscale"], default: 1), value(["scaley", "yscale"], default: 1)),
-            scripts: scripts
-        )
     }
 
     private func loadMetalTexture(named name: String, materialDir: String, wallpaperDir: URL) -> SceneMetalTextureSource? {

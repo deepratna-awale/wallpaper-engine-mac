@@ -141,6 +141,13 @@ struct SceneMaterialEffects {
     let transformOffset: SIMD2<Float>
     let transformScale: SIMD2<Float>
     let scripts: [String: String]
+
+    /// No adjustment. A layer's material constants reach WE's own shader (`ImageMaterialPlan`);
+    /// they are never guessed into these native adjustments by name.
+    static let identity = SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
+                                               exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
+                                               transformAngle: 0, transformOffset: .zero,
+                                               transformScale: SIMD2<Float>(repeating: 1), scripts: [:])
 }
 
 struct SceneBloomSettings {
