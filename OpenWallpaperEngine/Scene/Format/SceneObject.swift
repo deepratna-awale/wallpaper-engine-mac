@@ -84,7 +84,7 @@ struct WESceneObject: Decodable {
         image = try? c.decodeIfPresent(String.self, forKey: .image)
         particle = try? c.decodeIfPresent(String.self, forKey: .particle)
         instanceoverride = try? c.decodeIfPresent(WEInstanceOverride.self, forKey: .instanceoverride)
-        effects = try? c.decodeIfPresent([WEObjectEffect].self, forKey: .effects)
+        effects = c.decodeElements(WEObjectEffect.self, forKey: .effects, userInfo: decoder.userInfo)
         shape = try? c.decodeIfPresent(String.self, forKey: .shape)
             if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {
             textValue = scriptedText.stringValue
@@ -167,35 +167,69 @@ struct WESceneObject: Decodable {
     }
 }
 
+/// An effect instance on a scene object. `passes` holds every authored pass, in order.
 struct WEObjectEffect: Decodable {
     let file: String
+    let id: Int?
+    let name: String?
     let visible: Bool?
     let visibleCondition: String?
     let visibleUserProperty: String?
+    let visibleScript: String?
     let passes: [WEObjectEffectPass]?
 
-    enum CodingKeys: String, CodingKey { case file, visible, passes }
+    enum CodingKeys: String, CodingKey { case file, id, name, visible, passes }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let info = decoder.userInfo
         file = try container.decode(String.self, forKey: .file)
-        if let conditional = try? container.decode(WEConditionalBool.self, forKey: .visible) {
-            visible = conditional.value
-            visibleCondition = conditional.condition
-            visibleUserProperty = conditional.property
-        } else {
-            visible = try? container.decodeIfPresent(Bool.self, forKey: .visible)
-            visibleCondition = nil
-            visibleUserProperty = nil
+        id = container.decodeLogged(Int.self, forKey: .id, userInfo: info)
+        name = container.decodeLogged(String.self, forKey: .name, userInfo: info)
+        switch container.decodeLogged(SceneJSON.self, forKey: .visible, userInfo: info) {
+        case .object?:
+            let conditional = container.decodeLogged(WEConditionalBool.self, forKey: .visible, userInfo: info)
+            visible = conditional?.value
+            visibleCondition = conditional?.condition
+            visibleUserProperty = conditional?.property
+            visibleScript = conditional?.script
+        case .bool(let flag)?:
+            (visible, visibleCondition, visibleUserProperty, visibleScript) = (flag, nil, nil, nil)
+        case .number(let number)?:
+            (visible, visibleCondition, visibleUserProperty, visibleScript) = (number != 0, nil, nil, nil)
+        case .string(let text)?:
+            (visible, visibleCondition, visibleUserProperty, visibleScript) = (!["false", "0"].contains(text.lowercased()), nil, nil, nil)
+        default:
+            (visible, visibleCondition, visibleUserProperty, visibleScript) = (nil, nil, nil, nil)
         }
-        passes = try? container.decodeIfPresent([WEObjectEffectPass].self, forKey: .passes)
+        passes = container.decodeElements(WEObjectEffectPass.self, forKey: .passes, userInfo: info)
     }
 }
 
+/// Per-instance overrides for one pass of an effect.
 struct WEObjectEffectPass: Decodable {
+    /// Legacy view of the constants (number/string/script only), used by the current renderer.
     let constantshadervalues: [String: WEEffectConstant]?
+    /// Every constant with its full authored form.
+    let constants: [String: SceneRawValue]
+    /// Texture slots; nil entries are kept so indices match the material.
     let textures: [String?]?
     let combos: [String: Int]?
+    /// `usertextures` (e.g. `[null, {"name":"$mediaThumbnail","type":"system"}]`), kept raw.
+    let usertextures: SceneJSON?
+
+    enum CodingKeys: String, CodingKey { case constantshadervalues, textures, combos, usertextures }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let info = decoder.userInfo
+        constants = c.decodeEntries(SceneRawValue.self, forKey: .constantshadervalues, userInfo: info) ?? [:]
+        // Failures are already reported by `constants` above.
+        constantshadervalues = try? c.decodeIfPresent([String: WEEffectConstant].self, forKey: .constantshadervalues)
+        textures = c.decodeElements(String?.self, forKey: .textures, userInfo: info)
+        combos = c.decodeEntries(Int.self, forKey: .combos, userInfo: info)
+        usertextures = c.decodeLogged(SceneJSON.self, forKey: .usertextures, userInfo: info)
+    }
 }
 
 struct WEEffectConstant: Decodable {
