@@ -1376,7 +1376,13 @@ class SceneWallpaperViewModel: ObservableObject {
             default: break
             }
         }
-        let refractAmount = material.passes?.first?.constants?["ui_editor_properties_refract_amount"]?.value
+        let materialPlan = buildParticleMaterial(materialPath, particleSystem: particleSystem, renderer: particleRenderer,
+                                                 source: source, spriteSheet: spriteSheet, object: object,
+                                                 wallpaperDir: wallpaperDir)
+        // The built-in draw imitates refraction with faint, thin sprites; WE's shader refracts
+        // with the particle's own alpha.
+        let refractAmount: Double? = materialPlan != nil ? nil
+            : material.passes?.first?.constants?["ui_editor_properties_refract_amount"]?.value
         let opacityMultiplier = refractAmount.map { max(0.04, min(abs(Float($0)), 1)) } ?? 1
         var system = SceneMetalParticleSystem(source: source, origin: origin, emissionRate: max(rate, 0),
                 emissionRateScript: rateScript,
@@ -1433,9 +1439,7 @@ class SceneWallpaperViewModel: ObservableObject {
             let innerDistance = Float(emitter.distancemin?.vectorValue.0 ?? 0)
             system.minimumSpawnRatio = distance.0 > 0 ? min(max(innerDistance / Float(distance.0), 0), 1) : 0
         }
-        system.material = buildParticleMaterial(materialPath, particleSystem: particleSystem, renderer: particleRenderer,
-                                                source: source, spriteSheet: spriteSheet, object: object,
-                                                wallpaperDir: wallpaperDir)
+        system.material = materialPlan
         return system
     }
 
