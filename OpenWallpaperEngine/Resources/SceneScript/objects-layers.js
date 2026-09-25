@@ -10,6 +10,8 @@
     const table = objects.table;
     const stride = table.layout.stride;
     const fields = rt.native.objects.fields;
+    // SceneScriptObjectModel.maximumEmitCount.
+    const MAX_EMIT = 1000000;
     const STRINGS = ['text', 'font', 'horizontalalign', 'verticalalign', 'anchor', 'alignment'];
 
     // Strings written this frame, flushed as one command per (slot, field) in the deferred phase.
@@ -220,9 +222,16 @@
         pause() { playback(this, OP.particlesPause, false); }
         stop() { playback(this, OP.particlesStop, false); }
         isPlaying() { return this._t[this._base + PLAYING] !== 0; }
+        // A count is floored and clamped to [0, MAX_EMIT]; NaN (an out-of-range audio read times
+        // anything) emits nothing. SceneScriptObjectModel validates it again natively.
         emitParticles(count) {
             if (this._dead) return;
-            objects.push(OP.particlesEmit, this._slot, typeof count === 'number' ? [count] : undefined);
+            if (typeof count !== 'number') {
+                objects.push(OP.particlesEmit, this._slot);
+                return;
+            }
+            if (count !== count) return;
+            objects.push(OP.particlesEmit, this._slot, [Math.max(0, Math.min(MAX_EMIT, Math.floor(count)))]);
         }
     }
 

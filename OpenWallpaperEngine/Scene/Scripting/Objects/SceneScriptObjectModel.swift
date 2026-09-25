@@ -17,6 +17,12 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
     let scriptResources = ["objects-values", "objects-animations", "objects-effects", "objects-layers",
                            "objects-scene"]
 
+    /// `emitParticles(count)` never asks for more than this at once (objects-layers.js clamps to
+    /// the same); the renderer still caps it to the system's own maximum.
+    static let maximumEmitCount = 1_000_000
+    /// Draw-order, effect and material indices beyond this address nothing.
+    private static let maximumIndex = Int(Int32.max)
+
     private weak var host: SceneScriptObjectHost?
     private weak var runtime: SceneScriptRuntime?
     private let capacity: SceneScriptObjectStore.Capacity
@@ -173,39 +179,47 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
             case .animationStop: return .animation(reference, .stop)
             case .animationJoin: return .animation(reference, .join)
             default:
-                guard let frame = numbers.first else { return nil }
+                guard let frame = numbers.first, frame.isFinite else { return nil }
                 return .animation(reference, .setFrame(Double(frame)))
             }
         }
         guard store.isLive(target) else { return nil }
+        // Ring numbers are whatever scripts pushed (NaN, ±Infinity, 1e39 → inf after Float32):
+        // every integer goes through SceneScriptNumber, and a command with an unusable one is dropped.
         switch command.opcode {
         case .objectCreate:
             guard let source = pendingSources[target] else { return nil }
             return .create(slot: target, source: source)
         case .objectDestroy: return .destroy(slot: target)
         case .objectSort:
-            guard let index = numbers.first else { return nil }
-            return .sort(slot: target, index: Int(index))
+            guard let number = numbers.first,
+                  let index = SceneScriptNumber.integer(number, clampedTo: 0...Self.maximumIndex) else { return nil }
+            return .sort(slot: target, index: index)
         case .objectSetString:
             guard command.strings.count == 2, let field = SceneScriptStringField(rawValue: command.strings[0]) else {
                 return nil
             }
             return .setString(slot: target, field: field, value: command.strings[1])
         case .materialSetProperty:
-            guard numbers.count >= 3, let name = command.strings.first else { return nil }
-            let material = Int(numbers[1])
-            return .setMaterialProperty(slot: target, effect: Int(numbers[0]), material: material < 0 ? nil : material,
+            guard numbers.count >= 3, let name = command.strings.first,
+                  let effect = SceneScriptNumber.index(numbers[0], in: 0...Self.maximumIndex),
+                  let material = SceneScriptNumber.index(numbers[1], in: -1...Self.maximumIndex) else { return nil }
+            return .setMaterialProperty(slot: target, effect: effect, material: material < 0 ? nil : material,
                                         name: name, value: Array(numbers.dropFirst(2)))
         case .materialExecuteFunction:
-            guard let effect = numbers.first, let name = command.strings.first else { return nil }
-            return .executeMaterialFunction(slot: target, effect: Int(effect), name: name)
+            guard let number = numbers.first, let name = command.strings.first,
+                  let effect = SceneScriptNumber.index(number, in: 0...Self.maximumIndex) else { return nil }
+            return .executeMaterialFunction(slot: target, effect: effect, name: name)
         case .soundPlay: return .sound(slot: target, .play)
         case .soundPause: return .sound(slot: target, .pause)
         case .soundStop: return .sound(slot: target, .stop)
         case .particlesPlay: return .particles(slot: target, .play)
         case .particlesPause: return .particles(slot: target, .pause)
         case .particlesStop: return .particles(slot: target, .stop)
-        case .particlesEmit: return .emitParticles(slot: target, count: numbers.first.map { Int($0) })
+        case .particlesEmit:
+            guard let number = numbers.first else { return .emitParticles(slot: target, count: nil) }
+            guard let count = SceneScriptNumber.integer(number, clampedTo: 0...Self.maximumEmitCount) else { return nil }
+            return .emitParticles(slot: target, count: count)
         default: return nil
         }
     }

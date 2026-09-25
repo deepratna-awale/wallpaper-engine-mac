@@ -604,13 +604,14 @@ final class AudioReactiveScriptEngine {
         let currentLevel = audioLevel
         let currentSpectrum = audioSpectrum
         let visualization = audioVisualizationSnapshot()
+        // Script numbers can be NaN or infinite; SceneScriptNumber never traps on them.
         let audioBlock: @convention(block) (Double, Double) -> Double = { low, high in
-            let minimum = max(0, min(63, Int(low)))
-            let maximum = max(minimum, min(63, Int(high)))
+            let minimum = SceneScriptNumber.integer(low, clampedTo: 0...63) ?? 0
+            let maximum = max(minimum, SceneScriptNumber.integer(high, clampedTo: 0...63) ?? 63)
             return currentSpectrum[minimum...maximum].max() ?? currentLevel
         }
         let fftBlock: @convention(block) (Double) -> Double = { index in
-            currentSpectrum[max(0, min(63, Int(index)))]
+            currentSpectrum[SceneScriptNumber.integer(index, clampedTo: 0...63) ?? 0]
         }
         let propertyBlock: @convention(block) (String) -> Double = { [weak self] name in
             self?.propertyService.modulatedValue(name) ?? 0
