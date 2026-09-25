@@ -171,6 +171,41 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertGreaterThan(repeated.red(x: 128, y: topRow), 20, "WE's default repeat wraps the bottom row in")
     }
 
+    // MARK: Geometry stages beyond WE's own
+
+    /// `stripquads.geom` emits `size / 20` separate 20-unit quads (one strip each, 20 units apart)
+    /// under a bound of 16 vertices.
+    private func stripQuads(size: Float, cull: (MTLCullMode, MTLWinding)? = nil) throws -> Pixels {
+        let plan = try self.plan("materials/stripquads.json", renderer: "sprite", keeping: .emulated(vertexCount: 3 * 14))
+        return try render(plan, particles: [particle(at: SIMD2(48, 128), size: size)], cull: cull)
+    }
+
+    func testRestartedStripsLeaveTheGapsBetweenThem() throws {
+        let pixels = try stripQuads(size: 60)
+        for x in [48, 88, 128] { XCTAssertGreaterThan(pixels.red(x: x, y: 128), 250, "quad at x \(x)") }
+        for x in [68, 108] { XCTAssertLessThan(pixels.red(x: x, y: 128), 5, "no triangle bridges the strips at x \(x)") }
+    }
+
+    func testEmittingFewerVerticesThanTheBoundDrawsOnlyThoseTriangles() throws {
+        let one = try stripQuads(size: 20)
+        XCTAssertGreaterThan(one.red(x: 48, y: 128), 250)
+        let lit = stride(from: 0, to: one.bytes.count, by: 4).filter { one.bytes[$0] > 128 }.count
+        XCTAssertEqual(Double(lit), 400, accuracy: 44, "one 20 × 20 quad and nothing else")
+        let three = try stripQuads(size: 60)
+        XCTAssertLessThan(three.red(x: 168, y: 128), 5, "a fourth quad the bound allows is not drawn")
+    }
+
+    func testStripTrianglesKeepOneWinding() throws {
+        // With back faces culled, a quad whose two triangles wound differently would lose half.
+        var counts: [Int] = []
+        for winding in [MTLWinding.clockwise, .counterClockwise] {
+            let pixels = try stripQuads(size: 60, cull: (.back, winding))
+            counts.append(stride(from: 0, to: pixels.bytes.count, by: 4).filter { pixels.bytes[$0] > 128 }.count)
+        }
+        XCTAssertEqual(counts.min(), 0, "every triangle faces the same way: \(counts)")
+        XCTAssertEqual(Double(counts.max() ?? 0), 1200, accuracy: 100, "three whole quads: \(counts)")
+    }
+
     func testBuilderReadsTheTextureFlags() throws {
         let plan = try builder.build(materialPath: "materials/particle/halo.json", renderer: nil, flags: 0,
                                      baseTexture: .image(NSImage()), spriteSheet: nil)
@@ -264,7 +299,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
     }
 
     private func render(_ plan: ParticleMaterialPlan, particles: [Particle], texture: MTLTexture? = nil,
-                        animationMode: String = "sequence") throws -> Pixels {
+                        animationMode: String = "sequence", cull: (MTLCullMode, MTLWinding)? = nil) throws -> Pixels {
         let size = Self.size
         XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: .rgba8Unorm), "pipelines still compiling")
         for stage in plan.stages {
@@ -286,6 +321,10 @@ final class ParticleMaterialRenderTests: XCTestCase {
         pass.colorAttachments[0].storeAction = .store
         let buffer = try XCTUnwrap(queue.makeCommandBuffer())
         let encoder = try XCTUnwrap(buffer.makeRenderCommandEncoder(descriptor: pass))
+        if let cull {
+            encoder.setCullMode(cull.0)
+            encoder.setFrontFacing(cull.1)
+        }
         renderer.draw(system, encoder: encoder, context: .init(
             sceneSize: SIMD2(Float(size), Float(size)), frame: BuiltinFrameContext(), values: NoValues(),
             assetTexture: { _, _ in nil }))
