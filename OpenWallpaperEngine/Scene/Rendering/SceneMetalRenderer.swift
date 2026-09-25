@@ -78,6 +78,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var particleInstanceStorage: MTLBuffer?
 
     private var particleSystems: [ParticleSystemRuntime] = []
+    /// Steps particle systems on the GPU; nil runs them on the CPU (`ParticleCPUSimulation`).
+    private let particleSimulator: ParticleGPUSimulator?
+    /// This frame's GPU steps, reused across frames.
+    private var particleRequests: [ParticleGPUSimulator.Request] = []
     private var sceneScript: String?
     private var camera = SceneCameraEffects()
     /// Whose user properties this renderer's frames read (see `SceneMetalContent.wallpaperKey`).
@@ -111,7 +115,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Told how long each frame took on the CPU, including the wait for a drawable.
     var frameTimeObserver: ((CFTimeInterval) -> Void)?
 
-    init?(view: MTKView) {
+    /// Where particle systems are simulated. The CPU simulation is the reference the GPU one is
+    /// tested against (`ParticleSimulationParityTests`), and the fallback when compute is unavailable.
+    enum ParticleSimulation {
+        case gpu, cpu
+    }
+
+    init?(view: MTKView, particleSimulation: ParticleSimulation = .gpu) {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
               let library = device.makeDefaultLibrary(),
@@ -159,6 +169,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
+        switch particleSimulation {
+        case .gpu:
+            do {
+                particleSimulator = try ParticleGPUSimulator(device: device)
+            } catch {
+                OWELog.error(.scene, "GPU particle simulation unavailable, simulating on the CPU: \(error)")
+                particleSimulator = nil
+            }
+        case .cpu:
+            particleSimulator = nil
+        }
         self.device = device
         self.copyPipeline = copyPipeline
         self.compositePipeline = compositePipeline
@@ -330,7 +351,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             if OWEFrameMetrics.isReportingEnabled {
                 OWEFrameMetrics.recordFrame(seconds: CACurrentMediaTime() - frameStart,
                                             layers: layers.count,
-                                            particles: particleSystems.reduce(0) { $0 + $1.particles.count })
+                                            particles: particleSystems.reduce(0) { $0 + ($1.gpu?.completedCount ?? $1.particles.count) })
             }
         }
 
@@ -410,23 +431,37 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         sceneRenderPass.colorAttachments[0].loadAction = .clear
         sceneRenderPass.colorAttachments[0].clearColor = clearColor
         sceneRenderPass.colorAttachments[0].storeAction = .store
-        guard var encoder = commandBuffer.makeRenderCommandEncoder(descriptor: sceneRenderPass) else { return }
-        encoder.setRenderPipelineState(renderPipeline)
-
-        ParticleCPUSimulation.update(particleSystems, deltaTime: Float(clock.delta), cursor: cursor)
         // One instanced draw per system rather than one per particle (or per rope segment, which
         // multiplies out to thousands on trail renderers).
         particleInstances.removeAll(keepingCapacity: true)
-        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int, material: Bool)] = []
+        particleRequests.removeAll(keepingCapacity: true)
+        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int, material: Bool, simulated: Bool)] = []
         // Systems are drawn in scene.json order, between the layers around them.
         let orderedSystems = particleSystems.enumerated()
             .sorted { ($0.element.configuration.order, $0.offset) < ($1.element.configuration.order, $1.offset) }
             .map(\.element)
+        let particleSignpost = OWESignpost.begin(OWESignpost.render, "updateParticles")
         for system in orderedSystems {
             let base = particleInstances.count
+            let inputs = ParticleFrameInputs.advance(system, deltaTime: Float(clock.delta), cursor: cursor)
+            if particleSimulator != nil {
+                // The GPU steps the system and writes whichever records it is drawn from.
+                let rendererName = system.configuration.rendererName
+                if let simulated = particleMaterials?.prepareSimulated(system, pixelFormat: sceneTexture.pixelFormat) {
+                    particleRequests.append(.init(system: system, inputs: inputs,
+                                                  kind: .material(simulated.format, rendererName: rendererName),
+                                                  materialVertexCount: simulated.vertexCount, renderVar: simulated.renderVar))
+                    particleBatches.append((system, base, 0, true, true))
+                } else {
+                    particleRequests.append(.init(system: system, inputs: inputs, kind: .fallback(rendererName: rendererName)))
+                    particleBatches.append((system, base, 0, false, true))
+                }
+                continue
+            }
+            ParticleCPUSimulation.step(system, inputs: inputs)
             if particleMaterials?.prepare(system, pixelFormat: sceneTexture.pixelFormat,
                                           opacity: { [unowned self] in self.particleOpacity($0, in: system) }) == true {
-                particleBatches.append((system, base, 0, true))
+                particleBatches.append((system, base, 0, true, false))
                 continue
             }
             if system.configuration.rendererName == "rope" {
@@ -453,8 +488,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     }
                 }
             }
-            particleBatches.append((system, base, particleInstances.count - base, false))
+            particleBatches.append((system, base, particleInstances.count - base, false, false))
         }
+        particleSignpost.end()
+        particleSimulator?.encode(particleRequests, sceneSize: sceneSize, targetSize: drawableSize,
+                                  commandBuffer: commandBuffer)
+        guard var encoder = commandBuffer.makeRenderCommandEncoder(descriptor: sceneRenderPass) else { return }
+        encoder.setRenderPipelineState(renderPipeline)
         let particleBuffer = particleInstanceBuffer(for: particleInstances.count)
         if let particleBuffer {
             particleInstances.withUnsafeBytes { source in
@@ -477,12 +517,25 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     drew = true
                     continue
                 }
+                let pipeline = batch.system.configuration.blending == "additive" ? additiveRenderPipeline : renderPipeline
+                if batch.simulated {
+                    // The built-in quads the GPU step wrote, counted by its indirect arguments.
+                    guard let gpu = batch.system.gpu, gpu.isReady, let records = gpu.records,
+                          gpu.recordKind?.isFallback == true else { continue }
+                    encoder.setVertexBuffer(records, offset: 0, index: 0)
+                    encoder.setFragmentBuffer(records, offset: 0, index: 0)
+                    encoder.setRenderPipelineState(pipeline)
+                    encoder.setFragmentTexture(batch.system.texture, index: 0)
+                    encoder.drawPrimitives(type: .triangleStrip, indirectBuffer: gpu.control,
+                                           indirectBufferOffset: ParticleGPUSystem.Control.fallbackDrawOffset)
+                    drew = true
+                    continue
+                }
                 guard batch.count > 0, let particleBuffer else { continue }
                 // Layer draws rebind index 0 with setVertexBytes, so bind the instances per draw.
                 encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
                 encoder.setFragmentBuffer(particleBuffer, offset: 0, index: 0)
-                encoder.setRenderPipelineState(batch.system.configuration.blending == "additive"
-                                               ? additiveRenderPipeline : renderPipeline)
+                encoder.setRenderPipelineState(pipeline)
                 encoder.setFragmentTexture(batch.system.texture, index: 0)
                 encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
                                        instanceCount: batch.count, baseInstance: batch.base)

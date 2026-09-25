@@ -33,15 +33,37 @@ final class ParticleMaterialRenderer {
     private final class SystemState {
         weak var owner: ParticleSystemRuntime?
         let records: ParticleRecordBuffer
+        /// Uniform blocks the GPU simulation patches (`Simulated.renderVar`), ring-buffered.
+        let uniformBlocks: ParticleRecordBuffer
         var programs: [String: UniformProgram] = [:]
-        /// This frame's draw, set by `prepare`.
-        var prepared: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState, buffer: MTLBuffer?, count: Int)?
+        /// This frame's draw, set by `prepare` or `prepareSimulated`.
+        var prepared: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState, records: Records)?
         var reportedFallback = false
 
         init(owner: ParticleSystemRuntime, device: MTLDevice) {
             self.owner = owner
             records = ParticleRecordBuffer(device: device)
+            uniformBlocks = ParticleRecordBuffer(device: device)
         }
+    }
+
+    /// Where a prepared draw's records come from.
+    private enum Records {
+        /// Written by the CPU this frame.
+        case cpu(buffer: MTLBuffer?, count: Int)
+        /// Written by the GPU simulation (`ParticleGPUSystem.records`), drawn indirectly; the
+        /// uniforms go to `uniforms` when the simulation patches them.
+        case gpu(uniforms: MTLBuffer?)
+    }
+
+    /// What the GPU simulation writes for a system drawn through its material.
+    struct Simulated {
+        let format: ParticleVertexFormat
+        /// Vertices per instance of the stage's draw.
+        let vertexCount: Int
+        /// The uniform block and byte offset of `g_RenderVar0`, which holds the rope's point
+        /// count: only the GPU knows it this frame.
+        let renderVar: (buffer: MTLBuffer, offset: Int)?
     }
 
     /// Counters for tests and diagnostics.
@@ -93,8 +115,42 @@ final class ParticleMaterialRenderer {
             ParticleRecordWriter.write(system, format: plan.format, count: count, into: next.contents(), opacity: opacity)
             buffer = next
         }
-        state.prepared = (ready.stage, ready.pipeline, buffer, count)
+        state.prepared = (ready.stage, ready.pipeline, .cpu(buffer: buffer, count: count))
         return true
+    }
+
+    /// Picks `system`'s stage for a draw whose records the GPU simulation writes this frame.
+    /// Nil means the system can't draw through its material now (see `prepare`).
+    func prepareSimulated(_ system: ParticleSystemRuntime, pixelFormat: MTLPixelFormat) -> Simulated? {
+        guard let plan = system.configuration.material else { return nil }
+        let state = state(for: system)
+        state.prepared = nil
+        guard let ready = readyStage(plan, pixelFormat: pixelFormat, state: state) else { return nil }
+        var renderVar: (buffer: MTLBuffer, offset: Int)?
+        var uniforms: MTLBuffer?
+        if plan.format == .rope, system.configuration.rendererName != "ropetrail",
+           let member = ready.stage.variant.uniforms?.members["g_RenderVar0"] {
+            let program = self.program(for: ready.stage, state: state)
+            guard let block = state.uniformBlocks.next(bytes: program.size) else { return nil }
+            uniforms = block
+            renderVar = (block, member.offset)
+        }
+        state.prepared = (ready.stage, ready.pipeline, .gpu(uniforms: uniforms))
+        return Simulated(format: plan.format, vertexCount: Self.vertexCount(ready.stage), renderVar: renderVar)
+    }
+
+    private static func vertexCount(_ stage: ParticleMaterialPlan.Stage) -> Int {
+        switch stage.geometry {
+        case .emulated(let count): return count
+        case .expandedQuads: return ParticleQuadExpansion.verticesPerInstance
+        }
+    }
+
+    private func program(for stage: ParticleMaterialPlan.Stage, state: SystemState) -> UniformProgram {
+        if let program = state.programs[stage.variantKey] { return program }
+        let program = UniformProgram(layout: stage.variant.uniforms, constants: stage.constants)
+        state.programs[stage.variantKey] = program
+        return program
     }
 
     struct DrawContext {
@@ -111,10 +167,18 @@ final class ParticleMaterialRenderer {
               let state = systems[ObjectIdentifier(system)], state.owner === system,
               let prepared = state.prepared else { return }
         state.prepared = nil
-        guard prepared.count > 0, let buffer = prepared.buffer else { return }
+        let recordBuffer: MTLBuffer
+        switch prepared.records {
+        case .cpu(let buffer, let count):
+            guard count > 0, let buffer else { return }
+            recordBuffer = buffer
+        case .gpu:
+            guard let gpu = system.gpu, gpu.isReady, let records = gpu.records, gpu.recordKind?.isFallback == false else { return }
+            recordBuffer = records
+        }
         let stage = prepared.stage
         encoder.setRenderPipelineState(prepared.pipeline)
-        encoder.setVertexBuffer(buffer, offset: 0, index: Self.recordBuffer)
+        encoder.setVertexBuffer(recordBuffer, offset: 0, index: Self.recordBuffer)
         encoder.setVertexBuffer(zeroAttributes, offset: 0, index: Self.zeroBuffer)
 
         var textures: [Int: BuiltinTextureInfo] = [:]
@@ -130,11 +194,7 @@ final class ParticleMaterialRenderer {
             textures[slot] = EffectGraphRenderer.textureInfo(for: texture, contentSize: source.contentSize)
         }
 
-        let program = state.programs[stage.variantKey] ?? {
-            let program = UniformProgram(layout: stage.variant.uniforms, constants: stage.constants)
-            state.programs[stage.variantKey] = program
-            return program
-        }()
+        let program = self.program(for: stage, state: state)
         if program.size > 0, let layout = stage.variant.uniforms {
             let uniforms = ParticleMaterialUniforms(plan: plan, system: system, sceneSize: context.sceneSize,
                                                     texture0: textures[0])
@@ -146,7 +206,12 @@ final class ParticleMaterialRenderer {
             var bytes = program.bytes
             uniforms.patch(&bytes, layout: layout)
             bytes.withUnsafeBytes { raw in
-                if raw.count <= 4096 {
+                if case .gpu(let block?) = prepared.records, block.length >= raw.count {
+                    // The simulation's step, which runs before this draw, patches the block.
+                    block.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+                    encoder.setVertexBuffer(block, offset: 0, index: 0)
+                    encoder.setFragmentBuffer(block, offset: 0, index: 0)
+                } else if raw.count <= 4096 {
                     encoder.setVertexBytes(raw.baseAddress!, length: raw.count, index: 0)
                     encoder.setFragmentBytes(raw.baseAddress!, length: raw.count, index: 0)
                 } else if let uniformBuffer = device.makeBuffer(bytes: raw.baseAddress!, length: raw.count) {
@@ -155,12 +220,15 @@ final class ParticleMaterialRenderer {
                 }
             }
         }
-        let vertexCount: Int
-        switch stage.geometry {
-        case .emulated(let count): vertexCount = count
-        case .expandedQuads: vertexCount = ParticleQuadExpansion.verticesPerInstance
+        switch prepared.records {
+        case .cpu(_, let count):
+            encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: Self.vertexCount(stage), instanceCount: count)
+        case .gpu:
+            // `ParticleGPUSimulator` wrote the arguments: the stage's vertex count and the records.
+            guard let control = system.gpu?.control else { return }
+            encoder.drawPrimitives(type: .triangle, indirectBuffer: control,
+                                   indirectBufferOffset: ParticleGPUSystem.Control.materialDrawOffset)
         }
-        encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: vertexCount, instanceCount: prepared.count)
         drawsEncoded += 1
     }
 
