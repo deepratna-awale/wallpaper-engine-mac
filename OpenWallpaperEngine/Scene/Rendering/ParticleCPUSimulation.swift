@@ -7,7 +7,7 @@ struct Particle {
     var age: Float
     let lifetime: Float
     var size: Float
-    let baseSize: Float
+    var baseSize: Float
     var alpha: Float
     let baseAlpha: Float
     var rotation: Float
@@ -49,6 +49,8 @@ final class ParticleSystemRuntime {
     var neighborVelocities: [SIMD2<Float>] = []
     /// The system's state on the GPU, when `ParticleGPUSimulator` runs it.
     var gpu: ParticleGPUSystem?
+    /// The emitter's world transform at the last step (`ParticleFrameInputs.motion`).
+    var lastEmitter: SceneAffineTransform?
 
     init(texture: MTLTexture, configuration: SceneMetalParticleSystem, seed: UInt32 = 0) {
         self.texture = texture
@@ -91,6 +93,12 @@ enum ParticleCPUSimulation {
             system.emissionRemainder = 0
             return
         }
+        if let motion = inputs.motion {
+            let scale = inputs.motionScale, angle = inputs.motionAngle
+            for index in system.particles.indices {
+                follow(&system.particles[index], motion: motion, scale: scale, angle: angle)
+            }
+        }
         let emitted = emissionCount(liveCount: system.particles.count, maximum: configuration.maximumParticleCount,
                                     rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
                                     remainder: &system.emissionRemainder)
@@ -112,6 +120,18 @@ enum ParticleCPUSimulation {
         system.particles.removeAll { $0.age >= $0.lifetime }
     }
 
+    /// Carries a particle that lives in its emitter's space along with the emitter's move.
+    static func follow(_ particle: inout Particle, motion: SceneAffineTransform, scale: Float, angle: Float) {
+        particle.position = motion.apply(particle.position)
+        particle.velocity = motion.linear * particle.velocity
+        particle.size *= scale
+        particle.baseSize *= scale
+        particle.rotation += angle
+        for sample in particle.history.indices {
+            particle.history[sample] = motion.apply(particle.history[sample])
+        }
+    }
+
     /// A new particle: the emitter's shape and every initializer.
     static func spawn(serial: UInt32, system: ParticleSystemRuntime, inputs: ParticleFrameInputs) -> Particle {
         let configuration = system.configuration
@@ -122,14 +142,16 @@ enum ParticleCPUSimulation {
         let angle = random(0, 2 * .pi, .spawnAngle)
         let radius = sqrt(random(0, 1, .spawnRadius))
         let spawnOffset: SIMD2<Float>
+        let extent = abs(configuration.spawnExtent * inputs.extentScale)
         if configuration.emitterName == "boxrandom" {
-            let extent = abs(configuration.spawnExtent)
             spawnOffset = SIMD2(random(-extent.x, extent.x, .boxX), random(-extent.y, extent.y, .boxY))
         } else {
-            spawnOffset = SIMD2(cos(angle) * configuration.spawnExtent.x, sin(angle) * configuration.spawnExtent.y) * radius
+            spawnOffset = SIMD2(cos(angle) * extent.x, sin(angle) * extent.y) * radius
         }
-        let authoredOffset = SIMD2(random(configuration.positionOffsetMinimum.x, configuration.positionOffsetMaximum.x, .offsetX),
-                                   random(configuration.positionOffsetMinimum.y, configuration.positionOffsetMaximum.y, .offsetY))
+        let offsetMinimum = inputs.offsetLinear * configuration.positionOffsetMinimum
+        let offsetMaximum = inputs.offsetLinear * configuration.positionOffsetMaximum
+        let authoredOffset = SIMD2(random(offsetMinimum.x, offsetMaximum.x, .offsetX),
+                                   random(offsetMinimum.y, offsetMaximum.y, .offsetY))
         var size = random(configuration.size.lowerBound, configuration.size.upperBound, .size)
         var alpha = random(configuration.alpha.lowerBound, configuration.alpha.upperBound, .alpha)
         let color = SIMD4<Float>(random(configuration.minimumColor.x, configuration.maximumColor.x, .red),
@@ -139,7 +161,7 @@ enum ParticleCPUSimulation {
         var velocity = SIMD2(random(configuration.minimumVelocity.x, configuration.maximumVelocity.x, .velocityX),
                              random(configuration.minimumVelocity.y, configuration.maximumVelocity.y, .velocityY))
         // Authored in emitter space; a rotated emitter (or parent) turns the launch direction.
-        velocity = configuration.velocityRotation * velocity
+        velocity = inputs.velocityRotation * velocity
         var sequence: Float = 0
         if let span = configuration.sequenceSpan, let start = inputs.sequenceStart, let end = inputs.sequenceEnd {
             let slot = Int(serial) % span.count
@@ -209,7 +231,7 @@ enum ParticleCPUSimulation {
             }
         }
         if let vortex = configuration.vortex {
-            let offset = particle.position - vortex.origin
+            let offset = particle.position - inputs.vortexOrigin
             let distance = simd_length(offset)
             if distance > 0.001, distance >= vortex.innerDistance, distance <= max(vortex.outerDistance, vortex.innerDistance) {
                 let progress = min(max((distance - vortex.innerDistance) / max(vortex.outerDistance - vortex.innerDistance, 0.001), 0), 1)
@@ -222,7 +244,7 @@ enum ParticleCPUSimulation {
             applyBoids(boids, to: &particle, index: index, system: system, deltaTime: deltaTime)
         }
         if let reduction = configuration.nearControlPointReduction {
-            let distance = simd_length(particle.position - reduction.origin)
+            let distance = simd_length(particle.position - inputs.reductionOrigin)
             if distance < reduction.outerDistance {
                 let progress = min(max((distance - reduction.innerDistance) / max(reduction.outerDistance - reduction.innerDistance, 0.001), 0), 1)
                 let multiplier = 1 - reduction.reduction * (1 - progress) * deltaTime
@@ -230,7 +252,7 @@ enum ParticleCPUSimulation {
             }
         }
         if let constraint = configuration.maintainControlPointDistance {
-            particle.velocity += (constraint.origin - particle.position) * constraint.strength * deltaTime
+            particle.velocity += (inputs.constraintOrigin - particle.position) * constraint.strength * deltaTime
         }
         if configuration.maintainSequenceDistance, let start = inputs.sequenceStart, let end = inputs.sequenceEnd {
             // Pulls each particle back to its slot on the strand so turbulence bends the
@@ -238,7 +260,7 @@ enum ParticleCPUSimulation {
             let anchor = start + (end - start) * particle.sequence
             particle.velocity += (anchor - particle.position) * 10 * deltaTime
         }
-        particle.velocity += configuration.gravity * deltaTime
+        particle.velocity += inputs.gravity * deltaTime
         particle.velocity *= max(0, 1 - inputs.drag * deltaTime)
         if let maximumSpeed = configuration.maximumSpeed, maximumSpeed > 0 {
             let speed = simd_length(particle.velocity)

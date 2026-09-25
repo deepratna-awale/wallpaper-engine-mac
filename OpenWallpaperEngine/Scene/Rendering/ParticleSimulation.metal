@@ -29,7 +29,6 @@ struct ParticleParameters {
     float4 alphaRotation;    // alpha min, max, rotation min, max
     float4 angularSpawn;     // angular velocity min, max, spawn extent xy
     float4 velocityRange;    // minimum xy, maximum xy
-    float4 velocityRotation; // column 0 xy, column 1 xy
     float4 colorMinimum;
     float4 colorMaximum;
     float4 offsetRange;      // minimum xy, maximum xy
@@ -37,15 +36,13 @@ struct ParticleParameters {
     float4 ringAxisBounds;   // axis xy, bounds min, max
     float4 ringSpeed;        // minimum xy, maximum xy
     float4 initialRemap;     // range min, max, multiply, output (0 size, 1 alpha, 2 velocity)
-    float4 gravity;          // gravity xy, maximum speed, angular acceleration
+    float4 limits;           // maximum speed, angular acceleration
     float4 turbulence;       // scale, speed min, max, time scale
     float4 turbulenceMask;   // phase, mask xy
     float4 attractor;        // strength, threshold
-    float4 vortex;           // origin xy, inner speed, outer speed
-    float4 vortexDistance;   // inner, outer
+    float4 vortex;           // inner speed, outer speed, inner distance, outer distance
     float4 boids;            // alignment, cohesion, separation, threshold
-    float4 reduction;        // origin xy, inner distance, outer distance
-    float4 constraint;       // reduction amount, constraint origin xy, strength
+    float4 reduction;        // inner distance, outer distance, reduction amount, constraint strength
     float4 sizeChange;       // start time, end time, start value, end value
     float4 alphaChange;
     float4 colorChangeTime;  // start time, end time
@@ -68,6 +65,13 @@ struct ParticleFrame {
     float4 anchor;   // remap anchor xy, has sequence
     float4 scene;    // scene size xy, target size xy
     uint4 indices;   // frame index, material vertex count, render-var offset in floats (~0: none), draw kind
+    float4 offsetLinear;     // emitter-space offsets (y down) to scene: column 0 xy, column 1 xy
+    float4 velocityRotation; // emitter-space velocities to scene: column 0 xy, column 1 xy
+    float4 gravityExtent;    // gravity xy, spawn extent scale xy
+    float4 origins;          // vortex origin xy, reduction origin xy
+    float4 constraintMotion; // constraint origin xy, motion translation xy
+    float4 motionLinear;     // motion column 0 xy, column 1 xy
+    float4 motionExtras;     // motion size scale, turn, has motion
 };
 
 // `ParticleSpriteInstance` and `ParticleRopeSegmentInstance` (ParticleInstanceLayout.swift).
@@ -297,16 +301,18 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     const uint flags = p.counts.y;
     const float angle = randomValue(0, 2 * M_PI_F, seed, serial, sSpawnAngle);
     const float radius = sqrt(randomValue(0, 1, seed, serial, sSpawnRadius));
-    const float2 extent = p.angularSpawn.zw;
+    const float2 extent = abs(p.angularSpawn.zw * f.gravityExtent.zw);
     float2 spawnOffset;
     if (flags & kBoxEmitter) {
-        const float2 box = abs(extent);
-        spawnOffset = float2(randomValue(-box.x, box.x, seed, serial, sBoxX), randomValue(-box.y, box.y, seed, serial, sBoxY));
+        spawnOffset = float2(randomValue(-extent.x, extent.x, seed, serial, sBoxX),
+                             randomValue(-extent.y, extent.y, seed, serial, sBoxY));
     } else {
         spawnOffset = float2(cos(angle) * extent.x, sin(angle) * extent.y) * radius;
     }
-    const float2 authoredOffset = float2(randomValue(p.offsetRange.x, p.offsetRange.z, seed, serial, sOffsetX),
-                                         randomValue(p.offsetRange.y, p.offsetRange.w, seed, serial, sOffsetY));
+    const float2x2 offsetLinear = float2x2(f.offsetLinear.xy, f.offsetLinear.zw);
+    const float2 offsetMinimum = offsetLinear * p.offsetRange.xy, offsetMaximum = offsetLinear * p.offsetRange.zw;
+    const float2 authoredOffset = float2(randomValue(offsetMinimum.x, offsetMaximum.x, seed, serial, sOffsetX),
+                                         randomValue(offsetMinimum.y, offsetMaximum.y, seed, serial, sOffsetY));
     float size = randomValue(p.lifetimeSize.z, p.lifetimeSize.w, seed, serial, sSize);
     float alpha = randomValue(p.alphaRotation.x, p.alphaRotation.y, seed, serial, sAlpha);
     const float4 color = float4(randomValue(p.colorMinimum.x, p.colorMaximum.x, seed, serial, sRed),
@@ -315,7 +321,7 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     float2 position = f.points.xy + spawnOffset + authoredOffset;
     float2 velocity = float2(randomValue(p.velocityRange.x, p.velocityRange.z, seed, serial, sVelocityX),
                              randomValue(p.velocityRange.y, p.velocityRange.w, seed, serial, sVelocityY));
-    velocity = float2x2(p.velocityRotation.xy, p.velocityRotation.zw) * velocity;
+    velocity = float2x2(f.velocityRotation.xy, f.velocityRotation.zw) * velocity;
     float sequence = 0;
     if ((flags & kSequenceSpan) && f.anchor.z > 0.5) {
         const uint spanCount = uint(p.sequence.x);
@@ -372,6 +378,20 @@ kernel void particleEmit(device ParticleState *particles [[buffer(0)]],
     particles[control[cCount] + gid] = spawn(control[cSerialBase] + gid, p, f);
 }
 
+/// `ParticleCPUSimulation.follow`: carries a particle along with its emitter's move.
+static void follow(thread ParticleState &particle, device float2 *own, constant ParticleParameters &p,
+                   constant ParticleFrame &f) {
+    const float2x2 linear = float2x2(f.motionLinear.xy, f.motionLinear.zw);
+    const float2 translation = f.constraintMotion.zw;
+    particle.positionVelocity = float4(linear * particle.positionVelocity.xy + translation,
+                                       linear * particle.positionVelocity.zw);
+    particle.life.zw *= f.motionExtras.x;
+    particle.alphaRotation.z += f.motionExtras.y;
+    if (p.counts.y & kHistory) {
+        for (uint sample = 0; sample < particle.identity.z; ++sample) own[sample] = linear * own[sample] + translation;
+    }
+}
+
 /// `ParticleCPUSimulation.advance`: every operator, then the death test. Reads `particles`
 /// (boids read neighbours from there too), writes `stepped`.
 kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]],
@@ -387,6 +407,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
     const uint flags = p.counts.y;
     const float deltaTime = f.time.x;
     ParticleState particle = particles[gid];
+    if (f.motionExtras.z > 0.5 && gid < control[cCount]) follow(particle, history + gid * p.counts.w, p, f);
     float2 position = particle.positionVelocity.xy;
     float2 velocity = particle.positionVelocity.zw;
     position += velocity * deltaTime;
@@ -404,12 +425,12 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         if (distance < p.attractor.y) velocity += offset / distance * p.attractor.x * deltaTime;
     }
     if (flags & kVortex) {
-        const float2 offset = position - p.vortex.xy;
+        const float2 offset = position - f.origins.xy;
         const float distance = length(offset);
-        const float inner = p.vortexDistance.x, outer = p.vortexDistance.y;
+        const float inner = p.vortex.z, outer = p.vortex.w;
         if (distance > 0.001f && distance >= inner && distance <= max(outer, inner)) {
             const float progress = saturateValue((distance - inner) / max(outer - inner, 0.001f));
-            const float speed = p.vortex.z + (p.vortex.w - p.vortex.z) * progress;
+            const float speed = p.vortex.x + (p.vortex.y - p.vortex.x) * progress;
             velocity += float2(-offset.y, offset.x) / distance * speed * deltaTime;
         }
     }
@@ -436,24 +457,24 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         }
     }
     if (flags & kReduction) {
-        const float distance = length(position - p.reduction.xy);
-        if (distance < p.reduction.w) {
-            const float progress = saturateValue((distance - p.reduction.z) / max(p.reduction.w - p.reduction.z, 0.001f));
-            velocity *= max(1 - p.constraint.x * (1 - progress) * deltaTime, 0.0f);
+        const float distance = length(position - f.origins.zw);
+        if (distance < p.reduction.y) {
+            const float progress = saturateValue((distance - p.reduction.x) / max(p.reduction.y - p.reduction.x, 0.001f));
+            velocity *= max(1 - p.reduction.z * (1 - progress) * deltaTime, 0.0f);
         }
     }
     if (flags & kConstraint) {
-        velocity += (p.constraint.yz - position) * p.constraint.w * deltaTime;
+        velocity += (f.constraintMotion.xy - position) * p.reduction.w * deltaTime;
     }
     if ((flags & kMaintainSequence) && f.anchor.z > 0.5) {
         const float2 anchor = f.sequence.xy + (f.sequence.zw - f.sequence.xy) * particle.trail.y;
         velocity += (anchor - position) * 10 * deltaTime;
     }
-    velocity += p.gravity.xy * deltaTime;
+    velocity += f.gravityExtent.xy * deltaTime;
     velocity *= max(0.0f, 1 - f.time.w * deltaTime);
-    if ((flags & kMaximumSpeed) && p.gravity.z > 0) {
+    if ((flags & kMaximumSpeed) && p.limits.x > 0) {
         const float speed = length(velocity);
-        if (speed > p.gravity.z) velocity *= p.gravity.z / speed;
+        if (speed > p.limits.x) velocity *= p.limits.x / speed;
     }
     particle.life.x += deltaTime;
     const float life = saturateValue(particle.life.x / max(particle.life.y, 0.001f));
@@ -489,7 +510,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         const float mapped = p.remapAlpha.y + (p.remapAlpha.z - p.remapAlpha.y) * saturateValue(value);
         particle.alphaRotation.x = particle.alphaRotation.y * mapped;
     }
-    particle.alphaRotation.w += p.gravity.w * deltaTime;
+    particle.alphaRotation.w += p.limits.y * deltaTime;
     particle.alphaRotation.z += particle.alphaRotation.w * deltaTime;
     if (flags & kHistory) {
         const uint limit = p.counts.w;

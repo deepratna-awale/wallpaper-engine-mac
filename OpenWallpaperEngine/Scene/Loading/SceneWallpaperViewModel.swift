@@ -462,11 +462,12 @@ class SceneWallpaperViewModel: ObservableObject {
             for layer in layers where layer.fillsScene {
                 transforms.makeRoot(layer.id, local: SceneLocalTransform(origin: layer.position, scale: layer.scale, angle: layer.rotation))
             }
-            let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
+            var content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
                                             sceneScript: sceneScript, bloom: bloomSettings(for: scene.general),
                                             transforms: transforms,
                                             camera: SceneCameraEffects(scene.general, in: valueContext),
                                             wallpaperKey: propertyStoreKey)
+            content.motions = objectMotions(scene.objects, besides: layers, sceneSize: sceneSize, context: valueContext)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -1080,6 +1081,20 @@ class SceneWallpaperViewModel: ObservableObject {
         return cacheTexture(.image(image), for: cacheKey)
     }
 
+    /// How every object that isn't a drawn layer (groups, particle systems) moves, so its
+    /// children and its own particles follow it live.
+    private func objectMotions(_ objects: [WESceneObject], besides layers: [SceneMetalLayer], sceneSize: SIMD2<Float>,
+                               context: SceneValueContext) -> [String: SceneObjectMotion] {
+        let layerIDs = Set(layers.map(\.id))
+        var motions: [String: SceneObjectMotion] = [:]
+        for object in objects {
+            guard let id = object.id.map(String.init), !layerIDs.contains(id) else { continue }
+            motions[id] = SceneObjectMotion(object: object, sceneSize: sceneSize,
+                                            bindings: SceneLayerBindings(object: object, builtWith: context))
+        }
+        return motions
+    }
+
     private func buildMetalParticleSystem(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
                                           transforms: SceneTransformHierarchy) -> SceneMetalParticleSystem? {
         guard let particlePath = object.particle,
@@ -1103,7 +1118,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let rate = Float(emitter?.rate ?? 100) * overrides.rate
         let rateScript = overrides.rateScript ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)
-        let spawnExtent = emitterSpace.extent(SIMD2<Float>(Float(distance.0), Float(distance.1)))
+        let spawnExtent = SIMD2<Float>(Float(distance.0), Float(distance.1))
         var lifetime: ClosedRange<Float> = 1...1
         var size: ClosedRange<Float> = overrides.size * 20...overrides.size * 20
         var minimumVelocity = SIMD2<Float>.zero
@@ -1127,7 +1142,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let controlPoints: [ParticleControlPoint] = (particleSystem.controlpoint ?? []).map { controlPoint in
             let offset = (controlPoint.offset ?? "0 0 0").parseVector3()
             return ParticleControlPoint(id: controlPoint.id ?? 0,
-                                        offset: emitterSpace.offset(SIMD2<Float>(Float(offset.0), -Float(offset.1))),
+                                        offset: SIMD2<Float>(Float(offset.0), -Float(offset.1)),
                                         locksToCursor: controlPoint.locktopointer == true
                                             || ((controlPoint.flags ?? 0) & 1) != 0)
         }
@@ -1156,8 +1171,8 @@ class SceneWallpaperViewModel: ObservableObject {
             case "positionoffsetrandom":
                 let minimum = initializer.min?.vectorValue ?? (0, 0, 0)
                 let maximum = initializer.max?.vectorValue ?? (0, 0, 0)
-                positionOffsetMinimum = emitterSpace.offset(SIMD2<Float>(Float(minimum.0), -Float(minimum.1)))
-                positionOffsetMaximum = emitterSpace.offset(SIMD2<Float>(Float(maximum.0), -Float(maximum.1)))
+                positionOffsetMinimum = SIMD2<Float>(Float(minimum.0), -Float(minimum.1))
+                positionOffsetMaximum = SIMD2<Float>(Float(maximum.0), -Float(maximum.1))
             case "hsvcolorrandom":
                 minimumColor = normalizedParticleColor(initializer.min?.vectorValue ?? (1, 1, 1))
                 maximumColor = normalizedParticleColor(initializer.max?.vectorValue ?? (1, 1, 1))
@@ -1217,6 +1232,7 @@ class SceneWallpaperViewModel: ObservableObject {
         minimumColor *= colorOverride
         maximumColor *= colorOverride
         var gravity = SIMD2<Float>.zero
+        var worldGravity = false
         var drag: Float = 0
         var fadeIn: Float = 0
         var fadeOut: Float = 1
@@ -1247,6 +1263,7 @@ class SceneWallpaperViewModel: ObservableObject {
             case "movement":
                 let value = (`operator`.gravity ?? "0 0 0").parseVector3()
                 gravity = SIMD2<Float>(Float(value.0), Float(value.2 != 0 ? value.2 : value.1))
+                worldGravity = ((`operator`.flags ?? 0) & 1) != 0
                 drag = Float(`operator`.drag ?? 0)
                 dragScript = `operator`.$drag.script
             case "alphafade":
@@ -1277,8 +1294,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 maximumSpeed = Float(`operator`.maxspeed ?? 0)
             case "vortex", "vortex_v2":
                 let axis = (`operator`.axis ?? "0 1 0").parseVector3()
-                let axisOrigin = origin + SIMD2<Float>(Float(axis.0), -Float(axis.1))
-                vortex = ParticleVortex(origin: axisOrigin,
+                vortex = ParticleVortex(offset: SIMD2<Float>(Float(axis.0), -Float(axis.1)),
                                          innerSpeed: Float(`operator`.speedinner ?? 0),
                                          outerSpeed: Float(`operator`.speedouter ?? 0),
                                          innerDistance: Float(`operator`.distanceinner ?? 0),
@@ -1313,12 +1329,12 @@ class SceneWallpaperViewModel: ObservableObject {
                                                 sine: `operator`.transformfunction?.lowercased() == "sine")
                 }
             case "reducemovementnearcontrolpoint":
-                nearControlPointReduction = ParticleDistanceReduction(origin: origin,
+                nearControlPointReduction = ParticleDistanceReduction(offset: .zero,
                                                                        innerDistance: Float(`operator`.distanceinner ?? 0),
                                                                        outerDistance: Float(`operator`.distanceouter ?? 100),
                                                                        reduction: Float(`operator`.reductioninner ?? 1))
             case "maintaindistancetocontrolpoint":
-                maintainControlPointDistance = ParticleDistanceConstraint(origin: origin,
+                maintainControlPointDistance = ParticleDistanceConstraint(offset: .zero,
                                                                           strength: Float(`operator`.variablestrength ?? 1))
             case "maintaindistancebetweencontrolpoints":
                 maintainSequenceDistance = true
@@ -1334,7 +1350,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 // position; adding the system's own `origin` was previously shadowed by this `let origin`,
                 // which pinned every attractor to the canvas corner (0,0) instead of the emitter itself.
                 let attractOffset = `operator`.origin?.vectorValue ?? (0, 0, 0)
-                attractor = Attractor(origin: origin + SIMD2<Float>(Float(attractOffset.0), -Float(attractOffset.1)),
+                attractor = Attractor(offset: SIMD2<Float>(Float(attractOffset.0), -Float(attractOffset.1)),
                                       strength: Float(`operator`.scale?.doubleValue ?? 100),
                                       threshold: Float(`operator`.threshold ?? 1000))
             default: break
@@ -1347,7 +1363,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                         maximumParticleCount: max(Int((Float(particleSystem.maxcount ?? 1000) * overrides.count).rounded()), 0),
                                         spawnExtent: spawnExtent, lifetime: lifetime, size: size,
                                         minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity,
-                                        gravity: emitterSpace.direction(gravity), drag: drag, dragScript: dragScript, alpha: alpha,
+                                        gravity: gravity, drag: drag, dragScript: dragScript, alpha: alpha,
                                         minimumColor: minimumColor, maximumColor: maximumColor,
                                         minimumRotation: minimumRotation, maximumRotation: maximumRotation,
                                         minimumAngularVelocity: minimumAngularVelocity, maximumAngularVelocity: maximumAngularVelocity,
@@ -1384,7 +1400,10 @@ class SceneWallpaperViewModel: ObservableObject {
                                         fadeIn: fadeIn, fadeOut: fadeOut,
                                         fadeInScript: fadeInScript, fadeOutScript: fadeOutScript,
                                         blending: material.passes?.first?.blending?.lowercased() ?? "translucent")
-        system.velocityRotation = emitterSpace.rotation
+        system.objectID = object.id.map(String.init)
+        system.emitterLinear = world.linear
+        system.worldSpace = particleSystem.isWorldSpace
+        system.worldGravity = worldGravity
         system.material = buildParticleMaterial(materialPath, particleSystem: particleSystem, renderer: particleRenderer,
                                                 source: source, spriteSheet: spriteSheet, object: object,
                                                 wallpaperDir: wallpaperDir)

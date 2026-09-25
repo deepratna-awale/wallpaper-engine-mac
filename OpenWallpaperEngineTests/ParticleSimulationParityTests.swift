@@ -58,7 +58,7 @@ final class ParticleSimulationParityTests: XCTestCase {
         system.spawnExtent = SIMD2(300, -80)
         system.positionOffsetMinimum = SIMD2(-20, 5)
         system.positionOffsetMaximum = SIMD2(20, 40)
-        system.velocityRotation = simd_float2x2(SIMD2(0, 1), SIMD2(-1, 0))
+        system.emitterLinear = simd_float2x2(SIMD2(0, 1), SIMD2(-1, 0))
         system.maximumSpeed = 30
         system.angularAcceleration = 2
         try assertParity(system)
@@ -72,7 +72,7 @@ final class ParticleSimulationParityTests: XCTestCase {
 
     func testControlPointAttractAndCursorControlPoint() throws {
         var system = ParticleTestSystem()
-        system.attractor = Attractor(origin: SIMD2(600, 600), strength: 300, threshold: 400)
+        system.attractor = Attractor(offset: SIMD2(100, 100), strength: 300, threshold: 400)
         system.cursorControlPoint = CursorControlPoint(id: 1, offset: SIMD2(10, -10))
         system.emitterControlPoint = 1
         try assertParity(system)
@@ -80,7 +80,7 @@ final class ParticleSimulationParityTests: XCTestCase {
 
     func testVortex() throws {
         var system = ParticleTestSystem()
-        system.vortex = ParticleVortex(origin: SIMD2(520, 480), innerSpeed: 400, outerSpeed: 50, innerDistance: 5,
+        system.vortex = ParticleVortex(offset: SIMD2(20, -20), innerSpeed: 400, outerSpeed: 50, innerDistance: 5,
                                        outerDistance: 300)
         try assertParity(system)
     }
@@ -93,9 +93,9 @@ final class ParticleSimulationParityTests: XCTestCase {
 
     func testControlPointDistanceOperators() throws {
         var system = ParticleTestSystem()
-        system.nearControlPointReduction = ParticleDistanceReduction(origin: SIMD2(500, 500), innerDistance: 10,
+        system.nearControlPointReduction = ParticleDistanceReduction(offset: .zero, innerDistance: 10,
                                                                      outerDistance: 200, reduction: 3)
-        system.maintainControlPointDistance = ParticleDistanceConstraint(origin: SIMD2(450, 520), strength: 0.5)
+        system.maintainControlPointDistance = ParticleDistanceConstraint(offset: SIMD2(-50, 20), strength: 0.5)
         try assertParity(system)
     }
 
@@ -194,6 +194,32 @@ final class ParticleSimulationParityTests: XCTestCase {
         XCTAssertEqual(gpu.count, 0)
     }
 
+    // MARK: - Moving emitters
+
+    /// The emitter moves, turns and grows every frame (an animated parent): particles in its
+    /// space follow it on both simulations alike.
+    func testParticlesFollowAMovingEmitter() throws {
+        var system = ParticleTestSystem()
+        system.gravity = SIMD2(0, -80)
+        system.rendererName = "ropetrail"
+        try assertParity(system, "local", emitter: Self.movingEmitter)
+    }
+
+    func testWorldSpaceParticlesIgnoreAMovingEmitter() throws {
+        var system = ParticleTestSystem()
+        system.worldSpace = true
+        system.worldGravity = true
+        system.gravity = SIMD2(0, -80)
+        try assertParity(system, "world", emitter: Self.movingEmitter)
+    }
+
+    private static func movingEmitter(_ frame: Int) -> SceneAffineTransform {
+        let t = Float(frame) / 60
+        let local = SceneLocalTransform(origin: SIMD2(400 + 200 * t, 500 + 50 * sin(t * 3)),
+                                        scale: SIMD2(repeating: 1 + 0.5 * t), angle: t)
+        return SceneAffineTransform(local)
+    }
+
     // MARK: - Records
 
     func testSpriteRecordsMatchTheCPUWriter() throws {
@@ -268,14 +294,17 @@ final class ParticleSimulationParityTests: XCTestCase {
     }
 
     private func runBoth(_ system: ParticleTestSystem, frames: Int = frames, seed: UInt32 = 42,
-                         kind: ParticleGPUDrawKind? = nil) throws -> (ParticleSystemRuntime, GPURun) {
+                         kind: ParticleGPUDrawKind? = nil,
+                         emitter: ((Int) -> SceneAffineTransform)? = nil) throws -> (ParticleSystemRuntime, GPURun) {
         let cpu = ParticleSystemRuntime(texture: texture, configuration: system.configuration, seed: seed)
         let gpu = ParticleSystemRuntime(texture: texture, configuration: system.configuration, seed: seed)
         let kind = kind ?? (system.rendererName == "ropetrail" ? .ropeTrail : .sprite)
         var last: MTLCommandBuffer?
-        for _ in 0..<frames {
-            ParticleCPUSimulation.update([cpu], deltaTime: 1 / 60, cursor: Self.cursor)
-            let inputs = ParticleFrameInputs.advance(gpu, deltaTime: 1 / 60, cursor: Self.cursor)
+        for frame in 0..<frames {
+            let world = emitter?(frame)
+            ParticleCPUSimulation.step(cpu, inputs: ParticleFrameInputs.advance(cpu, deltaTime: 1 / 60, cursor: Self.cursor,
+                                                                                emitter: world))
+            let inputs = ParticleFrameInputs.advance(gpu, deltaTime: 1 / 60, cursor: Self.cursor, emitter: world)
             let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
             simulator.encode([.init(system: gpu, inputs: inputs, kind: kind, materialVertexCount: 6)],
                              sceneSize: SIMD2(1280, 720), targetSize: SIMD2(1280, 720), commandBuffer: commandBuffer)
@@ -324,8 +353,9 @@ final class ParticleSimulationParityTests: XCTestCase {
     }
 
     private func assertParity(_ system: ParticleTestSystem, _ label: String = "", positionTolerance: Float = 1,
+                              emitter: ((Int) -> SceneAffineTransform)? = nil,
                               file: StaticString = #filePath, line: UInt = #line) throws {
-        let (cpu, gpu) = try runBoth(system)
+        let (cpu, gpu) = try runBoth(system, emitter: emitter)
         let states = simulator.snapshot(gpu.runtime, queue: queue)
         let expected = statistics(cpu.particles), actual = statistics(states)
         XCTAssertGreaterThan(expected.count, 50, label, file: file, line: line)

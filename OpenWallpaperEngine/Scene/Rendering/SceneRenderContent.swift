@@ -154,6 +154,9 @@ struct SceneMetalContent {
     let bloom: SceneBloomSettings
     /// Every object's parent and authored transform; layer positions are relative to their parent.
     var transforms: SceneTransformHierarchy = .empty
+    /// Objects that aren't drawn layers (groups, particle systems), by id: how their own
+    /// transform moves, so what hangs below them follows.
+    var motions: [String: SceneObjectMotion] = [:]
     var camera = SceneCameraEffects()
     /// The wallpaper instance's key in the script engine's user-property store (its directory path).
     var wallpaperKey = ""

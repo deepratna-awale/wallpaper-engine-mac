@@ -20,9 +20,12 @@ struct SceneParticleEmitterSpace {
 
     /// An emitter-local offset given y-down (as the particle builder stores control points and
     /// position offsets), scaled and rotated into scene space and returned y-down.
-    func offset(_ yDown: SIMD2<Float>) -> SIMD2<Float> {
-        let flip = SIMD2<Float>(1, -1)
-        return (world.linear * (yDown * flip)) * flip
+    func offset(_ yDown: SIMD2<Float>) -> SIMD2<Float> { offsetLinear * yDown }
+
+    /// `offset` as a matrix: the world scale and rotation conjugated by the y flip.
+    var offsetLinear: simd_float2x2 {
+        let flip = simd_float2x2(diagonal: SIMD2<Float>(1, -1))
+        return flip * world.linear * flip
     }
 
     /// The emitter's world rotation (and any mirroring) without its scale. Velocities and

@@ -29,7 +29,12 @@ struct SceneLayerBindings {
 
     /// The layer's base values this frame, before scripts and animations.
     func baseValues(for layer: SceneMetalLayer, in context: SceneValueContext) -> SceneLayerBaseValues {
-        var base = SceneLayerBaseValues(layer)
+        baseValues(SceneLayerBaseValues(layer), in: context)
+    }
+
+    /// `base` (what the object was built with) moved by the bindings' change since the build.
+    func baseValues(_ built: SceneLayerBaseValues, in context: SceneValueContext) -> SceneLayerBaseValues {
+        var base = built
         for (field, binding) in fields {
             let now = field.resolve(binding.source, in: context)
             guard now != binding.built else { continue }
@@ -80,6 +85,15 @@ struct SceneLayerBaseValues: Equatable {
     var opacity: Float
     var brightness: Float
     var color: SIMD4<Float>
+
+    init(position: SIMD2<Float>, scale: SIMD2<Float>, rotation: Float) {
+        self.position = position
+        self.scale = scale
+        self.rotation = rotation
+        opacity = 1
+        brightness = 1
+        color = SIMD4(repeating: 1)
+    }
 
     init(_ layer: SceneMetalLayer) {
         position = layer.position

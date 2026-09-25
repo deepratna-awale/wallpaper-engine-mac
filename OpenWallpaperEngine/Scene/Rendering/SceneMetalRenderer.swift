@@ -9,12 +9,15 @@ private struct PreparedLayer {
     /// Key used for script-driven state. Layers cloned by `thisScene.createLayer` share their
     /// source's textures but track their own transform under a different id.
     var stateId: String
+    /// Where the layer's own transform comes from each frame.
+    let motion: SceneObjectMotion
 
     init(frames: [RenderTextureFrame], frameDuration: Float, layer: SceneMetalLayer, stateId: String? = nil) {
         self.frames = frames
         self.frameDuration = frameDuration
         self.layer = layer
         self.stateId = stateId ?? layer.id
+        motion = SceneObjectMotion(layer: layer)
     }
 }
 
@@ -108,6 +111,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// however many children read it.
     private var frameLocals: [String: SceneLocalTransform] = [:]
     private var layerIndexByStateId: [String: Int] = [:]
+    /// Objects that aren't drawn layers (groups, particle systems), by id: their live transform.
+    private var objectMotions: [String: SceneObjectMotion] = [:]
     /// The most recently committed frame, so state a removal frees can wait for it.
     private(set) var lastCommandBuffer: MTLCommandBuffer?
     /// Removed clones' state ids, freed once the frame that last drew them completes.
@@ -215,6 +220,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard let content else {
             layers = []
             particleSystems = []
+            objectMotions = [:]
             sceneScript = nil
             textFrameCache.removeAll()
             textRasterScales.removeAll()
@@ -246,6 +252,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.particleSystems = preparedParticleSystems
                 self.sceneScript = content.sceneScript
                 self.transforms = content.transforms
+                self.objectMotions = content.motions
                 self.wallpaperKey = content.wallpaperKey
                 self.camera = content.camera
                 self.textFrameCache.removeAll()
@@ -269,6 +276,16 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                             : entry.layer.positionScriptProperties
                     ]
                     layerAliases[entry.layer.name] = entry.layer.id
+                }
+                // Other objects (groups, particle systems) can be moved by scripts too.
+                for (id, motion) in content.motions where scriptLayers[id] == nil {
+                    scriptLayers[id] = [
+                        "id": id, "name": motion.name, "visible": true,
+                        "origin": ["x": motion.origin.x, "y": motion.origin.y, "z": 0],
+                        "scale": ["x": motion.scale.x, "y": motion.scale.y, "z": 1],
+                        "angles": ["x": 0, "y": 0, "z": motion.angle],
+                    ]
+                    if layerAliases[motion.name] == nil { layerAliases[motion.name] = id }
                 }
                 AudioReactiveScriptEngine.shared.configureLayers(scriptLayers, aliases: layerAliases,
                                                                  canvasSize: content.size)
@@ -438,7 +455,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let particleSignpost = OWESignpost.begin(OWESignpost.render, "updateParticles")
         for system in orderedSystems {
             let base = particleInstances.count
-            let inputs = ParticleFrameInputs.advance(system, deltaTime: Float(clock.delta), cursor: cursor)
+            let inputs = ParticleFrameInputs.advance(system, deltaTime: Float(clock.delta), cursor: cursor,
+                                                     emitter: emitterWorld(system.configuration, time: time))
             if particleSimulator != nil {
                 // The GPU steps the system and writes whichever records it is drawn from.
                 let rendererName = system.configuration.rendererName
@@ -766,9 +784,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for (index, entry) in layers.enumerated() { layerIndexByStateId[entry.stateId] = index }
     }
 
-    /// A layer's own origin, scale and `angles.z` this frame: script, then script-set state, then
-    /// timeline, then authored. Evaluated once per frame per layer.
-    /// User-bound values give the base that scripts and animations start from.
+    /// A layer's authored values moved by its user bindings: the base that scripts and
+    /// animations start from.
     private func baseValues(_ entry: PreparedLayer, time: Float) -> SceneLayerBaseValues {
         entry.layer.bindings.isEmpty
             ? SceneLayerBaseValues(entry.layer)
@@ -778,45 +795,34 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func evaluatedLocal(_ entry: PreparedLayer, time: Float) -> SceneLocalTransform {
-        if let cached = frameLocals[entry.stateId] { return cached }
-        let base = baseValues(entry, time: time)
-        // origin is a Vec3 in Wallpaper Engine; scripts read and write value.z, so evaluating
-        // it as a Vec2 hands them an object with no z and silently corrupts the result.
-        let position = entry.layer.positionScript.flatMap { script -> SIMD2<Float>? in
-            AudioReactiveScriptEngine.shared.evaluateVector3(script,
-                fallback: SIMD3<Float>(base.position.x, base.position.y, 0),
-                layerId: entry.stateId, time: Double(time)).map { SIMD2<Float>($0.x, $0.y) }
-        }
-            ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "origin",
-                fallback: vector2(SceneTimeline.vector3(entry.layer.positionAnimation, at: time,
-                    fallback: SIMD3<Float>(base.position.x, base.position.y, 0))))
-        let scale = entry.layer.scaleScript.flatMap { script -> SIMD2<Float>? in
-            AudioReactiveScriptEngine.shared.evaluateVector3(script,
-                fallback: SIMD3<Float>(base.scale.x, base.scale.y, 1),
-                layerId: entry.stateId, time: Double(time)).map { SIMD2<Float>($0.x, $0.y) }
-        } ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "scale",
-            fallback: vector2(SceneTimeline.vector3(entry.layer.scaleAnimation, at: time,
-                fallback: SIMD3<Float>(base.scale.x, base.scale.y, 1))))
-        // `angles` is a Vec3 in Wallpaper Engine; scripts mutate value.x/y/z, so it has to be
-        // evaluated as a vector even though only the Z rotation is used here.
-        let rotation = entry.layer.rotationScript.flatMap {
-            AudioReactiveScriptEngine.shared.evaluateVector3($0,
-                fallback: SIMD3<Float>(0, 0, base.rotation),
-                layerId: entry.stateId, time: Double(time))?.z
-        } ?? AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "angles.z",
-            fallback: SceneTimeline.vector3(entry.layer.rotationAnimation, at: time,
-                fallback: SIMD3<Float>(0, 0, base.rotation)).z)
-        let local = SceneLocalTransform(origin: position, scale: scale, angle: rotation)
-        frameLocals[entry.stateId] = local
+        objectLocal(entry.motion, stateId: entry.stateId, time: time)
+    }
+
+    /// An object's own transform this frame (`SceneObjectMotion.local`), evaluated once per frame.
+    private func objectLocal(_ motion: SceneObjectMotion, stateId: String, time: Float) -> SceneLocalTransform {
+        if let cached = frameLocals[stateId] { return cached }
+        let local = motion.local(at: time, stateId: stateId)
+        frameLocals[stateId] = local
         return local
     }
 
-    /// The full transform of a layer's ancestors this frame. Ancestors that are drawn layers use
-    /// their live (scripted, animated) transform, so moving a parent moves its children.
+    /// This frame's own transform of any object: a drawn layer's, or another object's (groups,
+    /// particle systems) from its motion. Nil for an object without either.
+    private func liveLocal(_ id: String, time: Float) -> SceneLocalTransform? {
+        if let index = layerIndexByStateId[id] { return evaluatedLocal(layers[index], time: time) }
+        return objectMotions[id].map { objectLocal($0, stateId: id, time: time) }
+    }
+
+    /// The full transform of a layer's ancestors this frame. Every ancestor uses its live
+    /// (scripted, animated) transform, so moving a parent moves its children.
     private func parentWorld(_ entry: PreparedLayer, time: Float) -> SceneAffineTransform {
-        transforms.parentWorld(of: entry.layer.id) { [self] id in
-            layerIndexByStateId[id].map { evaluatedLocal(layers[$0], time: time) }
-        }
+        transforms.parentWorld(of: entry.layer.id) { [self] id in liveLocal(id, time: time) }
+    }
+
+    /// A particle system's emitter transform this frame: its object's, parents included.
+    private func emitterWorld(_ configuration: SceneMetalParticleSystem, time: Float) -> SceneAffineTransform? {
+        guard let id = configuration.objectID else { return nil }
+        return transforms.world(of: id) { [self] id in liveLocal(id, time: time) }
     }
 
     private func worldTransform(_ entry: PreparedLayer, time: Float) -> SceneAffineTransform {

@@ -30,6 +30,14 @@ struct SceneAffineTransform: Equatable {
 
     func apply(_ point: SIMD2<Float>) -> SIMD2<Float> { linear * point + translation }
 
+    /// The transform undoing this one; nil when it collapses an axis (a zero scale).
+    var inverse: SceneAffineTransform? {
+        let determinant = simd_determinant(linear)
+        guard determinant.isFinite, abs(determinant) > 1e-12 else { return nil }
+        let inverted = linear.inverse
+        return SceneAffineTransform(linear: inverted, translation: -(inverted * translation))
+    }
+
     /// How much one local unit grows along each local axis.
     var axisScale: SIMD2<Float> { SIMD2(simd_length(linear.columns.0), simd_length(linear.columns.1)) }
 }

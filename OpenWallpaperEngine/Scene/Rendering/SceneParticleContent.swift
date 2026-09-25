@@ -6,20 +6,21 @@ struct SceneMetalParticleSystem {
     let source: SceneMetalTextureSource
     /// Index of the object in scene.json; systems draw between layers in that order.
     var order = 0
+    /// The emitter's scene position at load. With `emitterLinear` it is the emitter object's
+    /// authored world transform, which the simulation uses unless the renderer supplies a live one.
     let origin: SIMD2<Float>
     let emissionRate: Float
     let emissionRateScript: String?
     let maximumParticleCount: Int
+    /// The spawn shape's half extent (`distancemax`) in emitter space.
     let spawnExtent: SIMD2<Float>
     let lifetime: ClosedRange<Float>
     let size: ClosedRange<Float>
     let minimumVelocity: SIMD2<Float>
     let maximumVelocity: SIMD2<Float>
-    /// Scene-space gravity: the authored vector turned by the emitter's world rotation.
+    /// The `movement` operator's gravity as authored: in emitter space, or in scene space with
+    /// `worldGravity`.
     let gravity: SIMD2<Float>
-    /// Turns each spawned particle's emitter-local velocity into scene space
-    /// (`SceneParticleEmitterSpace.rotation`).
-    var velocityRotation = matrix_identity_float2x2
     let drag: Float
     let dragScript: String?
     let alpha: ClosedRange<Float>
@@ -72,6 +73,21 @@ struct SceneMetalParticleSystem {
     let blending: String
     /// The system's material for WE's own particle shaders; nil keeps the built-in particle draw.
     var material: ParticleMaterialPlan? = nil
+    /// The emitter object's id in the scene hierarchy; the renderer moves the emitter with that
+    /// object's live transform (parents, scripts and animations included).
+    var objectID: String? = nil
+    /// The emitter's world scale and rotation at load (see `origin`).
+    var emitterLinear = matrix_identity_float2x2
+    /// `flags` bit 0: spawned particles stay where they are when the emitter moves. Otherwise they
+    /// live in the emitter's space and move, turn and scale with it.
+    var worldSpace = false
+    /// `movement` flag bit 0: gravity is a scene-space vector, not turned with the emitter.
+    var worldGravity = false
+
+    /// The emitter's authored world transform.
+    var authoredWorld: SceneAffineTransform {
+        SceneAffineTransform(linear: emitterLinear, translation: origin)
+    }
 }
 
 struct ParticleChange {
@@ -88,8 +104,9 @@ struct ParticleColorChange {
     let endValue: SIMD4<Float>
 }
 
+/// `vortex`: `offset` from the emitter (as authored, not turned with it) is the axis.
 struct ParticleVortex {
-    let origin: SIMD2<Float>
+    let offset: SIMD2<Float>
     let innerSpeed: Float
     let outerSpeed: Float
     let innerDistance: Float
@@ -116,15 +133,17 @@ struct ParticleRemap {
     let sine: Bool
 }
 
+/// `reducemovementnearcontrolpoint` around the emitter's position plus `offset`.
 struct ParticleDistanceReduction {
-    let origin: SIMD2<Float>
+    let offset: SIMD2<Float>
     let innerDistance: Float
     let outerDistance: Float
     let reduction: Float
 }
 
+/// `maintaindistancetocontrolpoint` towards the emitter's position plus `offset`.
 struct ParticleDistanceConstraint {
-    let origin: SIMD2<Float>
+    let offset: SIMD2<Float>
     let strength: Float
 }
 
@@ -132,6 +151,7 @@ struct ParticleDistanceConstraint {
 /// initializers and operators address them by index.
 struct ParticleControlPoint {
     let id: Int
+    /// Emitter-space offset, y down; `SceneParticleEmitterSpace.offset` places it.
     let offset: SIMD2<Float>
     let locksToCursor: Bool
 }
@@ -175,8 +195,9 @@ struct Turbulence {
     let mask: SIMD2<Float>
 }
 
+/// `controlpointattract` towards the emitter's position plus `offset` (as authored).
 struct Attractor {
-    let origin: SIMD2<Float>
+    let offset: SIMD2<Float>
     let strength: Float
     let threshold: Float
 }

@@ -60,6 +60,20 @@ struct ParticleGPUFrame {
     var scene: SIMD4<Float>
     /// Frame index, material vertex count, `g_RenderVar0` offset in floats (`noRenderVar`: none), draw kind.
     var indices: SIMD4<UInt32>
+    /// `ParticleFrameInputs.offsetLinear`, column 0 xy, column 1 xy.
+    var offsetLinear: SIMD4<Float>
+    /// `ParticleFrameInputs.velocityRotation`, column 0 xy, column 1 xy.
+    var velocityRotation: SIMD4<Float>
+    /// Gravity xy, extent scale xy.
+    var gravityExtent: SIMD4<Float>
+    /// Vortex origin xy, reduction origin xy.
+    var origins: SIMD4<Float>
+    /// Constraint origin xy, motion translation xy.
+    var constraintMotion: SIMD4<Float>
+    /// Motion linear part, column 0 xy, column 1 xy.
+    var motionLinear: SIMD4<Float>
+    /// Motion size scale, turn, has motion.
+    var motionExtras: SIMD4<Float>
 
     static let noRenderVar = UInt32.max
 
@@ -75,6 +89,19 @@ struct ParticleGPUFrame {
         scene = SIMD4(sceneSize.x, sceneSize.y, targetSize.x, targetSize.y)
         indices = SIMD4(inputs.frameIndex, UInt32(materialVertexCount),
                         renderVarOffset.map { UInt32($0 / 4) } ?? Self.noRenderVar, kind.rawValue)
+        offsetLinear = Self.columns(inputs.offsetLinear)
+        velocityRotation = Self.columns(inputs.velocityRotation)
+        gravityExtent = SIMD4(inputs.gravity.x, inputs.gravity.y, inputs.extentScale.x, inputs.extentScale.y)
+        origins = SIMD4(inputs.vortexOrigin.x, inputs.vortexOrigin.y, inputs.reductionOrigin.x, inputs.reductionOrigin.y)
+        let motion = inputs.motion ?? .identity
+        constraintMotion = SIMD4(inputs.constraintOrigin.x, inputs.constraintOrigin.y,
+                                 motion.translation.x, motion.translation.y)
+        motionLinear = Self.columns(motion.linear)
+        motionExtras = SIMD4(inputs.motionScale, inputs.motionAngle, inputs.motion == nil ? 0 : 1, 0)
+    }
+
+    static func columns(_ matrix: simd_float2x2) -> SIMD4<Float> {
+        SIMD4(matrix.columns.0.x, matrix.columns.0.y, matrix.columns.1.x, matrix.columns.1.y)
     }
 }
 
@@ -100,7 +127,6 @@ struct ParticleGPUParameters {
     var alphaRotation = SIMD4<Float>.zero
     var angularSpawn = SIMD4<Float>.zero
     var velocityRange = SIMD4<Float>.zero
-    var velocityRotation = SIMD4<Float>.zero
     var colorMinimum = SIMD4<Float>.zero
     var colorMaximum = SIMD4<Float>.zero
     var offsetRange = SIMD4<Float>.zero
@@ -108,15 +134,16 @@ struct ParticleGPUParameters {
     var ringAxisBounds = SIMD4<Float>.zero
     var ringSpeed = SIMD4<Float>.zero
     var initialRemap = SIMD4<Float>.zero
-    var gravity = SIMD4<Float>.zero
+    /// Maximum speed, angular acceleration.
+    var limits = SIMD4<Float>.zero
     var turbulence = SIMD4<Float>.zero
     var turbulenceMask = SIMD4<Float>.zero
     var attractor = SIMD4<Float>.zero
+    /// Inner speed, outer speed, inner distance, outer distance.
     var vortex = SIMD4<Float>.zero
-    var vortexDistance = SIMD4<Float>.zero
     var boids = SIMD4<Float>.zero
+    /// Inner distance, outer distance, reduction; constraint strength.
     var reduction = SIMD4<Float>.zero
-    var constraint = SIMD4<Float>.zero
     var sizeChange = SIMD4<Float>.zero
     var alphaChange = SIMD4<Float>.zero
     var colorChangeTime = SIMD4<Float>.zero
@@ -142,8 +169,6 @@ struct ParticleGPUParameters {
         alphaRotation = SIMD4(c.alpha.lowerBound, c.alpha.upperBound, c.minimumRotation, c.maximumRotation)
         angularSpawn = SIMD4(c.minimumAngularVelocity, c.maximumAngularVelocity, c.spawnExtent.x, c.spawnExtent.y)
         velocityRange = SIMD4(c.minimumVelocity.x, c.minimumVelocity.y, c.maximumVelocity.x, c.maximumVelocity.y)
-        velocityRotation = SIMD4(c.velocityRotation.columns.0.x, c.velocityRotation.columns.0.y,
-                                 c.velocityRotation.columns.1.x, c.velocityRotation.columns.1.y)
         colorMinimum = c.minimumColor
         colorMaximum = c.maximumColor
         offsetRange = SIMD4(c.positionOffsetMinimum.x, c.positionOffsetMinimum.y,
@@ -168,7 +193,7 @@ struct ParticleGPUParameters {
             }
             initialRemap = SIMD4(remap.rangeMinimum, remap.rangeMaximum, remap.multiply ? 1 : 0, output)
         }
-        gravity = SIMD4(c.gravity.x, c.gravity.y, c.maximumSpeed ?? 0, c.angularAcceleration)
+        limits = SIMD4(c.maximumSpeed ?? 0, c.angularAcceleration, 0, 0)
         if c.maximumSpeed != nil { flags.insert(.maximumSpeed) }
         if let value = c.turbulence {
             flags.insert(.turbulence)
@@ -181,8 +206,7 @@ struct ParticleGPUParameters {
         }
         if let value = c.vortex {
             flags.insert(.vortex)
-            vortex = SIMD4(value.origin.x, value.origin.y, value.innerSpeed, value.outerSpeed)
-            vortexDistance = SIMD4(value.innerDistance, value.outerDistance, 0, 0)
+            vortex = SIMD4(value.innerSpeed, value.outerSpeed, value.innerDistance, value.outerDistance)
         }
         if let value = c.boids {
             flags.insert(.boids)
@@ -190,14 +214,13 @@ struct ParticleGPUParameters {
         }
         if let value = c.nearControlPointReduction {
             flags.insert(.reduction)
-            reduction = SIMD4(value.origin.x, value.origin.y, value.innerDistance, value.outerDistance)
-            constraint.x = value.reduction
+            reduction.x = value.innerDistance
+            reduction.y = value.outerDistance
+            reduction.z = value.reduction
         }
         if let value = c.maintainControlPointDistance {
             flags.insert(.constraint)
-            constraint.y = value.origin.x
-            constraint.z = value.origin.y
-            constraint.w = value.strength
+            reduction.w = value.strength
         }
         if c.maintainSequenceDistance { flags.insert(.maintainSequence) }
         if let change = c.sizeChange {

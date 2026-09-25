@@ -15,7 +15,10 @@ struct ParticleTestSystem {
     var minimumVelocity = SIMD2<Float>(-40, -20)
     var maximumVelocity = SIMD2<Float>(40, 60)
     var gravity = SIMD2<Float>.zero
-    var velocityRotation = matrix_identity_float2x2
+    /// The emitter's world scale and rotation (with `origin`, its transform).
+    var emitterLinear = matrix_identity_float2x2
+    var worldSpace = false
+    var worldGravity = false
     var drag: Float = 0
     var alpha: ClosedRange<Float> = 0.5...1
     var minimumColor = SIMD4<Float>(0.2, 0.3, 0.4, 1)
@@ -81,7 +84,9 @@ struct ParticleTestSystem {
             cursorControlPoint: cursorControlPoint, emitterControlPoint: emitterControlPoint, spriteSheet: spriteSheet,
             animationMode: animationMode, sequenceMultiplier: 1, opacityMultiplier: 1, refractive: false,
             fadeIn: fadeIn, fadeOut: fadeOut, fadeInScript: nil, fadeOutScript: nil, blending: "translucent")
-        system.velocityRotation = velocityRotation
+        system.emitterLinear = emitterLinear
+        system.worldSpace = worldSpace
+        system.worldGravity = worldGravity
         system.material = material
         return system
     }
