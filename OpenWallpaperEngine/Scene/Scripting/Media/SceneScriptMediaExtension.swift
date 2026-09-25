@@ -14,35 +14,39 @@ extension SceneScriptEvent.Kind {
     static let mediaTimeline = Self(rawValue: "mediaTimeline")
 }
 
-/// WP6 of docs/scenescript-plan.md: the five media callbacks, fed by a `MediaSessionSource`.
+/// WP6 of docs/scenescript-plan.md: the five media callbacks, fed by a `MediaSessionSource`
+/// (one per process, shared by every runtime's extension).
 ///
 /// The source reports whole states from any thread; each state that differs from the last becomes
-/// a new version and one inbox event per changed part, in WE's order (status, playback,
-/// properties, thumbnail, timeline). Scripts get them at the start of the next frame, at the
-/// media position of the frame (§1.9 P1).
+/// a new version, and the changed parts wait here, newest per kind. Right before each frame they go
+/// into the inbox in WE's order (status, playback, properties, thumbnail, timeline), so scripts get
+/// them at the media position of the frame (§1.9 P1), and a paused wallpaper holds at most five
+/// pending media events instead of filling the inbox with timeline ticks.
 ///
 /// A script also gets the current state right after its `init`, as WE sends it (§1.9 P8; only the
 /// parts that aren't empty, see `MediaSessionState.initialChanges`). That goes through
 /// `__rt.hooks.initialized` and `__rt.native.mediaSnapshot()`, which returns the state with its
-/// version; queued events of that version or older are then skipped for that script, so it never
-/// sees a change twice.
+/// version; events of that version or older are then skipped for that script, so it never sees a
+/// change twice.
 final class SceneScriptMediaExtension: SceneScriptRuntimeExtension {
     let scriptResources = ["sceneScriptMedia"]
 
     private let source: MediaSessionSource
-    /// Owns `state`, `version` and `inbox`: the source reports on its own queue, the runtime reads
-    /// the snapshot on its thread.
+    private var subscription: Int?
+    /// Owns `state`, `version` and `pending`: the source reports on its own queue, the runtime
+    /// reads on its thread.
     private let lock = NSLock()
     private var state = MediaSessionState()
     private var version = 0
-    private var inbox: SceneScriptInbox?
+    /// The newest change of each kind not yet posted, with the version it came with.
+    private var pending: [SceneScriptEvent.Kind: (change: MediaSessionState.Change, version: Int)] = [:]
 
     init(source: MediaSessionSource) {
         self.source = source
     }
 
     deinit {
-        source.stop()
+        if let subscription { source.unsubscribe(subscription) }
     }
 
     func install(into runtime: SceneScriptRuntime) throws {
@@ -53,10 +57,18 @@ final class SceneScriptMediaExtension: SceneScriptRuntimeExtension {
             self?.snapshotObject() ?? ["version": 0, "events": [Any]()]
         }
         native.setValue(unsafeBitCast(snapshot, to: AnyObject.self), forProperty: "mediaSnapshot")
+        subscription = source.subscribe { [weak self] state in self?.receive(state) }
+    }
+
+    /// Posts the pending changes, newest per kind, in WE's order.
+    func willRunFrame(_ runtime: SceneScriptRuntime, deltaTime: Double) {
         lock.lock()
-        inbox = runtime.inbox
+        let posting = pending.values.sorted { $0.change.order < $1.change.order }
+        pending.removeAll()
         lock.unlock()
-        source.start { [weak self] state in self?.receive(state) }
+        for entry in posting {
+            runtime.inbox.post(SceneScriptEvent(kind: entry.change.kind, payload: entry.change.payload(version: entry.version)))
+        }
     }
 
     /// Takes a state from the source (any thread).
@@ -67,9 +79,7 @@ final class SceneScriptMediaExtension: SceneScriptRuntimeExtension {
         state = newState
         guard !changes.isEmpty else { return }
         version += 1
-        for change in changes {
-            inbox?.post(SceneScriptEvent(kind: change.kind, payload: change.payload(version: version)))
-        }
+        for change in changes { pending[change.kind] = (change, version) }
     }
 
     private func snapshotObject() -> [String: Any] {
@@ -83,6 +93,17 @@ final class SceneScriptMediaExtension: SceneScriptRuntimeExtension {
 }
 
 private extension MediaSessionState.Change {
+    /// WE's callback order (scenescript64.dll indices 14–18).
+    var order: Int {
+        switch self {
+        case .status: return 0
+        case .playback: return 1
+        case .properties: return 2
+        case .thumbnail: return 3
+        case .timeline: return 4
+        }
+    }
+
     var kind: SceneScriptEvent.Kind {
         switch self {
         case .status: return .mediaStatus

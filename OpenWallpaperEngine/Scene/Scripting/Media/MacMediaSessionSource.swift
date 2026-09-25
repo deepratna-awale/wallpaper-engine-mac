@@ -5,20 +5,29 @@ import ImageIO
 /// menu bar's Now Playing uses. `MPNowPlayingInfoCenter` only describes the calling app's own
 /// playback, so it can't stand in.
 ///
-/// Everything is resolved at runtime with `dlopen`/`dlsym`; when any symbol is missing the source
-/// reports `enabled == false` once and stays silent. Since macOS 15.4 MediaRemote answers only
+/// MediaRemote is resolved at runtime with `dlopen`/`dlsym` (`MediaRemote.load()`); without it the
+/// source reports `enabled == false` and stays silent. Since macOS 15.4 MediaRemote answers only
 /// entitled processes, so the info may simply never arrive: scripts then see "nothing playing".
 ///
-/// Notifications trigger a fetch; while something plays with a known duration the position is
-/// re-reported once a second (WE: timeline events are "sent frequently while media is playing").
-/// All state is confined to `queue`.
+/// Its registration is process-wide, so the app keeps one source and every runtime subscribes: the
+/// first subscriber registers, the last one's departure unregisters. Notifications trigger a fetch;
+/// while something plays with a known duration the position is re-reported once a second (WE:
+/// timeline events are "sent frequently while media is playing"). Fetching and artwork decoding
+/// run on `queue`; `unsubscribe` never waits for them.
 final class MacMediaSessionSource: MediaSessionSource {
     private let queue = DispatchQueue(label: "OpenWallpaperEngine.MediaSession", qos: .utility)
-    private let remote: MediaRemote?
+    private let framework: NowPlayingFramework?
     private let now: () -> Date
 
+    /// Owns `subscribers`, `nextID` and `latest`. Held while delivering a state, so `unsubscribe`
+    /// waits at most for one delivery in progress (subscribers only queue it), never for fetching.
+    private let lock = NSLock()
+    private var subscribers: [Int: (MediaSessionState) -> Void] = [:]
+    private var nextID = 0
+    private var latest: MediaSessionState?
+
     // Confined to `queue`.
-    private var update: ((MediaSessionState) -> Void)?
+    private var active = false
     private var info: [String: Any] = [:]
     private var isPlaying = false
     private var artwork: (key: Int, colors: ArtworkPalette.Colors?)?
@@ -26,59 +35,105 @@ final class MacMediaSessionSource: MediaSessionSource {
     private var timer: DispatchSourceTimer?
     private var fetchGeneration = 0
 
-    init(remote: MediaRemote? = MediaRemote.load(), now: @escaping () -> Date = Date.init) {
-        self.remote = remote
+    init(framework: NowPlayingFramework? = MediaRemote.load(), now: @escaping () -> Date = Date.init) {
+        self.framework = framework
         self.now = now
-        queue.setSpecific(key: Self.queueKey, value: ())
     }
 
     deinit {
         for observer in observers { NotificationCenter.default.removeObserver(observer) }
         timer?.cancel()
+        if active { framework?.unregister() }
     }
 
-    func start(update: @escaping (MediaSessionState) -> Void) {
+    func subscribe(_ update: @escaping (MediaSessionState) -> Void) -> Int {
+        lock.lock()
+        let id = nextID
+        nextID += 1
+        subscribers[id] = update
+        lock.unlock()
         queue.async { [self] in
-            self.update = update
-            guard let remote else {
-                update(MediaSessionState())
-                return
-            }
-            remote.register(queue)
-            for name in remote.notificationNames {
-                observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
-                    self?.queue.async { self?.fetch() }
-                })
-            }
+            reconcile()
+            deliverLatest(to: id)
+        }
+        return id
+    }
+
+    func unsubscribe(_ id: Int) {
+        lock.lock()
+        subscribers[id] = nil
+        lock.unlock()
+        queue.async { [weak self] in self?.reconcile() }
+    }
+
+    /// Waits until the work queued so far has run. Tests use it.
+    func flush() {
+        queue.sync {}
+    }
+
+    // MARK: - Lifecycle (on `queue`)
+
+    /// Registers while anyone listens and unregisters once nobody does.
+    private func reconcile() {
+        lock.lock()
+        let wanted = !subscribers.isEmpty
+        lock.unlock()
+        if wanted && !active {
+            activate()
+        } else if !wanted && active {
+            deactivate()
+        }
+    }
+
+    private func activate() {
+        active = true
+        guard let framework else {
             publish()
-            fetch()
+            return
         }
+        framework.register(on: queue)
+        for name in framework.notificationNames {
+            observers.append(NotificationCenter.default.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+                self?.queue.async { self?.fetch() }
+            })
+        }
+        publish()
+        fetch()
     }
 
-    func stop() {
-        let work = { [self] in
-            update = nil
-            for observer in observers { NotificationCenter.default.removeObserver(observer) }
-            observers.removeAll()
-            timer?.cancel()
-            timer = nil
-            remote?.unregister()
-        }
-        if DispatchQueue.getSpecific(key: Self.queueKey) != nil { work() } else { queue.sync(execute: work) }
+    private func deactivate() {
+        active = false
+        fetchGeneration += 1
+        for observer in observers { NotificationCenter.default.removeObserver(observer) }
+        observers.removeAll()
+        timer?.cancel()
+        timer = nil
+        framework?.unregister()
+        info = [:]
+        isPlaying = false
+        artwork = nil
+        lock.lock()
+        latest = nil
+        lock.unlock()
     }
 
-    private static let queueKey = DispatchSpecificKey<Void>()
+    private func deliverLatest(to id: Int) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let latest, let update = subscribers[id] else { return }
+        update(latest)
+    }
 
     // MARK: - Fetching (on `queue`)
 
     private func fetch() {
-        guard let remote, update != nil else { return }
+        guard active, let framework else { return }
         fetchGeneration += 1
         let generation = fetchGeneration
-        remote.getNowPlayingInfo(queue) { [weak self] dictionary in
+        framework.nowPlayingInfo(on: queue) { [weak self] info in
             guard let self, generation == self.fetchGeneration else { return }
-            self.info = (dictionary as? [String: Any]) ?? [:]
-            remote.getIsPlaying(self.queue) { [weak self] playing in
+            self.info = info
+            framework.isPlaying(on: self.queue) { [weak self] playing in
                 guard let self, generation == self.fetchGeneration else { return }
                 self.isPlaying = playing
                 self.publish()
@@ -87,12 +142,14 @@ final class MacMediaSessionSource: MediaSessionSource {
     }
 
     private func publish() {
-        guard let update else { return }
         let colors = artworkColors()
-        let state = Self.state(from: info, isPlaying: isPlaying, enabled: remote != nil, now: now(),
+        let state = Self.state(from: info, isPlaying: isPlaying, enabled: framework != nil, now: now(),
                                artwork: colors.map { ($0.key, $0.colors) })
-        update(state)
-        scheduleTimeline(running: state.playback == .playing && state.timeline.duration > 0)
+        lock.lock()
+        latest = state
+        for update in subscribers.values { update(state) }
+        lock.unlock()
+        scheduleTimeline(running: active && state.playback == .playing && state.timeline.duration > 0)
     }
 
     /// Decodes the artwork once per image.

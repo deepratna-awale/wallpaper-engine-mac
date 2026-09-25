@@ -1,8 +1,9 @@
 import Foundation
 
 /// MediaRemote's functions, resolved at runtime. Nil from `load()` when the framework or any
-/// symbol is missing (logged once, `.info`).
-struct MediaRemote {
+/// symbol is missing (logged once, `.info`). Registration is process-wide: keep one
+/// `MacMediaSessionSource` per process.
+struct MediaRemote: NowPlayingFramework {
     typealias Register = @convention(c) (DispatchQueue) -> Void
     typealias Unregister = @convention(c) () -> Void
     typealias GetNowPlayingInfo = @convention(c) (DispatchQueue, @escaping @convention(block) (NSDictionary?) -> Void) -> Void
@@ -30,11 +31,27 @@ struct MediaRemote {
         "kMRMediaRemoteNowPlayingApplicationDidChangeNotification",
     ]
 
-    let register: Register
-    let unregister: Unregister
-    let getNowPlayingInfo: GetNowPlayingInfo
-    let getIsPlaying: GetIsPlaying
+    private let registerFunction: Register
+    private let unregisterFunction: Unregister
+    private let getNowPlayingInfo: GetNowPlayingInfo
+    private let getIsPlaying: GetIsPlaying
     let notificationNames: [Notification.Name]
+
+    func register(on queue: DispatchQueue) {
+        registerFunction(queue)
+    }
+
+    func unregister() {
+        unregisterFunction()
+    }
+
+    func nowPlayingInfo(on queue: DispatchQueue, _ handler: @escaping ([String: Any]) -> Void) {
+        getNowPlayingInfo(queue) { dictionary in handler((dictionary as? [String: Any]) ?? [:]) }
+    }
+
+    func isPlaying(on queue: DispatchQueue, _ handler: @escaping (Bool) -> Void) {
+        getIsPlaying(queue) { playing in handler(playing) }
+    }
 
     static func load() -> MediaRemote? {
         guard let handle = dlopen(path, RTLD_LAZY) else {
@@ -58,7 +75,7 @@ struct MediaRemote {
             let value = pointer.assumingMemoryBound(to: CFString?.self).pointee
             return Notification.Name(value.map { $0 as String } ?? name)
         }
-        return MediaRemote(register: register, unregister: unregister, getNowPlayingInfo: getInfo,
+        return MediaRemote(registerFunction: register, unregisterFunction: unregister, getNowPlayingInfo: getInfo,
                            getIsPlaying: getIsPlaying, notificationNames: names)
     }
 }
