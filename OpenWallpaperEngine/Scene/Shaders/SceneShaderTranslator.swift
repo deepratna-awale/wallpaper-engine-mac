@@ -274,12 +274,16 @@ enum SceneShaderTranslator {
         // `shaders/` holds the shared runtime shaders (fur, puppet warp, volumetrics) and
         // `zcompat/` per-wallpaper compatibility variants, both of which effects alone miss.
         let searchRoots = ["effects", "shaders", "zcompat"].map { assetsDirectory.appending(path: $0) }
+        let resolvedAssetsPath = assetsDirectory.resolvingSymlinksInPath().path
         for root in searchRoots {
             guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { continue }
             for case let url as URL in enumerator {
                 let extensionName = url.pathExtension.lowercased()
                 guard extensionName == "frag" || extensionName == "vert" else { continue }
-                let relativePath = url.path.replacingOccurrences(of: assetsDirectory.path + "/", with: "")
+                // The enumerator reports resolved paths (/var -> /private/var), so compare against
+                // the resolved root; otherwise the whole absolute path leaks into the cache name.
+                let relativePath = url.resolvingSymlinksInPath().path
+                    .replacingOccurrences(of: resolvedAssetsPath + "/", with: "")
                 guard !isEditorOnlyShader(relativePath) else { continue }
                 guard let source = try? Data(contentsOf: url) else { continue }
                 let outputName = relativePath.replacingOccurrences(of: "/", with: "_") + ".metal"
