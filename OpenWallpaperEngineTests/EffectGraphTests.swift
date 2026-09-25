@@ -107,6 +107,20 @@ final class EffectGraphTests: XCTestCase {
         XCTAssertGreaterThan(difference(result.input, result.output), 1)
     }
 
+    func testReleaseLayerFreesItsStateAndTargetsAreReused() throws {
+        let json = #"{"file":"effects/tint/effect.json","passes":[{"constantshadervalues":{"color":"1 0 0","alpha":1}}]}"#
+        _ = try run(json)
+        XCTAssertEqual(renderer.layerStateCount, 1)
+        let allocated = renderer.targetsAllocated
+        renderer.releaseLayer("unknown")
+        XCTAssertEqual(renderer.layerStateCount, 1, "unknown ids are ignored")
+        renderer.releaseLayer("test")
+        XCTAssertEqual(renderer.layerStateCount, 0)
+        // The same chain on a new layer takes the released targets instead of allocating.
+        _ = try run(json)
+        XCTAssertEqual(renderer.targetsAllocated, allocated)
+    }
+
     func testFourPassBlurWithQuarterBuffersSoftensEdges() throws {
         let result = try run(#"{"file":"effects/blur/effect.json","passes":[{},{},{},{}]}"#)
         XCTAssertGreaterThan(difference(result.input, result.output), 0.5)

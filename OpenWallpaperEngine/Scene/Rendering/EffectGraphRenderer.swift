@@ -121,6 +121,19 @@ final class EffectGraphRenderer {
         spareOrder.removeAll()
     }
 
+    /// Frees one layer's state (e.g. a removed script clone). Its targets go to the spare list,
+    /// which is safe while earlier command buffers still read them: later passes on the same
+    /// queue are ordered after those reads. Pipelines are shared by variant, not owned by a
+    /// layer, so a compile still in flight for this layer's chain just lands in the cache.
+    /// Call on the render thread, like `apply`.
+    func releaseLayer(_ stateId: String) {
+        guard let state = layers.removeValue(forKey: stateId) else { return }
+        recycleTargets(state)
+    }
+
+    /// Layers holding state, for tests and diagnostics.
+    var layerStateCount: Int { layers.count }
+
     struct Context {
         let frame: BuiltinFrameContext
         let values: SceneValueContext
