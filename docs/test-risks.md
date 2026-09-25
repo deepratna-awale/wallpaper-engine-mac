@@ -668,3 +668,285 @@ Line numbers are at `61a34d7`. `GeometryShaderEmulationTests` (9) and `ImageMate
 6. **REFRACT particles (13 library materials) stay on the built-in draw, as intended and logged.** They can't be recalibrated until snapshot support lands. When it does, re-check the I22 conventions: since `9d8c262`, `common_particles.h` no longer flips `v_ScreenCoord.y`, and the `#ifndef HLSL` offset flip in `genericparticle.frag` is taken.
 
 **Status of F1–F6 (particles, H).** F1 fixed by `0591466` (`testRandomSpriteFramesShowOneFrameEvenWithFrameBlending`). F2 fixed by `0591466`, following linux-wallpaperengine and wallpaper-scene-renderer (size/2); a WE capture is still Open. F3 fixed by `0591466` (`.tex` flags pick the sampler: `testClampUVsKeepsTheOppositeEdgeOut`, `testBuilderReadsTheTextureFlags`). F4 fixed by `329a12d` (the three pixel tests above). F5 measured by `ParticleMaterialPerformanceTests.testSubdividedRopeTrailCost`: 2 000 rope-trail segments on an M4 take 2.9 / 1.9 / 3.8 ms GPU at S = 0 / 4 / 8. F6 fixed by `a0d6c15` (scene snapshot per refracting system) and `671456d` (the built-in draw's faded look-alike no longer dims them).
+
+---
+
+# SceneScript
+
+Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2 landed). Adversarial list for the rewrite in [`scenescript-plan.md`](scenescript-plan.md); owners are its work packages. Paths are relative to `OpenWallpaperEngine/`. "Corpus" is `/Volumes/980Pro/dd-scenescript/corpus` (281 scripts, 508 sites); a 12-hex name like `08861b7e67b4` is `corpus/scripts/<name>.js`. §1.9 P*n* is the plan's evidence table.
+
+| # | Sev | Owner | Risk |
+|---|-----|-------|------|
+| S1 | Critical | WP3 | Tokenizer: regex vs division, comments and strings that contain `export`/`import`, template literals |
+| S2 | High | WP3 | Export getters pick up non-exported functions and globals named like callbacks |
+| S3 | Medium | WP3 | Sloppy-mode wrapper: implicit globals and `this`, unlike WE's always-strict modules |
+| S4 | High | WP3, WP2 | Line and column drift in error reports |
+| S5 | Medium | WP3, WP9 | Compile failures and V8-vs-JSC language gaps (macOS 13 JSC) |
+| S6 | Critical | WP8, WP11 | Return-value coercion: NaN/Infinity reach Swift `Int(...)`, broadcast, text |
+| S7 | High | WP8 | Accumulators and aliasing of `value` between calls |
+| S8 | High | WP4, WP8 | Load order: `scriptproperties` → `init` → `applyUserProperties`; user-bound script properties |
+| S9 | High | WP4 | Timers: cancel after fire, timers added while timers run, clock source, NaN delays |
+| S10 | High | WP2, WP4, WP6, WP11 | Teardown: timers, `destroy()`, storage flush, no extension teardown hook |
+| S11 | High | WP2, WP7, WP11 | Reentrancy: scripts creating or destroying layers and scripts inside callbacks |
+| S12 | High | WP7, WP11 | `createLayer` from assets that must be loaded, or are missing |
+| S13 | Medium | WP7, WP11 | `sortLayer` and command timing relative to updates and the draw |
+| S14 | High | WP7, WP6 | Vector aliasing in setters, getters and event objects |
+| S15 | Medium | WP7, WP8 | Vec math interop, degrees↔radians and Float32 round trips |
+| S16 | High | WP5 | Audio buffers: sharing between scripts, smoothing advanced per renderer, races with capture |
+| S17 | Critical | WP2, WP5 | A script detaches a shared typed array; JSC frees Swift's memory (use after free) |
+| S18 | High | WP6 | MediaRemote unavailable or slow; artwork palette on the render thread |
+| S19 | High | WP2, WP11 | Watchdog runs on the main thread; one hung script freezes the app and halts everything |
+| S20 | Medium | WP2, WP6, WP10 | Inbox overflow drops state-changing events |
+| S21 | Medium | WP4 | `localStorage` limits, corruption, write amplification, display ids |
+| S22 | High | WP11, all | Two displays must share nothing |
+| S23 | High | all | Swift↔JS retain cycles leak a whole VM per wallpaper switch |
+| S24 | Medium | WP9, all | Per-frame allocations, GC pauses, the < 0.5 ms target, replay determinism |
+| S25 | High | WP7, WP8 | Scripts on effects and materials (`thisObject`) |
+| S26 | Medium | WP8, WP10, WP11 | Scripts on hidden layers and effects |
+| S27 | Medium | WP10 | Cursor hit testing: spaces, parallax, Retina, multi-display, click pairing |
+| S28 | Medium | WP2, WP7 | Untrusted scripts reach `__rt` and the shared buffers |
+
+---
+
+## S1. Tokenizer edge cases (Critical, WP3)
+**Scenario.** The transformer finds top-level `import`/`export` with a tokenizer (plan §4.2). The corpus has everything that trips a naive one:
+- 24 scripts with commented-out exports: `// export function update(value){` (about 15 scripts), block comments `/*export function init() {` (`01d5071b6f02` and others). If a comment is not skipped, a dead `update` becomes live, or `export ` is stripped from the middle of a comment and breaks nothing visibly but shifts the next token.
+- `import` inside a comment (`01aa0f2822e2:3`, `// import * as WEVector from 'WEVector';`). Blanking that line is harmless; treating it as an import and registering a dependency is not.
+- Regex literals after `(`: `string.split(/\s*,\s*/)` (`1b3a92cc7a8f:83`, `6f913f89fcc9`, `867af3817c70`). The classic trap: `/` after `)` or an identifier is division, after `(`, `,`, `=`, `return`, `typeof` it starts a regex. A mis-classified `/` swallows the rest of the line as a regex and can hide a real `export` or unbalance braces so "top level" is wrong.
+- Template literals with `${…}` (`159224b59e2a:10`, `f86e0df8a16e:237`) and multi-line Japanese templates containing `\n` (`f902ebf8404a:29-33`). A template that contains `}` inside `${ {a:1} }` breaks depth counting.
+- 32 scripts contain CJK text and full-width punctuation `（）` in comments and strings; none have astral characters, BOM, CRLF or U+2028 today, but Workshop scripts edited on Windows commonly have CRLF.
+- 147 scripts use `export let/var/const`; none use `export {…}`, `export default`, classes or generators.
+**Test.**
+- Corpus: for every script, the export set the compiler reports equals `per-script.json`'s exports, and the transformed source has the same line count.
+- Synthetic: `a = b / c / d` and `x = y /2/ z` stay division; `return /x/.test(s)`, `(/a/)`, `[/a/]`, `!/a/` are regexes; `}` then `/` after a block vs after an object literal; `` `${ {a:1}.a }` ``; `'export function update'` in a string; `obj.export = 1`, `{ import: 1 }`, `x.import`; `export` followed by a newline and then `function` (still an export); `export let a = 1, b = 2` (two exports); `export let {a} = o` (reject or support, but decide).
+- A CRLF copy and a CR-only copy of every corpus script compile to the same exports and line numbers.
+
+## S2. Export getters resolve non-exports (High, WP3)
+**Scenario.** The contract says exports are "getters for every name in `__rt.CALLBACKS` plus `scriptProperties`" (`Modules/SceneScriptModuleCompiling.swift:10-11`, plan §4.2 `get update(){ return typeof update==='function'?update:undefined }`). If the compiler emits such a getter for a name the script did not export, it resolves the identifier through the module scope and then the global scope:
+- A script with a private helper `function init(){…}` or `function destroy(){…}` that it never exports gets it called by the engine. WE calls only exports.
+- A name with no binding at all resolves to a global of that name, so any extension that defines a global `update`, `destroy` or `init` (or a sloppy script that leaked one, S3) is called as every other script's callback.
+**Test.** A script with non-exported `function update(){ throw new Error('called') }` and `function destroy(){…}` → never called, no error. A global `globalThis.update = () => 7` defined before load → a script without `update` is not affected. Only names in the source's own export list get getters.
+
+## S3. Sloppy-mode wrapper (Medium, WP3)
+**Scenario.** ES modules are always strict; 9 corpus scripts lack `'use strict'` (`288db579f057`, `7d3bc214624c`, `a1b1d7b1a839`, `b960dd5aa8d4`, …). If the factory function is not strict:
+- `counter = 0` without a declaration creates a **global** shared by every script in the scene (WE throws a ReferenceError at that line). Two scripts using the same undeclared name then step on each other, and the difference hides author bugs WE would surface.
+- `this` at top level is `globalThis` instead of `undefined`; `arguments.callee`, `with`, octal literals and duplicate parameters are accepted.
+**Test.** A script without `'use strict'` doing `x = 1` at global scope → ReferenceError on that line, instance disabled; `typeof this` at top level is `'undefined'`; two non-strict scripts with the same top-level `let` both run.
+
+## S4. Line and column drift (High, WP3, WP2)
+**Scenario.**
+- The header is joined onto line 1 (plan §4.2), so errors on line 1 report a column shifted by the header's length.
+- Blanked import lines must keep their newlines, including an import that spans lines.
+- JS counts `\r\n`, lone `\r`, U+2028 and U+2029 as line terminators; a Swift tokenizer that counts only `\n` drifts after the first CR-only or U+2028 line.
+- **Errors thrown by runtime or extension helpers carry the helper's line, not the script's.** Confirmed for WP2, see Findings SF1.
+**Test.** Fixtures that throw on line 1 at column 5, on the line after a blanked two-line import, after a CR-only line and after a U+2028 inside a string, each reporting the original line (and column on line 1). `engine.registerAudioBuffers(16)` inside `update` on line 3 reports line 3.
+
+## S5. Compile failures and language gaps (Medium, WP3, WP9)
+**Scenario.**
+- `8bb9b9a54120` (string broken across lines) must disable only that site, keep the authored value and log once with its line.
+- The deployment target is macOS 13 (`OpenWallpaperEngine.xcodeproj`, `MACOSX_DEPLOYMENT_TARGET = 13.0`). WE runs V8, which has builtins that macOS 13's JSC lacks (`Object.groupBy`, `Array.prototype.toSorted`/`toReversed`/`with`, regex `v` flag, `Promise.withResolvers`, `ArrayBuffer.prototype.transfer`). A Workshop script that uses one works in WE and on macOS 15 but throws a TypeError on macOS 13 every frame. The corpus uses none, but CI and developers run the newest macOS, so no test would notice.
+- HTML-like comments (`<!--`) and hashbangs are accepted by our classic-script wrapper but rejected by V8 modules (harmless leniency; note it).
+**Test.** The WP9 corpus replay also runs on the oldest supported macOS once before a release; a synthetic script that calls `[].toSorted()` in `update` logs one error naming the script and line, and other scripts keep running.
+
+## S6. Return-value coercion (Critical, WP8, WP11)
+**Scenario.** P3: a number returned for a vector is broadcast (today it becomes `(n, 0, 0)`), a failed type check leaves the field unchanged, and **NaN passes the number check and is written**. What reaches Swift matters more than what reaches JS:
+- `08861b7e67b4` with its `barAmount` slider at 100 reads `audioBuffer.average[64]` (past the 64-entry array) → `undefined * x` → NaN → `scale.y = NaN` on the last bar. `Infinity` comes from `1000 / (now - last)` when two frames share a millisecond (`155fe61a17a0` computes `fps` that way).
+- Swift's `Int(Float.nan)` and `Int(Float.infinity)` **trap**. Any consumer that converts a scripted number to an integer (particle `rate`/`count` → emitted count, `maxrows`, `pointsize` → font size, `limitrows`, a texture-animation frame, an index) crashes the app. A NaN in a world matrix makes the layer vanish, and a NaN in `alpha` poisons blending.
+- `1e39` is finite in JS but `+inf` after the Float32 table write.
+- Text: `update` returning a number, `null`, `undefined`, an object or a Vec3. The text must never render `"undefined"`; what WE does with a number (convert or skip) must be decided from P3, not guessed per call site.
+**Test.** A fuzz fixture per field type (number, bool, string, Vec2, Vec3, colour, text, `instanceoverride.*`, `general.*`) returning each of `NaN`, `±Infinity`, `-0`, `1e39`, `"1 2 3"`, `"abc"`, `null`, `{}`, `[]`, `true`, a Vec2 for a Vec3 field, then rendering 10 frames through the renderer: no trap, no NaN in any GPU uniform the renderer computes from the table except where P3 says WE writes it, and a clamp or skip at every `Int(...)` conversion.
+
+## S7. Accumulators and aliasing of `value` (High, WP8)
+**Scenario.** P2: `update(value)` receives the last applied value, so `value += frametime` accumulates.
+- If WP8 hands the script the cached value object itself, a script that mutates it and forgets to `return` (`value.x += 1;`) moves the property in ours and not in WE, where `value` is a fresh copy.
+- If `rt.apply` stores the returned object as is (`Resources/SceneScript/runtime.js:124-129` stores whatever `coerce` returns), a script that returns a module-level `Vec3` and keeps mutating it from a timer or cursor callback changes `record.value` between frames without any return.
+- On an animated property (P2), the value must be this frame's animated value, so an accumulator on an animated property does not run away.
+**Test.** `update(v){ v.x += 1 }` (no return) → unchanged after 10 frames. `const k = new Vec3(); update(){ k.x += 1; return k }` plus a timer that sets `k.x = 100` → the field shows only what `update` returned. `update(v){ return v + 1 }` on alpha → 0, 1, 2, … exactly. An accumulator on an animated field follows the animation plus one frame's increment.
+
+## S8. Load order and script properties (High, WP4, WP8)
+**Scenario.**
+- `08861b7e67b4` reads `scriptProperties.barAmount` in `init` to decide how many bars to create; if `scriptproperties` are injected after `init` (or the user-bound `{user, value}` entries, 38 in the corpus, are unresolved at load), the wallpaper makes 32 bars instead of the user's count and never corrects it (init runs once).
+- `105f9d26fe76` relies on `applyUserProperties` running after every `init` (P8).
+- On a property change, the user-bound script properties must be re-injected **before** the same frame's `applyUserProperties(changed)` broadcast, or scripts see the old value for a frame (or forever, if they latch).
+- `load()` is re-callable for scripts added later; runtime-added scripts then receive `applyUserProperties(all)`, which P8's best guess says WE never sends. See Findings SF5.
+- `engine.userProperties` colours must be `Vec3` through `_Internal.convertUserProperties`, the same object the first `applyUserProperties` gets.
+**Test.** A fixture whose `init` creates `scriptProperties.n` layers with a user-bound `n` → the user's value; changing the user property → `applyUserProperties({n})` sees the new `scriptProperties.n`. The call log of a three-script scene matches P8 exactly: bodies, injection, `init`+media per script, then all `applyUserProperties`, then all `applyGeneralSettings`.
+
+## S9. Timers (High, WP4)
+**Scenario.** Corpus pattern (`23ea5c1b7601`, `1553916bf67e`): `lastHideEvent = engine.setTimeout(() => { thisObject.visible = false }, 1000)`, and on the next media event `lastHideEvent()` to cancel.
+- Cancelling a timeout that **already fired** must be a no-op. With numeric ids reused from a free list, it cancels someone else's timer.
+- A timer created inside a timer callback must not fire in the same pass (P1: per script over a snapshot); an interval whose period is shorter than the frame fires once per frame (reset, not catch-up); `setTimeout(cb, 0)` fires next frame.
+- `ms` of `NaN`, negative, `undefined`, a string; `cb` not a function (a string of code must not be `eval`ed).
+- Clock: timers must run on scene time, so pausing the wallpaper (`playRate 0`), sleep/wake and speed changes do not fire a burst of intervals on resume; `engine.runtime` and the timer clock must agree.
+- A timer whose script was removed (`destroyLayer`, reconfigure) must never fire into a destroyed object.
+- Global-scope `setTimeout` throws WE's message; a timer callback that throws is logged but not disabled.
+**Test.** The `lastHideEvent` pattern with a cancel after the fire, then a second timer created: the second still fires. A 1 ms interval over 10 frames of 16 ms → 10 calls. Pause for 60 s and resume → no burst. Remove a script with a pending timeout → nothing fires, no error.
+
+## S10. Teardown (High, WP2, WP4, WP6, WP11)
+**Scenario.**
+- `destroy()` may write `localStorage`, start a timer, stop a sound or push commands. `SceneScriptRuntime.tearDown()` runs `__rt.teardown` and never drains the command ring or tells extensions (Findings SF4), so storage written in `destroy()` is lost if WP4 batches writes, WP4 cannot clear timers, WP6 cannot unsubscribe from the media source, and WP5 cannot release its capture client.
+- `deinit` calls `tearDown()`, so script `destroy()` callbacks run on whatever thread drops the last reference to the runtime (a view model released on a background task), breaking render-thread confinement.
+- A watchdog stop inside `destroy()` during teardown must not block the next wallpaper's load.
+**Test.** A script whose `destroy()` does `localStorage.set('k', 1)`: after teardown and a new runtime, `get('k')` is 1. A pending interval at teardown never fires afterwards (poll 2 s). A fake media source sees one unsubscribe per runtime. Release the last reference on a background queue → `destroy()` still runs on the render thread, or not at all, by design.
+
+## S11. Reentrancy (High, WP2, WP7, WP11)
+**Scenario.** Scripts change structure from inside callbacks:
+- `destroyLayer(x)` in `update` or in a cursor callback of `x` itself; then writes to `thisLayer` after its own destroy.
+- `destroy()` of one script removes another script: in WP2's `destroyPending` the second one is dropped without its `destroy()` and stays in `byId` (confirmed, Findings SF2).
+- `createLayer` with a scripted config inside `update` adds records while `rt.frame` iterates `rt.records` (the loop reads `records.length` live, so a new record is visited in the same frame; it is skipped only because its state is `DEFINED`).
+- A command handler that calls back into JS (for example `createLayer` running the new layer's module body) pushes into the ring while `SceneScriptCommandRing.drain()` executes it; `drain` ends with `resetRing`, which drops those commands.
+- Slot reuse: a stale `ILayer` kept after `destroyLayer` writes into a slot that now belongs to a new layer (ABA).
+**Test.** Create and destroy 1000 layers over 1000 frames with memory flat (the WP11 clone stress test). A stale handle write after its slot is reused changes nothing. `destroy()` that removes another script → both `destroy()`s run and both ids are gone. A handler that pushes a command during `drain` → the command runs this frame or the next, never lost.
+
+## S12. `createLayer` from assets (High, WP7, WP11)
+**Scenario.**
+- `08861b7e67b4` and `4919ac5f12ef` call `thisScene.createLayer('models/bar.json')` up to 99 times in `init`, and immediately write `alignment`, `color`, `alpha`, `parallaxDepth` and call `sortLayer(bar, thisIndex)`. The returned object must exist synchronously with a slot, and every write before the native layer materialises must land on it.
+- `f6acb397ce16` creates 63 bars from `models/workshop/2079954552/bar.json`, another Workshop item's asset. When that dependency is missing, `createLayer` returning `null` makes `newBar.parallaxDepth` throw in `init`, which disables `init` (P4) with half the bars made. What WE returns for a missing asset must be settled, and the loader must not crash on it.
+- `585203d7f809` clones through `createLayer(thisScene.getInitialLayerConfig(origbar))` inside a `try` and treats any throw as "no bars".
+- Loading textures and models synchronously inside the JS entry stalls the frame (and counts toward the watchdog, S19). Loading them asynchronously means the first frames draw nothing for those layers.
+- The object table has a fixed capacity (`Objects/SceneScriptObjectTable.swift:39-45`; "a larger table is a new buffer"). Growing it replaces the `Float32Array`; any JS layer object that captured the old array keeps writing into a dead buffer.
+**Test.** 99 bars in `init` → 99 slots with independent origins and the draw order WE gives repeated `sortLayer(bar, i)` at the same index. A missing asset path → the documented result, one log line, no crash. Grow past capacity mid-scene → earlier layer objects still move their layers.
+
+## S13. `sortLayer` and command timing (Medium, WP7, WP11)
+**Scenario.**
+- `sortLayer` from `update` must reorder before this frame's draw (plan: "in the same frame"); `getLayerIndex` right after `sortLayer` in the same callback must agree with WE (immediate or deferred; unknown, decide).
+- Indices count what: drawables only, or also sound and hidden objects? `getLayerIndex(thisLayer)` followed by `sortLayer(bar, thisIndex)` gives different results for each choice.
+- Commands pushed during `load` (module bodies and `init`: `createLayer`, `sortLayer`, `play`, `setFrame`) are not drained until after the first frame's updates (Findings SF5).
+- The ring holds 4096 commands per frame; a script calling `emitParticles` or `setMaterialProperty` per bar per frame overflows it and later commands are dropped silently after one log line.
+**Test.** `sortLayer` in `update` → the rendered order changes in the same frame (render test). `getLayerIndex` after `sortLayer` matches the chosen rule. A `play()` in `init` takes effect before the first rendered frame.
+
+## S14. Vector aliasing (High, WP7, WP6)
+**Scenario.** `08861b7e67b4.update` assigns **one** `Vec3` to every bar and mutates it between assignments: `scale.y = …; bar.scale = scale;` then the next bar. `bar.color = baseColor` shares one object across all bars. `baseOrigin = thisLayer.origin` is kept across frames.
+- A setter that stores the reference (the plan keeps strings and rare fields on the JS object) makes every bar end up with the last bar's value.
+- A getter that returns the cached object lets `baseOrigin` follow the layer, and makes `thisLayer.scale.x = 2` take effect (4 corpus scripts commented that out because it doesn't in WE).
+- Event objects: `shared.accentColor = event.primaryColor` (corpus) keeps a thumbnail colour. If WP6 pools or reuses event objects to save allocations, the stored colour changes on the next event. `rt.broadcast` passes the same argument array to every script (`runtime.js:302-308`), so one script that mutates the event (or the `resizeScreen` Vec2, or the `applyUserProperties` object) changes what the next script receives.
+**Test.** The bar loop above → each bar keeps its own scale. `const o = thisLayer.origin; thisLayer.origin = new Vec3(5)` → `o` unchanged. Two scripts on `mediaThumbnailChanged`, the first does `e.primaryColor.x = 0` → decide and pin whether the second sees it (WE likely builds the event per call).
+
+## S15. Vec math interop and units (Medium, WP7, WP8)
+**Scenario.**
+- WE's quirks must survive: `new Vec4(x, y, z)` sets `w = z`, `Vec2.perpendicular()` is `(y, -x)`, `equals` uses an epsilon, `new Vec3(n)` broadcasts (`08861b7e67b4`: `new Vec3(0 + barWidth)`). Only loading `baseclasses.js` unmodified guarantees that; any shim that redefines them (the old one did) breaks it.
+- Coercion must accept WE Vec objects, plain `{x, y, z}`, and `"x y z"` strings, and read `x/y/z` through getters too.
+- Angles are degrees at the API and radians in a Float32 table: `thisLayer.angles = new Vec3(0, 0, 90)` then `thisLayer.angles.z === 90` is false after the Float32 radians round trip (89.99999…). Scripts that compare or accumulate (`angles.z += 1` for hours) drift. The same holds for origin `0.1` → `0.10000000149`.
+**Test.** Set angles 90 and read back exactly 90 (store degrees, or round-trip within 1e-4 and document it). 100 000 frames of `angles.z += 0.36` → 36 000 within 0.01. `Vec4(1, 2, 3).w === 3`.
+
+## S16. Audio buffers (High, WP5)
+**Scenario.**
+- **Smoothing advance.** `AudioSpectrumAnalyzer.advanceFrame()` moves the smoothing one step and must be called "exactly once per frame" (`Audio/AudioSpectrum.swift:90-91`). Every `SceneMetalRenderer` already calls it (`Scene/Rendering/SceneMetalRenderer.swift:449`), so two displays advance it twice per frame, and a WP5 extension that also calls it makes three: faster decay, and different values per display. WP5 must read `snapshot`, and the analyzer should advance once per display-link tick, not per renderer.
+- **Sharing between scripts.** One `SceneScriptSharedBuffer` per resolution shared by every script (plan §5 WP5) means a script that normalizes in place (`buf.average[i] *= gain`) changes every other script's input for the rest of the frame. None of the corpus scripts write into the arrays, but Workshop scripts that do exist in the wider Workshop.
+- **Races.** Filling the typed arrays from the capture thread (tempting for "live") gives torn reads mid-`update`; filling only in `willRunFrame` from `snapshot` under the analyzer's lock does not.
+- **Stereo.** `left ≠ right` needs real stereo capture; a mono source copied to both sides passes every test that only checks shape.
+- Out-of-range reads (`average[64]`) are `undefined` in WE too; they feed S6.
+- Two `registerAudioBuffers(16)` calls in one scene must both work; `registerAudioBuffers(128)` throws WE's message; a call from a callback throws.
+**Test.** Two runtimes rendering the same tone for 60 frames → identical values and the same decay as one runtime. Script A writes `average[0] = 99` and script B reads it in the same frame → B sees the captured value (per-script arrays, or copies refreshed per call). A left-only tone → `right` stays near zero.
+
+## S17. Detached shared buffers (Critical, WP2, WP5)
+**Scenario.** `SceneScriptSharedBuffer` gives JavaScriptCore ownership of Swift's allocation (`JSObjectMakeTypedArrayWithBytesNoCopy` with a deallocator that frees it) and keeps the typed array alive, assuming that keeps the memory alive (`Runtime/SceneScriptSharedBuffer.swift:7-9`, `:20`). A script that calls `audio.left.buffer.transfer()` (available in JSC from macOS 14.4) detaches the original: the new `ArrayBuffer` takes the bytes, and when it is collected JSC calls the deallocator while `pointer` is still used by Swift. Every later `willRunFrame` write is a heap write after free. Confirmed, see Findings SF3. Audio buffers are handed to scripts by design (WP5); the object table and command ring are reachable through `__rt` (S28).
+**Test.** The probe in SF3 as a unit test: transfer a shared buffer's `ArrayBuffer`, drop it, force GC, then write through `pointer` under Address Sanitizer → no report.
+
+## S18. Media sources (High, WP6)
+**Scenario.**
+- MediaRemote is restricted for third-party bundles since macOS 15.4. The adapter (`/usr/bin/perl` or a helper) can disappear in any OS update, hang, or return garbage. Failure must mean `mediaStatusChanged({enabled: false})` once, not a crash, a hang on the render thread, or a permission prompt.
+- The artwork palette (k-means or median cut) on a 1000×1000 image costs tens of ms; computed on the render thread it drops frames on every track change. It must run off-thread and post the event.
+- Timeline events arrive several times a second from some players; while the wallpaper is paused they pile up in the inbox (S20).
+- P8: each script gets the current media state right after its `init`, including scripts added later; before the first real event the state must be "no media", with WE's field names and `MediaPlaybackEvent` constants.
+- No AppleScript and no Automation prompts anywhere (the old `BrowserMediaIntegration` polled eight browsers every 2 s).
+**Test.** A fake source that fails to start, hangs for 5 s on the first query, and flips availability: the first frame is not delayed, `enabled` goes false then true, no crash. Palette time on a 4K PNG measured off the main thread. `grep -r NSAppleScript` in `Scene/Scripting` is empty.
+
+## S19. Watchdog on the main thread (High, WP2, WP11)
+**Scenario.** The renderer draws from `MTKView` with `isPaused = false` and `enableSetNeedsDisplay = false` (`Scene/Rendering/SceneMetalRenderer.swift:213-214`), i.e. on the main thread. The watchdog allows 15 s per native→JS entry (`Runtime/SceneScriptRuntime.swift:16-21`), so one `while (true) {}` in any script freezes the whole app (menu bar, settings, every other display) for 15 s. WE runs scripts in the wallpaper process, so its 15 s hang does not freeze its UI.
+- After the stop, the runtime is halted for good (P5): the wallpaper keeps rendering with frozen values and the only sign is one log line. The user needs a visible state or a reload.
+- The limit covers the whole frame (all 71 scripts of 3453730450 plus events and timers), not each outermost call like WE's; a legitimately slow load (99 `createLayer`s with synchronous asset loads, S12) shares one 15 s budget.
+- Measured on this Mac: the watchdog stops a catastrophic regex (`/^(a+)+$/` on 28 characters) but overshoots a 0.5 s limit to 1.17 s.
+**Test.** A scene with a `while(true)` in `update` of a script on display A: the main run loop stays responsive enough to open Settings (or document that it does not, and pick a shorter per-frame limit than WE's), display B keeps rendering after A's stop, one "dead lock" line names the script, and the wallpaper shows the halted state. Termination inside `load`, `frame` and `tearDown` each leave the runtime `halted` and the next wallpaper loadable.
+
+## S20. Inbox overflow (Medium, WP2, WP6, WP10)
+**Scenario.** `SceneScriptInbox.post` drops the **oldest** events past 1024 (`Runtime/SceneScriptInbox.swift:14-16`). When frames stop (`metalView.isPaused` when `playRate == 0`, `Scene/Loading/SceneWallpaperView.swift:144`; occluded windows; a sleeping display), cursor moves (WP10) and media timeline events (WP6) keep arriving. A user-property change made in the sidebar while paused is then pushed out by mouse movement, and scripts never receive that `applyUserProperties`, a permanent desync. Confirmed by reading, Findings SF4.
+**Test.** Pause, change a user property, post 2000 cursor moves, resume → the script receives the property change. Cursor moves should be coalesced (keep the latest), and state events (properties, settings, media status, playback) never dropped.
+
+## S21. `localStorage` (Medium, WP4)
+**Scenario.**
+- Cap: 100 KB per wallpaper (docs). A script that appends to a stored array every frame hits it in minutes; `set` beyond the cap must fail the way WE does (throw or return false), not grow the file or crash.
+- Write amplification: a `set` every frame must not become a file write every frame on the (external) disk; batch and flush, and flush at teardown (S10).
+- Corruption: a crash mid-write leaves a truncated file. Write atomically (temp file and rename); an unparsable file reads as empty and logs once, and must not throw on every `get`.
+- Values: `Vec3` through `_Internal.stringifyConfig`; cyclic objects and functions (`JSON.stringify` throws) must throw into the script, not crash native code; NaN becomes null.
+- Keys that are not strings throw WE's "key not a string"; calls at global scope throw.
+- Scope: `'screen'` is keyed by display id. `CGDirectDisplayID` can change after a reconnect or reboot, and then per-screen data vanishes. Two runtimes of the same wallpaper on two displays share `'global'`; if each caches the file, the last writer wins and clobbers the other's keys.
+**Test.** Two runtimes write different `'global'` keys → both survive a reload. Truncate the file → next load logs once and starts empty. `set` past 100 KB → WE's behaviour. A `Vec3` round-trips as a `Vec3`.
+
+## S22. Two displays share nothing (High, WP11, all)
+**Scenario.** Two instances of the same wallpaper must not share `shared`, module-level variables, timers, audio smoothing (S16), storage caches beyond `'global'` (S21), command handlers or statics in Swift. The old singleton `AudioReactiveScriptEngine.shared` keeps clobbering until WP11 removes it; any extension that keeps a `static var` cache (opcode handlers, compiled-module cache keyed by source, palette cache keyed by track) reintroduces the problem.
+**Test.** Two runtimes of one scene with a counter in `shared` and in a module-level `let`; run A for 10 frames and B for 3 → 10 and 3. Tear down A → B keeps running with its timers. `grep -n "static var" Scene/Scripting` reviewed per package.
+
+## S23. Swift↔JS retain cycles (High, all)
+**Scenario.** A `@convention(block)` native installed on `rt.native` that captures the runtime or the extension strongly makes JSContext → block → runtime → JSContext: the VM is never freed. `SceneScriptCommandRing.register` stores escaping handlers (`Objects/SceneScriptCommandRing.swift:62-65`); WP7's handlers will naturally capture the runtime or the renderer, making runtime → ring → handler → runtime. A `JSValue` stored in a Swift object that JS can reach retains the context strongly (use `JSManagedValue`). Every wallpaper switch then leaks one VM, its JS heap, the object table, the ring and the audio buffers.
+**Test.** Create a runtime with every extension, load a corpus scene, run 10 frames, tear down, and assert a `weak` reference to the runtime and to each extension is nil. Repeat 100 times with resident memory flat.
+
+## S24. Per-frame cost and replay determinism (Medium, WP9, all)
+**Scenario.** Target: < 0.5 ms per frame for 3453730450 (71 sites), about 1–5 µs per script.
+- Swift→JS bridging per frame: `inbox.drain().map { $0.javaScriptObject }` converts Swift dictionaries each frame (cursor moves at 120 Hz), `rt.frame` gets a bridged array, `drainErrors` uses `toArray`, ring strings use `toArray`. Each is small but all run every frame.
+- JS allocation: a `Vec3` per getter and per argument (like WE), event objects, closures. Eden GCs every few seconds with 1–3 ms pauses show up as p99 spikes, not in averages.
+- Determinism: 62 corpus scripts use `Date` and 7 use `Math.random`. A replay harness with a fake clock must also stub `Date` and seed `Math.random`, or assertion (e) on clocks is flaky and frame-time baselines vary.
+**Test.** `measure` p50 and p99 over 3600 frames of 3453730450 with a tone: p50 < 0.5 ms, p99 < 1 ms. Zero Swift→JS object creations in a frame with no events. The clock fixtures run at a fixed `Date`.
+
+## S25. Scripts on effects and materials (High, WP7, WP8)
+**Scenario.** 46 `effects[i].visible` sites (`thisObject.visible = event.hasThumbnail` 44 times) and 86 effect-constant sites. `thisObject` must be the `IEffect` or the `IMaterial` (constants by name, `thisObject.multiply`), and `thisObject.getAnimation()` must be the property's own timeline (2134765860's `multiply` with `startpaused`).
+- Effects hidden at load are not built today (plan §3.3 item 11); a media event can then never show them.
+- A material constant whose name collides with a member (`name`, `visible`, `getAnimation`) or with `Object.prototype` (`constructor`, `toString`, `__proto__`) shadows or breaks the object if members are defined per name on the object.
+- Two effects with the same name: `getEffect(name)` returns which one?
+- `setMaterialProperty` must reach every material of the effect with that constant, and nothing else.
+**Test.** An effect hidden at load, shown by a `mediaThumbnailChanged` with `hasThumbnail: true`, draws. A material with a constant named `constructor` still exposes `getAnimation`. `thisObject` for an effect-constant script is the material, not the layer.
+
+## S26. Hidden layers (Medium, WP8, WP10, WP11)
+**Scenario.** P6: `update` runs on hidden layers; `03f0db0a6dff` hides its own layer in `init`. The old code drops objects hidden at load and runs visible scripts once. Also:
+- a layer hidden by its parent: its scripts still run;
+- cursor events on a hidden (or alpha 0) Solid layer: WE's hit test presumably skips invisible objects; ours must decide the same way;
+- the renderer must skip drawing hidden layers without skipping their transform pass, or `getTransformMatrix` and hit tests read stale matrices.
+**Test.** A layer hidden in `init` whose `update` shows it after 30 frames appears on frame 31. A click on a hidden Solid layer → no cursor callback.
+
+## S27. Cursor hit testing (Medium, WP10)
+**Scenario.** Three coordinate spaces meet: AppKit points (bottom-left origin), display pixels (Retina 2×, a second display at 1×), and scene space after `.cover`/`.center` fitting, camera parallax and camera shake. A hit test in points on a 2× display misses by half; one that ignores the parallax offset misses whenever the mouse is off-centre. Also:
+- `cursorClick` requires down and up on the same object;
+- a layer destroyed while hovered must not get `cursorLeave` afterwards;
+- `openUserShortcut` only once per click;
+- clicks that land on desktop icons or other apps' windows must not reach scripts (the old code counted any click via `NSEvent.pressedMouseButtons`).
+**Test.** Rotated, scaled and parented Solid layers on a 2× and a 1× display, with parallax on: clicks at the layer's corners hit, 1 px outside miss. Down on A and up on B → no click. Moving across two overlapping Solid layers gives enter/leave pairs for the top one only.
+
+## S28. Untrusted scripts reach the runtime (Medium, WP2, WP7)
+**Scenario.** `__rt` is a non-writable global, but its members are writable and reachable from every script. A Workshop script can replace `__rt.hooks.coerce`, clear `__rt.records`, set `__rt.halted`, or push arbitrary opcodes and targets through `__rt.push` or directly into `__rt.ring.records`. The ring bounds-checks number ranges (`Objects/SceneScriptCommandRing.swift:95-96`), but each handler must also bounds-check `target` against the object table. Combined with S17, the shared buffers are the only path from script to memory corruption.
+**Test.** A script that pushes opcode 400 with target `2^31-1`, negative targets and garbage counts → no crash, one log line. Handlers get `target` already validated or validate it themselves.
+
+---
+
+## Findings (SceneScript)
+
+Line numbers are at `94a9e6e` unless a commit is named. Each probe ran against the real `runtime.js` and the system JavaScriptCore on the development Mac.
+
+### WP2: `3387d82` (per-instance runtime skeleton)
+
+**SF1. Errors thrown by runtime helpers report the helper's line as the script's. Medium (S4).**
+- `describe` takes `error.line` from the error object (`Resources/SceneScript/runtime.js:55-65`), and `drainErrors` reports it as the script's line (`Runtime/SceneScriptRuntime.swift:256-259`). JavaScriptCore sets `line` where the `Error` was **constructed**, so every error built in `runtime.js` or an extension's JS carries that file's line.
+- Probe: a script whose line 3 calls `__rt.requireGlobalScope('registerAudioBuffers')` from `update` → reported `line: 135, column: 51` (the `throw` in `runtime.js:135`). This will hit every WE-message error of WP4/WP5 (`setTimeout cannot be called from global scope.`, `Resolution must be either 16, 32 or 64.`, `key not a string`).
+- **Fix direction:** take the line and column from the first `error.stack` frame whose URL is the script's `sourceURL` (`owe://script/…`), or `-1` when there is none.
+
+**SF2. `destroy()` that removes another script loses that script's `destroy()` and leaves it in `byId`. Medium (S11).**
+- `destroyPending` walks `records` once, then filters on `pendingDestroy` (`runtime.js:343-354`). A record marked during another record's `destroy()` and positioned **before** it is filtered out of `records` without its `destroy()` and without `byId.delete`.
+- Probe: records `c`, `b`; `b.destroy()` calls `__rt.remove('c')`; after the frame `c`'s `destroy` never ran, `records` no longer has `c`, `byId.has('c')` is true (so `isEnabled('c')` stays true and a new script with id `c` throws "Duplicate script id").
+- **Fix direction:** loop until no record is pending (or collect, destroy, and repeat), and delete from `byId` in the same pass that filters.
+
+**SF3. A script can free Swift's shared memory by detaching a typed array. Critical (S17).**
+- `SceneScriptSharedBuffer` passes a deallocator that frees the allocation (`Runtime/SceneScriptSharedBuffer.swift:20`) and relies on holding the typed array to keep it alive (`:7-9`). `ArrayBuffer.prototype.transfer` exists in this JSC (`typeof … === 'function'`).
+- Probe (a Swift JSC program mirroring `SceneScriptSharedBuffer`): after `left.buffer.transfer()`, Swift's writes are visible through the new buffer; once it is dropped and GC runs, **the deallocator is called while Swift still holds `pointer`**. Every later write from `willRunFrame` or the command ring is a use after free.
+- Reachable today through `__rt.ring.header/records/args` (command ring), and after WP5 and WP7 through the audio buffers and `__rt.table.values`.
+- **Fix direction:** Swift owns the memory (no-op deallocator, freed in `deinit` after the context is gone), and `runtime.js` deletes `ArrayBuffer.prototype.transfer` and `transferToFixedLength` before any script runs; add the probe as a test.
+
+**SF4. The inbox drops the oldest events, including property changes, and teardown has no extension hook. Medium (S10, S20).**
+- `SceneScriptInbox.post` removes the oldest events past 1024 regardless of kind (`Runtime/SceneScriptInbox.swift:14-16`). Once WP10 posts cursor moves, a paused wallpaper loses the user's property changes.
+- `SceneScriptRuntimeExtension` has `install`, `willRunFrame` and `didRunFrame` only (`Runtime/SceneScriptRuntimeExtension.swift:12-25`), and `tearDown` neither drains the ring nor notifies extensions (`Runtime/SceneScriptRuntime.swift:168-177`). WP4 (storage flush, timers), WP5 and WP6 (unsubscribe) have nowhere to clean up; commands pushed in `destroy()` are never executed. `deinit` runs `tearDown` (`:124-126`), so `destroy()` callbacks run on the releasing thread.
+- **Fix direction:** coalesce cursor moves and never drop state events; add `willTearDown(_:)` (called after `__rt.teardown`, then drain the ring) to the extension protocol.
+
+**SF5. `load()` differs from P8 for scripts added later, and doesn't drain the ring. Low (S8, S13).**
+- A second `load` sends `applyUserProperties(userProperties)` to the new records (`runtime.js:258-264`). P8's best guess is that runtime-created scripts get none; if WP11 calls `load()` with the default `[:]`, they get `{}`, and a script that reads `changed.x` without `hasOwnProperty` gets `undefined`.
+- `load()` does not call `commandRing.drain()` (`Runtime/SceneScriptRuntime.swift:144-151`), so `createLayer`, `sortLayer` and `play` from module bodies and `init` run only after the first frame's updates.
+- **Fix direction:** skip `applyUserProperties` for records defined after the first load (or document the choice), and drain after `load`.
+
+Probes were small `swiftc` programs outside the repo: SF1 and SF2 evaluate the repo's `runtime.js` in a plain `JSContext` and drive `define`/`load`/`remove`/`frame`; SF3 builds a typed array exactly as `SceneScriptSharedBuffer.init` does; S19's regex timing sets `JSContextGroupSetExecutionTimeLimit` to 0.5 s as `SceneScriptWatchdog` does.
