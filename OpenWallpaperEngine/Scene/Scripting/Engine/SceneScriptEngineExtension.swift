@@ -129,8 +129,12 @@ final class SceneScriptEngineExtension: SceneScriptRuntimeExtension {
     /// `engine.timeOfDay`: the local wall clock as a fraction of 24 h, 00:00:00 → 0.
     private func timeOfDay() -> Double {
         let parts = calendar.dateComponents([.hour, .minute, .second, .nanosecond], from: now())
-        let seconds = Double((parts.hour ?? 0) * 3600 + (parts.minute ?? 0) * 60 + (parts.second ?? 0))
-            + Double(parts.nanosecond ?? 0) / 1_000_000_000
+        let hours: Int = parts.hour ?? 0
+        let minutes: Int = parts.minute ?? 0
+        let wholeSeconds: Int = parts.second ?? 0
+        let nanoseconds: Int = parts.nanosecond ?? 0
+        let clock: Int = hours * 3600 + minutes * 60 + wholeSeconds
+        let seconds: Double = Double(clock) + Double(nanoseconds) / 1_000_000_000
         return seconds / 86_400
     }
 
