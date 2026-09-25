@@ -194,6 +194,17 @@ final class ParticleSimulationParityTests: XCTestCase {
         XCTAssertEqual(gpu.count, 0)
     }
 
+    func testEmitterBurstSpeedRingAndSign() throws {
+        var system = ParticleTestSystem()
+        system.instantaneous = 300
+        system.emissionRate = 120
+        system.emitterSpeed = 50...250
+        system.minimumSpawnRatio = 0.5
+        system.emitterSign = SIMD2(0, 1)
+        system.lifetime = 3...4
+        try assertParity(system)
+    }
+
     // MARK: - Moving emitters
 
     /// The emitter moves, turns and grows every frame (an animated parent): particles in its

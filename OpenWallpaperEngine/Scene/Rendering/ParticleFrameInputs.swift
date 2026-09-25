@@ -15,6 +15,9 @@ struct ParticleFrameInputs {
     var fadeOut: Float = 1
     /// The system emits nothing and shows nothing this frame: every particle is removed.
     var clears = false
+    /// Particles emitted at once this step on top of the rate: the emitter's `instantaneous`
+    /// burst on the system's first step.
+    var burst = 0
     /// Where particles spawn: the emitter, or its cursor-locked control point.
     var spawnOrigin = SIMD2<Float>.zero
     var attractorOrigin = SIMD2<Float>.zero
@@ -69,7 +72,10 @@ struct ParticleFrameInputs {
         inputs.emissionRate = configuration.emissionRateScript.map {
             AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.emissionRate, time: time)
         } ?? configuration.emissionRate
-        if inputs.emissionRate <= 0.0001 || configuration.opacityMultiplier <= 0.0001 {
+        inputs.burst = system.frameIndex == 1 ? max(configuration.instantaneous, 0) : 0
+        // Without a rate a system only shows its burst, if it has one.
+        let idle = inputs.emissionRate <= 0.0001 && configuration.instantaneous <= 0
+        if idle || configuration.opacityMultiplier <= 0.0001 {
             inputs.clears = true
             inputs.fadeIn = system.fadeIn
             inputs.fadeOut = system.fadeOut

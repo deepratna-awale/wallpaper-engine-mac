@@ -48,7 +48,7 @@ enum ParticleGPUDrawKind: UInt32 {
 struct ParticleGPUFrame {
     /// Delta, elapsed, emission rate, drag.
     var time: SIMD4<Float>
-    /// Fade in, fade out, clears.
+    /// Fade in, fade out, clears, burst.
     var fade: SIMD4<Float>
     /// Spawn origin xy, attractor origin xy.
     var points: SIMD4<Float>
@@ -80,7 +80,7 @@ struct ParticleGPUFrame {
     init(_ inputs: ParticleFrameInputs, sceneSize: SIMD2<Float>, targetSize: SIMD2<Float>, kind: ParticleGPUDrawKind,
          materialVertexCount: Int, renderVarOffset: Int?) {
         time = SIMD4(inputs.deltaTime, inputs.elapsedTime, inputs.emissionRate, inputs.drag)
-        fade = SIMD4(inputs.fadeIn, inputs.fadeOut, inputs.clears ? 1 : 0, 0)
+        fade = SIMD4(inputs.fadeIn, inputs.fadeOut, inputs.clears ? 1 : 0, Float(inputs.burst))
         points = SIMD4(inputs.spawnOrigin.x, inputs.spawnOrigin.y, inputs.attractorOrigin.x, inputs.attractorOrigin.y)
         let start = inputs.sequenceStart ?? .zero, end = inputs.sequenceEnd ?? .zero
         sequence = SIMD4(start.x, start.y, end.x, end.y)
@@ -127,6 +127,10 @@ struct ParticleGPUParameters {
     var alphaRotation = SIMD4<Float>.zero
     var angularSpawn = SIMD4<Float>.zero
     var velocityRange = SIMD4<Float>.zero
+    /// Emitter speed min, max, sign xy.
+    var emitterShape = SIMD4<Float>.zero
+    /// Minimum spawn radius ratio.
+    var emitterRing = SIMD4<Float>.zero
     var colorMinimum = SIMD4<Float>.zero
     var colorMaximum = SIMD4<Float>.zero
     var offsetRange = SIMD4<Float>.zero
@@ -169,6 +173,8 @@ struct ParticleGPUParameters {
         alphaRotation = SIMD4(c.alpha.lowerBound, c.alpha.upperBound, c.minimumRotation, c.maximumRotation)
         angularSpawn = SIMD4(c.minimumAngularVelocity, c.maximumAngularVelocity, c.spawnExtent.x, c.spawnExtent.y)
         velocityRange = SIMD4(c.minimumVelocity.x, c.minimumVelocity.y, c.maximumVelocity.x, c.maximumVelocity.y)
+        emitterShape = SIMD4(c.emitterSpeed.lowerBound, c.emitterSpeed.upperBound, c.emitterSign.x, c.emitterSign.y)
+        emitterRing = SIMD4(min(max(c.minimumSpawnRatio, 0), 1), 0, 0, 0)
         colorMinimum = c.minimumColor
         colorMaximum = c.maximumColor
         offsetRange = SIMD4(c.positionOffsetMinimum.x, c.positionOffsetMinimum.y,

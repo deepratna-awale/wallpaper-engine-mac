@@ -29,6 +29,8 @@ struct ParticleParameters {
     float4 alphaRotation;    // alpha min, max, rotation min, max
     float4 angularSpawn;     // angular velocity min, max, spawn extent xy
     float4 velocityRange;    // minimum xy, maximum xy
+    float4 emitterShape;     // emitter speed min, max, sign xy
+    float4 emitterRing;      // minimum spawn radius ratio
     float4 colorMinimum;
     float4 colorMaximum;
     float4 offsetRange;      // minimum xy, maximum xy
@@ -59,7 +61,7 @@ struct ParticleParameters {
 
 struct ParticleFrame {
     float4 time;     // delta, elapsed, emission rate, drag
-    float4 fade;     // fade in, fade out, clears
+    float4 fade;     // fade in, fade out, clears, burst
     float4 points;   // spawn origin xy, attractor origin xy
     float4 sequence; // start xy, end xy
     float4 anchor;   // remap anchor xy, has sequence
@@ -140,6 +142,7 @@ constant uint sLifetime = 15;
 constant uint sRotation = 16;
 constant uint sAngularVelocity = 17;
 constant uint sSpriteFrame = 18;
+constant uint sEmitterSpeed = 19;
 
 static uint pcg(uint value) {
     const uint state = value * 747796405u + 2891336453u;
@@ -277,12 +280,14 @@ kernel void particleBegin(device uint *control [[buffer(0)]],
     } else {
         float carry = *remainder + max(f.time.z, 0.0f) * f.time.x;
         const int maximum = int(p.counts.x);
+        const int available = max(maximum - int(count), 0);
+        const int burst = min(int(f.fade.w), available);
         // Clamped before the conversion, which is undefined past int's range; the maximum caps it anyway.
-        const int taken = max(0, min(int(min(carry, 2147483520.0f)), maximum - int(count)));
+        const int taken = max(0, min(int(min(carry, 2147483520.0f)), available - burst));
         carry -= float(taken);
-        if (int(count) + taken >= maximum) carry = fmod(carry, 1.0f);
+        if (int(count) + burst + taken >= maximum) carry = fmod(carry, 1.0f);
         *remainder = carry;
-        emitted = uint(taken);
+        emitted = uint(burst + taken);
     }
     const uint total = count + emitted;
     control[cCount] = count;
@@ -300,7 +305,8 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     const uint seed = p.counts.z;
     const uint flags = p.counts.y;
     const float angle = randomValue(0, 2 * M_PI_F, seed, serial, sSpawnAngle);
-    const float radius = sqrt(randomValue(0, 1, seed, serial, sSpawnRadius));
+    const float inner = p.emitterRing.x;
+    const float radius = inner + (1 - inner) * sqrt(randomValue(0, 1, seed, serial, sSpawnRadius));
     const float2 extent = abs(p.angularSpawn.zw * f.gravityExtent.zw);
     float2 spawnOffset;
     if (flags & kBoxEmitter) {
@@ -308,6 +314,8 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
                              randomValue(-extent.y, extent.y, seed, serial, sBoxY));
     } else {
         spawnOffset = float2(cos(angle) * extent.x, sin(angle) * extent.y) * radius;
+        if (p.emitterShape.z != 0) spawnOffset.x = abs(spawnOffset.x) * (p.emitterShape.z > 0 ? 1 : -1);
+        if (p.emitterShape.w != 0) spawnOffset.y = abs(spawnOffset.y) * (p.emitterShape.w > 0 ? 1 : -1);
     }
     const float2x2 offsetLinear = float2x2(f.offsetLinear.xy, f.offsetLinear.zw);
     const float2 offsetMinimum = offsetLinear * p.offsetRange.xy, offsetMaximum = offsetLinear * p.offsetRange.zw;
@@ -322,6 +330,8 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     float2 velocity = float2(randomValue(p.velocityRange.x, p.velocityRange.z, seed, serial, sVelocityX),
                              randomValue(p.velocityRange.y, p.velocityRange.w, seed, serial, sVelocityY));
     velocity = float2x2(f.velocityRotation.xy, f.velocityRotation.zw) * velocity;
+    const float2 outward = length(spawnOffset) > 1e-6f ? normalize(spawnOffset) : float2(0);
+    velocity += outward * randomValue(p.emitterShape.x, p.emitterShape.y, seed, serial, sEmitterSpeed);
     float sequence = 0;
     if ((flags & kSequenceSpan) && f.anchor.z > 0.5) {
         const uint spanCount = uint(p.sequence.x);

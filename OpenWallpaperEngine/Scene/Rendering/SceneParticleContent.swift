@@ -12,7 +12,7 @@ struct SceneMetalParticleSystem {
     let emissionRate: Float
     let emissionRateScript: String?
     let maximumParticleCount: Int
-    /// The spawn shape's half extent (`distancemax`) in emitter space.
+    /// The spawn shape's half extent (`distancemax`, times `directions`) in emitter space.
     let spawnExtent: SIMD2<Float>
     let lifetime: ClosedRange<Float>
     let size: ClosedRange<Float>
@@ -83,6 +83,14 @@ struct SceneMetalParticleSystem {
     var worldSpace = false
     /// `movement` flag bit 0: gravity is a scene-space vector, not turned with the emitter.
     var worldGravity = false
+    /// The emitter's `instantaneous` burst: particles spawned at once when the system starts.
+    var instantaneous = 0
+    /// Emitter `speedmin`…`speedmax`: speed away from the emitter's centre along the spawn offset.
+    var emitterSpeed: ClosedRange<Float> = 0...0
+    /// `sphererandom` `distancemin` over `distancemax`: the spawn ring's inner radius.
+    var minimumSpawnRatio: Float = 0
+    /// `sphererandom` `sign`: forces a spawn offset axis positive (1) or negative (−1); 0 leaves it.
+    var emitterSign = SIMD2<Float>.zero
 
     /// The emitter's authored world transform.
     var authoredWorld: SceneAffineTransform {

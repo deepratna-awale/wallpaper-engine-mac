@@ -19,6 +19,10 @@ struct ParticleTestSystem {
     var emitterLinear = matrix_identity_float2x2
     var worldSpace = false
     var worldGravity = false
+    var instantaneous = 0
+    var emitterSpeed: ClosedRange<Float> = 0...0
+    var minimumSpawnRatio: Float = 0
+    var emitterSign = SIMD2<Float>.zero
     var drag: Float = 0
     var alpha: ClosedRange<Float> = 0.5...1
     var minimumColor = SIMD4<Float>(0.2, 0.3, 0.4, 1)
@@ -87,6 +91,10 @@ struct ParticleTestSystem {
         system.emitterLinear = emitterLinear
         system.worldSpace = worldSpace
         system.worldGravity = worldGravity
+        system.instantaneous = instantaneous
+        system.emitterSpeed = emitterSpeed
+        system.minimumSpawnRatio = minimumSpawnRatio
+        system.emitterSign = emitterSign
         system.material = material
         return system
     }

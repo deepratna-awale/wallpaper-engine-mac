@@ -73,17 +73,20 @@ enum ParticleCPUSimulation {
         }
     }
 
-    /// How many particles to spawn this step, updating the fractional carry-over. Spawns a full
-    /// system could not take are skipped, not queued into a later burst.
+    /// How many particles to spawn this step: `burst` first, then the rate, updating the
+    /// fractional carry-over. Spawns a full system could not take are skipped, not queued into a
+    /// later burst.
     static func emissionCount(liveCount: Int, maximum: Int, rate: Float, deltaTime: Float,
-                              remainder: inout Float) -> Int {
+                              remainder: inout Float, burst: Int = 0) -> Int {
+        let available = max(maximum - liveCount, 0)
+        let burst = min(max(burst, 0), available)
         remainder += max(rate, 0) * deltaTime
-        let count = max(0, min(Int(remainder), maximum - liveCount))
+        let count = max(0, min(Int(remainder), available - burst))
         remainder -= Float(count)
-        if liveCount + count >= maximum {
+        if liveCount + burst + count >= maximum {
             remainder = remainder.truncatingRemainder(dividingBy: 1)
         }
-        return count
+        return burst + count
     }
 
     static func step(_ system: ParticleSystemRuntime, inputs: ParticleFrameInputs) {
@@ -101,7 +104,7 @@ enum ParticleCPUSimulation {
         }
         let emitted = emissionCount(liveCount: system.particles.count, maximum: configuration.maximumParticleCount,
                                     rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
-                                    remainder: &system.emissionRemainder)
+                                    remainder: &system.emissionRemainder, burst: inputs.burst)
         for _ in 0..<emitted {
             system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: inputs))
             system.nextSerial &+= 1
@@ -140,13 +143,17 @@ enum ParticleCPUSimulation {
             ParticleRandom.value(a, b, seed: seed, serial: serial, stream)
         }
         let angle = random(0, 2 * .pi, .spawnAngle)
-        let radius = sqrt(random(0, 1, .spawnRadius))
-        let spawnOffset: SIMD2<Float>
+        let inner = min(max(configuration.minimumSpawnRatio, 0), 1)
+        let radius = inner + (1 - inner) * sqrt(random(0, 1, .spawnRadius))
+        var spawnOffset: SIMD2<Float>
         let extent = abs(configuration.spawnExtent * inputs.extentScale)
         if configuration.emitterName == "boxrandom" {
             spawnOffset = SIMD2(random(-extent.x, extent.x, .boxX), random(-extent.y, extent.y, .boxY))
         } else {
             spawnOffset = SIMD2(cos(angle) * extent.x, sin(angle) * extent.y) * radius
+            let sign = configuration.emitterSign
+            if sign.x != 0 { spawnOffset.x = abs(spawnOffset.x) * (sign.x > 0 ? 1 : -1) }
+            if sign.y != 0 { spawnOffset.y = abs(spawnOffset.y) * (sign.y > 0 ? 1 : -1) }
         }
         let offsetMinimum = inputs.offsetLinear * configuration.positionOffsetMinimum
         let offsetMaximum = inputs.offsetLinear * configuration.positionOffsetMaximum
@@ -162,6 +169,9 @@ enum ParticleCPUSimulation {
                              random(configuration.minimumVelocity.y, configuration.maximumVelocity.y, .velocityY))
         // Authored in emitter space; a rotated emitter (or parent) turns the launch direction.
         velocity = inputs.velocityRotation * velocity
+        // The emitter's own speed pushes particles out from its centre.
+        let outward = simd_length(spawnOffset) > 1e-6 ? simd_normalize(spawnOffset) : SIMD2<Float>.zero
+        velocity += outward * random(configuration.emitterSpeed.lowerBound, configuration.emitterSpeed.upperBound, .emitterSpeed)
         var sequence: Float = 0
         if let span = configuration.sequenceSpan, let start = inputs.sequenceStart, let end = inputs.sequenceEnd {
             let slot = Int(serial) % span.count

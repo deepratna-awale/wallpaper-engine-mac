@@ -1118,7 +1118,8 @@ class SceneWallpaperViewModel: ObservableObject {
         let rate = Float(emitter?.rate ?? 100) * overrides.rate
         let rateScript = overrides.rateScript ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)
-        let spawnExtent = SIMD2<Float>(Float(distance.0), Float(distance.1))
+        let directions = emitter?.directions?.vectorValue ?? (1, 1, 0)
+        let spawnExtent = SIMD2<Float>(Float(distance.0 * directions.0), Float(distance.1 * directions.1))
         var lifetime: ClosedRange<Float> = 1...1
         var size: ClosedRange<Float> = overrides.size * 20...overrides.size * 20
         var minimumVelocity = SIMD2<Float>.zero
@@ -1404,6 +1405,15 @@ class SceneWallpaperViewModel: ObservableObject {
         system.emitterLinear = world.linear
         system.worldSpace = particleSystem.isWorldSpace
         system.worldGravity = worldGravity
+        if let emitter {
+            system.instantaneous = max(emitter.instantaneous ?? 0, 0)
+            let speeds = (Float(emitter.speedmin ?? 0), Float(emitter.speedmax ?? emitter.speedmin ?? 0))
+            system.emitterSpeed = min(speeds.0, speeds.1)...max(speeds.0, speeds.1)
+            let sign = emitter.sign?.vectorValue ?? (0, 0, 0)
+            system.emitterSign = SIMD2(Float(sign.0), Float(sign.1))
+            let innerDistance = Float(emitter.distancemin?.vectorValue.0 ?? 0)
+            system.minimumSpawnRatio = distance.0 > 0 ? min(max(innerDistance / Float(distance.0), 0), 1) : 0
+        }
         system.material = buildParticleMaterial(materialPath, particleSystem: particleSystem, renderer: particleRenderer,
                                                 source: source, spriteSheet: spriteSheet, object: object,
                                                 wallpaperDir: wallpaperDir)

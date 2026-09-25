@@ -12,7 +12,7 @@ enum ParticleRandom {
     enum Stream: UInt32 {
         case spawnAngle = 0, spawnRadius, boxX, boxY, offsetX, offsetY, size, alpha
         case red, green, blue, velocityX, velocityY, ringSpeedX, ringSpeedY
-        case lifetime, rotation, angularVelocity, spriteFrame
+        case lifetime, rotation, angularVelocity, spriteFrame, emitterSpeed
     }
 
     /// Per-frame draws (turbulence): the frame index with the high bit set, so they never meet a

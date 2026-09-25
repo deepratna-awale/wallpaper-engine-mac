@@ -74,7 +74,7 @@ final class ParticleGPUSystem {
             // The carried remainder is below 1 at the start of a step, so a step spawns at most
             // ⌊rate·Δt⌋ + 1 particles.
             let spawns = Double(max(inputs.emissionRate, 0)) * Double(inputs.deltaTime)
-            let bound = Double(upperBound) + spawns.rounded(.down) + 1
+            let bound = Double(upperBound) + spawns.rounded(.down) + 1 + Double(inputs.burst)
             upperBound = Int(min(bound, Double(maximumCount)))
         }
         guard upperBound > capacity || particles == nil else { return true }
