@@ -64,6 +64,10 @@ class SceneWallpaperViewModel: ObservableObject {
     private var assetDataCache: [String: Data] = [:]
     /// Other Workshop items' assets (`…/workshop/<id>/…`), loose or inside the item's `.pkg`.
     private var workshopAssets = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())
+    /// WE's fixed copies of broken Workshop shaders (`assets/zcompat`).
+    private var shaderCompat: SceneShaderCompat?
+    /// The loaded wallpaper's Workshop id, which bounds the zcompat fixes.
+    private var loadedProjectId: String?
 
     /// Decoded textures are identical for every screen showing the same wallpaper, so they live in
     /// one process-wide cache. NSCache lets the system reclaim them under pressure rather than
@@ -237,6 +241,9 @@ class SceneWallpaperViewModel: ObservableObject {
             videoStream = nil
             builtVideoFrameSize = nil
             workshopAssets = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())
+            shaderCompat = SceneShaderCompat(assetsDirectory: WallpaperEngineAssets.directory)
+                ?? SceneShaderCompat(assetsDirectory: WallpaperEngineAssets.bundled)
+            loadedProjectId = Self.workshopId(of: wallpaper)
         }
         // Symlink in any already-installed cross-workshop-item asset dependencies before parsing,
         // so paths like "effects/workshop/<id>/name/effect.json" resolve as ordinary loose files.
@@ -1435,6 +1442,12 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func assetData(named path: String, wallpaperDir: URL) -> Data? {
         if let cached = assetDataCache[path] { return cached }
+        // WE's fixed copy of a broken Workshop shader replaces the one the wallpaper ships.
+        if let fixed = shaderCompat?.replacement(forShaderPath: path, projectId: loadedProjectId) {
+            Self.log("Using WE's compatibility copy of \(path)")
+            assetDataCache[path] = fixed
+            return fixed
+        }
         // A missing loose file is an ordinary miss: the next source is tried.
         let data = pkgParser?.extractFile(named: path)
             ?? (try? Data(contentsOf: wallpaperDir.appending(path: path)))
@@ -1442,6 +1455,14 @@ class SceneWallpaperViewModel: ObservableObject {
             ?? sharedAssetData(named: path)
         if let data { assetDataCache[path] = data }
         return data
+    }
+
+    /// The project's Workshop id: `workshopid` in project.json, else a numeric folder name
+    /// (Steam names downloaded items by id). Nil for a local project.
+    static func workshopId(of wallpaper: WEWallpaper) -> String? {
+        if let id = wallpaper.project.workshopid?.rawValue, !id.isEmpty, id.allSatisfy(\.isNumber) { return id }
+        let folder = wallpaper.wallpaperDirectory.lastPathComponent
+        return !folder.isEmpty && folder.allSatisfy({ $0.isASCII && $0.isNumber }) ? folder : nil
     }
 
     private func sharedAssetData(named path: String) -> Data? {
