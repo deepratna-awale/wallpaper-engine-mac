@@ -7,7 +7,8 @@ Read [`docs/architecture.md`](docs/architecture.md) first. It explains the modul
 - Open `OpenWallpaperEngine.xcodeproj`, scheme **OpenWallpaperEngine**, macOS 13+.
 - **Debug builds sign with *Apple Development*.** macOS ties the Screen Recording grant (needed for audio-reactive features) to the signature, and ad-hoc signing loses it on every rebuild.
   - If you aren't on the project's team, set your own team in *Signing & Capabilities* and don't commit that change.
-- **Shader toolchain:** `brew install glslang spirv-cross` for translating WE shaders.
+- **Shader toolchain:** WE shaders are translated in process by the glslang and SPIRV-Cross libraries linked into the app. You don't need to install anything.
+  - `brew install glslang spirv-cross` is only for the fallback compiler (`ProcessShaderCompiler`). The app switches to it after an in-process compile crashed, and runs the Homebrew executables as subprocesses.
 - **WE assets:** point *Settings → General → Wallpaper Engine Assets Directory* at a Wallpaper Engine install. Otherwise the app uses the bundled copy.
 
 ## Where code goes
