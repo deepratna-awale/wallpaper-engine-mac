@@ -60,4 +60,15 @@ final class ShaderTextPassTests: XCTestCase {
                       result.vertex)
         XCTAssertTrue(result.fragment.hasPrefix("#version 450\n\nlayout(std140"), result.fragment)
     }
+
+    /// WE's GLSL backend leaves `HLSL`/`HLSL_SM30` undefined, so `#ifdef HLSL` branches (D3D
+    /// screen-space flips and half-texel offsets) are not taken.
+    func testPreludeLeavesHLSLUndefined() throws {
+        let prelude = ShaderPrelude.text(for: .fragment, combos: [:])
+        XCTAssertFalse(prelude.contains("#define HLSL"), prelude)
+        let source = "#ifdef HLSL\nFLIPPED\n#endif\n#if HLSL_SM30\nSM30\n#endif\n"
+        let text = try InProcessShaderCompiler().preprocess(prelude + source, stage: .fragment)
+        XCTAssertFalse(text.contains("FLIPPED"))
+        XCTAssertFalse(text.contains("SM30"))
+    }
 }

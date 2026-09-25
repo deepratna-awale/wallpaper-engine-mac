@@ -77,9 +77,11 @@ enum ShaderPrelude {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// `HLSL` and `HLSL_SM30` are left undefined, as WE's GLSL backend leaves them: shaders test
+    /// them with `#ifdef` (screen-space UV flips, half-texel offsets for D3D9), and in an `#if`
+    /// an undefined name is 0.
     private static let common = [
         "#define GLSL 1",
-        "#define HLSL 0",
         "#define highp",
         "#define mediump",
         "#define lowp",
@@ -115,10 +117,6 @@ enum ShaderPrelude {
         "#define M_PI_2 6.28318530718",
         "#define SQRT_2 1.41421356237",
         "#define SQRT_3 1.73205080756",
-        // Engine feature switches the shaders test with `#if`; WE defines them per platform.
-        "#ifndef HLSL_SM30",
-        "#define HLSL_SM30 0",
-        "#endif",
     ]
 
     private static func macroName(_ line: String) -> String? {
