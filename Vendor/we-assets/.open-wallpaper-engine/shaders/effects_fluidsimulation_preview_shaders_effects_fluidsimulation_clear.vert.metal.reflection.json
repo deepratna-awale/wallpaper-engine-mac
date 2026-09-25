@@ -1,1 +1,0 @@
-{"textures":[],"uniforms":[{"name":"g_Frametime","type":"float"},{"name":"u_Pressure","semantic":"{\"material\":\"pressure\",\"label\":\"ui_editor_properties_pressure\",\"default\":0.8,\"range\":[0.0, 1.0],\"group\":\"ui_editor_properties_simulation\"}\r","type":"float"}],"combos":{}}

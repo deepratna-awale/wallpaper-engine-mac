@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_ModelViewProjectionMatrix", "type": "mat4", "semantic": null}, {"name": "g_Scale", "type": "vec2", "semantic": "{\"material\":\"ui_editor_properties_scale\",\"default\":\"1 1\",\"linked\":true,\"range\":[0.01, 2.0]}"}, {"name": "g_Texture0Resolution", "type": "vec4", "semantic": null}], "textures": [], "combos": {}}

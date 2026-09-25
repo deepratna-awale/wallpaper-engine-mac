@@ -415,9 +415,6 @@ class SceneWallpaperViewModel: ObservableObject {
             let layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildMetalTextLayer(object, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
-            if let layer, object.visibleUserProperty == "hyperdrive" || object.name?.localizedCaseInsensitiveContains("hyperdrive") == true {
-                Self.logDetail("Hyperdrive layer active: id=\(layer.id) name=\(layer.name) effects=\(layer.sceneEffects.map(\.name))")
-            }
             return layer
         }.sorted { first, second in
             // Text is authored early in several Workshop scenes but is intended
@@ -430,25 +427,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                             sceneSize: sceneSize, objectsByID: objectsByID)
         }
         if !layers.isEmpty || !particleSystems.isEmpty {
-            let toggleableEffects = [
-                "shake", "waterwaves", "nitro", "vhs", "pulse", "iris", "volumetricfog", "parallax",
-                "tint", "opacity", "fisheye", "scroll", "chromaticaberration", "colorkey", "spin",
-                "blend", "blendgradient", "blurradial", "watercaustics", "cloudmotion", "clouds", "edgedetection",
-                "filmgrain", "fire", "perspective", "depthparallax", "reflection", "skew", "swing", "transform",
-                "twirl", "waterflow", "xray", "blur", "blurprecise", "cursorripple", "glitter", "localcontrast",
-                "motionblur", "refraction", "shine", "empty", "shimmer", "foliagesway", "waterripple", "godrays",
-                "lightshafts", "audiobars", "hueshift", "hyperdrive"
-            ]
-            let enabledEffects = toggleableEffects.filter {
-                AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_\($0)") == "true"
-            }
-            let authoredEffects = (scene.effects ?? []).map { canonicalEffectName($0.lowercased()) }
-            let dynamicEffects = sharedEffectCatalog()
-            logEffectCoverage(layers: layers, sceneEffects: authoredEffects, catalog: dynamicEffects)
             let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
-                                            sceneScript: sceneScript,
-                                            effects: Set(authoredEffects).union(enabledEffects),
-                                            bloom: bloomSettings(for: scene.general), dynamicEffects: dynamicEffects)
+                                            sceneScript: sceneScript, bloom: bloomSettings(for: scene.general))
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -465,9 +445,8 @@ class SceneWallpaperViewModel: ObservableObject {
                 effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                           exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                           transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
-            sceneEffects: [], xraySource: nil)], particleSystems: [], sceneScript: sceneScript, effects: [],
-            bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1)),
-            dynamicEffects: sharedEffectCatalog())
+            )], particleSystems: [], sceneScript: sceneScript,
+            bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1)))
     }
 
     // MARK: - Video as a scene
@@ -513,19 +492,11 @@ class SceneWallpaperViewModel: ObservableObject {
             effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                           exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                           transformAngle: 0, transformOffset: .zero,
-                                          transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
-            sceneEffects: [], xraySource: nil)
+                                          transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
         layer.musicSync = musicSync
-
-        let toggleable = SceneEffectRegistry.all.map { $0.name }
-        let enabled = toggleable.filter {
-            AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_\($0)") == "true"
-        }
-        return SceneMetalContent(size: sceneSize, layers: [layer], particleSystems: [],
-                                 sceneScript: nil, effects: Set(enabled),
+        return SceneMetalContent(size: sceneSize, layers: [layer], particleSystems: [], sceneScript: nil,
                                  bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7,
-                                                           tint: SIMD3<Float>(repeating: 1)),
-                                 dynamicEffects: sharedEffectCatalog())
+                                                           tint: SIMD3<Float>(repeating: 1)))
     }
 
     /// Drives playback for the Metal video path; the AVKit path owns its own players.
@@ -659,28 +630,6 @@ class SceneWallpaperViewModel: ObservableObject {
         let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
         let effects = materialEffects(material.passes?.first)
         let effectPlans = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
-        var sceneEffects = buildSceneEffects(object.effects ?? [], objectID: object.id ?? -1,
-                             wallpaperDir: wallpaperDir, skipping: effectPlans.handled)
-        if object.name?.localizedCaseInsensitiveContains("cloud") == true {
-            sceneEffects.append(SceneMetalEffect(name: "volumetricfog", constants: [:], mask: nil, scripts: [:]))
-        }
-        let xraySource: SceneMetalTextureSource?
-        if sceneEffects.contains(where: { $0.name == "xray" }) {
-            xraySource = objectsByID.values.compactMap { alternate -> SceneMetalTextureSource? in
-                guard alternate.id != object.id, alternate.image != nil,
-                      alternate.image != imagePath,
-                      alternate.origin == object.origin,
-                      alternate.size == object.size,
-                      let alternateImage = alternate.image,
-                      let alternateModel: WEModel = loadJSON(path: alternateImage, wallpaperDir: wallpaperDir),
-                      let alternateMaterialPath = alternateModel.material,
-                      let alternateMaterial: WEMaterial = loadJSON(path: alternateMaterialPath, wallpaperDir: wallpaperDir),
-                      let alternateTexture = alternateMaterial.passes?.first?.textures?.first else { return nil }
-                return loadMetalTexture(named: alternateTexture, materialDir: alternateMaterialPath, wallpaperDir: wallpaperDir)
-            }.first
-        } else {
-            xraySource = nil
-        }
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
                        scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
@@ -694,8 +643,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        positionScript: object.originScript, positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
                        sizeScript: object.sizeScript, sizeAnimation: nil,
                                rotation: rotation, rotationScript: object.anglesScript,
-                               rotationAnimation: object.anglesAnimation, effects: effects, sceneEffects: sceneEffects,
-                                               xraySource: xraySource)
+                               rotationAnimation: object.anglesAnimation, effects: effects)
         layer.weEffects = effectPlans.plans
         layer.sceneInput = sceneInput
         // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
@@ -737,8 +685,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                rotationAnimation: object.anglesAnimation,
                                effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                                              exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
-                                                             transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
-                               sceneEffects: [], xraySource: nil)
+                                                             transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
     }
 
     private func clockConfiguration(for object: WESceneObject) -> SceneClock? {
@@ -786,8 +733,8 @@ class SceneWallpaperViewModel: ObservableObject {
     private func buildShapeLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
                                  objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
         guard object.shape != nil, let effects = object.effects, !effects.isEmpty else { return nil }
-        let sceneEffects = buildSceneEffects(effects, objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
-        guard !sceneEffects.isEmpty else { return nil }
+        let plans = buildEffectPlans(effects, objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
+        guard !plans.isEmpty else { return nil }
         let position = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
         let size: SIMD2<Float>
         if let sizeString = object.size {
@@ -796,7 +743,7 @@ class SceneWallpaperViewModel: ObservableObject {
         } else {
             size = sceneSize
         }
-        return SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
+        var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                        source: .image(transparentPlaceholderImage), position: position, size: size,
                        scale: SIMD2<Float>(repeating: 1), scaleScript: nil, scaleAnimation: nil,
                        opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
@@ -808,8 +755,9 @@ class SceneWallpaperViewModel: ObservableObject {
                        rotationAnimation: object.anglesAnimation,
                        effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                                      exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
-                                                     transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]),
-                       sceneEffects: sceneEffects, xraySource: nil)
+                                                     transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
+        layer.weEffects = plans
+        return layer
     }
 
     /// A fully transparent 1x1 placeholder texture for procedural shape layers (e.g. light shafts) that
@@ -925,39 +873,19 @@ class SceneWallpaperViewModel: ObservableObject {
         return nil
     }
 
-    /// Reports, per authored effect in the loaded scene, whether it resolves to a translated
-    /// shader pass, falls back to a built-in implementation, or cannot be drawn at all.
-    private func logEffectCoverage(layers: [SceneMetalLayer], sceneEffects: [String],
-                                   catalog: SceneDynamicEffectCatalog) {
-        var names = Set(sceneEffects)
-        for layer in layers { names.formUnion(layer.sceneEffects.map { $0.name.lowercased() }) }
-        guard !names.isEmpty else { return }
-        var dynamic: [String] = [], native: [String] = [], unrenderable: [String] = []
-        let builtIn = Set(SceneEffectRegistry.all.map { $0.name.lowercased() })
-        for name in names.sorted() {
-            if catalog.isRenderable(name) { dynamic.append(name) }
-            else if builtIn.contains(name) { native.append(name) }
-            else { unrenderable.append(name) }
-        }
-        Self.log("Effect coverage: \(names.count) authored — \(dynamic.count) shader, "
-                 + "\(native.count) built-in, \(unrenderable.count) unrenderable")
-        if !native.isEmpty { Self.log("  built-in fallback: \(native.joined(separator: ", "))") }
-        if !unrenderable.isEmpty { OWELog.error(.scene, "Effects with no implementation: \(unrenderable.joined(separator: ", "))") }
-    }
 
     /// Shared by every scene: translated variants are cached in memory and on disk.
     private static let effectTranslator: ShaderVariantTranslator? = {
         do {
             return ShaderVariantTranslator(compiler: try ProcessShaderCompiler())
         } catch {
-            OWELog.error(.shader, "WE shader toolchain unavailable, effects use built-in approximations: \(error)")
+            OWELog.error(.shader, "WE shader toolchain unavailable, scene effects are disabled: \(error)")
             return nil
         }
     }()
 
-    /// Plans each visible effect for Wallpaper Engine's own shaders. `handled` holds the indices
-    /// the native approximations must skip: planned effects and hidden ones. Effects that can't be
-    /// planned (no toolchain, sources missing) fall back to the native stack until it is removed.
+    /// Plans each visible effect for Wallpaper Engine's own shaders. An effect that can't be
+    /// planned (no toolchain, sources missing) is left out, with the reason logged.
     private func buildEffectPlans(_ effects: [WEObjectEffect], objectID: Int,
                                   wallpaperDir: URL) -> (plans: [SceneEffectPlan], handled: Set<Int>) {
         guard !effects.isEmpty, let translator = Self.effectTranslator else { return ([], []) }
@@ -989,97 +917,10 @@ class SceneWallpaperViewModel: ObservableObject {
         return (plans, handled)
     }
 
-    private func buildSceneEffects(_ effects: [WEObjectEffect], objectID: Int,
-                                   wallpaperDir: URL, skipping handled: Set<Int> = []) -> [SceneMetalEffect] {
-        var metalEffects: [SceneMetalEffect] = []
-        for (effectIndex, effect) in effects.enumerated() {
-            guard !handled.contains(effectIndex), isEffectVisible(effect),
-                                    AudioReactiveScriptEngine.shared.userPropertyString(
-                                        sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: effectIndex)
-                                    ) != "false",
-                  let pass = effect.passes?.first else { continue }
-            let rawName = ((effect.file as NSString).deletingLastPathComponent as NSString).lastPathComponent.lowercased()
-            let name = canonicalEffectName(rawName)
-            var constants: [String: [Float]] = [:]
-            var scripts: [String: String] = [:]
-            for (key, value) in pass.constantshadervalues ?? [:] {
-                if let script = value.script {
-                    scripts[key.lowercased()] = script
-                }
-                if let number = value.number {
-                    constants[key.lowercased()] = [normalizedAuthoredEffectValue(number, key: key)]
-                } else if let string = value.string,
-                          !string.split(separator: " ").isEmpty {
-                    constants[key.lowercased()] = string.split(separator: " ").compactMap { Float($0) }
-                        .map { normalizedAuthoredEffectValue(Double($0), key: key) }
-                }
-            }
-            var overrideKeys: [String: [String]] = [:]
-            for key in Array(constants.keys) {
-                let overrideKey = sceneAuthoredEffectOverrideKey(objectID: objectID,
-                                                                  effectIndex: effectIndex,
-                                                                  parameter: key)
-                var override = AudioReactiveScriptEngine.shared.userPropertyString(overrideKey)
-                if override == nil, let existingValues = constants[key] {
-                    override = existingValues.map { String($0) }.joined(separator: " ")
-                }
-                guard let override else { continue }
-                let values = override.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Float($0) }
-                if !values.isEmpty {
-                    // Store the un-modulated base plus the keys; the renderer applies music sync
-                    // per frame so it stays live instead of freezing at build time.
-                    constants[key] = values
-                    overrideKeys[key] = values.indices.map { component in
-                        values.count > 1 ? "\(overrideKey)_\(component)" : overrideKey
-                    }
-                }
-            }
-            let maskName = pass.textures?.compactMap { $0 }.first
-            let mask = maskName.flatMap {
-                loadMetalTexture(named: $0, materialDir: effect.file, wallpaperDir: wallpaperDir)
-            }
-            // Wallpaper Engine's blend effect takes its source image in texture slot 1 and its
-            // Photoshop-style mode from the BLENDMODE combo; slot 0 is the layer itself.
-            var blendSource: SceneMetalTextureSource?
-            var blendMode = 0
-            if name == "blend" {
-                blendMode = pass.combos?["BLENDMODE"] ?? 0
-                if let textures = pass.textures, textures.count > 1, let blendName = textures[1] {
-                    blendSource = loadMetalTexture(named: blendName, materialDir: effect.file,
-                                                   wallpaperDir: wallpaperDir)
-                }
-            }
-            metalEffects.append(SceneMetalEffect(name: name, constants: constants,
-                                                 mask: blendSource == nil ? mask : nil,
-                                                 scripts: scripts, overrideKeys: overrideKeys,
-                                                 blend: blendSource, blendMode: blendMode))
-        }
-        return metalEffects
-    }
-
-    private func normalizedAuthoredEffectValue(_ value: Double, key: String) -> Float {
-        Float(value)
-    }
 
 
-    /// Effect names follow Wallpaper Engine's spelling; this only folds in the aliases some
-    /// workshop effects use for the same thing.
-    private func canonicalEffectName(_ name: String) -> String {
-        switch name {
-        case "simple_audio_bars", "simpleaudiobars", "audiobars", "audio_bars": return "audiobars"
-        case "hue_shift", "hueshift": return "hueshift"
-        case "lens_distorsion", "lensdistorsion", "lens_distortion", "lensdistortion": return "hyperdrive"
-        default: return name
-        }
-    }
 
-    private func sharedEffectCatalog() -> SceneDynamicEffectCatalog {
-        guard let assetsDirectory = WallpaperEngineAssets.directory else {
-            return SceneDynamicEffectCatalog(definitions: [:])
-        }
-        return SceneDynamicEffectCatalog.shared(for: assetsDirectory,
-                                                wallpaperDirectory: currentWallpaper.wallpaperDirectory)
-    }
+
 
     private func isObjectVisible(_ object: WESceneObject) -> Bool {
         let objectID = object.id ?? -1

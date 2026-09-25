@@ -38,7 +38,6 @@ enum ZipImporter {
                     try fm.copyItem(at: url, to: target)
                     DispatchQueue.global(qos: .utility).async {
                         WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: target)
-                        SceneShaderTranslator.translatePackageShaders(in: target)
                     }
                     imported += 1
                 } catch {

@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_Texture0", "type": "sampler2D", "semantic": "{\"label\":\"ui_editor_properties_albedo\",\"nonremovable\":true}"}, {"name": "g_Texture1", "type": "sampler2D", "semantic": "{\"label\":\"ui_editor_properties_mask\",\"nonremovable\":true}"}, {"name": "g_RenderVar0", "type": "vec4", "semantic": null}], "textures": ["g_Texture0", "g_Texture1"], "combos": {}}

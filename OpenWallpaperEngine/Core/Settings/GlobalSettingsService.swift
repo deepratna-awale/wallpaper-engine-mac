@@ -146,7 +146,6 @@ class GlobalSettingsViewModel: ObservableObject {
         settings.wallpaperEngineAssetsDirectory = directory?.standardizedFileURL.path
         UserDefaults.standard.set(settings.wallpaperEngineAssetsDirectory,
                                   forKey: Self.wallpaperEngineAssetsDirectoryKey)
-        SceneDynamicEffectCatalog.invalidateSharedCache()
         NotificationCenter.default.post(name: .wallpaperEngineAssetsDirectoryDidChange, object: nil)
     }
     

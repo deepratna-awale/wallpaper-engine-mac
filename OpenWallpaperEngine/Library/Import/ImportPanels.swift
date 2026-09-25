@@ -83,7 +83,6 @@ extension AppDelegate {
                         try? fm.copyItem(at: url, to: dest)
                         DispatchQueue.global(qos: .utility).async {
                             WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: dest)
-                            SceneShaderTranslator.translatePackageShaders(in: dest)
                         }
                     }
                 }

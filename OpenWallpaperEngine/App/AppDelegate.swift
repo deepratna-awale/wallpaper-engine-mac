@@ -94,8 +94,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     static var shared = AppDelegate()
     
     func applicationWillFinishLaunching(_ notification: Notification) {
-        // Must run before any wallpaper reads its saved per-effect settings.
-        SceneEffectNameMigration.run()
 
         // 创建设置视窗
         setSettingsWindow()

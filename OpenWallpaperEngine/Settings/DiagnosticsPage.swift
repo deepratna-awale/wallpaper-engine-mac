@@ -22,8 +22,6 @@ struct DiagnosticsPage: SettingsPage {
                     Label("No assets available", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
-                row("Effect parameters",
-                    "\(SceneAuthoredEffectRanges.effectCount) effects, \(SceneAuthoredEffectRanges.parameterCount) parameters")
             } header: {
                 Label("Assets", systemImage: "shippingbox")
             }
@@ -53,21 +51,12 @@ struct DiagnosticsPage: SettingsPage {
             }
 
             Section {
-                row("Translated", "\(shaderCounts.metal)")
-                row("Compiled libraries", "\(shaderCounts.metallib)")
-                row("Reflection sidecars", "\(shaderCounts.reflection)")
-                if shaderCounts.unsupported > 0 {
-                    row("Unsupported by Metal", "\(shaderCounts.unsupported)")
-                }
+                row("Translated variants", "\(shaderCounts)")
                 Button("Refresh") { shaderCounts = DiagnosticsPage.shaderCacheCounts() }
             } header: {
                 Label("Shader Cache", systemImage: "square.stack.3d.up")
             } footer: {
-                // A library count below the translated count means some shaders could not be
-                // expressed in Metal; those effects fall back to the built-in approximations.
-                Text(shaderCounts.metallib < shaderCounts.metal
-                     ? "\(shaderCounts.metal - shaderCounts.metallib) shader(s) have no Metal library."
-                     : "Every translated shader has a compiled library.")
+                Text("WE shaders are translated per combination of options the first time a scene uses them, then reused.")
             }
         }
         .formStyle(.grouped)
@@ -88,21 +77,10 @@ struct DiagnosticsPage: SettingsPage {
         }
     }
 
-    private struct ShaderCounts {
-        var metal = 0, metallib = 0, reflection = 0, unsupported = 0
-    }
-
-    private static func shaderCacheCounts() -> ShaderCounts {
-        var counts = ShaderCounts()
-        guard let shaders = WallpaperEngineAssets.directory?
-            .appending(path: ".open-wallpaper-engine/shaders", directoryHint: .isDirectory),
-              let names = try? FileManager.default.contentsOfDirectory(atPath: shaders.path) else { return counts }
-        for name in names {
-            if name.hasSuffix(".metallib") { counts.metallib += 1 }
-            else if name.hasSuffix(".reflection.json") { counts.reflection += 1 }
-            else if name.hasSuffix(".unsupported") { counts.unsupported += 1 }
-            else if name.hasSuffix(".metal") { counts.metal += 1 }
-        }
-        return counts
+    /// Shader variants translated so far (one per shader pair and option set).
+    private static func shaderCacheCounts() -> Int {
+        guard let directory = ShaderVariantTranslator.defaultCacheDirectory,
+              let names = try? FileManager.default.contentsOfDirectory(atPath: directory.path) else { return 0 } // no cache yet
+        return names.filter { $0.hasSuffix(".json") }.count
     }
 }

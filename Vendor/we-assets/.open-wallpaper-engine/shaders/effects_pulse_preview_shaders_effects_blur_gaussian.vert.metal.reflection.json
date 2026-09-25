@@ -1,1 +1,0 @@
-{"textures":[],"uniforms":[{"semantic":"{\"material\":\"Scale\",\"default\":\"1 1\",\"linked\":true,\"range\":[0.01, 2.0]}\r","name":"g_Scale","type":"vec2"},{"name":"g_Texture0Resolution","type":"vec4"}],"combos":{"KERNEL":"KERNEL"}}

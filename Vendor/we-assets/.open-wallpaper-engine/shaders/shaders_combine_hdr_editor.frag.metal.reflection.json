@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_Texture0", "type": "sampler2D", "semantic": null}, {"name": "g_TexelSize", "type": "vec2", "semantic": "Proper gamma conversion http://chilliant.blogspot.com/2012/08/srgb-approximations-for-hlsl.html"}], "textures": ["g_Texture0"], "combos": {}}

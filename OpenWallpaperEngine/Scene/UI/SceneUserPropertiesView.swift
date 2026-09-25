@@ -123,20 +123,13 @@ private final class SceneUserPropertiesModel: ObservableObject {
                 SceneUserProperty(id: "_owe_blur", title: "Blur", type: "slider", order: Int.max - 2, defaultValue: "1", options: [], minimum: 0, maximum: 2),
                 SceneUserProperty(id: "_owe_speed", title: "Animation Speed", type: "slider", order: Int.max - 1, defaultValue: "1", options: [], minimum: 0, maximum: 2)
             ])
-            // Every supported effect's controls are driven by SceneEffectRegistry, so adding a new
-            // effect kind to the renderer only requires one entry there, not manual UI wiring here.
-            for definition in SceneEffectRegistry.all {
-                properties.append(contentsOf: SceneEffectRegistry.controls(forEffect: definition.name).map { parameter in
-                    SceneUserProperty(id: "_owe_effect_\(definition.name)_\(parameter.key)", title: parameter.title,
-                                      type: "slider", order: Int.max - 40, defaultValue: parameter.normalizedDefaultValue, options: [],
-                                      minimum: parameter.normalizedMinimum, maximum: parameter.normalizedMaximum)
-                })
-            }
-            properties.append(contentsOf: SceneEffectRegistry.all.enumerated().map { index, definition in
-                SceneUserProperty(id: "_owe_effect_enabled_\(definition.name)", title: definition.title, type: "bool",
-                                  order: trailingOrder(offset: 30, index: index), defaultValue: definition.name == "audiobars" ? "true" : "false",
-                                  options: [], minimum: 0, maximum: 1)
-            })
+            // Mouse parallax (setting keys kept from when it lived with the native effects).
+            properties.append(contentsOf: [
+                SceneUserProperty(id: "_owe_effect_enabled_parallax", title: "Mouse Parallax", type: "bool",
+                                  order: Int.max - 7, defaultValue: "false", options: [], minimum: 0, maximum: 1),
+                SceneUserProperty(id: "_owe_effect_parallax_amount", title: "Parallax Amount", type: "slider",
+                                  order: Int.max - 6, defaultValue: "1", options: [], minimum: 0, maximum: 2)
+            ])
             // Some scenes gate a layer's visibility on a user property (e.g. a "dark"/"colored" variant
             // toggle) that the author forgot to declare in project.json; expose the simple on/off ones
             // anyway since the renderer already honors any visibleUserProperty by name.
@@ -263,10 +256,9 @@ struct SceneUserPropertiesView: View {
                 }
             }
             let adjustmentProperties = model.properties.filter { property in
-                property.id.hasPrefix("_owe_") && !isEffectProperty(property) && !isTextProperty(property)
+                property.id.hasPrefix("_owe_") && !isTextProperty(property)
             }
-            let effectProperties = model.properties.filter(isEffectProperty)
-            if !adjustmentProperties.isEmpty || !effectProperties.isEmpty || isVideo {
+            if !adjustmentProperties.isEmpty || isVideo {
                 CollapsibleSection(title: "User Scene Settings") {
                     VStack(alignment: .leading, spacing: 12) {
                         if isVideo {
@@ -280,23 +272,6 @@ struct SceneUserPropertiesView: View {
                                     }
                                 }
                                 .padding(.top, 4)
-                            }
-                        }
-                        if !effectProperties.isEmpty {
-                            DisclosureGroup("User Effects") {
-                                VStack(alignment: .leading, spacing: 12) {
-                                    ForEach(SceneEffectRegistry.grouped(), id: \.title) { group in
-                                        DisclosureGroup(group.title) {
-                                            VStack(alignment: .leading, spacing: 12) {
-                                                ForEach(group.effects, id: \.name) { definition in
-                                                    effectGroup(definition)
-                                                }
-                                            }
-                                            .padding(.top, 6)
-                                        }
-                                    }
-                                }
-                                .padding(.top, 6)
                             }
                         }
                         if !model.textObjects.isEmpty {
@@ -331,9 +306,6 @@ struct SceneUserPropertiesView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func isEffectProperty(_ property: SceneUserProperty) -> Bool {
-        property.id.hasPrefix("_owe_effect_")
-    }
 
     @ViewBuilder
     private var videoMusicSyncControls: some View {
@@ -387,34 +359,6 @@ struct SceneUserPropertiesView: View {
 
     private func isTextProperty(_ property: SceneUserProperty) -> Bool {
         property.id.hasPrefix("_owe_text_")
-    }
-
-    @ViewBuilder
-    private func effectGroup(_ definition: SceneEffectDefinition) -> some View {
-        let enabledID = "_owe_effect_enabled_\(definition.name)"
-        let controls = model.properties.filter { property in
-            property.id == enabledID || property.id.hasPrefix("_owe_effect_\(definition.name)_")
-        }
-        if !controls.isEmpty {
-            DisclosureGroup {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(controls.filter { $0.id != enabledID }) { property in
-                        propertyView(property)
-                    }
-                }
-                .padding(.top, 4)
-            } label: {
-                HStack {
-                    if let enabled = controls.first(where: { $0.id == enabledID }) {
-                        propertyView(enabled)
-                    } else {
-                        Text(definition.title)
-                    }
-                    infoButton(SceneHelp.effect(definition.name))
-                    Spacer()
-                }
-            }
-        }
     }
 
     @ViewBuilder

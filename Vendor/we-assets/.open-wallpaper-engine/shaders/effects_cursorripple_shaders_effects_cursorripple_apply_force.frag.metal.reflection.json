@@ -1,1 +1,0 @@
-{"textures":["g_Texture0"],"uniforms":[{"name":"g_Frametime","type":"float"},{"name":"g_PointerState","type":"vec4"},{"name":"g_Texture0","type":"sampler2D","semantic":"{\"hidden\":true}\r"}],"combos":{}}

@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_Texture0", "type": "sampler2D", "semantic": null}, {"name": "g_HDRParams", "type": "vec2", "semantic": null}], "textures": ["g_Texture0"], "combos": {}}

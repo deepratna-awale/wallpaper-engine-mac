@@ -1,1 +1,0 @@
-{"uniforms":[{"name":"g_ModelViewProjectionMatrix","type":"mat4"},{"name":"g_Texture2Resolution","type":"vec4"}],"textures":[],"combos":{"KERNEL":"KERNEL"}}

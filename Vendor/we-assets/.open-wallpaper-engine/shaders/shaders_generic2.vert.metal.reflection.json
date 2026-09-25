@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_ModelMatrix", "type": "mat4", "semantic": null}, {"name": "g_ViewProjectionMatrix", "type": "mat4", "semantic": null}, {"name": "g_EyePosition", "type": "vec3", "semantic": null}, {"name": "g_LightAmbientColor", "type": "vec3", "semantic": null}, {"name": "g_LightSkylightColor", "type": "vec3", "semantic": null}], "textures": [], "combos": {}}

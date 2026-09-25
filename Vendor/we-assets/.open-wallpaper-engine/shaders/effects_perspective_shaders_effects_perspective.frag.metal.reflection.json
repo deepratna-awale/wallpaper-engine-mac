@@ -1,1 +1,0 @@
-{"textures":["g_Texture0"],"uniforms":[{"name":"g_Texture0","semantic":"{\"material\":\"ui_editor_properties_framebuffer\",\"hidden\":true}\r","type":"sampler2D"}],"combos":{"REPEAT":"REPEAT"}}

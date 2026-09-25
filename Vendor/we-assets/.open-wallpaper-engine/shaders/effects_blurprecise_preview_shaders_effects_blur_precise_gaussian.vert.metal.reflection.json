@@ -1,1 +1,0 @@
-{"combos":{"KERNEL":"KERNEL"},"textures":[],"uniforms":[{"name":"g_ModelViewProjectionMatrix","type":"mat4"},{"semantic":"{\"material\":\"scale\",\"label\":\"ui_editor_properties_scale\",\"default\":\"1 1\",\"linked\":true,\"range\":[0.01, 2.0]}\r","name":"g_Scale","type":"vec2"},{"name":"g_Texture0Resolution","type":"vec4"},{"name":"g_Texture2Resolution","type":"vec4"}]}

@@ -27,22 +27,3 @@ struct DXTDecodeUniform {
     var blockColumns: UInt32
     var format: UInt32
 }
-
-struct EffectUniform {
-    var time: Float
-    var pulse: Float
-    var cursor: SIMD2<Float> = .zero
-    var audioBands0: SIMD4<Float> = .zero
-    var audioBands1: SIMD4<Float> = .zero
-    var audioBands2: SIMD4<Float> = .zero
-    var audioBands3: SIMD4<Float> = .zero
-}
-
-struct EffectDescriptorGPU {
-    var kind: UInt32
-    var maskIndex: UInt32
-    var values: SIMD4<Float>
-    var extra: SIMD4<Float>
-    var extra2: SIMD4<Float> = .zero
-    var extra3: SIMD4<Float> = .zero
-}

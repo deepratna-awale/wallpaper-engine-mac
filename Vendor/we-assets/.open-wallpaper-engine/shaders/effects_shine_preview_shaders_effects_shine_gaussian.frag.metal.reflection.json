@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_Texture0", "type": "sampler2D", "semantic": "{\"material\":\"ui_editor_properties_framebuffer\",\"hidden\":true}"}], "textures": ["g_Texture0"], "combos": {}}

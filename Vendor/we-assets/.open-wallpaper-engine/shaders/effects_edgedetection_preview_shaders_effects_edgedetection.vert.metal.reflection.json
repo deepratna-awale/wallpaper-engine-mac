@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_ModelViewProjectionMatrix", "type": "mat4", "semantic": null}, {"name": "g_Texture0Resolution", "type": "vec4", "semantic": null}, {"name": "g_DetectionSize", "type": "float", "semantic": "{\"material\":\"Detection size\",\"default\":1,\"range\":[0,5]}"}], "textures": [], "combos": {}}

@@ -6,28 +6,14 @@ private struct PreparedLayer {
     let frames: [RenderTextureFrame]
     let frameDuration: Float
     let layer: SceneMetalLayer
-    // At most 4 mask textures can be bound per draw; effectMaskSlots maps each sceneEffects
-    // position to its bound slot (0...3) in effectMasks, or nil if it has no mask / didn't fit.
-    let effectMasks: [MTLTexture]
-    let effectMaskSlots: [Int?]
-    /// Blend sources share the same four texture slots as masks.
-    let effectBlendSlots: [Int?]
-    let xrayTexture: MTLTexture?
     /// Key used for script-driven state. Layers cloned by `thisScene.createLayer` share their
     /// source's textures but track their own transform under a different id.
     var stateId: String
 
-    init(frames: [RenderTextureFrame], frameDuration: Float, layer: SceneMetalLayer,
-         effectMasks: [MTLTexture], effectMaskSlots: [Int?], effectBlendSlots: [Int?] = [],
-         xrayTexture: MTLTexture?,
-         stateId: String? = nil) {
+    init(frames: [RenderTextureFrame], frameDuration: Float, layer: SceneMetalLayer, stateId: String? = nil) {
         self.frames = frames
         self.frameDuration = frameDuration
         self.layer = layer
-        self.effectMasks = effectMasks
-        self.effectMaskSlots = effectMaskSlots
-        self.effectBlendSlots = effectBlendSlots
-        self.xrayTexture = xrayTexture
         self.stateId = stateId ?? layer.id
     }
 }
@@ -86,10 +72,6 @@ private final class ParticleSystemRuntime {
 }
 
 final class SceneMetalRenderer: NSObject, MTKViewDelegate {
-    /// Authored masks bound per layer. Stacking several masked effects on one object is common
-    /// (a shine plus a handful of shakes), and anything past this renders unmasked.
-    /// Must match `kMaxEffectMasks` and the `masks` array length in SceneShaders.metal.
-    static let maxEffectMasks = 32
     private let device: MTLDevice
     private let commandQueue: MTLCommandQueue
     private let renderPipeline: MTLRenderPipelineState
@@ -103,7 +85,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var effectAssetTextures: [String: MTLTexture] = [:]
     /// `g_Time` counts from when the scene appeared, as in Wallpaper Engine.
     private var effectTimeOrigin = CACurrentMediaTime()
-    private let dynamicEffectPipelines: DynamicEffectPipelineCache
     private let contentQueue = DispatchQueue(label: "SceneMetalRenderer.content", qos: .userInitiated)
     private let contentGenerationLock = NSLock()
     private var contentGeneration = 0
@@ -111,54 +92,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var layers: [PreparedLayer] = []
     private var particleInstances: [LayerUniform] = []
     private var particleInstanceStorage: MTLBuffer?
-    private struct EffectStackKey: Hashable {
-        let layerIndex: Int
-        let revision: Int
-        let sceneSize: SIMD2<Float>
-        let maskSlots: [Int?]
-        let globalNames: Set<String>
-        let handled: Set<String>
-    }
-    private var effectStackCache: [EffectStackKey: EffectStack] = [:]
 
-    /// Descriptor construction walks every effect and does dictionary lookups per parameter, per
-    /// layer, per frame. Only scripted and audio-baked effects actually change between frames, so
-    /// everything else is reused until user properties bump the revision.
-    private func cachedEffectStack(layerIndex: Int, effects: [SceneMetalEffect], maskSlots: [Int?],
-                                   blendSlots: [Int?] = [],
-                                   globalNames: Set<String>, handled: Set<String>,
-                                   sceneSize: SIMD2<Float>, audioLevel: Float) -> EffectStack {
-        guard !EffectStack.isFrameVarying(effects: effects, globalNames: globalNames) else {
-            return EffectStack(effects: effects, maskSlots: maskSlots, blendSlots: blendSlots,
-                               globalNames: globalNames,
-                               sceneSize: sceneSize, audioLevel: audioLevel)
-        }
-        let key = EffectStackKey(layerIndex: layerIndex,
-                                 revision: AudioReactiveScriptEngine.shared.propertyRevision,
-                                 sceneSize: sceneSize, maskSlots: maskSlots,
-                                 globalNames: globalNames, handled: handled)
-        if let cached = effectStackCache[key] { return cached }
-        let stack = EffectStack(effects: effects, maskSlots: maskSlots, blendSlots: blendSlots,
-                                globalNames: globalNames,
-                                sceneSize: sceneSize, audioLevel: audioLevel)
-        if effectStackCache.count > 256 { effectStackCache.removeAll(keepingCapacity: true) }
-        effectStackCache[key] = stack
-        OWEFrameMetrics.countEffectStackBuild()
-        return stack
-    }
     private var particleSystems: [ParticleSystemRuntime] = []
     private var lastFrameTime = CACurrentMediaTime()
     private var sceneScript: String?
     private var placement: WallpaperPlacement = .fill
-    private var effects = Set<String>()
-    private var dynamicEffects = SceneDynamicEffectCatalog(definitions: [:])
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     private var sceneRenderTarget: MTLTexture?
     private var sceneRenderTargetSize = SIMD2<Float>.zero
     private var textFrameCache: [String: RenderTextureFrame] = [:]
-    private var dynamicTextureCache: [URL: MTLTexture] = [:]
-    private var dynamicSamplerCache: [String: MTLSamplerState] = [:]
-    private var smoothedAudioBands = [Float](repeating: 0, count: 16)
 
     init?(view: MTKView) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -201,7 +143,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         self.dxtDecodePipeline = decodePipeline
         self.textureLoader = MTKTextureLoader(device: device)
         self.renderTargetPool = SceneRenderTargetPool(device: device)
-        self.dynamicEffectPipelines = DynamicEffectPipelineCache(device: device)
         super.init()
         view.device = device
         view.delegate = self
@@ -228,41 +169,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             layers = []
             particleSystems = []
             sceneScript = nil
-            effectStackCache.removeAll(keepingCapacity: true)
             textFrameCache.removeAll(keepingCapacity: true)
-            dynamicTextureCache.removeAll(keepingCapacity: true)
-            dynamicSamplerCache.removeAll(keepingCapacity: true)
             return
         }
         contentQueue.async { [weak self] in
             guard let self, self.isCurrentContentGeneration(generation) else { return }
             let preparedLayers: [PreparedLayer] = content.layers.compactMap { layer in
                 guard let frames = self.makeTextureFrames(from: layer.source), !frames.isEmpty else { return nil }
-                var effectMasks: [MTLTexture] = []
-                let effectMaskSlots: [Int?] = layer.sceneEffects.map { effect in
-                    guard let mask = effect.mask, let texture = self.makeTextureFrames(from: mask)?.first?.texture else { return nil }
-                    guard effectMasks.count < SceneMetalRenderer.maxEffectMasks else {
-                        OWELog.error(.scene, "Layer '\(layer.name)' exceeds \(SceneMetalRenderer.maxEffectMasks) masked effects; '\(effect.name)' will render unmasked")
-                        return nil
-                    }
-                    effectMasks.append(texture)
-                    return effectMasks.count - 1
-                }
-                // Blend sources share the mask array, so they draw from the same budget.
-                let effectBlendSlots: [Int?] = layer.sceneEffects.map { effect in
-                    guard let blend = effect.blend,
-                          let texture = self.makeTextureFrames(from: blend)?.first?.texture else { return nil }
-                    guard effectMasks.count < SceneMetalRenderer.maxEffectMasks else {
-                        OWELog.error(.scene, "Layer '\(layer.name)' exceeds \(SceneMetalRenderer.maxEffectMasks) mask/blend textures; '\(effect.name)' will not blend")
-                        return nil
-                    }
-                    effectMasks.append(texture)
-                    return effectMasks.count - 1
-                }
-                return PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration },
-                                     layer: layer, effectMasks: effectMasks, effectMaskSlots: effectMaskSlots,
-                                     effectBlendSlots: effectBlendSlots,
-                                     xrayTexture: layer.xraySource.flatMap { self.makeTextureFrames(from: $0)?.first?.texture })
+                return PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration }, layer: layer)
             }
             let preparedParticleSystems: [ParticleSystemRuntime] = content.particleSystems.compactMap { system in
                 guard let texture = self.makeTextureFrames(from: system.source)?.first?.texture else { return nil }
@@ -272,16 +186,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentContentGeneration(generation) else { return }
                 self.sceneSize = content.size
-                self.effects = Set(content.effects.map { $0.lowercased() })
-                self.dynamicEffects = content.dynamicEffects
                 self.bloom = content.bloom
                 self.layers = preparedLayers
                 self.particleSystems = preparedParticleSystems
                 self.sceneScript = content.sceneScript
-                self.effectStackCache.removeAll(keepingCapacity: true)
                 self.textFrameCache.removeAll(keepingCapacity: true)
-                self.dynamicTextureCache.removeAll(keepingCapacity: true)
-                self.dynamicSamplerCache.removeAll(keepingCapacity: true)
                 var scriptLayers: [String: [String: Any]] = [:]
                 var layerAliases: [String: String] = [:]
                 for entry in preparedLayers {
@@ -382,7 +291,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let animationSpeed = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_speed", fallback: 1)
         let time = Float(CACurrentMediaTime()) * animationSpeed
         let audioLevel = AudioReactiveScriptEngine.shared.audioLevel
-        let audioBands = audioBandVectors()
         let frameDelta = min(Float(CACurrentMediaTime() - lastFrameTime), 1.0 / 15.0)
         AudioReactiveScriptEngine.shared.setSceneClock(deltaTime: Double(frameDelta))
         if let sceneScript {
@@ -393,7 +301,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let cursorDelta = (cursor - sceneSize / 2) / sceneSize
         materializeScriptCreatedLayers()
         var dynamicTextures: [Int: MTLTexture] = [:]
-        var dynamicHandledEffects: [Int: Set<String>] = [:]
         // Advanced once per frame: every advance smooths the spectrum one step further.
         var effectFrame = BuiltinFrameContext()
         effectFrame.time = CACurrentMediaTime() - effectTimeOrigin
@@ -410,11 +317,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 dynamicTextures[layerIndex] = runEffects(entry, input: textureFrame(for: entry, time: time).texture,
                                                          snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
                 continue
-            }
-            if let result = applyDynamicEffects(to: entry, time: time, audioLevel: Float(audioLevel),
-                                                drawableSize: drawableSize, commandBuffer: commandBuffer) {
-                dynamicTextures[layerIndex] = result.texture
-                dynamicHandledEffects[layerIndex] = result.handledEffects
             }
         }
 
@@ -457,37 +359,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 // Until its effects are ready the layer has nothing of its own to draw.
                 if entry.layer.sceneInput, dynamicTextures[layerIndex] == nil { continue }
             }
-            var effectUniform = EffectUniform(time: time,
-                                              pulse: effects.contains("pulse") ? Float(audioLevel) : 0)
-            effectUniform.cursor = cursorDelta
-            effectUniform.audioBands0 = audioBands.0
-            effectUniform.audioBands1 = audioBands.1
-            effectUniform.audioBands2 = audioBands.2
-            effectUniform.audioBands3 = audioBands.3
-            encoder.setVertexBytes(&effectUniform, length: MemoryLayout<EffectUniform>.stride, index: 1)
-            encoder.setFragmentBytes(&effectUniform, length: MemoryLayout<EffectUniform>.stride, index: 1)
-            let handledEffects = dynamicHandledEffects[layerIndex] ?? []
-            let blendSlotsByIndex = entry.effectBlendSlots
-            let nativeEffectEntries = zip(entry.layer.sceneEffects.enumerated(), entry.effectMaskSlots)
-                .filter { !handledEffects.contains($0.0.element.name.lowercased()) }
-            let nativeEffects = nativeEffectEntries.map(\.0.element)
-            let nativeMaskSlots = nativeEffectEntries.map(\.1)
-            let nativeBlendSlots = nativeEffectEntries.map { entry -> Int? in
-                entry.0.offset < blendSlotsByIndex.count ? blendSlotsByIndex[entry.0.offset] : nil
-            }
-            // Layers that already author an effect (with their own tuned values/mask) must not
-            // also receive the global toggle's copy, or the two passes stack and corrupt the layer.
-            let authoredEffectNames = Set(entry.layer.sceneEffects.map { $0.name.lowercased() })
-            let nativeGlobalEffects = effects.filter {
-                !handledEffects.contains($0.lowercased()) && !authoredEffectNames.contains($0.lowercased())
-                    && !SceneEffectRegistry.isOverlay($0)
-            }
-            let effectStack = cachedEffectStack(layerIndex: layerIndex, effects: nativeEffects,
-                                                maskSlots: nativeMaskSlots, blendSlots: nativeBlendSlots,
-                                                globalNames: nativeGlobalEffects,
-                                                handled: handledEffects,
-                                                sceneSize: sceneSize, audioLevel: Float(audioLevel))
-            effectStack.bind(to: encoder)
             let opacity = entry.layer.opacityScript.map {
                 AudioReactiveScriptEngine.shared.evaluate($0, fallback: entry.layer.opacity, layerId: entry.stateId)
             } ?? timelineValue(entry.layer.opacityAnimation, at: time, fallback: AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "alpha", fallback: entry.layer.opacity))
@@ -614,14 +485,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
             encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
             encoder.setFragmentTexture(dynamicTextures[layerIndex] ?? textureFrame.texture, index: 0)
-            encoder.setFragmentTexture(entry.xrayTexture, index: 1)
-            // The shader takes the masks as one indexable array starting at slot 2, so the whole
-            // range is bound in a single call and unused slots are explicitly cleared.
-            var maskTextures = [MTLTexture?](repeating: nil, count: SceneMetalRenderer.maxEffectMasks)
-            for (index, texture) in entry.effectMasks.prefix(SceneMetalRenderer.maxEffectMasks).enumerated() {
-                maskTextures[index] = texture
-            }
-            encoder.setFragmentTextures(maskTextures, range: 2..<(2 + SceneMetalRenderer.maxEffectMasks))
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
         updateParticles(deltaTime: frameDelta, cursor: cursor)
@@ -681,19 +544,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return
         }
         compositeEncoder.setRenderPipelineState(renderPipeline)
-        // Overlay effects generate their own artwork, so they run here, once, over the whole frame.
-        let overlayEffects = effects.filter { SceneEffectRegistry.isOverlay($0) }
-        var compositeEffectUniform = EffectUniform(time: time, pulse: 0)
-        compositeEffectUniform.cursor = cursorDelta
-        compositeEffectUniform.audioBands0 = audioBands.0
-        compositeEffectUniform.audioBands1 = audioBands.1
-        compositeEffectUniform.audioBands2 = audioBands.2
-        compositeEffectUniform.audioBands3 = audioBands.3
-        compositeEncoder.setVertexBytes(&compositeEffectUniform, length: MemoryLayout<EffectUniform>.stride, index: 1)
-        compositeEncoder.setFragmentBytes(&compositeEffectUniform, length: MemoryLayout<EffectUniform>.stride, index: 1)
-        let compositeEffectStack = EffectStack(effects: [], globalNames: overlayEffects,
-                                               sceneSize: sceneSize, audioLevel: Float(audioLevel))
-        compositeEffectStack.bind(to: compositeEncoder)
         var compositeUniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize)
         let bloomMultiplier = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1)
         let authoredBloom = bloom.enabled ? bloom.strength * bloomMultiplier : 0
@@ -778,172 +628,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return min(max(position, minimum), maximum)
     }
 
-    private func applyDynamicEffects(to entry: PreparedLayer, time: Float, audioLevel: Float,
-                                     drawableSize: SIMD2<Float>, commandBuffer: MTLCommandBuffer)
-        -> (texture: MTLTexture, handledEffects: Set<String>)? {
-        let signpost = OWESignpost.begin(OWESignpost.render, "dynamicEffects")
-        defer { signpost.end() }
-        // Authored masks are object-specific and only the native path binds them. Do not let the
-        // generic dynamic executor claim these effects and suppress their mask-aware implementation.
-        var names = entry.layer.sceneEffects.filter { $0.mask == nil }.map { $0.name }
-        for name in effects where dynamicEffects.definition(for: name) != nil && !names.contains(name) {
-            names.append(name)
-        }
-        guard !names.isEmpty else { return nil }
 
-        var current = textureFrame(for: entry, time: time).texture
-        var didRender = false
-        var handledEffects = Set<String>()
-        for name in names {
-            guard let definition = dynamicEffects.definition(for: name) else { continue }
-            var effectCompleted = true
-            for pass in definition.passes {
-                guard let vertexURL = dynamicEffects.shaderURL(for: pass, stage: "vert"),
-                      let fragmentURL = dynamicEffects.shaderURL(for: pass, stage: "frag"),
-                      let pipeline = dynamicEffectPipelines.pipeline(vertexURL: vertexURL, fragmentURL: fragmentURL,
-                                                                      pixelFormat: current.pixelFormat,
-                                                                      macroConfiguration: dynamicEffects.macroConfiguration(for: vertexURL, fragmentURL: fragmentURL),
-                                                                      blending: pass.blending),
-                      let output = renderTargetPool.texture(width: current.width, height: current.height,
-                                                            pixelFormat: current.pixelFormat, avoiding: current),
-                      let encoder = dynamicEncoder(for: pipeline, source: current, output: output,
-                                                   time: time, audioLevel: audioLevel, drawableSize: drawableSize,
-                                                   pass: pass, fragmentURL: fragmentURL,
-                                                   commandBuffer: commandBuffer) else {
-                    effectCompleted = false
-                    break
-                }
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-                encoder.endEncoding()
-                current = output
-                didRender = true
-            }
-            if effectCompleted { handledEffects.insert(name.lowercased()) }
-        }
-        return didRender ? (current, handledEffects) : nil
-    }
 
-    private func audioBandVectors() -> (SIMD4<Float>, SIMD4<Float>, SIMD4<Float>, SIMD4<Float>) {
-        let snapshot = AudioReactiveScriptEngine.shared.audioVisualizationSnapshot()
-        let smoothing = min(max(AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_audiobars_smoothing", fallback: 0.72), 0), 0.95)
-        let spectrum = snapshot.spectrum
-        let bands = (0..<16).map { index -> Float in
-            guard snapshot.level > 0.012 else { return 0 }
-            let start = index * 4
-            let end = min(start + 4, spectrum.count)
-            guard start < end else { return 0 }
-            let average = spectrum[start..<end].reduce(0, +) / Double(end - start)
-            return min(max(Float((average - 0.006) * 1.8), 0), 1)
-        }
-        for index in 0..<16 {
-            let attack = bands[index] > smoothedAudioBands[index] ? min(smoothing, 0.55) : smoothing
-            smoothedAudioBands[index] = smoothedAudioBands[index] * attack + bands[index] * (1 - attack)
-        }
-        return (SIMD4<Float>(smoothedAudioBands[0], smoothedAudioBands[1], smoothedAudioBands[2], smoothedAudioBands[3]),
-                SIMD4<Float>(smoothedAudioBands[4], smoothedAudioBands[5], smoothedAudioBands[6], smoothedAudioBands[7]),
-                SIMD4<Float>(smoothedAudioBands[8], smoothedAudioBands[9], smoothedAudioBands[10], smoothedAudioBands[11]),
-                SIMD4<Float>(smoothedAudioBands[12], smoothedAudioBands[13], smoothedAudioBands[14], smoothedAudioBands[15]))
-    }
 
-    private func dynamicEncoder(for pipeline: MTLRenderPipelineState, source: MTLTexture, output: MTLTexture,
-                                time: Float, audioLevel: Float, drawableSize: SIMD2<Float>,
-                                pass: SceneDynamicEffectPass, fragmentURL: URL,
-                                commandBuffer: MTLCommandBuffer) -> MTLRenderCommandEncoder? {
-        let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = output
-        descriptor.colorAttachments[0].loadAction = .clear
-        descriptor.colorAttachments[0].storeAction = .store
-        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return nil }
-        encoder.setRenderPipelineState(pipeline)
-        var uniform = layerUniform(position: drawableSize / 2, size: drawableSize, opacity: 1,
-                                   drawableSize: drawableSize)
-        uniform.sceneSize = drawableSize
-        encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
-        encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
-        var effect = EffectUniform(time: time, pulse: Float(audioLevel))
-        effect.cursor = .zero
-        encoder.setVertexBytes(&effect, length: MemoryLayout<EffectUniform>.stride, index: 1)
-        encoder.setFragmentBytes(&effect, length: MemoryLayout<EffectUniform>.stride, index: 1)
-        let values = dynamicPassValues(pass, reflection: dynamicEffects.reflection(for: fragmentURL))
-        if !values.isEmpty {
-            values.withUnsafeBytes { bytes in
-                encoder.setFragmentBytes(bytes.baseAddress!, length: bytes.count, index: 2)
-            }
-        }
-        encoder.setFragmentTexture(source, index: 0)
-        for (index, texturePath) in (pass.textures ?? []).enumerated() {
-            guard let texturePath else { continue }
-            if texturePath.hasPrefix("_rt") || texturePath.hasPrefix("rt/") {
-                encoder.setFragmentTexture(source, index: index)
-                continue
-            }
-            guard let url = dynamicEffects.textureURL(for: texturePath),
-                  let texture = dynamicTexture(for: url) else { continue }
-            encoder.setFragmentTexture(texture, index: index)
-        }
-        if let sampler = dynamicSampler(for: pass) {
-            let textureCount = max((pass.textures ?? []).count, 1)
-            for index in 0..<textureCount { encoder.setFragmentSamplerState(sampler, index: index) }
-        }
-        return encoder
-    }
 
-    private func dynamicSampler(for pass: SceneDynamicEffectPass) -> MTLSamplerState? {
-        let filter = pass.filter?.lowercased() ?? "linear"
-        let address = pass.address?.lowercased() ?? "clamp"
-        let key = "\(filter)|\(address)|\(pass.sampler ?? "")"
-        if let cached = dynamicSamplerCache[key] { return cached }
-        let descriptor = MTLSamplerDescriptor()
-        descriptor.minFilter = filter.contains("nearest") ? .nearest : .linear
-        descriptor.magFilter = descriptor.minFilter
-        let addressMode: MTLSamplerAddressMode = address.contains("repeat") ? .repeat : .clampToEdge
-        descriptor.sAddressMode = addressMode
-        descriptor.tAddressMode = addressMode
-        guard let sampler = device.makeSamplerState(descriptor: descriptor) else { return nil }
-        dynamicSamplerCache[key] = sampler
-        return sampler
-    }
 
-    private func dynamicTexture(for url: URL) -> MTLTexture? {
-        if let cached = dynamicTextureCache[url] { return cached }
-        let source: SceneMetalTextureSource?
-        if url.pathExtension.lowercased() == "tex" {
-            let parser = TEXParser(data: (try? Data(contentsOf: url)) ?? Data())
-            source = parser.extractImage().map(SceneMetalTextureSource.image)
-        } else {
-            source = NSImage(contentsOf: url).map(SceneMetalTextureSource.image)
-        }
-        guard let source, let frame = makeTextureFrames(from: source)?.first else { return nil }
-        dynamicTextureCache[url] = frame.texture
-        return frame.texture
-    }
-
-    private func dynamicPassValues(_ pass: SceneDynamicEffectPass,
-                                   reflection: SceneShaderReflection?) -> [Float] {
-        let constants = (pass.constants ?? [:]).merging(pass.uniforms ?? [:], uniquingKeysWith: { first, _ in first })
-        let keys: [String] = reflection?.uniforms
-            .filter { !$0.type.hasPrefix("sampler") }
-            .map { uniform in
-                let name = uniform.name.lowercased()
-                let semantic = uniform.semantic?.lowercased()
-                return constants.keys.first { key in
-                    let normalized = key.lowercased()
-                    return normalized == name || normalized == name.replacingOccurrences(of: "g_", with: "")
-                        || semantic?.contains("\"material\":\"\(normalized)\"") == true
-                } ?? uniform.name
-            } ?? constants.keys.sorted()
-        return keys.flatMap { (key) -> [Float] in
-            guard let constant = constants[key] else { return [0] }
-            if let number = constant.number { return [Float(number)] }
-            if let value = constant.value {
-                return value.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Float($0) }
-            }
-            if let script = constant.script {
-                return [AudioReactiveScriptEngine.shared.evaluate(script, fallback: 0)]
-            }
-            return []
-        }
-    }
 
     private func sceneRenderTarget(matching descriptor: MTLRenderPassDescriptor) -> MTLTexture? {
         let pixelSize = SIMD2<Float>(max(1, sceneSize.x.rounded()), max(1, sceneSize.y.rounded()))

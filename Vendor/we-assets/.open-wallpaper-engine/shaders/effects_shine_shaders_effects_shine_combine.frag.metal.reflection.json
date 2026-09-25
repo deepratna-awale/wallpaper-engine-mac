@@ -1,1 +1,0 @@
-{"textures":["g_Texture2","g_Texture0","g_Texture1"],"combos":{"BLENDMODE":"BLENDMODE","COPYBG":"COPYBG"},"uniforms":[{"name":"g_Texture2","semantic":"{\"hidden\":true,\"default\":\"_rt_FullFrameBuffer\"}\r","type":"sampler2D"},{"name":"g_Texture0","semantic":"{\"hidden\":true}\r","type":"sampler2D"},{"name":"g_Texture1","semantic":"{\"hidden\":true}\r","type":"sampler2D"}]}

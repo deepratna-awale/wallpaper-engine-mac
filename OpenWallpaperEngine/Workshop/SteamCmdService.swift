@@ -383,7 +383,6 @@ class SteamCmdService: ObservableObject {
                             try fm.copyItem(at: sourcePath, to: dest)
                             DispatchQueue.global(qos: .utility).async {
                                 WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: dest)
-                                SceneShaderTranslator.translatePackageShaders(in: dest)
                             }
                         } catch {
                             self.downloadProgress[workshopId] = .failed("Copy failed: \(error.localizedDescription)")

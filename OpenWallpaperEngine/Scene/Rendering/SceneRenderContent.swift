@@ -10,19 +10,6 @@ enum SceneMetalTextureSource {
     case video(VideoTextureStream)
 }
 
-struct SceneMetalEffect {
-    let name: String
-    let constants: [String: [Float]]
-    let mask: SceneMetalTextureSource?
-    let scripts: [String: String]
-    /// Per-parameter user-property keys, one per component. Sampled every frame so music sync
-    /// reacts live rather than being frozen at content-build time.
-    var overrideKeys: [String: [String]] = [:]
-    /// The image a blend effect composites over the layer, with the Photoshop-style mode it uses.
-    var blend: SceneMetalTextureSource? = nil
-    var blendMode: Int = 0
-}
-
 struct SceneMetalLayer {
     let id: String
     let name: String
@@ -51,12 +38,9 @@ struct SceneMetalLayer {
     let rotationScript: String?
     let rotationAnimation: WEVectorKeyframeAnimation?
     let effects: SceneMaterialEffects
-    let sceneEffects: [SceneMetalEffect]
-    let xraySource: SceneMetalTextureSource?
     /// Set for video layers so the picture can pulse with the music the way the AVKit path does.
     var musicSync: VideoMusicSyncVisuals? = nil
-    /// Authored effects that run through Wallpaper Engine's own shaders (Phase 2). Effects that
-    /// could not be planned stay in `sceneEffects` until the native stack is removed.
+    /// Authored effects, run through Wallpaper Engine's own shaders.
     var weEffects: [SceneEffectPlan] = []
     /// Composition, fullscreen and project layers: the base image is the scene rendered so far
     /// under the layer (`_rt_FullFrameBuffer`), not a texture.
@@ -131,7 +115,5 @@ struct SceneMetalContent {
     let layers: [SceneMetalLayer]
     let particleSystems: [SceneMetalParticleSystem]
     let sceneScript: String?
-    let effects: Set<String>
     let bloom: SceneBloomSettings
-    let dynamicEffects: SceneDynamicEffectCatalog
 }

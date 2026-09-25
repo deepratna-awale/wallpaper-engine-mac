@@ -1,1 +1,0 @@
-{"textures":["g_Texture0","g_Texture1"],"uniforms":[{"semantic":"{\"hidden\":true}\r","type":"sampler2D","name":"g_Texture0"},{"semantic":"{\"hidden\":true}\r","type":"sampler2D","name":"g_Texture1"}],"combos":{}}

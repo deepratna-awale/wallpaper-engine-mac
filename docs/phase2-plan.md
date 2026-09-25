@@ -2,7 +2,7 @@
 
 **Goal:** every WE effect — built-in or Workshop, single- or multi-pass — renders through WE's own shaders with WE's semantics. When this phase is done, the hand-written native effect stack is deleted.
 
-**Status:** planned 2026-09-25. It lands on `deepratna/feature-work` (PR #2), milestone by milestone.
+**Status (2026-09-25):** M1–M7 landed on `deepratna/feature-work` (PR #2). M8 (library coverage sweep) and M9 (in-process compiler, binary archive) remain. Script access to effects (`getEffect`/`setMaterialProperty`) moved to the Phase 6 SceneScript rewrite.
 
 **Sources:**
 - Three research reports, kept in the session scratchpad and summarised here:

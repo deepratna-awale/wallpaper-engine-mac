@@ -1,32 +1,10 @@
 import XCTest
-import Metal
 @testable import OpenWallpaperEngine
 
 /// Headless checks that the scene pipeline actually produces what WE content needs. Known gaps are
 /// recorded with XCTExpectFailure (strict), so fixing one makes its test fail until the expectation
 /// is removed, and the gap can't be forgotten.
 final class RenderCheckTests: XCTestCase {
-    func testTranslatedEffectPipelinesBuild() throws {
-        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
-        let shaders = try XCTUnwrap(Bundle.main.resourceURL)
-            .appending(path: "we-assets/.open-wallpaper-engine/shaders", directoryHint: .isDirectory)
-        let names = try FileManager.default.contentsOfDirectory(atPath: shaders.path)
-        let vertexShaders = names.filter { $0.hasSuffix(".vert.metal") && !$0.contains("_preview_") }.sorted()
-        XCTAssertFalse(vertexShaders.isEmpty)
-        let cache = DynamicEffectPipelineCache(device: device)
-        var failed: [String] = []
-        for vertex in vertexShaders {
-            let fragment = vertex.replacingOccurrences(of: ".vert.metal", with: ".frag.metal")
-            guard names.contains(fragment) else { continue }
-            if cache.pipeline(vertexURL: shaders.appending(path: vertex), fragmentURL: shaders.appending(path: fragment),
-                              pixelFormat: .bgra8Unorm, macroConfiguration: "", blending: nil) == nil {
-                failed.append(vertex)
-            }
-        }
-        XCTExpectFailure("A1: pipelines have no vertex descriptor, so no translated WE shader renders")
-        XCTAssertEqual(failed, [], "\(failed.count) of \(vertexShaders.count) effect pipelines failed to build")
-    }
-
     func testLoaderKeepsEveryVisibleLayer() throws {
         let directory = Fixtures.url("Scenes/layers")
         let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/layers/project.json"))

@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_Texture0", "type": "sampler2D", "semantic": null}, {"name": "g_Texture1", "type": "sampler2D", "semantic": null}], "textures": ["g_Texture0", "g_Texture1"], "combos": {}}

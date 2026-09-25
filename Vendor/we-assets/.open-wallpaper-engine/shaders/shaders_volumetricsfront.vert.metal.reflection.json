@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_ViewProjectionMatrix", "type": "mat4", "semantic": null}, {"name": "g_AltViewProjectionMatrix", "type": "mat4", "semantic": null}], "textures": [], "combos": {}}

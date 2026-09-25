@@ -1,1 +1,0 @@
-{"uniforms": [{"name": "g_Texture1", "type": "sampler2D", "semantic": "{\"material\":\"morph\"}"}, {"name": "g_Texture1Texel", "type": "vec4", "semantic": null}], "textures": ["g_Texture1"], "combos": {}}
