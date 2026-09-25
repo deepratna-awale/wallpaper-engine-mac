@@ -22,17 +22,21 @@ struct LiveSceneValueContext: SceneValueContext {
     /// Clock passed to the script engine (it defaults to `CACurrentMediaTime()`).
     let scriptTime: Double
     let layerId: String?
+    /// The wallpaper whose user properties to read; nil reads the wallpaper being rendered.
+    let wallpaper: String?
 
     init(engine: AudioReactiveScriptEngine = .shared, time: Double,
-         scriptTime: Double = CACurrentMediaTime(), layerId: String? = nil) {
+         scriptTime: Double = CACurrentMediaTime(), layerId: String? = nil, wallpaper: String? = nil) {
         self.engine = engine
         self.time = time
         self.scriptTime = scriptTime
         self.layerId = layerId
+        self.wallpaper = wallpaper
     }
 
     func userProperty(_ name: String) -> String? {
-        engine.userPropertyString(name)
+        if let wallpaper { return engine.userPropertyString(name, wallpaper: wallpaper) }
+        return engine.userPropertyString(name)
     }
 
     func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? {

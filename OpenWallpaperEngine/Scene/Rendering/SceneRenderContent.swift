@@ -118,4 +118,6 @@ struct SceneMetalContent {
     let particleSystems: [SceneMetalParticleSystem]
     let sceneScript: String?
     let bloom: SceneBloomSettings
+    /// The wallpaper instance's key in the script engine's user-property store (its directory path).
+    var wallpaperKey = ""
 }

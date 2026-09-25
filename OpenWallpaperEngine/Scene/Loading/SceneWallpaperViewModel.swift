@@ -327,13 +327,8 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func prepareSceneUserPropertyDefaults(for wallpaper: WEWallpaper, scene: WEScene) {
-        guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame,
-              let data = try? Data(contentsOf: wallpaper.wallpaperDirectory.appending(path: "project.json")),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let general = root["general"] as? [String: Any],
-              let properties = general["properties"] as? [String: [String: Any]] else {
-            return
-        }
+        guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame else { return }
+        let properties = Self.declaredUserProperties(in: wallpaper.wallpaperDirectory)
         let key = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
         let explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
         let defaults = UserDefaults.standard
@@ -371,7 +366,21 @@ class SceneWallpaperViewModel: ObservableObject {
             values[property] = fallback.visibleCondition ?? "true"
         }
         defaults.set(values, forKey: key)
-        AudioReactiveScriptEngine.shared.setUserProperties(values)
+        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaper.wallpaperDirectory.path,
+                                                           replacing: true)
+    }
+
+    /// `general.properties` of project.json; empty when the wallpaper declares none.
+    private static func declaredUserProperties(in directory: URL) -> [String: [String: Any]] {
+        let url = directory.appending(path: "project.json")
+        do {
+            let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+            let general = root?["general"] as? [String: Any]
+            return general?["properties"] as? [String: [String: Any]] ?? [:]
+        } catch {
+            OWELog.error(.scene, "Can't read user properties from \(url.path): \(error)")
+            return [:]
+        }
     }
 
     private func loadPreviewImage(wallpaperDir: URL) -> NSImage? {
@@ -410,7 +419,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let layers: [SceneMetalLayer] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
             if object.textValue != nil,
-                    AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(object.id ?? -1)_enabled") == "false" {
+                    userProperty("_owe_text_\(object.id ?? -1)_enabled") == "false" {
                 return nil
             }
             var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
@@ -428,7 +437,8 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         if !layers.isEmpty || !particleSystems.isEmpty {
             let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
-                                            sceneScript: sceneScript, bloom: bloomSettings(for: scene.general))
+                                            sceneScript: sceneScript, bloom: bloomSettings(for: scene.general),
+                                            wallpaperKey: propertyStoreKey)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -954,8 +964,9 @@ class SceneWallpaperViewModel: ObservableObject {
             })
         var plans: [SceneEffectPlan] = []
         var handled = Set<Int>()
+        let storeKey = propertyStoreKey
         for (index, effect) in effects.enumerated() {
-            let enabled = AudioReactiveScriptEngine.shared.userPropertyString(
+            let enabled = userProperty(
                 sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: index)) != "false"
             guard isEffectVisible(effect), enabled else {
                 handled.insert(index)
@@ -964,7 +975,8 @@ class SceneWallpaperViewModel: ObservableObject {
             do {
                 plans.append(try builder.build(effect, overrides: { key in
                     AudioReactiveScriptEngine.shared.userPropertyString(
-                        sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key))
+                        sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key),
+                        wallpaper: storeKey)
                 }))
                 handled.insert(index)
             } catch {
@@ -979,14 +991,24 @@ class SceneWallpaperViewModel: ObservableObject {
 
 
 
+    /// Key of this wallpaper instance's user properties in the script engine's store.
+    var propertyStoreKey: String {
+        (loadedWallpaperDirectory ?? currentWallpaper.wallpaperDirectory).path
+    }
+
+    /// This wallpaper's current value of a user property.
+    func userProperty(_ name: String) -> String? {
+        AudioReactiveScriptEngine.shared.userPropertyString(name, wallpaper: propertyStoreKey)
+    }
+
     private func isObjectVisible(_ object: WESceneObject) -> Bool {
         let objectID = object.id ?? -1
         let overrideKey = sceneObjectVisibilityKey(objectID: objectID)
-        if let override = AudioReactiveScriptEngine.shared.userPropertyString(overrideKey) {
+        if let override = userProperty(overrideKey) {
             return override != "false"
         }
         if object.textValue != nil {
-            if AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(objectID)_enabled") == "false" {
+            if userProperty("_owe_text_\(objectID)_enabled") == "false" {
                 return false
             }
             if let name = object.name?.lowercased(), name.contains("clock") || name.contains("date") || name.contains("day") {
@@ -994,7 +1016,7 @@ class SceneWallpaperViewModel: ObservableObject {
             }
         }
         if let property = object.visibleUserProperty {
-            guard let selectedValue = AudioReactiveScriptEngine.shared.userPropertyString(property) else {
+            guard let selectedValue = userProperty(property) else {
                 return object.visible != false
             }
             if let condition = object.visibleCondition {
@@ -1013,7 +1035,8 @@ class SceneWallpaperViewModel: ObservableObject {
             objectsByID[id] = object
             visibility[String(id)] = isObjectVisible(object)
         }
-        visibility = AudioReactiveScriptEngine.shared.resolveLayerVisibility(scene.objects, initial: visibility)
+        visibility = AudioReactiveScriptEngine.shared.resolveLayerVisibility(scene.objects, initial: visibility,
+                                                                             wallpaper: propertyStoreKey)
 
         func isVisibleWithParents(_ object: WESceneObject, visited: Set<Int> = []) -> Bool {
             let id = object.id ?? -1
@@ -1029,7 +1052,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func isEffectVisible(_ effect: WEObjectEffect) -> Bool {
         if let property = effect.visibleUserProperty {
-            guard let selectedValue = AudioReactiveScriptEngine.shared.userPropertyString(property) else { return false }
+            guard let selectedValue = userProperty(property) else { return false }
             if let condition = effect.visibleCondition {
                 return normalizeVariant(condition) == normalizeVariant(selectedValue)
             }

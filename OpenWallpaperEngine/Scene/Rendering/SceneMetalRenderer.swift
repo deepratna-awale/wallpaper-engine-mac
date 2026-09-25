@@ -96,6 +96,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var particleSystems: [ParticleSystemRuntime] = []
     private var lastFrameTime = CACurrentMediaTime()
     private var sceneScript: String?
+    /// Whose user properties this renderer's frames read (see `SceneMetalContent.wallpaperKey`).
+    private var wallpaperKey = ""
     private var placement: WallpaperPlacement = .fill
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     private var sceneRenderTarget: MTLTexture?
@@ -190,6 +192,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.layers = preparedLayers
                 self.particleSystems = preparedParticleSystems
                 self.sceneScript = content.sceneScript
+                self.wallpaperKey = content.wallpaperKey
                 self.textFrameCache.removeAll(keepingCapacity: true)
                 var scriptLayers: [String: [String: Any]] = [:]
                 var layerAliases: [String: String] = [:]
@@ -267,7 +270,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         let frameStart = CACurrentMediaTime()
         let frameSignpost = OWESignpost.begin(OWESignpost.render, "frame")
-        AudioReactiveScriptEngine.shared.beginFrame()
+        AudioReactiveScriptEngine.shared.beginFrame(wallpaper: wallpaperKey)
         defer {
             AudioReactiveScriptEngine.shared.endFrame()
             frameSignpost.end()
