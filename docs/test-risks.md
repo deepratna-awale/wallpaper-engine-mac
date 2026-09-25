@@ -950,3 +950,36 @@ Line numbers are at `94a9e6e` unless a commit is named. Each probe ran against t
 - **Fix direction:** skip `applyUserProperties` for records defined after the first load (or document the choice), and drain after `load`.
 
 Probes were small `swiftc` programs outside the repo: SF1 and SF2 evaluate the repo's `runtime.js` in a plain `JSContext` and drive `define`/`load`/`remove`/`frame`; SF3 builds a typed array exactly as `SceneScriptSharedBuffer.init` does; S19's regex timing sets `JSContextGroupSetExecutionTimeLimit` to 0.5 s as `SceneScriptWatchdog` does.
+
+### WP3: `4d5410d`, `70c7a98`, `284ec4a` (tokenizer and module compiler)
+
+Ran 33 adversarial snippets through `SceneScriptModuleTransformer` and JavaScriptCore (a `swiftc` build of `Scene/Scripting/Modules/*.swift`). All behave like a V8 module:
+- S1: division vs regex (`a / b / c`, `a /2/ c`, after `)`/`return`/a block/an `if (x)`, `/[/]/`), templates with `}` and nested templates, `export`/`import` in strings, comments and as property names, `export` on its own line, multi-declarator and destructuring exports, CJK identifiers, HTML comments, hashbangs.
+- S2: only exported names get getters; a non-exported `function update(){ throw … }` is invisible.
+- S3: the factory is strict; `counter = 0` throws a ReferenceError on line 1, top-level `this` is `undefined`, a top-level `return` is a compile error.
+- S4: CRLF, CR-only and U+2028 sources report the original line; line 1 columns are shifted by the header, as documented.
+- ASI hazards (`export let a = 1` followed by a `(` line) fail the same way V8 does.
+
+**No confirmed issues.** SF1 still applies: errors built inside runtime or extension JS carry that file's line.
+
+### WP4: `c75f615`, `7eb0126`, `140b510`, `73d3b6d` (engine, input, console, timers, localStorage)
+
+**What the commits already cover.** S9: a cancel after the timer fired is a no-op (the timer object, not an id, is cancelled); timers added while timers run wait for the next frame; an interval resets to its period, so a resume after a pause fires it once; NaN, negative and missing delays fire next frame; timers die with their record. S10/S21: writes flush at most once per second of scene time and when the extension is released (after `destroy()` ran), and atomically; an unreadable file starts empty with one log line; one `SceneScriptStorage` serves every runtime, so two screens don't clobber `'global'`. S14: each `applyUserProperties` call gets its own converted object. S23: the native blocks capture `self` weakly.
+
+**SF6. `localStorage` keys are not counted against the 100 KB cap. Low.** `setValue` sizes an entry as `8 + value.utf8.count` (`Scene/Scripting/Engine/SceneScriptStorage.swift:54`, `:158-159`); the key is free. A script that uses data as keys (`localStorage.set(JSON.stringify(state), 1)` with a new state each frame) grows the file and the in-memory store without bound. Whether wallpaper64.exe counts keys should be checked at the same address as the value size; if it doesn't, cap the key length or the entry count anyway, because the file is ours.
+- **Test:** 10 000 `set`s of distinct 1 KB keys → refused past the cap (or the documented WE behaviour), file size bounded.
+
+**SF7. Writes of the last second are lost when the app quits. Low.** Flushing happens in `didRunFrame` once a second (`Engine/SceneScriptEngineExtension.swift:99-101`) and in `deinit` (`:69`, `SceneScriptStorage.swift:40`). Nothing calls `SceneScriptStorage.flush()` from `applicationWillTerminate` (`App/SafeRestart.swift:80` is the existing hook), and runtimes are not released on quit. A counter a script stores on every click loses up to one second of clicks.
+- **Fix direction:** WP11 flushes the shared storage from `applicationWillTerminate` (and on sleep).
+
+**SF8. `engine.runtime` is a Float32 and steps by more than a frame after 1.5 days. Low (verify against WE).** `frame[Slot.runtime] = Float(runtimeSeconds)` (`Engine/SceneScriptEngineExtension.swift:112`). Float32 spacing is 1/64 s at 2^17 s (36 h) and 1/32 s at 3 days, so `Math.sin(engine.runtime * k)` animations stutter on a wallpaper left running (the normal case). The commit says WE's is a float too; if that is right the behaviour is faithful, otherwise keep a Double (a getter over a `Float64Array` costs the same).
+
+### WP5: `5db500f` (WE's spectrum pipeline), `18e3bfb` (registerAudioBuffers)
+
+**What the commits already cover.** S16: the smoothing is now timed by `deltaTime` from the monotonic clock (`Audio/AudioSpectrum.swift:89-99`), so the extra `advanceFrame()` from a second display's renderer adds one 0.1 ms step instead of a whole frame; the extension only reads the snapshot. The arrays are filled on the runtime's thread before the frame (no torn reads), left/right/average are separate, 128 and non-global calls throw WE's messages.
+
+**SF9. Every script's audio arrays are views into one store per resolution, so SF3 is now reachable from any audio script, and one script's writes reach the others. High.**
+- `registerAudioBuffers` returns `store.subarray(...)` of the one shared `Float32Array` (`Scene/Scripting/Audio/sceneScriptAudioBuffers.js:15-19`). `audio.left.buffer` is that store's `ArrayBuffer`: `audio.left.buffer.transfer()` in any script detaches it for **every** script (all arrays become length 0, so every read is `undefined` and every bar goes NaN, S6) and, once collected, frees the memory `willRunFrame` keeps writing (SF3).
+- A script that normalizes in place (`buf.average[i] /= max`) changes what every later script sees in the same frame. The commit cites WE's DLL tick "copying" the host arrays at `0x18164f84d`; if that copy targets per-registration arrays, WE isolates scripts and ours doesn't.
+- **Fix direction:** fix SF3 first; then give each registration its own arrays refreshed in `willRunFrame` (or pin, from the DLL, that WE shares them).
+- **Test:** script A writes `average[0] = 99` in `update`, script B later in the same frame reads the spectrum value; script A calls `left.buffer.transfer()` and script B still reads 16 finite values.
