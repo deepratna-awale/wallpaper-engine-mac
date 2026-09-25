@@ -109,7 +109,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var frameLocals: [String: SceneLocalTransform] = [:]
     private var layerIndexByStateId: [String: Int] = [:]
     /// The most recently committed frame, so state a removal frees can wait for it.
-    private var lastCommandBuffer: MTLCommandBuffer?
+    private(set) var lastCommandBuffer: MTLCommandBuffer?
     /// Removed clones' state ids, freed once the frame that last drew them completes.
     private var deferredReleases = SceneDeferredReleases()
     /// Told how long each frame took on the CPU, including the wait for a drawable.

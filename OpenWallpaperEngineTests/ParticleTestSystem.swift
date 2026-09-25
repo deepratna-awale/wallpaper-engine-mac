@@ -4,6 +4,7 @@ import simd
 
 /// A particle system configuration for simulation tests: every operator off unless set.
 struct ParticleTestSystem {
+    var source: SceneMetalTextureSource = .image(NSImage())
     var origin = SIMD2<Float>(500, 500)
     var emissionRate: Float = 600
     var maximum = 1000
@@ -61,7 +62,7 @@ struct ParticleTestSystem {
 
     var configuration: SceneMetalParticleSystem {
         var system = SceneMetalParticleSystem(
-            source: .image(NSImage()), origin: origin, emissionRate: emissionRate, emissionRateScript: nil,
+            source: source, origin: origin, emissionRate: emissionRate, emissionRateScript: nil,
             maximumParticleCount: maximum, spawnExtent: spawnExtent, lifetime: lifetime, size: size,
             minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity, gravity: gravity,
             drag: drag, dragScript: nil, alpha: alpha, minimumColor: minimumColor, maximumColor: maximumColor,
