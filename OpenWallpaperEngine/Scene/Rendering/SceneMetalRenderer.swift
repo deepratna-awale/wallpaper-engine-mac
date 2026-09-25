@@ -126,6 +126,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var drawablePixelsPerPoint: Float = 1
     /// Last frame's normalised pointer, for `g_PointerPositionLast`; nil until the first frame.
     private var lastPointer: SIMD2<Float>?
+    /// Where the cursor was last seen on this renderer's display.
+    private var cursorTracker = SceneCursorTracker()
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     private var sceneRenderTarget: MTLTexture?
     private var sceneRenderTargetSize = SIMD2<Int>.zero
@@ -229,6 +231,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             clock = SceneClock()
             transforms = .empty
             lastPointer = nil
+            cursorTracker = SceneCursorTracker()
             pendingEffectReleases.removeAll()
             lastCommandBuffer = nil
             return
@@ -381,7 +384,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         if let sceneScript {
             AudioReactiveScriptEngine.shared.executeSceneScript(sceneScript, time: sceneTime)
         }
-        let cursor = sceneCursor(in: view, drawableSize: realDrawableSize)
+        let cursorSample = cursorTracker.update(sceneCursor(in: view, drawableSize: realDrawableSize),
+                                                sceneSize: sceneSize)
+        let cursor = cursorSample.position
         AudioReactiveScriptEngine.shared.updateSceneCursor(cursor)
         materializeScriptCreatedLayers()
         releaseFinishedEffectState()
@@ -396,7 +401,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.pointer = pointer
         effectFrame.pointerLast = lastPointer ?? pointer
         lastPointer = pointer
-        effectFrame.pointerState = BuiltinFrameContext.pointerState(primaryDown: NSEvent.pressedMouseButtons & 1 != 0)
+        effectFrame.pointerState = BuiltinFrameContext.pointerState(
+            primaryDown: cursorSample.onDisplay && NSEvent.pressedMouseButtons & 1 != 0)
         effectFrame.screenSize = drawableSize
         effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
         let motion = cameraMotion(cursor: cursor, time: time)
@@ -957,11 +963,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                             transformScaleY: 1)
     }
 
-    private func sceneCursor(in view: MTKView, drawableSize: SIMD2<Float>) -> SIMD2<Float> {
+    /// The cursor in scene units, or nil while it is on another display.
+    private func sceneCursor(in view: MTKView, drawableSize: SIMD2<Float>) -> SIMD2<Float>? {
         guard let window = view.window,
               let screen = window.screen,
               screen.frame.contains(NSEvent.mouseLocation) else {
-            return sceneSize / 2
+            return nil
         }
         let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
         let mouse = view.convert(windowPoint, from: nil)
@@ -1651,5 +1658,19 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let fadeIn = system.fadeIn > 0 ? min(progress / system.fadeIn, 1) : 1
         let fadeOut = system.fadeOut < 1 ? min((1 - progress) / (1 - system.fadeOut), 1) : 1
         return particle.alpha * fadeIn * fadeOut * system.configuration.opacityMultiplier
+    }
+}
+/// WE keeps the pointer where it left a display rather than recentring it, and reports no
+/// button pressed while it is elsewhere; a jump to the centre would kick pointer-driven effects.
+struct SceneCursorTracker {
+    private(set) var lastPosition: SIMD2<Float>?
+
+    /// `live` is nil while the cursor is on another display.
+    mutating func update(_ live: SIMD2<Float>?, sceneSize: SIMD2<Float>) -> (position: SIMD2<Float>, onDisplay: Bool) {
+        if let live {
+            lastPosition = live
+            return (live, true)
+        }
+        return (lastPosition ?? sceneSize / 2, false)
     }
 }
