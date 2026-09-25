@@ -328,14 +328,27 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func prepareSceneUserPropertyDefaults(for wallpaper: WEWallpaper, scene: WEScene) {
         guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame else { return }
-        let properties = Self.declaredUserProperties(in: wallpaper.wallpaperDirectory)
         let key = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
         let explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
         let defaults = UserDefaults.standard
-        var values = defaults.bool(forKey: explicitKey)
+        let stored = defaults.bool(forKey: explicitKey)
             ? defaults.dictionary(forKey: key) as? [String: String] ?? [:]
             : [:]
-        for (name, property) in properties where values[name] == nil {
+        let values = Self.userPropertyValues(stored: stored,
+                                             declared: Self.declaredUserProperties(in: wallpaper.wallpaperDirectory),
+                                             scene: scene)
+        defaults.set(values, forKey: key)
+        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaper.wallpaperDirectory.path,
+                                                           replacing: true)
+    }
+
+    /// The wallpaper's property values: what the user stored, else project.json's defaults (the
+    /// first option for a combo without one). Nothing else is invented: WE shows exactly what the
+    /// properties say, even when that selects no variant of a conditional layer.
+    static func userPropertyValues(stored: [String: String], declared: [String: [String: Any]],
+                                   scene: WEScene) -> [String: String] {
+        var values = stored
+        for (name, property) in declared where values[name] == nil {
             if let value = property["value"] {
                 values[name] = sceneUserPropertyString(value)
             } else if property["type"] as? String == "combo",
@@ -354,22 +367,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 values[prefix + "size"] = String(pointSize)
             }
         }
-        let conditionalImages = scene.objects.filter { $0.image != nil && $0.visibleUserProperty != nil }
-        let hasSelectedVariant = conditionalImages.contains { object in
-            guard let property = object.visibleUserProperty, let selectedValue = values[property] else { return false }
-            if let condition = object.visibleCondition {
-                return normalizeVariant(condition) == normalizeVariant(selectedValue)
-            }
-            return selectedValue.caseInsensitiveCompare("true") == .orderedSame || selectedValue == "1"
-        }
-        if !conditionalImages.isEmpty, !hasSelectedVariant,
-           let fallback = conditionalImages.first(where: { $0.visible == true }) ?? conditionalImages.first,
-           let property = fallback.visibleUserProperty {
-            values[property] = fallback.visibleCondition ?? "true"
-        }
-        defaults.set(values, forKey: key)
-        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaper.wallpaperDirectory.path,
-                                                           replacing: true)
+        return values
     }
 
     /// `general.properties` of project.json; empty when the wallpaper declares none.
