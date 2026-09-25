@@ -1,6 +1,6 @@
 # SceneScript plan
 
-**Status: 2026-09-25, research only.** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
+**Status: 2026-09-25, WP0 (from evidence), WP1 and WP2 done.** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
 
 Sources, in order of authority:
 
@@ -14,7 +14,7 @@ Sources, in order of authority:
 4. **linux-wallpaperengine** (LWE) as a second implementation to compare against.
 5. **Measurements** on JavaScriptCore on this Mac (§4.6).
 
-Where WE's behaviour is not documented, the plan says so and names the probe that settles it (§5, WP0). Nothing here is guessed silently.
+Where WE's behaviour is not documented, §1.9 settles it from WE's binaries and marks what remains a best guess. Nothing here is guessed silently.
 
 ---
 
@@ -49,8 +49,8 @@ Where WE's behaviour is not documented, the plan says so and names the probe tha
 | `mediaPropertiesChanged(e)` | track metadata changed | `{title, artist, subTitle, albumTitle, albumArtist, genres, contentType}` |
 | `mediaThumbnailChanged(e)` | artwork changed | `{hasThumbnail, primaryColor, secondaryColor, tertiaryColor, textColor, highContrastColor}` (Vec3) |
 | `mediaTimelineChanged(e)` | position changed (only some players) | `{position, duration}` |
-| `animationEvent(e)` | *not in the d.ts*; named in the DLL | `AnimationEvent {name, frame}` (puppet/timeline events) |
-| `cursorHitTest` | *not in the d.ts*; named in the DLL | unknown, probe P7 |
+| `animationEvent(e, value)` | *not in the d.ts*; named in the DLL | `AnimationEvent {name, frame}` (puppet/timeline events), plus the property value; its return is applied (§1.9 P3) |
+| `cursorHitTest` | *not in the d.ts*; named in the DLL | never dispatched by `wallpaper64.exe` (§1.9 P7) |
 
 `CursorEvent`: `worldPosition: Vec3`, `localPosition: Vec3` ("only X and Y are supported"), `hitBox?: String` (the puppet hit box's name); `screenPosition` and `button` are commented out as "NOT USED" (`button` is always 0). The docs say `cursorClick` follows `cursorDown` and `cursorUp` on the same object.
 
@@ -137,21 +137,28 @@ Value semantics: vector getters return **copies**. In the corpus, every in-place
 
 From `scenescript64.dll`: `Script execution has been interrupted because a dead lock was detected.` (WE has a watchdog that terminates long-running scripts), `Error: ` / `Log: ` / `, col ` / ` (line ` (the log format), `JS base class error: %s`, `Cannot execute user command outside of cursor callbacks.`, `Cannot execute more than one user command per cursor click.`, and the storage file magic `LSKV0001`. From `wallpaper64.exe`: `Invalid parent configuration.`, `bin/scenestorage/` (where `localStorage` persists) and `LSBK0001`.
 
-### 1.9 Semantics still to settle with probes
+### 1.9 Semantics resolved from evidence
 
-The docs don't answer these; WP0 settles each with a probe wallpaper run in WE under CrossOver.
+WE cannot run on this Mac, not even under CrossOver, so the probes WP0 planned are impossible. Each question is settled from WE's binaries instead: `scenescript64.dll` (the DLL) and `wallpaper64.exe` (the exe), disassembled with `llvm-objdump`, following references from the strings and vtable slots into the code. Where the binaries are silent, the docs, the d.ts and the corpus decide. Addresses are virtual addresses. The disassembly and the xref scripts are in `/Volumes/980Pro/dd-agentSS1/research/` (`ssx.asm`, `wp.asm`, `xref2.py`).
 
-| # | Question | Default until probed |
-|---|---|---|
-| P1 | Order in a frame: timers, events, `update`s (object order? property order?), timeline animations, destroy | events → timers → updates in object order → deferred destroy → animations (LWE: timers, then updates) |
-| P2 | When a property is also timeline-animated or user-bound, does `value` include the animated or user value, or only the script's last return? | documented: the current value, so accumulators work. Open for animated properties: pass the post-animation value |
-| P3 | Returning a non-coercible value (an object without x/y/z, `NaN`) | property unchanged (the docs cover only "no return") |
-| P4 | A script that throws: keeps being called? Disabled? | keeps running, and that call's result is skipped (LWE does the same); each distinct error logged once |
-| P5 | The watchdog limit, and whether a terminated script is disabled | ~1 s per call; disabled after termination |
-| P6 | Do `update`s run on hidden layers? | yes: the docs' media example hides its layer in `init` and shows it from `mediaPlaybackChanged` |
-| P7 | `cursorHitTest`, which layers receive cursor events (`solid`, alpha test?) | events on layers whose bounds contain the cursor; `solid` layers stop the event going to layers below |
-| P8 | `init` order across objects; is `applyUserProperties` before or after `init`? | module eval (all) → script-property injection → `init` (object order) → `applyUserProperties(all)` |
-| P9 | `thisObject` for particle `instanceoverride` and `general.*` scripts (the effect and material cases are documented in §1.3) | the particle system; the scene |
+Two structures anchor the evidence:
+
+- The DLL's callback name table (`0x1819a3ee0`) fixes each callback's index and bit: 0 `init`, 1 `update`, 2 `resizeScreen`, 3 `destroy`, 4 `applyUserProperties`, 5 `applyGeneralSettings`, 6 `animationEvent`, 7 `cursorHitTest`, 8–13 cursor, 14–18 media.
+- The DLL engine vtable (`0x1819a3f78`): `+0x40` is the callback dispatcher (`0x18164e4d0`), `+0x48` the per-frame tick (`0x18164f800`). In the exe, `0x140177ad0` sends one callback to every script component of the scene, in list order.
+
+| # | Question | WE's behaviour | Evidence | Status |
+|---|---|---|---|---|
+| P1 | Order in a frame | cursor events → pending user-property changes and `applyUserProperties(changed)` → media events → timeline animations and `animationEvent` → engine tick (audio buffers refilled, then timers) → `update` for every script in list order. Timers run per script over a snapshot of its list; an interval is **reset** to its period when it fires (so at most once per frame); a timeout is removed after firing. | exe frame `0x1401802d5`–`0x1401802e5`: cursor `0x140189e10`, then `0x140171440` (`applyUserProperties` via `0x1401731d0` at `0x140171a8d`, media from `0x140171b7c`, `animationEvent` at `0x1401726e7`, `tick` at `0x140172755`, `update` at `0x14017276f`); DLL tick refreshes audio at `0x18164f84d`, timers `0x18164f9b0`–`0x181650346` | evidence. Best guess: list order is scene creation order; `destroyLayer` applies after all updates (docs); where `resizeScreen` falls (we put it first) |
+| P2 | What `value` holds | the property's live value at the call, read natively; animations are evaluated earlier in the same frame, so an animated property shows this frame's animated value; otherwise the last applied value (accumulators work) | DLL `0x18164e693` → `0x1816208e0`; corpus `155fe61a17a0` (`value += …`) | evidence; best guess for how an animation and a script combine on one property |
+| P3 | Returning an unusable value | converter switches on the property type and type-checks the return; a failed check leaves the property unchanged, silently. Vectors need numeric x/y/z; a bare number is broadcast. `NaN` passes the number check and **is written**. Angles are converted degrees→radians on write. Only `init`, `update` and `animationEvent` returns are applied; `animationEvent(event, value)` receives the value too | DLL converter `0x181620e10`, skip path `0x181621458`, applied-return check `0x18164f719` | evidence |
+| P4 | A script that throws | the error is logged with line and column, the call's return is not applied, and **that callback is never called again for that script**; its other callbacks keep running. Timer and ended callbacks are logged but never disabled | DLL error handler `0x181651ab0` sets the callback's bit in the script's mask (`orl %r8d,0xdc(%rax)` at `0x181651bff`, only for error-level messages, `0x181651ba6`); the dispatcher skips masked callbacks (`testl %eax,0xdc(%r13)` at `0x18164e51c`); timers call with bit 0 (`0x1816501bc`, `0x181650943`) | evidence (contradicts the earlier "keeps running" default and LWE) |
+| P5 | The watchdog | **15 s** per outermost script call (steady clock + `0x37E11D600` ns, reset when the nesting depth returns to 0). When it fires: `TerminateExecution`, an engine-wide flag, and the "dead lock" message logged once naming the script. From then on **every** callback, timer, ended callback and new script is skipped until the engine is reset (the wallpaper reloads) | DLL `0x1816477c8` (constant), `0x181647908` (flag), `0x181653e3d` (message), skips at `0x18164e529`, `0x18164f9d2`, `0x181650743`, `0x18164bfbc`; reset `0x18164bcb0` | evidence |
+| P6 | `update` on hidden layers | yes: the broadcast checks the exported-callback bit, the component state and a scene flag, never visibility | exe `0x140177ad0`; corpus `03f0db0a6dff` hides its layer in `init` | evidence |
+| P7 | Who gets cursor events | only objects marked Solid, and only the scripts of the object that was hit. `cursorHitTest` is never dispatched by the exe | docs: cursor events "only work on objects marked as Solid"; exe `0x140177b3e`; corpus never uses `cursorHitTest` | evidence for Solid; best guess that `cursorHitTest` is unused; alpha test unknown |
+| P8 | Load order | module evaluation → `init` in list order, each script getting the current media state right after its `init` → `applyUserProperties` (all properties, once, at load) → `applyGeneralSettings` | exe `0x140172830` moves each new component through states 0→1→2, calls `init` (`0x140172bd0`), then media 14–18; `applyUserProperties` (`0x1401742e2`) only reaches state-2 components that export it (`0x1401734e4`); docs: "called once initially when the wallpaper is loaded"; corpus `105f9d26fe76` uses in `applyUserProperties` what `init` set | evidence for init first; best guess that the first call carries every property (docs), and that scripts created at runtime get no initial `applyUserProperties` (`0x140172830` never sends index 4) |
+| P9 | `thisObject` for `instanceoverride.*` and `general.*` | the particle system; the scene | none of the 29 corpus bindings on these fields touches `thisObject` or `thisLayer`, so it cannot be observed | best guess, harmless either way |
+
+WE's exact global-scope messages (DLL `.rdata`): `registerAudioBuffers can only be called from global scope.`, `registerAsset can only be called from global scope.`, `requestFeatures can only be called from global scope.`, `setTimeout cannot be called from global scope.`, `setInterval cannot be called from global scope.`, `timeout cannot be cleared from global scope.`, `<member> cannot be accessed from global scope.`, and `Resolution must be either 16, 32 or 64.`
 
 ### 1.10 linux-wallpaperengine as a reference
 
@@ -264,7 +271,7 @@ Ten further exports are the authors' own helpers (`skip`, `playTrack`, …); WE 
 
 Files:
 
-- `OpenWallpaperEngine/Scene/Scripting/AudioReactiveScriptEngine.swift` (1336 lines): audio capture, FFT, the property store, layer state and the JS runtime, all in one process-wide singleton.
+- `OpenWallpaperEngine/Scene/Scripting/AudioReactiveScriptEngine.swift`: layer state and the JS runtime in one process-wide singleton. It held audio capture, FFT and the property store too (1336 lines) until WP1 moved them to `Audio/SystemAudioCapture.swift` and `Scene/Values/SceneUserPropertyService.swift`; the engine owns one of each and forwards its old API to them.
 - `BrowserMediaIntegration.swift`: polls browser tab titles with AppleScript every 2 s.
 
 Call sites:
@@ -434,23 +441,24 @@ The corpus uses only `export function|let|var|const NAME` and `import * as X fro
 
 ### 4.4 Frame order
 
-The load phase runs once, in scene object order (P8 to confirm):
+The load phase runs once, in scene object order (§1.9 P8):
 
 1. Evaluate every module factory (global scope: `registerAudioBuffers`, `registerAsset`, `createScriptProperties().finish()`).
 2. Inject `scriptproperties` through WE's `_Internal.updateScriptProperties`. User-bound entries are resolved through `Scene/Values` and re-injected when the user property changes.
-3. `init(value)` per script, applying its return.
-4. `applyUserProperties(all)`, then `applyGeneralSettings({language})`.
+3. `init(value)` per script, applying its return; right after each `init`, that script gets the current media state (WP6).
+4. `applyUserProperties(all)` for every script, then `applyGeneralSettings({language})`.
 
 Each frame:
 
 1. Frame globals: `engine.frametime/runtime/timeOfDay`, `input.*` in scene space, audio buffers refilled in place.
-2. Inbox events, in arrival order: `applyUserProperties(changed)`, `resizeScreen`, media events, cursor events. Cursor hit tests use last frame's world transforms (§4.8).
-3. Due timers.
-4. `update(value)` for every instance in scene order. Within an object, fields go in a fixed order (visible, origin, scale, angles, alpha, color, text, effects, instanceoverride) until P1 says otherwise.
-5. Deferred structure: `destroyLayer` (after all updates, per the docs), `createLayer` materialisation, `sortLayer`, `destroy()` callbacks.
-6. Swift executes the command ring, then timeline animations, particles and transforms (which write world matrices back into the table), then render.
+2. Inbox events by kind, then arrival (§1.9 P1): `resizeScreen` (best guess), cursor events, `applyUserProperties(changed)`, media events. Cursor hit tests use last frame's world transforms (§4.8).
+3. Timeline animations and `animationEvent` (WP12).
+4. Due timers.
+5. `update(value)` for every instance in scene order. Within an object, fields go in a fixed order (visible, origin, scale, angles, alpha, color, text, effects, instanceoverride); WE's list order is creation order, which this approximates.
+6. Deferred structure: `destroyLayer` (after all updates, per the docs), `createLayer` materialisation, `sortLayer`, `destroy()` callbacks.
+7. Swift executes the command ring, then particles and transforms (which write world matrices back into the table), then render.
 
-**One native→JS call per frame** (`__rt.frame(dt)`) runs steps 1–5 in JS. Swift only fills the shared buffers before it and drains the command ring and dirty strings after it.
+**One native→JS call per frame** (`__rt.frame(dt)`) runs steps 1–6 in JS. Swift only fills the shared buffers before it and drains the command ring and dirty strings after it.
 
 ### 4.5 Errors, the watchdog and the sandbox
 
@@ -459,13 +467,13 @@ Each frame:
 - An exception is recorded on the instance: the message, `sourceURL:line:col` and the stack. It is reported to Swift through a per-frame error array, and each distinct (instance, message) is logged once through `OWELog.error(.script, …)`.
 - Other scripts are unaffected.
 - A compile error disables that instance, and its field keeps the authored value. `8bb9b9a54120` is the corpus case.
-- A runtime error keeps the instance running (P4).
+- A callback that throws is never called again for that instance; its other callbacks keep running, and the call's return is not applied (§1.9 P4). A module body that throws disables the instance. Timer callbacks are logged, never disabled.
 
 **Watchdog.** `JSContextGroupSetExecutionTimeLimit` (private C symbol, resolved with `dlsym`; nil means no watchdog, with an `.info` log).
 
 - Verified on this Mac: `while(true){}` is terminated after 0.21 s with a 0.2 s limit, and the context stays usable afterwards.
-- The limit applies per native→JS entry, so it covers the whole `__rt.frame`. On termination, `__rt.current` names the running instance. It is disabled (WE: "dead lock was detected") and the frame is retried without it next time.
-- Suggested limit: 1 s at load, 250 ms per frame.
+- The limit applies per native→JS entry, so it covers the whole `__rt.frame`; WE's applies per outermost script call. On termination `__rt.current` names the running instance, the "dead lock was detected" message is logged once, and, like WE, the **whole runtime halts**: no callback, timer or new script runs until the wallpaper reloads (§1.9 P5).
+- Limit: WE's 15 s, at load and per frame.
 
 **Sandbox.**
 
@@ -509,20 +517,15 @@ Work packages are ordered; packages in the same step touch disjoint files and ca
 
 ### Step 0 (serial)
 
-**WP0 — Ground-truth probes.** No app code.
+**WP0 — Resolved from evidence.** WE cannot run on this Mac, even under CrossOver, so no probe wallpapers. §1.9 records each answer with its evidence from WE's binaries, docs and corpus, and marks the remaining best guesses. WP9's synthetic fixtures assert the §1.9 behaviour instead of probe logs.
 
-- Build probe wallpapers under `/Volumes/980Pro/dd-scenescript/probes/` that `console.log` markers for P1–P9. For example, `update` on three objects and several fields, a timeline-animated property with a script, `update` returning `undefined`, a throwing script, `while(true)`, a hidden layer, and `solid` layers stacked under the cursor.
-- Run them in WE under CrossOver and collect WE's log (`Log:`/`Error:` lines).
-- Record the answers in §1.9 of this document.
-- Test: the probe outputs are saved as fixtures (`Tests/Fixtures/SceneScript/probes/*.json`) that WP9 asserts against.
-
-**WP1 — Split the file, moves only.** Move audio capture, FFT and `SceneUserPropertyStores` usage out of `AudioReactiveScriptEngine.swift`:
+**WP1 — Split the file, moves only.** *Done:* `AudioCapturePermissionGate` and `CaptureRestartScheduler` moved to `Audio/`, `SceneUserPropertyStores` to `Scene/Values/` (move-only commit); then the split below, with bodies unchanged and each new type owning its own lock. Move audio capture, FFT and `SceneUserPropertyStores` usage out of `AudioReactiveScriptEngine.swift`:
 
 - `Audio/SystemAudioCapture.swift` (capture, restart, spectrum analyzer feed)
 - `Scene/Values/SceneUserPropertyService.swift` (property store, music sync, `userPropertyValue`)
 - The old type keeps only scripting and forwards. No logic changes; must build.
 
-**WP2 — Runtime skeleton and interfaces.**
+**WP2 — Runtime skeleton and interfaces.** *Done;* see **Seams** below. Not wired into the renderer yet: the app keeps running `AudioReactiveScriptEngine` until WP11.
 
 - `Scene/Scripting/Runtime/SceneScriptRuntime.swift`: VM, context, watchdog, prelude loading, the `frame(dt)` driver, the error channel.
 - `SceneScriptHost.swift`: the protocol for assets, audio, media, input, storage, clock and log.
@@ -531,6 +534,48 @@ Work packages are ordered; packages in the same step touch disjoint files and ca
 - `Resources/SceneScript/runtime.js`: `__rt.invoke`, the phase flag, the error array.
 - WE's `baseclasses.js` and jsmodules are loaded **unmodified** from `WallpaperEngineAssets`.
 - Tests: a fake host; `while(true)` is terminated and disabled; an exception in one instance leaves the next one running; the context survives termination.
+
+### Seams (what WP2 left for WP3–WP11)
+
+WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Later packages **plug in; they don't edit these**. If a package needs a new runtime method, it adds it in an `extension SceneScriptRuntime` in its own file.
+
+| File | What it is |
+|---|---|
+| `Runtime/SceneScriptRuntime.swift` | One `JSVirtualMachine` + one `JSContext` per wallpaper instance. `add(_:)`, `load(userProperties:generalSettings:)`, `frame(deltaTime:)`, `tearDown()`, `remove(scriptID:)`, and the inbox shortcuts `userPropertiesDidChange(_:)`, `screenDidResize(width:height:)`. |
+| `Resources/SceneScript/runtime.js` | `__rt`: script records, the load and frame order, the phase flag, `__rt.call`/`invoke` isolation, the error channel, module registry, command-ring writer. |
+| `Runtime/SceneScriptWatchdog.swift` | `JSContextGroupSetExecutionTimeLimit` via `dlsym`; nil (and one `.info` line) when missing. Limit: WE's 15 s per load entry and per frame entry (`Configuration`). |
+| `Runtime/SceneScriptError*.swift` | `SceneScriptError` (compile/runtime/terminated/internal; id, callback, line, message; never source) and the once-per-distinct-error log. |
+| `Runtime/SceneScriptInstance.swift` | One attachment site: id, source, initial value, `scriptproperties` JSON, object slot. |
+| `Runtime/SceneScriptHost.swift` | What the owning wallpaper instance provides: `identity` (wallpaper id + screen id), `prelude`, an optional error callback. |
+| `Runtime/SceneScriptRuntimeExtension.swift` | The plug-in protocol (below). |
+| `Runtime/SceneScriptInbox.swift`, `SceneScriptEvent.swift` | The only thread-safe entry; events drained at the start of a frame. |
+| `Runtime/SceneScriptSharedBuffer.swift` | Swift memory seen by JS as a typed array (`JSObjectMakeTypedArrayWithBytesNoCopy`). |
+| `Runtime/SceneScriptPrelude.swift`, `SceneScriptResources.swift` | WE's `baseclasses.js` + jsmodules, unmodified; our bundled JS. |
+| `Modules/SceneScriptModuleCompiling.swift` | The compiler protocol and factory contract (WP3). |
+| `Objects/SceneScriptObjectTable.swift` | Slot layout + shared `Float32Array`/dirty bytes (WP7 fills). |
+| `Objects/SceneScriptCommandRing.swift` | Shared `Int32Array` records + `Float32Array` numbers, drained after each frame (WP7 and others add opcodes). |
+
+**Order the runtime guarantees** (tested in `SceneScriptRuntimeTests`):
+
+- Creation: `baseclasses.js` → `runtime.js` → per extension `install(into:)` then its `scriptResources` → jsmodules through the compiler.
+- `load` (resumable; re-callable for scripts added later): every module body (phase `'global'`) → `scriptproperties` through `_Internal.updateScriptProperties` → every `init(value)` → every `applyUserProperties(all)` → every `applyGeneralSettings({language})`. All in `add` order, which is scene order.
+- `load` also calls `__rt.hooks.initialized(record)` right after each `init`.
+- `frame`: `frameGlobals` handlers → inbox events ordered by kind (`__rt.EVENT_ORDER`: resize, cursor, userProperties, generalSettings, media), then arrival → `animations` handlers → `timers` handlers → every `update(value)` → `deferred` handlers → `destroy()` of removed scripts. Then Swift drains the command ring and calls `didRunFrame`.
+- A throw is recorded and swallowed; the callback that threw is never called again for that script (`record.failed`), its other callbacks keep running. `__rt.call` (timers, ended callbacks) logs but disables nothing. A throw in a module body or a compile error disables that script only. A watchdog stop halts the whole runtime (`state == .halted`, `__rt.halted`), naming the script from `__rt.current`.
+
+**Per package:**
+
+- **WP3 (module compiler).** Implement `SceneScriptModuleCompiling` in `Modules/`. The contract is in the protocol's doc comment: `factorySource` evaluates to `function (__rt, __scope) → exports`; `thisLayer`/`thisObject` come from `__scope`, imports from `__scope.require(name)`; exports are getters for every name in `__rt.CALLBACKS` plus `scriptProperties`; line N stays line N. Rejected forms throw `SceneScriptCompileError(message:line:)`. The same compiler turns WE's jsmodules into modules the runtime registers as `wemath`/`wevector`/`wecolor`. `TestSceneScriptCompiler` in the tests is the stand-in until then.
+- **WP4 (engine, input, console, timers, storage).** A `SceneScriptRuntimeExtension` with its own `engine.js`, `timers.js`, `storage.js`. Timers register with `__rt.addPhaseHandler('timers', fn)` and run script callbacks through `__rt.call(record, label, 'callback', fn, args)` (errors stay attributed and isolated); the owning record at `setTimeout` time is `__rt.byId.get(__rt.current)`. Global-scope rules use `__rt.requireGlobalScope(what)` / `__rt.forbidGlobalScope(what)`, which produce WE's exact messages (§1.9). Timers follow §1.9 P1: per script, over a snapshot, an interval resets to its period (fires at most once per frame), a timeout is removed after firing. `_Internal.convertUserProperties` goes into `__rt.hooks.userProperties`. Per-frame numbers (`frametime`, `runtime`, cursor) belong in a `SceneScriptSharedBuffer` filled in `willRunFrame`. Storage keys come from `runtime.identity`.
+- **WP5 (audio).** An extension; one `SceneScriptSharedBuffer<Float>` per registered resolution, filled in place in `willRunFrame` (WE refreshes them in its tick, before timers and updates; §1.9 P1); `registerAudioBuffers` calls `__rt.requireGlobalScope('registerAudioBuffers')`.
+- **WP6 (media).** Declare kinds in its own file (`extension SceneScriptEvent.Kind { static let mediaPlayback = … }`), post with `runtime.inbox.post(_:)` from any thread, and handle them in JS with `__rt.addEventHandler(kind, __rt.EVENT_ORDER.media, e => __rt.broadcast('mediaPlaybackChanged', [e.payload]))`. The current media state for a new script goes in `__rt.hooks.initialized` (§1.9 P8).
+- **WP7 (object model).** Owns `SceneScriptObjectTable` (append fields at the end and bump `stride`) and the opcodes 400–999 (`extension SceneScriptCommandRing.Opcode { static let … }` in its files, handlers registered in its extension's `install`). `__rt.hooks.scope(record)` returns `{thisLayer, thisObject}` for `record.slot`; `thisScene`, `layers.js` and `scene.js` are its own. Opcode ranges: 1–99 runtime, 100–199 WP4, 200–299 WP5, 300–399 WP6, 400–999 WP7, 1000+ later.
+- **WP8 (binding).** Builds `SceneScriptInstance`s; `__rt.hooks.argument(record)` (the value `init`/`update` receive) and `__rt.hooks.coerce(record, returned)` (undefined keeps the value).
+- **WP10 (cursor).** Cursor events through the inbox with `target` = object slot; its own JS handler registered at `__rt.EVENT_ORDER.cursor`; only Solid objects (§1.9 P7).
+- **WP12 (animations).** Timeline evaluation and `animationEvent(event, value)` go in the `animations` phase.
+- **WP11 (integration).** The renderer (not a singleton) owns one runtime per wallpaper instance, which is what fixes two displays clobbering each other: `load` at scene load, `frame(deltaTime:)` per frame, `tearDown` on reconfigure, `screenDidResize`/`userPropertiesDidChange` from the view model. It builds the extension list, reads `SceneScriptPrelude.load()` once, and deletes the scripting half of `AudioReactiveScriptEngine`.
+
+**Bundle names.** The synchronized group copies `Resources/SceneScript/*.js` to the bundle root, so every runtime JS file name must be unique in the app bundle. `SceneScriptResources` looks in `SceneScript/` first, then the root.
 
 ### Step 1 (parallel; each owns the files listed)
 
@@ -568,7 +613,7 @@ Work packages are ordered; packages in the same step touch disjoint files and ca
 - Delete `resolveLayerVisibility` and `loadSceneScript`.
 - Tests: an accumulator script moves; `undefined` keeps the value; a text script never renders "undefined"; an effect hidden at load can be shown by a media event; `scriptproperties` from `{"user":…}` update on property change.
 
-**WP9 — Corpus replay harness.** `OpenWallpaperEngineTests/SceneScriptCorpusTests.swift`, `SceneScriptTestHost.swift`, `Tests/Fixtures/SceneScript/` (synthetic scripts plus probe expectations).
+**WP9 — Corpus replay harness.** `OpenWallpaperEngineTests/SceneScriptCorpusTests.swift`, `SceneScriptTestHost.swift`, `Tests/Fixtures/SceneScript/` (synthetic scripts asserting the §1.9 behaviour).
 
 - For every corpus wallpaper, build the real script sites from its `scene.json` or `.pkg` through WP8's collector, with a headless host (fake clock, silent and tone audio, scripted cursor path, media event sequence, property changes).
 - Run load plus N = 600 frames.
