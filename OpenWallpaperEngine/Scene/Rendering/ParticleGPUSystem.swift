@@ -25,9 +25,12 @@ final class ParticleGPUSystem {
     /// of an instanced system. Instance overrides can change it every frame.
     private(set) var maximumCount = 0
     /// An instanced system's instances; 1 otherwise.
-    private let slots: Int
+    let slots: Int
     /// An instanced system's instances (`ParticleGPUInstance`), zeroed at creation.
     let instances: MTLBuffer?
+    /// A linked child's control points from its parent's particles (`ParticleGPULinkedPoints`), one
+    /// per slot; nil without the link.
+    let linkedPoints: MTLBuffer?
     /// Scratch for an event child, sized for its parent's particles: event flags, their prefix
     /// sums and the listed events.
     private(set) var eventFlags: MTLBuffer?
@@ -79,6 +82,14 @@ final class ParticleGPUSystem {
         } else {
             slots = 1
             instances = nil
+        }
+        if configuration.link?.controlPointStart != nil {
+            let bytes = max(slots, 1) * MemoryLayout<ParticleGPULinkedPoints>.stride
+            guard let linked = device.makeBuffer(length: bytes, options: .storageModePrivate) else { return nil }
+            linked.label = "Particle linked control points"
+            linkedPoints = linked
+        } else {
+            linkedPoints = nil
         }
         parameters.label = "Particle parameters"
         control.label = "Particle control"

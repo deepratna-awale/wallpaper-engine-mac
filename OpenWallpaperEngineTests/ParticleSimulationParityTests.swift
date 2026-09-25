@@ -28,7 +28,7 @@ final class ParticleSimulationParityTests: XCTestCase {
         let library = try device.makeDefaultLibrary(bundle: Bundle(for: ParticleGPUSimulator.self))
         let function = try XCTUnwrap(library.makeFunction(name: "particleLayoutSizes"))
         let pipeline = try device.makeComputePipelineState(function: function)
-        let sizes = try XCTUnwrap(device.makeBuffer(length: 8 * 4, options: .storageModeShared))
+        let sizes = try XCTUnwrap(device.makeBuffer(length: 9 * 4, options: .storageModeShared))
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
         let encoder = try XCTUnwrap(commandBuffer.makeComputeCommandEncoder())
         encoder.setComputePipelineState(pipeline)
@@ -37,11 +37,12 @@ final class ParticleSimulationParityTests: XCTestCase {
         encoder.endEncoding()
         commandBuffer.commit()
         commandBuffer.waitUntilCompleted()
-        let metal = Array(UnsafeBufferPointer(start: sizes.contents().bindMemory(to: UInt32.self, capacity: 8), count: 8)).map(Int.init)
+        let metal = Array(UnsafeBufferPointer(start: sizes.contents().bindMemory(to: UInt32.self, capacity: 9), count: 9)).map(Int.init)
         XCTAssertEqual(metal, [MemoryLayout<ParticleGPUState>.stride, MemoryLayout<ParticleGPUParameters>.stride,
                                MemoryLayout<ParticleGPUFrame>.stride, MemoryLayout<ParticleSpriteInstance>.stride,
                                MemoryLayout<ParticleRopeSegmentInstance>.stride, MemoryLayout<LayerUniform>.stride,
-                               MemoryLayout<ParticleGPUInstance>.stride, MemoryLayout<ParticleCollisionPlacement>.stride])
+                               MemoryLayout<ParticleGPUInstance>.stride, MemoryLayout<ParticleCollisionPlacement>.stride,
+                               MemoryLayout<ParticleGPULinkedPoints>.stride])
     }
 
     // MARK: - Parity per initializer and operator

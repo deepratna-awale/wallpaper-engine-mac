@@ -125,8 +125,15 @@ enum ParticleCPUSimulation {
         return (burst, count)
     }
 
-    static func step(_ system: ParticleSystemRuntime, inputs: ParticleFrameInputs) {
+    static func step(_ system: ParticleSystemRuntime, inputs frame: ParticleFrameInputs) {
         let configuration = system.configuration
+        let start = configuration.link?.controlPointStart
+        let controlPoints = start.map { _ in ParticleControlPointLink.controlPoints(of: configuration) } ?? []
+        var inputs = frame
+        if let start, !configuration.isInstanced {
+            inputs = frame.linked(ParticleControlPointLink.positions(for: system, slot: 0), start: start,
+                                  controlPoints: controlPoints)
+        }
         system.spawnedThisStep.removeAll(keepingCapacity: true)
         system.diedThisStep.removeAll(keepingCapacity: true)
         if inputs.clears {
@@ -140,7 +147,12 @@ enum ParticleCPUSimulation {
         var instanceInputs: [ParticleFrameInputs] = []
         if configuration.isInstanced {
             updateInstances(system, inputs: inputs)
-            instanceInputs = system.instances.map { inputs.placed(at: $0.translation) }
+            instanceInputs = system.instances.enumerated().map { slot, instance in
+                let placed = inputs.placed(at: instance.translation)
+                guard let start else { return placed }
+                return placed.linked(ParticleControlPointLink.positions(for: system, slot: slot), start: start,
+                                     controlPoints: controlPoints)
+            }
             if !configuration.worldSpace {
                 for index in system.particles.indices {
                     let instance = system.instances[system.particles[index].instance]

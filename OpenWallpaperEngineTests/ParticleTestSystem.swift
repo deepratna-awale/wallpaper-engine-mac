@@ -112,12 +112,15 @@ struct ParticleTestSystem {
         let probability: Float
         var origin = SIMD2<Float>.zero
         var instanced: Bool?
+        /// Link flag 1 (`ParticleChildLink.controlPointStart`).
+        var controlPointStart: Int?
 
         func link(parentIndex: Int, parent: ParticleChildLink?) -> ParticleChildLink {
             ParticleChildLink(parentIndex: parentIndex, kind: kind,
                               local: SceneLocalTransform(origin: origin, scale: SIMD2(1, 1), angle: 0),
                               probability: probability, maximumInstances: instances,
-                              instanced: instanced ?? (kind != .static || parent?.instanced == true))
+                              instanced: instanced ?? (kind != .static || parent?.instanced == true),
+                              controlPointStart: controlPointStart)
         }
     }
 

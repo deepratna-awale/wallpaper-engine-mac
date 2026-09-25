@@ -22,7 +22,7 @@ final class ParticleGPUSimulator {
 
     private let device: MTLDevice
     private let begin, emit, simulate, scanBlocks, scanBlockSums, compact, finish: MTLComputePipelineState
-    private let eventMark, eventScatter, instanceStep: MTLComputePipelineState
+    private let eventMark, eventScatter, instanceStep, linkPoints: MTLComputePipelineState
     private let writers: [ParticleGPUDrawKind: MTLComputePipelineState]
 
     init(device: MTLDevice) throws {
@@ -44,6 +44,7 @@ final class ParticleGPUSimulator {
         eventMark = try pipeline("particleEventMark")
         eventScatter = try pipeline("particleEventScatter")
         instanceStep = try pipeline("particleInstanceStep")
+        linkPoints = try pipeline("particleLinkPoints")
         let sprites = try pipeline("particleWriteFallbackSprites")
         writers = [
             .sprite: try pipeline("particleWriteSprites"),
@@ -75,8 +76,9 @@ final class ParticleGPUSimulator {
                 if blit == nil { blit = commandBuffer.makeBlitCommandEncoder() }
                 return blit
             }
-            // An instanced system steps from its parent's step, encoded just before it.
-            if gpu.isReady, request.system.configuration.isInstanced {
+            // An instanced or linked system steps from its parent's step, encoded just before it.
+            let configuration = request.system.configuration
+            if gpu.isReady, configuration.isInstanced || configuration.link?.controlPointStart != nil {
                 let parent = request.system.parent?.gpu
                 gpu.isReady = parent?.isReady == true
                 if let parent, gpu.isReady, request.system.configuration.link?.kind != .static {
@@ -120,6 +122,18 @@ final class ParticleGPUSimulator {
                                          threadsPerThreadgroup: group)
         }
         let instances = gpu.instances ?? control
+        let linked = gpu.linkedPoints ?? control
+        if let linkedPoints = gpu.linkedPoints, let parent = request.system.parent?.gpu, let parentParticles = parent.particles {
+            var slots = UInt32(gpu.slots)
+            encoder.setComputePipelineState(linkPoints)
+            encoder.setBuffer(parentParticles, offset: 0, index: 0)
+            encoder.setBuffer(parent.control, offset: 0, index: 1)
+            encoder.setBuffer(linkedPoints, offset: 0, index: 2)
+            encoder.setBuffer(gpu.parameters, offset: 0, index: 3)
+            encoder.setBytes(&slots, length: 4, index: 4)
+            encoder.dispatchThreads(MTLSize(width: gpu.slots, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: min(gpu.slots, 64), height: 1, depth: 1))
+        }
 
         if request.system.configuration.isInstanced {
             guard let parent = request.system.parent?.gpu else { return }
@@ -138,6 +152,7 @@ final class ParticleGPUSimulator {
         encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
         encoder.setBytes(&frame, length: frameLength, index: 3)
         encoder.setBuffer(instances, offset: 0, index: 4)
+        encoder.setBuffer(linked, offset: 0, index: 5)
         perParticle()
 
         encoder.setComputePipelineState(simulate)
@@ -160,6 +175,7 @@ final class ParticleGPUSimulator {
         } else {
             encoder.setBuffer(control, offset: 0, index: 8)
         }
+        encoder.setBuffer(linked, offset: 0, index: 9)
         perParticle()
 
         scan(alive, count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.count, offsets: offsets,

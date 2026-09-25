@@ -185,18 +185,23 @@ kernel void particleEmit(device ParticleState *particles [[buffer(0)]],
                          constant ParticleParameters &p [[buffer(2)]],
                          constant ParticleFrame &f [[buffer(3)]],
                          device const ParticleInstanceState *instances [[buffer(4)]],
+                         device const LinkedPoints *linked [[buffer(5)]],
                          uint gid [[thread_position_in_grid]]) {
     if (gid >= control[cEmit]) return;
     const uint serial = control[cSerialBase] + gid;
     if (p.counts.y & kInstanced) {
         const uint instance = spawningInstance(instances, p.instancing.y, gid);
         const ParticleInstanceState source = instances[instance];
-        ParticleState particle = spawn(serial, p, f, framePoints(f, source.place.xy));
+        FramePoints points = framePoints(f, source.place.xy);
+        if (p.linking.x != 0) linkPoints(points, p, f, linked[instance]);
+        ParticleState particle = spawn(serial, p, f, points);
         particle.trail.z = float(instance);
         inheritOnSpawn(particle, p.inherit.x, source);
         particles[control[cCount] + gid] = particle;
     } else {
-        particles[control[cCount] + gid] = spawn(serial, p, f, framePoints(f, float2(0)));
+        FramePoints points = framePoints(f, float2(0));
+        if (p.linking.x != 0) linkPoints(points, p, f, linked[0]);
+        particles[control[cCount] + gid] = spawn(serial, p, f, points);
     }
 }
 
@@ -259,6 +264,7 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
                              constant ParticleFrame &f [[buffer(6)]],
                              device ParticleInstanceState *instances [[buffer(7)]],
                              constant CollisionPlacement *collisions [[buffer(8)]],
+                             device const LinkedPoints *linked [[buffer(9)]],
                              uint gid [[thread_position_in_grid]]) {
     const uint total = control[cTotal];
     if (gid >= total) return;
@@ -282,7 +288,8 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
     } else if (f.motionExtras.z > 0.5 && gid < control[cCount]) {
         follow(particle, own, p, motion, f.constraintMotion.zw);
     }
-    const FramePoints points = framePoints(f, shift);
+    FramePoints points = framePoints(f, shift);
+    if (p.linking.x != 0) linkPoints(points, p, f, linked[(flags & kInstanced) ? uint(particle.trail.z) : 0]);
     float2 position = particle.positionVelocity.xy;
     float2 velocity = particle.positionVelocity.zw;
     const float2 previous = position;

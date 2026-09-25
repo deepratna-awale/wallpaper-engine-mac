@@ -218,3 +218,30 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
     control[cDispatch + 1] = 1;
     control[cDispatch + 2] = 1;
 }
+
+/// `ParticleControlPointLink.positions`: the parent particles a linked child's control points take
+/// this step, one thread per instance (1 for a system without instances). After the parent's step.
+kernel void particleLinkPoints(device const ParticleState *parentParticles [[buffer(0)]],
+                               device const uint *parentControl [[buffer(1)]],
+                               device LinkedPoints *linked [[buffer(2)]],
+                               constant ParticleParameters &p [[buffer(3)]],
+                               constant uint &slots [[buffer(4)]],
+                               uint slot [[thread_position_in_grid]]) {
+    if (slot >= slots) return;
+    const uint start = p.linking.y;
+    const uint wanted = start < 8 ? 8 - start : 0;
+    const bool perInstance = p.linking.z != 0;
+    LinkedPoints points;
+    for (uint i = 0; i < 4; ++i) points.points[i] = float4(0);
+    uint count = 0;
+    const uint total = parentControl[cCount];
+    for (uint index = 0; index < total && count < wanted; ++index) {
+        const ParticleState particle = parentParticles[index];
+        if (perInstance && uint(particle.trail.z) != slot) continue;
+        if (count % 2 == 0) points.points[count / 2].xy = particle.positionVelocity.xy;
+        else points.points[count / 2].zw = particle.positionVelocity.xy;
+        ++count;
+    }
+    points.count = uint4(count, 0, 0, 0);
+    linked[slot] = points;
+}

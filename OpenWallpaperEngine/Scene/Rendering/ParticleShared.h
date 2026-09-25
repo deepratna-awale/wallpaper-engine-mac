@@ -60,6 +60,9 @@ struct ParticleParameters {
     float4 audioVelocity;    // audio-responsive turbulentvelocityrandom: minimum xy, maximum xy
     float4 emitterTiming;    // `ParticleEmitterTiming`: delay, duration, periodic duration min, max
     float4 emitterPeriod;    // periodic delay min, max, periodic
+    int4 pointControlPoints0; // `ParticleControlPointLink.controlPoints` (-1: none): spawn origin, attractor,
+    int4 pointControlPoints1; // sequence start, end; remap anchor, vortex, reduction, constraint
+    uint4 linking;           // linked, first control point, per parent instance
 };
 
 /// A collision shape in scene space (`ParticleCollisionPlacement`).
@@ -102,6 +105,14 @@ struct ParticleFrame {
     float4 audioScales;      // audio responses: turbulentvelocityrandom, turbulence, vortex
     uint4 emission;          // period limit (~0: none), starts a period, one per frame
     float4 drawLinear;       // the emitter's linear its particles are drawn through: column 0 xy, column 1 xy
+    float4 linkOffsets0;     // operators' offsets from their control points: attractor xy, reduction xy
+    float4 linkOffsets1;     // constraint xy
+};
+
+/// `ParticleGPULinkedPoints`: a linked child's control points for one instance.
+struct LinkedPoints {
+    float4 points[4];
+    uint4 count;
 };
 
 // `ParticleSpriteInstance` and `ParticleRopeSegmentInstance` (ParticleInstanceLayout.swift).
@@ -228,6 +239,31 @@ static FramePoints framePoints(constant ParticleFrame &f, float2 shift) {
     points.reduction = f.origins.zw + ((absolute & aReduction) ? float2(0) : shift);
     points.constraint = f.constraintMotion.xy + ((absolute & aConstraint) ? float2(0) : shift);
     return points;
+}
+
+/// `ParticleFrameInputs.linked`: the points on control points `start…` moved to the parent's
+/// particles in `linked`.
+static void linkPoints(thread FramePoints &points, constant ParticleParameters &p, constant ParticleFrame &f,
+                       LinkedPoints linked) {
+    if (p.linking.x == 0) return;
+    const int start = int(p.linking.y);
+    for (int point = 0; point < 8; ++point) {
+        const int id = point < 4 ? p.pointControlPoints0[point] : p.pointControlPoints1[point - 4];
+        const int index = id - start;
+        if (id < max(start, 1) || index >= int(linked.count.x)) continue;
+        const float4 pair = linked.points[index / 2];
+        const float2 position = (index % 2 == 0) ? pair.xy : pair.zw;
+        switch (point) {
+        case 0: points.spawnOrigin = position; break;
+        case 1: points.attractor = position + f.linkOffsets0.xy; break;
+        case 2: points.sequenceStart = position; break;
+        case 3: points.sequenceEnd = position; break;
+        case 4: points.remapAnchor = position; break;
+        case 5: points.vortex = position; break;
+        case 6: points.reduction = position + f.linkOffsets0.zw; break;
+        default: points.constraint = position + f.linkOffsets1.xy; break;
+        }
+    }
 }
 
 // MARK: - Helpers

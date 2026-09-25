@@ -31,6 +31,9 @@ struct ParticleChildLink {
     let maximumInstances: Int
     /// Whether the child runs as instances.
     let instanced: Bool
+    /// Link flag 1: the child's control points from this index on are the parent's particles
+    /// (`ParticleControlPointLink`); nil without it.
+    var controlPointStart: Int? = nil
 
     /// The child's emitter transform given its parent's this frame. Event instances sit at their
     /// parent particle, so for them it carries only the parent's scale and rotation; each instance

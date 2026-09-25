@@ -1371,7 +1371,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    private func appendRope(_ system: ParticleSystemRuntime, drawableSize: SIMD2<Float>) {        let particles = system.particles
+    /// One rope through the system's particles; one per instance of an instanced system.
+    private func appendRope(_ system: ParticleSystemRuntime, drawableSize: SIMD2<Float>) {
+        for strand in ParticleRopeStrands.strands(system.particles) {
+            appendRope(strand, system: system, drawableSize: drawableSize)
+        }
+    }
+
+    private func appendRope(_ particles: [Particle], system: ParticleSystemRuntime, drawableSize: SIMD2<Float>) {
         guard particles.count > 1 else { return }
         var spline: [(position: SIMD2<Float>, size: Float, color: SIMD4<Float>, opacity: Float)] = []
         let subdivision = max(system.configuration.ropeSubdivision, 1)

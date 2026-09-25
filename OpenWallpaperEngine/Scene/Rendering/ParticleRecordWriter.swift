@@ -90,21 +90,27 @@ enum ParticleRecordWriter {
         return phase.isFinite ? phase : 0
     }
 
-    /// `rope`: one strand through the system's particles, oldest first.
+    /// `rope`: one strand through the system's particles, oldest first; one per instance of an
+    /// instanced system. Record `i` joins particle `i` to the next of its strand; the last of each
+    /// strand but the system's last gets an empty record, which draws nothing.
     private static func writeRope(_ system: ParticleSystemRuntime, into records: UnsafeMutablePointer<ParticleRopeSegmentInstance>,
                                   count: Int, opacity: (Particle) -> Float) {
         let particles = system.particles
-        let points = Float(particles.count)
+        let strands = ParticleRopeStrands(particles)
         let scale = system.drawSizeScale
         for index in 0..<min(count, max(particles.count - 1, 0)) {
+            guard let following = strands.next[index] else {
+                records[index] = ParticleRopeSegmentInstance.empty
+                continue
+            }
             let start = particles[index]
-            let end = particles[index + 1]
-            let previous = particles[max(index - 1, 0)].position
-            let next = particles[min(index + 2, particles.count - 1)].position
+            let end = particles[following]
+            let previous = particles[strands.previous[index] ?? index].position
+            let next = particles[strands.next[following] ?? following].position
             records[index] = ParticleRopeSegmentInstance(
                 start: SIMD4(start.position.x, start.position.y, 0, shaderSize(start, scale: scale)),
-                end: SIMD4(end.position.x, end.position.y, 0, points),
-                previous: SIMD4(previous.x, previous.y, 0, Float(index)),
+                end: SIMD4(end.position.x, end.position.y, 0, Float(strands.count[index])),
+                previous: SIMD4(previous.x, previous.y, 0, Float(strands.index[index])),
                 next: SIMD4(next.x, next.y, 0, shaderSize(end, scale: scale)),
                 endColor: color(end, opacity: opacity),
                 color: color(start, opacity: opacity))
@@ -142,4 +148,48 @@ enum ParticleRecordWriter {
             }
         }
     }
+}
+
+/// A `rope`'s strands: the system's particles in spawn order, one strand per instance (all of them
+/// for a system without instances). `particleWriteRope` walks the same neighbours on the GPU.
+struct ParticleRopeStrands {
+    /// Each particle's neighbours on its strand, its place on it and the strand's length.
+    var next: [Int?]
+    var previous: [Int?]
+    var index: [Int]
+    var count: [Int]
+
+    /// The strands' particles, each in spawn order, the strands in the order they first appear.
+    static func strands(_ particles: [Particle]) -> [[Particle]] {
+        var order: [Int] = []
+        var members: [Int: [Particle]] = [:]
+        for particle in particles {
+            if members[particle.instance] == nil { order.append(particle.instance) }
+            members[particle.instance, default: []].append(particle)
+        }
+        return order.compactMap { members[$0] }
+    }
+
+    init(_ particles: [Particle]) {
+        next = Array(repeating: nil, count: particles.count)
+        previous = Array(repeating: nil, count: particles.count)
+        index = Array(repeating: 0, count: particles.count)
+        count = Array(repeating: 0, count: particles.count)
+        var members: [Int: [Int]] = [:]
+        for (position, particle) in particles.enumerated() { members[particle.instance, default: []].append(position) }
+        for strand in members.values {
+            for (place, position) in strand.enumerated() {
+                next[position] = place + 1 < strand.count ? strand[place + 1] : nil
+                previous[position] = place > 0 ? strand[place - 1] : nil
+                index[position] = place
+                count[position] = strand.count
+            }
+        }
+    }
+}
+
+extension ParticleRopeSegmentInstance {
+    /// A segment that draws nothing: no width, no colour.
+    static let empty = ParticleRopeSegmentInstance(start: .zero, end: .zero, previous: .zero, next: .zero,
+                                                   endColor: .zero, color: .zero)
 }

@@ -114,8 +114,10 @@ final class ParticleChildrenTests: XCTestCase {
             load: { $0 == "a.json" ? parent : WEParticleSystem() },
             build: { _, _, _, _ in ParticleTestSystem().configuration },
             report: { reports.append($0) })
-        XCTAssertEqual(builder.family("a.json", world: .identity, overrides: SceneParticleOverrides()).count, 2)
-        XCTAssertEqual(reports.count, 2, "control points from the parent, and an unknown type")
+        let family = builder.family("a.json", world: .identity, overrides: SceneParticleOverrides())
+        XCTAssertEqual(family.count, 2)
+        XCTAssertEqual(reports.count, 1, "an unknown type")
+        XCTAssertEqual(family[1].link?.controlPointStart, 0, "control points from the parent's particles, from 0 by default")
     }
 
     // MARK: - Simulation
@@ -334,6 +336,106 @@ final class ParticleChildrenTests: XCTestCase {
         }
     }
 
+    /// WE's thunderbolt: each spawner instance flies one particle off the bolt, and a static child of
+    /// it draws a beam from the instance to that particle through its control point 1 (link flag 1,
+    /// start index 1).
+    func testLinkedControlPointsFollowTheParentsParticles() throws {
+        let links = thunderboltLinks()
+        let cpu = try Family(root: rocketTestSystem(), children: links)
+        let gpu = try Family(root: rocketTestSystem(), children: links)
+        for _ in 0..<40 {
+            cpu.stepCPU(frames: 1, root: translation(SIMD2(500, 300)))
+            // Beam particles spawned this step lie between their instance and its spawner's particle.
+            let beams = cpu.runtimes[2]
+            for particle in beams.particles where particle.age <= 1 / 60 + 1e-4 {
+                let start = beams.instances[particle.instance].translation
+                let points = ParticleControlPointLink.positions(for: beams, slot: particle.instance)
+                let end = try XCTUnwrap(points.first, "the spawner instance has its particle")
+                XCTAssertEqual(points, cpu.runtimes[1].particles.filter { $0.instance == particle.instance }.map(\.position))
+                let t = simd_dot(particle.position - start, end - start) / max(simd_length_squared(end - start), 1e-6)
+                let closest = start + (end - start) * min(max(t, 0), 1)
+                XCTAssertLessThan(simd_distance(particle.position, closest), 1e-2)
+            }
+        }
+        XCTAssertGreaterThan(cpu.runtimes[2].particles.count, 0)
+        try gpu.stepGPU(frames: 40, root: translation(SIMD2(500, 300)))
+        for index in cpu.runtimes.indices {
+            let expected = cpu.runtimes[index].particles
+            let actual = gpu.simulator.snapshot(gpu.runtimes[index], queue: gpu.queue)
+            XCTAssertEqual(actual.map(\.identity.x), expected.map(\.serial), "system \(index)")
+            for (a, e) in zip(actual, expected) {
+                XCTAssertLessThan(simd_distance(SIMD2(a.positionVelocity.x, a.positionVelocity.y), e.position), 0.05,
+                                  "system \(index)")
+            }
+        }
+    }
+
+    /// An instanced rope draws one strand per instance: no segment joins two instances' particles,
+    /// on the CPU and the GPU.
+    func testAnInstancedRopeDrawsOneStrandPerInstance() throws {
+        let links = thunderboltLinks()
+        let cpu = try Family(root: rocketTestSystem(), children: links)
+        let gpu = try Family(root: rocketTestSystem(), children: links)
+        cpu.stepCPU(frames: 40, root: translation(SIMD2(500, 300)))
+        try gpu.stepGPU(frames: 40, root: translation(SIMD2(500, 300)), kinds: [2: .rope])
+        let beams = cpu.runtimes[2]
+        let count = ParticleRecordWriter.recordCount(beams, format: .rope)
+        let pointer = UnsafeMutableRawPointer.allocate(byteCount: max(count, 1) * ParticleVertexFormat.rope.stride,
+                                                       alignment: 16)
+        defer { pointer.deallocate() }
+        ParticleRecordWriter.write(beams, format: .rope, count: count, into: pointer) { _ in 1 }
+        let expected = Array(UnsafeBufferPointer(start: pointer.bindMemory(to: ParticleRopeSegmentInstance.self,
+                                                                           capacity: count), count: count))
+        let strands = ParticleRopeStrands(beams.particles)
+        var drawn = 0
+        for (index, record) in expected.enumerated() {
+            guard let next = strands.next[index] else {
+                XCTAssertEqual(record.start.w, 0, "the end of a strand joins nothing")
+                continue
+            }
+            drawn += 1
+            XCTAssertEqual(beams.particles[index].instance, beams.particles[next].instance)
+            XCTAssertEqual(SIMD2(record.end.x, record.end.y), beams.particles[next].position)
+            XCTAssertEqual(Int(record.end.w), beams.particles.filter { $0.instance == beams.particles[index].instance }.count)
+        }
+        XCTAssertGreaterThan(drawn, 0)
+        XCTAssertLessThan(drawn, count, "more than one strand")
+        let actual = gpu.simulator.records(gpu.runtimes[2], as: ParticleRopeSegmentInstance.self, queue: gpu.queue).records
+        XCTAssertEqual(actual.count, expected.count)
+        for (a, e) in zip(actual, expected) {
+            XCTAssertLessThan(simd_distance(a.start, e.start), 0.05)
+            XCTAssertLessThan(simd_distance(a.end, e.end), 0.05)
+            XCTAssertLessThan(simd_distance(a.previous, e.previous), 0.05)
+            XCTAssertLessThan(simd_distance(a.next, e.next), 0.05)
+        }
+    }
+
+    /// WE's thunderbolt children: a follow spawner flying one particle off each rocket, and under it
+    /// a beam, a rope from the spawner instance to that particle through control point 1.
+    private func thunderboltLinks() -> [(ParticleTestSystem.Linked, Int)] {
+        var spawner = ParticleTestSystem()
+        spawner.emissionRate = 0
+        spawner.instantaneous = 1
+        spawner.maximum = 1
+        spawner.spawnExtent = .zero
+        spawner.minimumVelocity = SIMD2(200, 50)
+        spawner.maximumVelocity = SIMD2(200, 50)
+        spawner.lifetime = 2...2
+        var beam = ParticleTestSystem()
+        beam.emissionRate = 120
+        beam.maximum = 8
+        beam.spawnExtent = .zero
+        beam.minimumVelocity = .zero
+        beam.maximumVelocity = .zero
+        beam.lifetime = 0.5...0.5
+        beam.rendererName = "rope"
+        beam.sequenceSpan = ParticleSequenceSpan(startControlPoint: 0, endControlPoint: 1, count: 8, arcAmount: 0,
+                                                 mirrored: false)
+        var beamLink = beam.link(.static, instances: 4, probability: 1, instanced: true)
+        beamLink.controlPointStart = 1
+        return [(spawner.link(.follow, instances: 4, probability: 1), 0), (beamLink, 1)]
+    }
+
     func testTheFixtureFamilyRunsTheSameOnTheGPU() throws {
         let systems = try content().particleSystems
         let cpu = try Family(systems)
@@ -422,11 +524,13 @@ private final class Family {
         }
     }
 
-    func stepGPU(frames: Int, root: (Int) -> SceneAffineTransform) throws {
+    /// `kinds`: what the step writes records for, by system (the built-in sprite otherwise).
+    func stepGPU(frames: Int, root: (Int) -> SceneAffineTransform, kinds: [Int: ParticleGPUDrawKind] = [:]) throws {
         var last: MTLCommandBuffer?
         for _ in 0..<frames {
-            let requests = runtimes.map { runtime in
-                ParticleGPUSimulator.Request(system: runtime, inputs: inputs(runtime, root: root), kind: .fallbackSprite)
+            let requests = runtimes.enumerated().map { index, runtime in
+                ParticleGPUSimulator.Request(system: runtime, inputs: inputs(runtime, root: root),
+                                             kind: kinds[index] ?? .fallbackSprite, materialVertexCount: 6)
             }
             let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
             simulator.encode(requests, sceneSize: SIMD2(1280, 720), targetSize: SIMD2(1280, 720), commandBuffer: commandBuffer)

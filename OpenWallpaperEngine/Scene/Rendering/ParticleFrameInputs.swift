@@ -60,6 +60,10 @@ struct ParticleFrameInputs {
     var vortexOrigin = SIMD2<Float>.zero
     var reductionOrigin = SIMD2<Float>.zero
     var constraintOrigin = SIMD2<Float>.zero
+    /// The operators' offsets from their control points, in the scene (`linked(_:start:controlPoints:)`).
+    var attractorOffset = SIMD2<Float>.zero
+    var reductionOffset = SIMD2<Float>.zero
+    var constraintOffset = SIMD2<Float>.zero
     /// Points that come from the cursor rather than the emitter: they stay put in every instance
     /// of an instanced system (`placed(at:)`).
     var absolutePoints: AbsolutePoints = []
@@ -210,15 +214,18 @@ struct ParticleFrameInputs {
         spawnOrigin = configuration.emitterControlPoint.map { point($0, offset: .zero, .spawnOrigin) } ?? origin
         if let attractor = configuration.attractor {
             attractorOrigin = point(attractor.controlPoint, offset: attractor.offset, .attractor)
+            attractorOffset = space.offset(attractor.offset)
         }
         if let vortex = configuration.vortex {
             vortexOrigin = point(vortex.controlPoint, offset: .zero, .vortex)
         }
         if let reduction = configuration.nearControlPointReduction {
             reductionOrigin = point(reduction.controlPoint, offset: reduction.offset, .reduction)
+            reductionOffset = space.offset(reduction.offset)
         }
         if let constraint = configuration.maintainControlPointDistance {
             constraintOrigin = point(constraint.controlPoint, offset: constraint.offset, .constraint)
+            constraintOffset = space.offset(constraint.offset)
         }
         if let span = configuration.sequenceSpan {
             if locked(span.startControlPoint) { absolutePoints.insert(.sequenceStart) }

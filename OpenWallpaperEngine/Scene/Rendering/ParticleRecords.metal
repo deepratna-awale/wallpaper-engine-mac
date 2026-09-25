@@ -58,7 +58,37 @@ kernel void particleWriteSprites(device const ParticleState *particles [[buffer(
     records[gid] = record;
 }
 
-/// `ParticleRecordWriter.writeRope`: one strand through the system, oldest particle first.
+/// `ParticleRopeStrands` for particle `gid`: the next and previous particle of its strand (`count`
+/// for none), its place on the strand and the strand's length. A system without instances is one
+/// strand; an instanced one has one per instance, which a scan over the particles finds.
+struct RopeNeighbours { uint next, previous, index, length; };
+
+static RopeNeighbours ropeNeighbours(device const ParticleState *particles, uint count, uint gid,
+                                     constant ParticleParameters &p) {
+    RopeNeighbours n;
+    if (!(p.counts.y & kInstanced)) {
+        n.next = gid + 1 < count ? gid + 1 : count;
+        n.previous = gid > 0 ? gid - 1 : count;
+        n.index = gid;
+        n.length = count;
+        return n;
+    }
+    const float strand = particles[gid].trail.z;
+    n.next = count;
+    n.previous = count;
+    n.index = 0;
+    n.length = 0;
+    for (uint j = 0; j < count; ++j) {
+        if (particles[j].trail.z != strand) continue;
+        n.length += 1;
+        if (j < gid) { n.index += 1; n.previous = j; }
+        if (j > gid && n.next == count) n.next = j;
+    }
+    return n;
+}
+
+/// `ParticleRecordWriter.writeRope`: one strand through the system (one per instance), oldest
+/// particle first.
 kernel void particleWriteRope(device const ParticleState *particles [[buffer(0)]],
                               device RopeRecord *records [[buffer(1)]],
                               device const uint *control [[buffer(2)]],
@@ -67,14 +97,20 @@ kernel void particleWriteRope(device const ParticleState *particles [[buffer(0)]
                               uint gid [[thread_position_in_grid]]) {
     const uint count = control[cCount];
     if (gid + 1 >= count) return;
+    const RopeNeighbours n = ropeNeighbours(particles, count, gid, p);
+    if (n.next == count) {
+        records[gid] = RopeRecord{};
+        return;
+    }
     const ParticleState start = particles[gid];
-    const ParticleState end = particles[gid + 1];
-    const float2 previous = particles[gid > 0 ? gid - 1 : 0].positionVelocity.xy;
-    const float2 next = particles[min(gid + 2, count - 1)].positionVelocity.xy;
+    const ParticleState end = particles[n.next];
+    const float2 previous = particles[n.previous < count ? n.previous : gid].positionVelocity.xy;
+    const RopeNeighbours after = ropeNeighbours(particles, count, n.next, p);
+    const float2 next = particles[after.next < count ? after.next : n.next].positionVelocity.xy;
     RopeRecord record;
     record.start = float4(start.positionVelocity.xy, 0, start.life.z / 2 * f.motionExtras.w);
-    record.end = float4(end.positionVelocity.xy, 0, float(count));
-    record.previous = float4(previous, 0, float(gid));
+    record.end = float4(end.positionVelocity.xy, 0, float(n.length));
+    record.previous = float4(previous, 0, float(n.index));
     record.next = float4(next, 0, end.life.z / 2 * f.motionExtras.w);
     record.endColor = recordColor(end, p, f);
     record.color = recordColor(start, p, f);
@@ -176,10 +212,16 @@ kernel void particleWriteFallbackRope(device const ParticleState *particles [[bu
     const uint count = control[cCount];
     if (gid + 1 >= count) return;
     const uint subdivision = uint(p.trail.z);
-    const ParticleState previous = particles[gid > 0 ? gid - 1 : gid];
+    const RopeNeighbours n = ropeNeighbours(particles, count, gid, p);
+    if (n.next == count) {
+        for (uint step = 0; step < subdivision; ++step) instances[gid * subdivision + step] = emptyInstance(f);
+        return;
+    }
+    const RopeNeighbours after = ropeNeighbours(particles, count, n.next, p);
+    const ParticleState previous = particles[n.previous < count ? n.previous : gid];
     const ParticleState start = particles[gid];
-    const ParticleState end = particles[gid + 1];
-    const ParticleState following = particles[gid + 2 < count ? gid + 2 : gid + 1];
+    const ParticleState end = particles[n.next];
+    const ParticleState following = particles[after.next < count ? after.next : n.next];
     const float startOpacity = particleOpacity(start, p, f), endOpacity = particleOpacity(end, p, f);
     for (uint step = 0; step < subdivision; ++step) {
         const float t0 = float(step) / float(subdivision);
@@ -281,4 +323,5 @@ kernel void particleLayoutSizes(device uint *sizes [[buffer(0)]]) {
     sizes[5] = sizeof(FallbackInstance);
     sizes[6] = sizeof(ParticleInstanceState);
     sizes[7] = sizeof(CollisionPlacement);
+    sizes[8] = sizeof(LinkedPoints);
 }

@@ -45,6 +45,17 @@ struct ParticleGPUInstance {
     var flags: Flag { Flag(rawValue: state.x) }
 }
 
+/// The parent particles a linked child's control points take (`ParticleControlPointLink`), for one
+/// instance: up to eight positions, oldest first, and how many.
+struct ParticleGPULinkedPoints {
+    var points0: SIMD4<Float>
+    var points1: SIMD4<Float>
+    var points2: SIMD4<Float>
+    var points3: SIMD4<Float>
+    /// Positions, -, -, -.
+    var count: SIMD4<UInt32>
+}
+
 /// What a system's GPU records are drawn with this frame (`ParticleSimulation.metal`).
 enum ParticleGPUDrawKind: UInt32 {
     /// WE material records (`ParticleVertexFormat`).
@@ -113,6 +124,9 @@ struct ParticleGPUFrame {
     var emission: SIMD4<UInt32>
     /// `ParticleFrameInputs.drawLinear`, column 0 xy, column 1 xy.
     var drawLinear: SIMD4<Float>
+    /// The operators' offsets from their control points: attractor xy, reduction xy; constraint xy.
+    var linkOffsets0: SIMD4<Float>
+    var linkOffsets1: SIMD4<Float>
 
     static let noRenderVar = UInt32.max
     static let noLimit = UInt32.max
@@ -139,6 +153,9 @@ struct ParticleGPUFrame {
         motionLinear = Self.columns(motion.linear)
         motionExtras = SIMD4(inputs.spawnSizeScale, inputs.spawnTurn, inputs.motion == nil ? 0 : 1, inputs.drawSizeScale)
         drawLinear = Self.columns(inputs.drawLinear)
+        linkOffsets0 = SIMD4(inputs.attractorOffset.x, inputs.attractorOffset.y,
+                             inputs.reductionOffset.x, inputs.reductionOffset.y)
+        linkOffsets1 = SIMD4(inputs.constraintOffset.x, inputs.constraintOffset.y, 0, 0)
         extra = SIMD4(inputs.absolutePoints.rawValue, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count), 0)
         audioScales = SIMD4(inputs.audioVelocityScale, inputs.turbulenceScale, inputs.vortexScale, 0)
         spawnScale = inputs.spawnScale
@@ -220,6 +237,11 @@ struct ParticleGPUParameters {
     /// maximum; periodic delay minimum and maximum, periodic.
     var emitterTiming = SIMD4<Float>.zero
     var emitterPeriod = SIMD4<Float>.zero
+    /// `ParticleControlPointLink.controlPoints` (−1: none), in `LinkedPoint` order.
+    var pointControlPoints0 = SIMD4<Int32>(repeating: -1)
+    var pointControlPoints1 = SIMD4<Int32>(repeating: -1)
+    /// Linked (1), first control point, per parent instance (1).
+    var linking = SIMD4<UInt32>.zero
 
     /// Samples each `ropetrail` particle keeps.
     var historyLimit: Int { Int(counts.w) }
@@ -341,6 +363,12 @@ struct ParticleGPUParameters {
         let timing = c.emitterTiming
         emitterTiming = SIMD4(timing.delay, timing.duration, timing.periodDuration.lowerBound, timing.periodDuration.upperBound)
         emitterPeriod = SIMD4(timing.periodDelay.lowerBound, timing.periodDelay.upperBound, timing.periodic ? 1 : 0, 0)
+        if let link = c.link, let start = link.controlPointStart {
+            let ids = ParticleControlPointLink.controlPoints(of: c).map { Int32(clamping: $0) }
+            pointControlPoints0 = SIMD4(ids[0], ids[1], ids[2], ids[3])
+            pointControlPoints1 = SIMD4(ids[4], ids[5], ids[6], ids[7])
+            linking = SIMD4(1, UInt32(clamping: start), link.kind == .static && link.instanced ? 1 : 0, 0)
+        }
         counts = SIMD4(UInt32(clamping: c.maximumParticleCount), flags.rawValue, seed, UInt32(historyLimit))
     }
 }
