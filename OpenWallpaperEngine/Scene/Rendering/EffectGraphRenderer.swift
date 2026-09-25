@@ -538,13 +538,28 @@ final class EffectGraphRenderer {
     }
 
     /// WE material blending → blend factors; nil means no blending (overwrite).
+    ///
+    /// `normal` and `disabled` overwrite. Any other value also overwrites and is logged once:
+    /// WE's full list of values isn't known, and the bundled assets and library use only these.
     static func blendMode(_ blending: String) -> (source: MTLBlendFactor, destination: MTLBlendFactor)? {
         switch blending.lowercased() {
         case "translucent": return (.sourceAlpha, .oneMinusSourceAlpha)
         case "additive": return (.sourceAlpha, .one)
-        default: return nil
+        case "normal", "disabled", "": return nil
+        default:
+            let first = unknownBlendingLock.withLock { unknownBlending.insert(blending).inserted }
+            if first { OWELog.error(.shader, "Unknown material blending \"\(blending)\"; drawing it as normal") }
+            return nil
         }
     }
+
+    /// Blending values `blendMode` didn't know, each logged once. Global because materials of
+    /// every renderer share the table; `unknownBlendingLock` owns it.
+    private static let unknownBlendingLock = NSLock()
+    nonisolated(unsafe) private static var unknownBlending = Set<String>() // guarded by unknownBlendingLock
+
+    /// Unknown blending values seen so far (tests, diagnostics).
+    static var unknownBlendingValues: Set<String> { unknownBlendingLock.withLock { unknownBlending } }
 }
 
 /// A pass's `WEUniforms` bytes: static values written once, dynamic constants and live built-ins

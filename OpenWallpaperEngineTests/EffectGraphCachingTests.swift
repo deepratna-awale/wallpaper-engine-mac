@@ -44,6 +44,21 @@ final class EffectGraphCachingTests: XCTestCase {
         XCTAssertEqual(EffectGraphRenderer.textureInfo(for: padded, contentSize: SIMD2(900, 100)).contentSize, SIMD2(512, 100))
     }
 
+    // MARK: - Blending
+
+    /// Every `blending` value in the bundled assets and the library (normal, translucent,
+    /// additive) is in the table; an unknown one overwrites like `normal` and is remembered.
+    func testBlendingTable() {
+        XCTAssertNil(EffectGraphRenderer.blendMode("normal"))
+        XCTAssertNil(EffectGraphRenderer.blendMode("disabled"))
+        XCTAssertTrue(EffectGraphRenderer.blendMode("Translucent")! == (.sourceAlpha, .oneMinusSourceAlpha))
+        XCTAssertTrue(EffectGraphRenderer.blendMode("additive")! == (.sourceAlpha, .one))
+        XCTAssertFalse(EffectGraphRenderer.unknownBlendingValues.contains("normal"))
+        XCTAssertNil(EffectGraphRenderer.blendMode("owe-test-unknown"))
+        XCTAssertNil(EffectGraphRenderer.blendMode("owe-test-unknown"))
+        XCTAssertTrue(EffectGraphRenderer.unknownBlendingValues.contains("owe-test-unknown"))
+    }
+
     // MARK: - Shader variant cache key
 
     func testVariantCacheKeyDependsOnToolchain() throws {
