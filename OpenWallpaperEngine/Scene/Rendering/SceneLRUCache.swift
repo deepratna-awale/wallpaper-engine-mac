@@ -26,4 +26,11 @@ struct SceneLRUCache<Key: Hashable, Value> {
     }
 
     mutating func removeAll() { entries.removeAll(keepingCapacity: true) }
+
+    /// Keeps only the `count` most recently used entries (memory pressure).
+    mutating func trim(to count: Int) {
+        guard entries.count > count else { return }
+        let kept = entries.sorted { $0.value.lastUse > $1.value.lastUse }.prefix(max(count, 0))
+        entries = Dictionary(uniqueKeysWithValues: kept.map { ($0.key, $0.value) })
+    }
 }

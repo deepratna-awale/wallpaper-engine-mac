@@ -65,6 +65,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// of it matches the scene drawn so far.
     private var sceneCopy: MTLTexture?
     private(set) var snapshotTracker = SceneSnapshotTracker()
+    /// Trims rebuildable memory when the system asks (`trimMemory`).
+    private var memoryPressure: SceneMemoryPressure?
     /// Runs authored effects through Wallpaper Engine's own shaders.
     private lazy var effectGraph = EffectGraphRenderer(device: device)
     /// Draws particle systems through their WE material.
@@ -199,11 +201,26 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         self.textureLoader = MTKTextureLoader(device: device)
         self.renderTargetPool = SceneRenderTargetPool(device: device)
         super.init()
+        memoryPressure = SceneMemoryPressure { [weak self] level in self?.trimMemory(level) }
         view.device = device
         view.delegate = self
         view.framebufferOnly = false
         view.enableSetNeedsDisplay = false
         view.isPaused = false
+    }
+
+    /// Drops what can be rebuilt under memory pressure: free pooled targets, cached text other than
+    /// the layers' current strings, spare effect targets and free uniform chunks; when critical,
+    /// also effect asset textures and pipelines idle since the last critical trim. Leased and
+    /// persistent targets, layers' own targets and anything the current frame uses stay.
+    func trimMemory(_ level: SceneMemoryPressure.Level) {
+        let before = renderTargetPool.residentBytes
+        renderTargetPool.removeAll()
+        textFrameCache.trim(to: layers.filter { $0.layer.text != nil }.count)
+        effectGraph?.trimMemory(dropIdlePipelines: level == .critical)
+        imageMaterials?.trimMemory(dropIdlePipelines: level == .critical)
+        if level == .critical { effectAssetTextures.removeAll() }
+        OWELog.info(.scene, "Memory pressure (\(level)): freed \((before - renderTargetPool.residentBytes) >> 20) MB of pooled targets")
     }
 
     /// Drops every prepared layer, releasing any video stream those layers hold.

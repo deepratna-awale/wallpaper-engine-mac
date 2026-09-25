@@ -25,6 +25,8 @@ final class ImageMaterialRenderer {
     /// Owns `pipelines`, `pending` and `failed`, which compile threads write.
     private let pipelineLock = NSLock()
     private var pipelines: [String: MTLRenderPipelineState] = [:]
+    /// Pipelines drawn with since the last `trimMemory` that dropped idle ones.
+    private var usedPipelines = Set<String>()
     private var pending = Set<String>()
     private var failed = Set<String>()
 
@@ -244,6 +246,17 @@ final class ImageMaterialRenderer {
         return program
     }
 
+    /// Memory pressure: drops free uniform chunks, and with `dropIdlePipelines` every pipeline not
+    /// drawn with since the last trim (they recompile, from the binary archive, if needed again).
+    func trimMemory(dropIdlePipelines: Bool) {
+        uniformArena.trim()
+        guard dropIdlePipelines else { return }
+        pipelineLock.withLock {
+            pipelines = pipelines.filter { usedPipelines.contains($0.key) }
+            usedPipelines.removeAll()
+        }
+    }
+
     /// Frees one layer's uniform state (e.g. a removed script clone).
     func releaseLayer(_ layerID: String) {
         programs.removeValue(forKey: layerID)
@@ -259,7 +272,8 @@ final class ImageMaterialRenderer {
     private func pipeline(for plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat) -> MTLRenderPipelineState? {
         let key = Self.pipelineKey(plan, pixelFormat: pixelFormat)
         let state: (pipeline: MTLRenderPipelineState?, busy: Bool) = pipelineLock.withLock {
-            (pipelines[key], pending.contains(key) || failed.contains(key))
+            if pipelines[key] != nil { usedPipelines.insert(key) }
+            return (pipelines[key], pending.contains(key) || failed.contains(key))
         }
         if let pipeline = state.pipeline { return pipeline }
         if !state.busy, let variant = plan.pass.variant { compile(plan, variant: variant, pixelFormat: pixelFormat, key: key) }

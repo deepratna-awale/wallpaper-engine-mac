@@ -23,6 +23,8 @@ final class EffectGraphRenderer {
     private let compileQueue = DispatchQueue(label: "owe.effect-pipelines", qos: .userInitiated, attributes: .concurrent)
     private let pipelineLock = NSLock()
     private var pipelines: [String: MTLRenderPipelineState] = [:]
+    /// Pipelines drawn with since the last `trimMemory` that dropped idle ones.
+    private var usedPipelines = Set<String>()
     private var pendingPipelines = Set<String>()
     private var failedPipelines = Set<String>()
     /// Backend binaries of compiled pipelines, persisted across launches; nil disables it.
@@ -127,6 +129,23 @@ final class EffectGraphRenderer {
         spareTargets.removeAll()
         spareOrder.removeAll()
     }
+
+    /// Memory pressure: drops the spare targets and free uniform chunks, and with
+    /// `dropIdlePipelines` every pipeline not drawn with since the last trim (they recompile, from
+    /// the binary archive, if needed again). Layers' own targets are in use and kept.
+    func trimMemory(dropIdlePipelines: Bool) {
+        spareTargets.removeAll()
+        spareOrder.removeAll()
+        uniformArena.trim()
+        guard dropIdlePipelines else { return }
+        pipelineLock.withLock {
+            pipelines = pipelines.filter { usedPipelines.contains($0.key) }
+            usedPipelines.removeAll()
+        }
+    }
+
+    /// Compiled pipelines, for tests and diagnostics.
+    var pipelineCount: Int { pipelineLock.withLock { pipelines.count } }
 
     /// Frees one layer's state (e.g. a removed script clone). Its targets go to the spare list,
     /// which is safe while earlier command buffers still read them: later passes on the same
@@ -261,6 +280,7 @@ final class EffectGraphRenderer {
                 let key = Self.pipelineKey(pass, format: format)
                 // Checked and claimed in one step, so callers on two threads never both compile it.
                 let state: (done: Bool, start: Bool) = pipelineLock.withLock {
+                    if pipelines[key] != nil { usedPipelines.insert(key) }
                     if pipelines[key] != nil || failedPipelines.contains(key) { return (true, false) }
                     return (false, pendingPipelines.insert(key).inserted)
                 }

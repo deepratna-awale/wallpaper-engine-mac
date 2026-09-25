@@ -86,4 +86,24 @@ final class EffectGraphReuseTests: XCTestCase {
         }
         XCTAssertEqual(renderer.targetsAllocated, allocated, "sizes seen before come from the spare list")
     }
+
+    /// Memory pressure drops spare targets and, when critical, pipelines idle since the last such
+    /// trim; the pipelines layers keep drawing with stay.
+    func testMemoryPressureDropsSpareTargetsAndIdlePipelinesOnly() throws {
+        let plan = try tintPlan()
+        XCTAssertTrue(renderer.waitUntilReady([plan], width: 64, height: 64))
+        let small = try texture(40, 20), large = try texture(80, 20)
+        try apply(plan, small, context())
+        try apply(plan, large, context())
+        renderer.trimMemory(dropIdlePipelines: false)
+        let allocated = renderer.targetsAllocated
+        try apply(plan, small, context())
+        XCTAssertGreaterThan(renderer.targetsAllocated, allocated, "the spare targets were dropped")
+        XCTAssertEqual(renderer.pipelineCount, 1)
+        renderer.trimMemory(dropIdlePipelines: true)
+        XCTAssertEqual(renderer.pipelineCount, 1, "drawn with since the last trim: kept")
+        renderer.trimMemory(dropIdlePipelines: true)
+        XCTAssertEqual(renderer.pipelineCount, 0, "idle since the last trim: dropped")
+        XCTAssertTrue(renderer.waitUntilReady([plan], width: 64, height: 64), "and rebuilt when needed again")
+    }
 }
