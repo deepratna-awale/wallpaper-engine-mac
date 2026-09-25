@@ -1,0 +1,242 @@
+'use strict';
+// SceneScript object model, part 5 of 5: `thisScene` (IScene), the layer registry in draw order,
+// `thisLayer`/`thisObject` for each script (`__rt.hooks.scope`), and the deferred structure changes.
+// Builds the scene's layers from the records SceneScriptObjectModel placed at install.
+(function (global) {
+    const rt = global.__rt;
+    const objects = rt.objects;
+    const native = rt.native.objects;
+    const OP = objects.OP;
+    const sceneBuffer = objects.sceneBuffer;
+    const SETTINGS_DIRTY = 0, CAMERA_DIRTY = 1;
+
+    // Every live layer in draw order; slot → layer; scene.json id → layer.
+    objects.order = [];
+    objects.bySlot = new Map();
+    objects.byID = new Map();
+    const pendingDestroy = [];
+
+    function register(record) {
+        const layer = objects.makeLayer(record);
+        objects.bySlot.set(record.slot, layer);
+        objects.byID.set(record.id, layer);
+        return layer;
+    }
+
+    // A layer from `name|index|ILayer` (IScene's argument forms): a number is a draw-order index; a
+    // string is a name, then an id.
+    function resolve(target) {
+        if (target instanceof objects.Layer) return target._dead ? null : target;
+        if (typeof target === 'number') {
+            const layer = objects.order[Math.floor(target)];
+            return layer === undefined ? null : layer;
+        }
+        if (typeof target === 'string') {
+            const layer = objects.order.find(function (candidate) { return candidate._name === target; });
+            if (layer !== undefined) return layer;
+            return objects.order.find(function (candidate) { return String(candidate._id) === target; }) || null;
+        }
+        return null;
+    }
+
+    function cameraVector(t, offset) { return objects.vec3(t[offset], t[offset + 1], t[offset + 2]); }
+
+    class Scene {
+        getLayer(nameOrIndex) { return resolve(nameOrIndex); }
+
+        getLayerByID(id) {
+            const key = String(id);
+            return objects.order.find(function (layer) { return String(layer._id) === key; }) || null;
+        }
+
+        getLayerCount() { return objects.order.length; }
+
+        enumerateLayers() { return objects.order.slice(); }
+
+        getLayerIndex(layer) {
+            const found = typeof layer === 'number' ? null : resolve(layer);
+            return found === null ? -1 : objects.order.indexOf(found);
+        }
+
+        getInitialLayerConfig(layer) {
+            const found = resolve(layer);
+            if (found === null || typeof found._record.config !== 'string') return null;
+            return JSON.parse(found._record.config);
+        }
+
+        // "The layer is removed after all scripts on that frame updated." Its children go with it
+        // (best guess: WE's editor removes a parent's children with it).
+        destroyLayer(layer) {
+            const found = resolve(layer);
+            if (found === null || pendingDestroy.indexOf(found) >= 0) return false;
+            pendingDestroy.push(found);
+            return true;
+        }
+
+        // A layer from an asset path or IAssetHandle, a configuration object in scene.json form
+        // (serialized with WE's `_Internal.stringifyConfig`), or another layer as starting point.
+        createLayer(configuration) {
+            let kind, payload = '', source = -1;
+            if (typeof configuration === 'string') {
+                kind = 'asset';
+                payload = configuration;
+            } else if (configuration instanceof objects.Layer) {
+                if (configuration._dead) return null;
+                kind = 'copy';
+                source = configuration._slot;
+            } else if (typeof IModelData === 'function' && configuration instanceof IModelData) {
+                objects.unsupported('IScene.createLayer(IModelData)');
+                return null;
+            } else if (configuration !== null && typeof configuration === 'object') {
+                // An IAssetHandle names its file through `toConfigString`, like WE's other handles
+                // (IModelData); a configuration object in scene.json form has no such method.
+                if (typeof configuration.toConfigString === 'function') {
+                    kind = 'asset';
+                    payload = String(configuration.toConfigString());
+                } else {
+                    kind = 'configuration';
+                    payload = global._Internal ? global._Internal.stringifyConfig(configuration) : JSON.stringify(configuration);
+                }
+            } else {
+                return null;
+            }
+            const record = native.create(kind, payload, source);
+            if (record === null || record === undefined) return null;
+            const layer = register(record);
+            objects.order.push(layer);
+            objects.push(OP.create, record.slot);
+            return layer;
+        }
+
+        // Moves `layer` to `index` in draw order at once; the renderer follows in the same frame.
+        sortLayer(layer, index) {
+            const found = resolve(layer);
+            if (found === null || typeof index !== 'number' || index !== index) return false;
+            const order = objects.order;
+            const target = Math.max(0, Math.min(order.length - 1, Math.floor(index)));
+            order.splice(order.indexOf(found), 1);
+            order.splice(target, 0, found);
+            objects.push(OP.sort, found._slot, [target]);
+            return true;
+        }
+
+        getCameraTransforms() {
+            const t = sceneBuffer.values;
+            return {
+                eye: cameraVector(t, fieldOffset.cameraEye),
+                center: cameraVector(t, fieldOffset.cameraCenter),
+                up: cameraVector(t, fieldOffset.cameraUp),
+                zoom: t[fieldOffset.cameraZoom],
+            };
+        }
+
+        setCameraTransforms(transforms) {
+            if (transforms === null || typeof transforms !== 'object') return;
+            const t = sceneBuffer.values;
+            let changed = false;
+            ['eye', 'center', 'up'].forEach(function (key) {
+                const c = objects.components(transforms[key], 3);
+                if (c === undefined || typeof transforms[key] === 'number') return;
+                const offset = fieldOffset['camera' + key[0].toUpperCase() + key.slice(1)];
+                for (let k = 0; k < 3; k++) t[offset + k] = c[k];
+                changed = true;
+            });
+            if (typeof transforms.zoom === 'number') {
+                t[fieldOffset.cameraZoom] = transforms.zoom;
+                changed = true;
+            }
+            if (changed) sceneBuffer.dirty[CAMERA_DIRTY] = 1;
+        }
+
+        getAnimation(name) { return objects.resolveAnimation(this, sceneAnimations, name); }
+    }
+
+    // Scene settings (bloom, clearcolor, camerashake, …), generated from SceneScriptSceneField.
+    const fieldOffset = {};
+    native.sceneFields.forEach(function (field) {
+        fieldOffset[field.name] = field.offset;
+        if (field.camera) return;
+        objects.defineField(Scene.prototype, field.name, field.offset, field.type, false);
+    });
+    objects.stub(Scene.prototype, 'IScene', 'createModelData', function () { return null; });
+    objects.stub(Scene.prototype, 'IScene', 'destroyModelData');
+
+    const thisScene = new Scene();
+    objects.attach(thisScene, sceneBuffer.values, 0, sceneBuffer.dirty, SETTINGS_DIRTY);
+    const sceneAnimations = native.initial.animations;
+    objects.Scene = Scene;
+    objects.scene = thisScene;
+    Object.defineProperty(global, 'thisScene', { value: thisScene, enumerable: true, writable: false, configurable: false });
+
+    native.initial.objects.forEach(function (record) { objects.order.push(register(record)); });
+
+    // MARK: thisLayer / thisObject
+
+    // The object a binding names (SceneScriptObjectBinding), or null when it no longer exists.
+    objects.bindingTarget = function (binding) {
+        if (binding.kind === 'scene') return thisScene;
+        const layer = objects.bySlot.get(binding.slot);
+        if (layer === undefined) return null;
+        if (binding.kind === 'layer') return layer;
+        const effect = layer.getEffect(binding.effect);
+        if (binding.kind === 'effect' || effect === null) return effect;
+        return effect.getMaterial(binding.material);
+    };
+
+    objects.bind = function (id, binding) { objects.bindings.set(id, binding); };
+
+    objects.slotForID = function (id) {
+        const layer = objects.byID.get(id);
+        return layer === undefined || layer._dead ? -1 : layer._slot;
+    };
+
+    objects.layerForSlot = function (slot) {
+        const layer = objects.bySlot.get(slot);
+        return layer === undefined ? null : layer;
+    };
+
+    // `thisLayer` is the layer in the script's slot (undefined for scene-level scripts);
+    // `thisObject` the owner of the bound property, else the layer, else the scene (§1.3, P9).
+    rt.hooks.scope = function (record) {
+        const layer = record.slot >= 0 ? objects.bySlot.get(record.slot) : undefined;
+        const binding = objects.bindings.get(record.id);
+        let thisObject = binding ? objects.bindingTarget(binding) : null;
+        if (thisObject === null || thisObject === undefined) thisObject = layer !== undefined ? layer : thisScene;
+        return { thisLayer: layer, thisObject: thisObject };
+    };
+
+    // MARK: deferred structure changes (after every update of the frame)
+
+    function collect(layer, into) {
+        if (into.indexOf(layer) >= 0) return;
+        into.push(layer);
+        const id = layer._id;
+        objects.order.forEach(function (candidate) {
+            if (candidate._record.parentID === id && candidate !== layer) collect(candidate, into);
+        });
+    }
+
+    function destroyPending() {
+        if (pendingDestroy.length === 0) return;
+        const doomed = [];
+        pendingDestroy.forEach(function (layer) { collect(layer, doomed); });
+        pendingDestroy.length = 0;
+        doomed.forEach(function (layer) {
+            const slot = layer._slot;
+            const index = objects.order.indexOf(layer);
+            if (index >= 0) objects.order.splice(index, 1);
+            objects.bySlot.delete(slot);
+            if (objects.byID.get(layer._id) === layer) objects.byID.delete(layer._id);
+            rt.records.forEach(function (record) {
+                if (record.slot === slot && !record.pendingDestroy) rt.remove(record.id);
+            });
+            objects.push(OP.destroy, slot);
+            objects.detachLayer(layer);
+        });
+    }
+
+    rt.addPhaseHandler('deferred', function () {
+        objects.flushStrings();
+        destroyPending();
+    });
+})(this);

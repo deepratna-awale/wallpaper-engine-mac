@@ -1,0 +1,212 @@
+import Foundation
+import JavaScriptCore
+
+/// The SceneScript object model (docs/scenescript-plan.md WP7): `thisScene`, the layers and their
+/// effects, materials and animations as live JS objects over shared memory, and `thisLayer` /
+/// `thisObject` for each script. A `SceneScriptRuntimeExtension`, one per runtime.
+///
+/// - Numeric members read and write `store`'s buffers directly; the renderer reads them after the
+///   frame (dirty bytes mark script writes).
+/// - Native actions (create, destroy, sort, strings, material writes, playback, animations) go
+///   through the command ring as opcodes 400–999 and reach `host` as `SceneScriptObjectCommand`s.
+/// - `createLayer` describes the new layer synchronously through the host, so the script gets a
+///   live layer at once; the host materializes it when the `.create` command arrives.
+/// - Members WE has but this app cannot do yet are explicit stubs: inert, and logged once each
+///   (`unsupportedMembers`).
+final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
+    let scriptResources = ["objects-values", "objects-animations", "objects-effects", "objects-layers",
+                           "objects-scene"]
+
+    private weak var host: SceneScriptObjectHost?
+    private weak var runtime: SceneScriptRuntime?
+    private let capacity: SceneScriptObjectStore.Capacity
+    private(set) var store: SceneScriptObjectStore?
+    private var pendingSources: [Int: SceneScriptLayerSource] = [:]
+    private var reportedFull = false
+    private var reportedInvalid = Set<Int32>()
+    /// WE members a script used that are stubs here, by `Interface.member`.
+    private(set) var unsupportedMembers = Set<String>()
+
+    init(host: SceneScriptObjectHost, capacity: SceneScriptObjectStore.Capacity = .standard) {
+        self.host = host
+        self.capacity = capacity
+    }
+
+    func install(into runtime: SceneScriptRuntime) throws {
+        guard let store = SceneScriptObjectStore(capacity: capacity, in: runtime.context) else {
+            throw SceneScriptRuntime.CreationError(description: "the object table could not be allocated")
+        }
+        self.store = store
+        self.runtime = runtime
+        store.table.install(on: runtime.rt)
+        registerCommands(on: runtime.commandRing)
+
+        let context = runtime.context
+        guard let native = runtime.rt.forProperty("native"), let objects = JSValue(newObjectIn: context) else {
+            throw SceneScriptRuntime.CreationError(description: "__rt.native is missing")
+        }
+        objects.setValue(SceneScriptObjectField.javaScriptObject, forProperty: "fields")
+        objects.setValue(SceneScriptSceneField.javaScriptObject, forProperty: "sceneFields")
+        objects.setValue(SceneScriptCommandRing.Opcode.objectModelOpcodes.mapValues { Int($0.rawValue) },
+                         forProperty: "opcodes")
+        objects.setValue(store.effects.javaScriptObject(in: context), forProperty: "effects")
+        objects.setValue(store.constants.javaScriptObject(in: context), forProperty: "constants")
+        objects.setValue(store.animations.javaScriptObject(in: context), forProperty: "animations")
+        objects.setValue(store.scene.javaScriptObject(in: context), forProperty: "scene")
+        objects.setValue(["rate": SceneScriptObjectStore.AnimationLayout.rate,
+                          "frame": SceneScriptObjectStore.AnimationLayout.frame,
+                          "playing": SceneScriptObjectStore.AnimationLayout.playing],
+                         forProperty: "animationLayout")
+        objects.setValue(initialScene(store), forProperty: "initial")
+        installNativeFunctions(on: objects)
+        native.setValue(objects, forProperty: "objects")
+    }
+
+    /// Sets what `thisObject` is for `scriptID` (and which property `getAnimation()` defaults to).
+    /// Call before the `load` that defines the script. Without a binding, `thisObject` is the
+    /// script's layer, or the scene for scripts without one.
+    func bind(scriptID: String, to binding: SceneScriptObjectBinding) {
+        guard let objects = runtime?.rt.forProperty("objects") else { return }
+        objects.invokeMethod("bind", withArguments: [scriptID, binding.javaScriptObject])
+    }
+
+    /// The object table slot of the layer with scene.json id `id`.
+    func slot(forObjectID id: Int) -> Int? {
+        guard let value = runtime?.rt.forProperty("objects")?.invokeMethod("slotForID", withArguments: [id]),
+              value.isNumber else { return nil }
+        let slot = Int(value.toInt32())
+        return slot >= 0 ? slot : nil
+    }
+
+    // MARK: - Native functions
+
+    private func initialScene(_ store: SceneScriptObjectStore) -> [String: Any] {
+        guard let description = host?.sceneScriptScene() else { return ["objects": [], "animations": []] }
+        var records: [[String: Any]] = []
+        for object in description.objects {
+            if let record = store.place(object) {
+                records.append(record)
+            } else {
+                reportFull(object.name)
+            }
+        }
+        let animations = store.placeScene(settings: description.settings, animations: description.animations)
+        return ["objects": records, "animations": animations]
+    }
+
+    private func installNativeFunctions(on objects: JSValue) {
+        let create: @convention(block) (String, String, Int32) -> Any = { [weak self] kind, payload, sourceSlot in
+            self?.createLayer(kind: kind, payload: payload, sourceSlot: Int(sourceSlot)) ?? NSNull()
+        }
+        let unsupported: @convention(block) (String) -> Void = { [weak self] member in
+            guard let self, unsupportedMembers.insert(member).inserted else { return }
+            OWELog.info(.script, "\(runtime?.identity.wallpaperID ?? ""): \(member) is not supported yet; it does nothing")
+        }
+        objects.setValue(create, forProperty: "create")
+        objects.setValue(unsupported, forProperty: "unsupported")
+    }
+
+    /// `thisScene.createLayer`: describes and places the layer now, materializes it on `.create`.
+    private func createLayer(kind: String, payload: String, sourceSlot: Int) -> Any {
+        guard let store, let host else { return NSNull() }
+        let source: SceneScriptLayerSource
+        switch kind {
+        case "asset": source = .asset(payload)
+        case "configuration": source = .configuration(json: payload)
+        case "copy":
+            guard store.isLive(sourceSlot) else { return NSNull() }
+            source = .copy(slot: sourceSlot)
+        default: return NSNull()
+        }
+        guard let description = host.sceneScriptDescribeLayer(source) else {
+            OWELog.error(.script, "\(runtime?.identity.wallpaperID ?? ""): createLayer could not make a layer from \(source)")
+            return NSNull()
+        }
+        guard let record = store.place(description), let slot = record["slot"] as? Int else {
+            reportFull(description.name)
+            return NSNull()
+        }
+        pendingSources[slot] = source
+        return record
+    }
+
+    private func reportFull(_ name: String) {
+        guard !reportedFull else { return }
+        reportedFull = true
+        OWELog.error(.script, "\(runtime?.identity.wallpaperID ?? ""): the SceneScript object table is full; "
+                     + "'\(name)' and later layers are not scriptable")
+    }
+
+    // MARK: - Commands
+
+    private func registerCommands(on ring: SceneScriptCommandRing) {
+        for opcode in SceneScriptCommandRing.Opcode.objectModelOpcodes.values {
+            ring.register(opcode) { [weak self] command in self?.execute(command) }
+        }
+    }
+
+    private func execute(_ ringCommand: SceneScriptCommandRing.Command) {
+        guard let store, let command = decode(ringCommand, store: store) else {
+            if reportedInvalid.insert(ringCommand.opcode.rawValue).inserted {
+                OWELog.error(.script, "SceneScript command \(ringCommand.opcode.rawValue) for target "
+                             + "\(ringCommand.target) is malformed or targets no live object; dropped")
+            }
+            return
+        }
+        host?.sceneScriptPerform(command)
+        if case .destroy(let slot) = command {
+            pendingSources[slot] = nil
+            store.release(slot: slot)
+        }
+    }
+
+    private func decode(_ command: SceneScriptCommandRing.Command, store: SceneScriptObjectStore) -> SceneScriptObjectCommand? {
+        typealias Opcode = SceneScriptCommandRing.Opcode
+        let target = Int(command.target)
+        let numbers = command.numbers
+        if [Opcode.animationPlay, .animationPause, .animationStop, .animationSetFrame, .animationJoin]
+            .contains(command.opcode) {
+            guard let reference = store.animationReferences[target] else { return nil }
+            switch command.opcode {
+            case .animationPlay: return .animation(reference, .play)
+            case .animationPause: return .animation(reference, .pause)
+            case .animationStop: return .animation(reference, .stop)
+            case .animationJoin: return .animation(reference, .join)
+            default:
+                guard let frame = numbers.first else { return nil }
+                return .animation(reference, .setFrame(Double(frame)))
+            }
+        }
+        guard store.isLive(target) else { return nil }
+        switch command.opcode {
+        case .objectCreate:
+            guard let source = pendingSources[target] else { return nil }
+            return .create(slot: target, source: source)
+        case .objectDestroy: return .destroy(slot: target)
+        case .objectSort:
+            guard let index = numbers.first else { return nil }
+            return .sort(slot: target, index: Int(index))
+        case .objectSetString:
+            guard command.strings.count == 2, let field = SceneScriptStringField(rawValue: command.strings[0]) else {
+                return nil
+            }
+            return .setString(slot: target, field: field, value: command.strings[1])
+        case .materialSetProperty:
+            guard numbers.count >= 3, let name = command.strings.first else { return nil }
+            let material = Int(numbers[1])
+            return .setMaterialProperty(slot: target, effect: Int(numbers[0]), material: material < 0 ? nil : material,
+                                        name: name, value: Array(numbers.dropFirst(2)))
+        case .materialExecuteFunction:
+            guard let effect = numbers.first, let name = command.strings.first else { return nil }
+            return .executeMaterialFunction(slot: target, effect: Int(effect), name: name)
+        case .soundPlay: return .sound(slot: target, .play)
+        case .soundPause: return .sound(slot: target, .pause)
+        case .soundStop: return .sound(slot: target, .stop)
+        case .particlesPlay: return .particles(slot: target, .play)
+        case .particlesPause: return .particles(slot: target, .pause)
+        case .particlesStop: return .particles(slot: target, .stop)
+        case .particlesEmit: return .emitParticles(slot: target, count: numbers.first.map { Int($0) })
+        default: return nil
+        }
+    }
+}

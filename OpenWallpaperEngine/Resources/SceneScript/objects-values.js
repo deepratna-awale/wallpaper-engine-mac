@@ -1,0 +1,170 @@
+'use strict';
+// SceneScript object model, part 1 of 5 (docs/scenescript-plan.md WP7): the `__rt.objects`
+// namespace, value conversion, generated accessors over the shared tables, and the registry of
+// WE members that are explicit stubs here. SceneScriptObjectModel.swift installed
+// `__rt.native.objects` (tables, field lists, opcodes, native functions) before this file runs.
+(function (global) {
+    const rt = global.__rt;
+    const native = rt.native.objects;
+    const RAD2DEG = 180 / Math.PI, DEG2RAD = Math.PI / 180;
+    // WE's classes from baseclasses.js (global lexical bindings, not properties of `global`).
+    const HAS_VEC = typeof Vec3 === 'function' && typeof Vec2 === 'function';
+
+    const objects = {
+        OP: native.opcodes,
+        table: rt.table,
+        effects: native.effects,
+        constants: native.constants,
+        animations: native.animations,
+        animationLayout: native.animationLayout,
+        sceneBuffer: native.scene,
+        // Script id → {kind, slot, effect, material, property} (SceneScriptObjectBinding).
+        bindings: new Map(),
+        // Extension points for later packages (WP12 replaces `animation` to return timeline-backed
+        // objects; the default returns `Animation`/`TextureAnimation` over the animation buffer).
+        hooks: {},
+        // Every stubbed member, as 'Interface.member'.
+        UNSUPPORTED: new Set(),
+    };
+
+    // MARK: vectors (WE's own classes, so WEVector/WEMath and the Vec methods work on them)
+
+    objects.vec2 = function (x, y) { return HAS_VEC ? new Vec2(x, y) : { x: x, y: y }; };
+    objects.vec3 = function (x, y, z) { return HAS_VEC ? new Vec3(x, y, z) : { x: x, y: y, z: z }; };
+    objects.vec4 = function (x, y, z, w) {
+        return typeof Vec4 === 'function' ? new Vec4(x, y, z, w) : { x: x, y: y, z: z, w: w };
+    };
+    objects.mat4 = function (m) { return typeof Mat4 === 'function' ? new Mat4(m) : { m: m }; };
+    objects.mat3 = function () { return typeof Mat3 === 'function' ? new Mat3() : { m: [1, 0, 0, 0, 1, 0, 0, 0, 1] }; };
+
+    // MARK: conversion (plan §1.9 P3)
+
+    // WE's property converter: a number for numbers (NaN passes and is written), a boolean or number
+    // for flags, numeric x/y(/z) for vectors with a bare number broadcast to every component.
+    // Anything else leaves the property unchanged (undefined here). Angles convert to radians.
+    function components(value, count) {
+        if (typeof value === 'number') {
+            const out = new Array(count);
+            for (let i = 0; i < count; i++) out[i] = value;
+            return out;
+        }
+        if (value === null || typeof value !== 'object') return undefined;
+        const keys = ['x', 'y', 'z', 'w'];
+        const out = new Array(count);
+        for (let i = 0; i < count; i++) {
+            const component = value[keys[i]];
+            if (typeof component !== 'number') return undefined;
+            out[i] = component;
+        }
+        return out;
+    }
+    objects.components = components;
+
+    // `type` is a field type from SceneScriptObjectField/SceneScriptSceneField. Returns the stored
+    // (table-unit) components, or undefined when WE would reject the value.
+    objects.convert = function (type, value) {
+        switch (type) {
+        case 'number': return typeof value === 'number' ? [value] : undefined;
+        case 'bool':
+            if (typeof value === 'boolean') return [value ? 1 : 0];
+            if (typeof value === 'number') return [value !== 0 ? 1 : 0];
+            return undefined;
+        case 'vec2': return components(value, 2);
+        case 'vec3': return components(value, 3);
+        case 'degrees': {
+            const c = components(value, 3);
+            return c === undefined ? undefined : [c[0] * DEG2RAD, c[1] * DEG2RAD, c[2] * DEG2RAD];
+        }
+        default: return undefined;
+        }
+    };
+
+    // Reads the script value of a field of `type` at `t[i]`: vectors are fresh copies (WE).
+    objects.read = function (type, t, i) {
+        switch (type) {
+        case 'number': return t[i];
+        case 'bool': return t[i] !== 0;
+        case 'vec2': return objects.vec2(t[i], t[i + 1]);
+        case 'vec3': return objects.vec3(t[i], t[i + 1], t[i + 2]);
+        case 'degrees': return objects.vec3(t[i] * RAD2DEG, t[i + 1] * RAD2DEG, t[i + 2] * RAD2DEG);
+        default: return undefined;
+        }
+    };
+
+    // Defines `name` on `proto` over a shared buffer. Instances carry `_t` (the Float32Array),
+    // `_base` (their first float), `_d` (the dirty bytes) and `_di` (their dirty index); a
+    // destroyed layer points them at a private snapshot, so a stale reference never touches a
+    // reused slot. A read-only field ignores writes, like the rest of WE's inert members.
+    objects.defineField = function (proto, name, offset, type, readOnly) {
+        const count = type === 'number' || type === 'bool' ? 1 : (type === 'vec2' ? 2 : 3);
+        Object.defineProperty(proto, name, {
+            configurable: true,
+            enumerable: true,
+            get: function () { return objects.read(type, this._t, this._base + offset); },
+            set: readOnly ? function (value) {} : function (value) {
+                if (this._dead) return;
+                const c = objects.convert(type, value);
+                if (c === undefined) return;
+                const t = this._t, i = this._base + offset;
+                for (let k = 0; k < count; k++) t[i + k] = c[k];
+                this._d[this._di] = 1;
+            },
+        });
+    };
+
+    // Gives `target` the non-enumerable internals `defineField` reads, over `count` floats of `t`
+    // from `base`, dirty byte `d[di]`.
+    objects.attach = function (target, t, base, d, di) {
+        Object.defineProperty(target, '_t', { value: t, writable: true });
+        Object.defineProperty(target, '_base', { value: base, writable: true });
+        Object.defineProperty(target, '_d', { value: d, writable: true });
+        Object.defineProperty(target, '_di', { value: di, writable: true });
+        Object.defineProperty(target, '_dead', { value: false, writable: true });
+    };
+
+    // Points `target` at a private copy of its `count` floats: it keeps its last values, and
+    // writes and commands through it do nothing (Swift reuses the slot).
+    objects.detach = function (target, count) {
+        if (target._dead) return;
+        const snapshot = new Float32Array(count);
+        for (let i = 0; i < count; i++) snapshot[i] = target._t[target._base + i];
+        target._t = snapshot;
+        target._base = 0;
+        target._d = new Uint8Array(1);
+        target._di = 0;
+        target._dead = true;
+    };
+
+    objects.defineMethod = function (proto, name, fn) {
+        Object.defineProperty(proto, name, { configurable: true, enumerable: false, writable: true, value: fn });
+    };
+
+    // MARK: explicit stubs
+
+    const reported = new Set();
+    objects.unsupported = function (member) {
+        if (reported.has(member)) return;
+        reported.add(member);
+        native.unsupported(member);
+    };
+
+    // Defines `iface.member` on `proto` as an inert stub that logs once per runtime and returns
+    // `result()` (or nothing). These are WE members that need engine features this app lacks yet
+    // (bones, animation layers, attachments, parenting at runtime, model data, video textures).
+    objects.stub = function (proto, iface, member, result) {
+        const qualified = iface + '.' + member;
+        objects.UNSUPPORTED.add(qualified);
+        objects.defineMethod(proto, member, function () {
+            objects.unsupported(qualified);
+            return result ? result() : undefined;
+        });
+    };
+
+    // MARK: commands
+
+    objects.push = function (opcode, target, numbers, strings) {
+        return rt.push(opcode, target, numbers, strings);
+    };
+
+    Object.defineProperty(rt, 'objects', { value: objects, enumerable: false, writable: false, configurable: false });
+})(this);
