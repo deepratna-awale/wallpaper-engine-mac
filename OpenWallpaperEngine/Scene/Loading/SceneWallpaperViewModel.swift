@@ -795,8 +795,22 @@ class SceneWallpaperViewModel: ObservableObject {
     private func registerFont(_ path: String?) -> String? {
         guard let path, !path.isEmpty else { return nil }
         if let registered = registeredFontNames[path] { return registered }
-        guard let data = loadFontData(named: path),
-              let descriptors = CTFontManagerCreateFontDescriptorsFromData(data as CFData) as? [CTFontDescriptor],
+        let resolver = SceneFontResolver(
+            wallpaperData: { self.loadFontData(named: $0) },
+            assetDirectories: [WallpaperEngineAssets.configured, WallpaperEngineAssets.bundled].compactMap { $0 },
+            workshop: WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots()))
+        let data: Data
+        switch resolver.resolve(path) {
+        case .system(let family)?:
+            registeredFontNames[path] = family
+            return family
+        case .data(let bytes, _)?:
+            data = bytes
+        case nil:
+            OWELog.error(.scene, "Font \"\(path)\" not found in the wallpaper, WE assets or workshop items; using the system font")
+            return path
+        }
+        guard let descriptors = CTFontManagerCreateFontDescriptorsFromData(data as CFData) as? [CTFontDescriptor],
               let descriptor = descriptors.first,
               let name = CTFontDescriptorCopyAttribute(descriptor, kCTFontNameAttribute) as? String else {
             return path
@@ -815,6 +829,7 @@ class SceneWallpaperViewModel: ObservableObject {
         return name
     }
 
+    /// The wallpaper's own package or folder; `SceneFontResolver` handles the other sources.
     private func loadFontData(named path: String) -> Data? {
         let normalized = path.replacingOccurrences(of: "\\", with: "/")
         let keys = [path, normalized, (normalized as NSString).lastPathComponent]
@@ -836,14 +851,6 @@ class SceneWallpaperViewModel: ObservableObject {
         if let directory = loadedWallpaperDirectory {
             for candidate in [normalized, (normalized as NSString).lastPathComponent] {
                 if let data = try? Data(contentsOf: directory.appending(path: candidate)) {
-                    assetDataCache[path] = data
-                    return data
-                }
-            }
-        }
-        if let assets = WallpaperEngineAssets.directory {
-            for candidate in [normalized, (normalized as NSString).lastPathComponent] {
-                if let data = try? Data(contentsOf: assets.appending(path: candidate)) {
                     assetDataCache[path] = data
                     return data
                 }
