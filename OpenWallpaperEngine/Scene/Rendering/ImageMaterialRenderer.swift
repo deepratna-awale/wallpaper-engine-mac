@@ -47,6 +47,8 @@ final class ImageMaterialRenderer {
     private(set) var drawsEncoded = 0
     /// Layer instances holding uniform state, for tests and diagnostics.
     var programCount: Int { programs.count }
+    /// Compiled pipelines, shared by every layer drawing the same variant, format and blending.
+    var pipelineCount: Int { pipelineLock.withLock { pipelines.count } }
 
     init?(device: MTLDevice, archive: EffectPipelineArchive?) {
         self.device = device

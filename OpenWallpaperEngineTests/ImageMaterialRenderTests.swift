@@ -388,6 +388,7 @@ final class ImageMaterialRenderTests: XCTestCase {
             }
         }
         XCTAssertEqual(renderer.programCount, 100)
+        XCTAssertEqual(renderer.pipelineCount, 1, "one pipeline for every layer on the same material (risk I11)")
         for id in ids { renderer.releaseLayer(id) }
         XCTAssertEqual(renderer.programCount, 0)
     }
