@@ -13,6 +13,14 @@ import ServiceManagement
 @MainActor
 class GlobalSettingsViewModel: ObservableObject {
     private static let wallpaperEngineAssetsDirectoryKey = "WallpaperEngineAssetsDirectory"
+    private static let audioPermissionAlertDismissedKey = "SuppressAudioPermissionPrompt"
+
+    /// The user chose "Don't Ask Again" on the missing Screen Recording permission alert.
+    /// Nonisolated because the audio engine reads it off the settings view model's lifetime.
+    nonisolated static var isAudioPermissionAlertDismissed: Bool {
+        get { UserDefaults.standard.bool(forKey: audioPermissionAlertDismissedKey) }
+        set { UserDefaults.standard.set(newValue, forKey: audioPermissionAlertDismissedKey) }
+    }
 
     @Published var settings: GlobalSettings
     {

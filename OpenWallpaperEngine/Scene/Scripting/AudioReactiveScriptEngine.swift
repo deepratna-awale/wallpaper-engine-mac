@@ -253,11 +253,20 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     private var sceneCanvasSize = SIMD2<Double>(1920, 1080)
     private var propertyNotificationWorkItem: DispatchWorkItem?
 
-    /// Guards `stream` and `captureGeneration`; capture starts and stops on arbitrary tasks.
+    /// Guards `stream`; capture starts and stops on arbitrary tasks.
     private let captureLock = NSLock()
-    /// Bumped on every restart so a start that was already in flight knows it has been superseded.
-    private var captureGeneration = 0
-    private var captureObservers: [NSObjectProtocol] = []
+    /// Only touched on the main actor. Never calls ScreenCaptureKit while permission is missing,
+    /// because ScreenCaptureKit itself shows the system prompt in that case.
+    @MainActor private lazy var permissionGate = AudioCapturePermissionGate(
+        preflight: { CGPreflightScreenCaptureAccess() },
+        isAlertDismissed: { GlobalSettingsViewModel.isAudioPermissionAlertDismissed })
+    /// Only touched on the main actor. The single owner of capture starts, so at most one
+    /// `SCStream` exists app-wide.
+    @MainActor private lazy var restartScheduler = CaptureRestartScheduler(
+        schedule: { delay, work in
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated(work) }
+        },
+        start: { [weak self] in self?.startSystemAudioCapture() })
 
     private override init() {
         super.init()
@@ -265,36 +274,66 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         // Unit tests run ad-hoc signed with this bundle id; a capture request from them is denied
         // and that denial replaces the user's Screen Recording grant for the real app.
         guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        Task { @MainActor [weak self] in self?.setUpSystemAudioCapture() }
+    }
+
+    @MainActor
+    private func setUpSystemAudioCapture() {
         observeCaptureInterruptions()
-        startSystemAudioCapture()
+        if permissionGate.canCapture() {
+            restartScheduler.requestRestart()
+        } else {
+            OWELog.info(.audio, "Screen Recording permission not granted; system audio capture is off.")
+            if permissionGate.shouldAlertMissingPermission() {
+                NotificationCenter.default.post(name: .audioCapturePermissionMissing, object: nil)
+            }
+        }
     }
 
     /// A ScreenCaptureKit stream does not survive system sleep or display reconfiguration, and
     /// nothing else would ever start a new one, so every audio-reactive feature would stay silent
     /// until the app is relaunched.
+    @MainActor
     private func observeCaptureInterruptions() {
-        captureObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
-                self?.restartSystemAudioCapture(reason: "system woke")
-            })
-        captureObservers.append(NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
-                self?.restartSystemAudioCapture(reason: "display configuration changed")
-            })
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(systemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(screenParametersDidChange),
+            name: NSApplication.didChangeScreenParametersNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(applicationDidBecomeActive),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
     }
 
+    // AppKit posts all three on the main thread.
+    @MainActor @objc private func systemDidWake() {
+        restartSystemAudioCapture(reason: "system woke")
+    }
+
+    @MainActor @objc private func screenParametersDidChange() {
+        restartSystemAudioCapture(reason: "display configuration changed")
+    }
+
+    @MainActor @objc private func applicationDidBecomeActive() {
+        recheckCapturePermission()
+    }
+
+    /// Starts capture if Screen Recording was granted since the last check. Never prompts, so it is
+    /// safe to call whenever the app activates or the Permissions page appears.
+    @MainActor
+    func recheckCapturePermission() {
+        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
+        guard permissionGate.becameGranted() else { return }
+        OWELog.info(.audio, "Screen Recording permission granted; starting system audio capture.")
+        restartScheduler.reset()
+        restartScheduler.requestRestart()
+    }
+
+    @MainActor
     private func restartSystemAudioCapture(reason: String) {
-        captureLock.lock()
-        captureGeneration &+= 1
-        let previous = stream
-        stream = nil
-        captureLock.unlock()
-        resetAudioLevels()
+        guard permissionGate.canCapture() else { return }
         OWELog.info(.audio, "Restarting ScreenCaptureKit audio capture: \(reason).")
-        Task { [weak self] in
-            try? await previous?.stopCapture()
-            self?.startSystemAudioCapture()
-        }
+        restartScheduler.requestRestart()
     }
 
     /// Without this, visuals stay frozen on the last buffer that arrived before capture stopped.
@@ -1045,66 +1084,73 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         return spectrum
     }
 
-    private func startSystemAudioCapture(attempt: Int = 0) {
+    /// Called only by `restartScheduler`, which guarantees a single start in flight; the previous
+    /// stream is stopped before a new one is created.
+    @MainActor
+    private func startSystemAudioCapture() {
         captureLock.lock()
-        let generation = captureGeneration
+        let previous = stream
+        stream = nil
         captureLock.unlock()
-        Task { [weak self] in
-            guard let self else { return }
-            let content: SCShareableContent
-            do {
-                content = try await SCShareableContent.current
-            } catch {
-                OWELog.error(.audio, "Unable to read shareable content: \(error.localizedDescription)")
-                await self.retryOrReportAudioCapture(attempt: attempt, generation: generation)
-                return
-            }
-            guard let display = content.displays.first else {
-                OWELog.error(.audio, "No shareable display found for ScreenCaptureKit audio capture.")
-                return
-            }
-            let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-            let configuration = SCStreamConfiguration()
-            configuration.capturesAudio = true
-            configuration.excludesCurrentProcessAudio = false
-            configuration.sampleRate = 48_000
-            configuration.channelCount = 2
-            let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-            do {
-                try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
-                try await stream.startCapture()
-                OWELog.info(.audio, "ScreenCaptureKit audio capture started.")
-            } catch {
-                OWELog.error(.audio, "Failed to start ScreenCaptureKit audio capture: \(error.localizedDescription)")
-                await self.retryOrReportAudioCapture(attempt: attempt, generation: generation)
-                return
-            }
-            self.captureLock.lock()
-            let isCurrent = generation == self.captureGeneration
-            if isCurrent { self.stream = stream }
-            self.captureLock.unlock()
-            // A restart happened while this start was in flight; the newer attempt owns capture.
-            if !isCurrent { try? await stream.stopCapture() }
-        }
-    }
-
-    private func isCurrentCapture(_ generation: Int) -> Bool {
-        captureLock.lock()
-        defer { captureLock.unlock() }
-        return generation == captureGeneration
-    }
-
-    /// ScreenCaptureKit often fails the first call right after launch even when permission is
-    /// granted, so capture is retried before anything is reported to the user.
-    private func retryOrReportAudioCapture(attempt: Int, generation: Int) async {
-        guard isCurrentCapture(generation) else { return }
-        guard attempt >= 2 else {
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard isCurrentCapture(generation) else { return }
-            startSystemAudioCapture(attempt: attempt + 1)
+        resetAudioLevels()
+        guard permissionGate.canCapture() else {
+            // Revoked while the start was queued. Touching ScreenCaptureKit now would prompt.
+            Task { try? await previous?.stopCapture() }
+            restartScheduler.reset()
+            restartScheduler.finished(success: true)
             return
         }
-        await reportMissingAudioCapturePermission()
+        Task { [weak self] in
+            if let previous {
+                do { try await previous.stopCapture() } catch {
+                    OWELog.debug(.audio, "Stopping previous capture stream failed: \(error.localizedDescription)")
+                }
+            }
+            let success = await self?.createAndStartStream() ?? false
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if self.restartScheduler.finished(success: success) {
+                    OWELog.error(.audio, "Giving up on ScreenCaptureKit audio capture after \(self.restartScheduler.maxFailures) failed attempts; it restarts on the next wake, display change or permission change.")
+                }
+            }
+        }
+    }
+
+    private func createAndStartStream() async -> Bool {
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.current
+        } catch {
+            OWELog.error(.audio, "Unable to read shareable content: \(error.localizedDescription)")
+            return false
+        }
+        guard let display = content.displays.first else {
+            OWELog.error(.audio, "No shareable display found for ScreenCaptureKit audio capture.")
+            return false
+        }
+        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
+        let configuration = SCStreamConfiguration()
+        configuration.capturesAudio = true
+        configuration.excludesCurrentProcessAudio = false
+        configuration.sampleRate = 48_000
+        configuration.channelCount = 2
+        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
+        do {
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
+            try await stream.startCapture()
+        } catch {
+            OWELog.error(.audio, "Failed to start ScreenCaptureKit audio capture: \(error.localizedDescription)")
+            return false
+        }
+        setCurrentStream(stream)
+        OWELog.info(.audio, "ScreenCaptureKit audio capture started.")
+        return true
+    }
+
+    private func setCurrentStream(_ stream: SCStream) {
+        captureLock.lock()
+        self.stream = stream
+        captureLock.unlock()
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -1115,21 +1161,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         guard wasCurrent else { return }
         OWELog.error(.audio, "ScreenCaptureKit audio capture stopped: \(error.localizedDescription)")
         resetAudioLevels()
-        // Give the system a moment to settle (the usual cause is sleep or a display change).
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.restartSystemAudioCapture(reason: "stream stopped")
-        }
-    }
-
-    @MainActor
-    private func reportMissingAudioCapturePermission() {
-        // Capture can also fail for transient reasons while permission is granted, and the prompt
-        // is only useful when it genuinely is not. Preflight answers that without prompting.
-        guard !CGPreflightScreenCaptureAccess() else {
-            OWELog.error(.audio, "Audio capture failed even though Screen Recording permission is granted.")
-            return
-        }
-        NotificationCenter.default.post(name: .audioCapturePermissionMissing, object: nil)
+        Task { @MainActor [weak self] in self?.restartSystemAudioCapture(reason: "stream stopped") }
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,

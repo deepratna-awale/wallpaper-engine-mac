@@ -19,10 +19,11 @@ struct PermissionsPage: SettingsPage {
                     description: "Needed for audio visualizers and audio-reactive SceneScript. macOS exposes system audio capture through Screen Recording permission."
                 )
                 HStack {
-                    Button("Request Permission") {
-                        PermissionHelper.requestScreenRecordingPermission()
+                    Button("Grant Access") {
+                        PermissionHelper.grantScreenRecordingAccess()
                         refresh()
                     }
+                    .disabled(hasScreenRecordingPermission)
                     Button("Open Privacy Settings") {
                         PermissionHelper.openScreenRecordingSettings()
                     }
@@ -33,15 +34,17 @@ struct PermissionsPage: SettingsPage {
             } header: {
                 Label("Audio Visualizers", systemImage: "waveform")
             } footer: {
-                Text("After granting permission, restart Open Wallpaper Engine so ScreenCaptureKit can start audio capture cleanly.")
+                Text("Audio capture starts on its own once the permission is granted; no restart is needed.")
             }
         }
         .formStyle(.grouped)
         .onAppear(perform: refresh)
     }
 
+    /// Never prompts: only re-reads the grant and starts capture if it was newly granted.
     private func refresh() {
         hasScreenRecordingPermission = PermissionHelper.hasScreenRecordingPermission
+        AudioReactiveScriptEngine.shared.recheckCapturePermission()
     }
 
     private func permissionRow(title: String, status: String, isGranted: Bool, description: String) -> some View {
@@ -66,9 +69,11 @@ enum PermissionHelper {
         CGPreflightScreenCaptureAccess()
     }
 
-    @discardableResult
-    static func requestScreenRecordingPermission() -> Bool {
-        CGRequestScreenCaptureAccess()
+    /// Only for explicit user actions: this is the one place the app asks macOS to prompt. The
+    /// system prompt itself links to the Privacy pane, and the Permissions page has a button for it.
+    static func grantScreenRecordingAccess() {
+        guard !CGPreflightScreenCaptureAccess() else { return }
+        _ = CGRequestScreenCaptureAccess()
     }
 
     static func openScreenRecordingSettings() {
