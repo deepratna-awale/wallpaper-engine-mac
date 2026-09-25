@@ -498,15 +498,14 @@ enum SceneShaderTranslator {
             try? FileManager.default.createDirectory(at: dump.deletingLastPathComponent(),
                                                      withIntermediateDirectories: true)
             try? shaderSource.write(to: dump, atomically: true, encoding: .utf8)
-            NSLog("[ShaderTranslator] Failed to translate shared shader %@ (preprocessed source at %@)",
-                  path, dump.path)
+            OWELog.error(.shader, "Failed to translate shared shader \(path) (preprocessed source at \(dump.path))")
             return false
         }
         fixupConstantAddressSpaces(at: outputURL)
         fixupBufferIndices(at: outputURL)
         SceneShaderReflection.parse(source: source).writeSidecar(for: outputURL)
         DispatchQueue.global(qos: .background).async { compileMetalLibrary(for: outputURL) }
-        NSLog("[ShaderTranslator] Cached shared shader %@", outputURL.lastPathComponent)
+        OWELog.info(.shader, "Cached shared shader \(outputURL.lastPathComponent)")
         return true
     }
 
@@ -523,13 +522,13 @@ enum SceneShaderTranslator {
         try? compatibilitySource.write(to: glslURL, options: .atomic)
         guard run(glslang, ["-G", "--auto-map-locations", "--auto-map-bindings", "-S", stage, "-o", spirvURL.path, glslURL.path]),
               run(spirvCross, ["--msl", "--msl-version", "230", "--output", outputURL.path, spirvURL.path]) else {
-            NSLog("[ShaderTranslator] Failed to translate %@", path)
+            OWELog.error(.shader, "Failed to translate \(path)")
             return false
         }
         fixupConstantAddressSpaces(at: outputURL)
         SceneShaderReflection.parse(source: source).writeSidecar(for: outputURL)
         compileMetalLibrary(for: outputURL)
-        NSLog("[ShaderTranslator] Cached %@", outputURL.lastPathComponent)
+        OWELog.info(.shader, "Cached \(outputURL.lastPathComponent)")
         return true
     }
 
@@ -553,7 +552,7 @@ enum SceneShaderTranslator {
                       let decoded = String(data: include, encoding: .utf8) {
                 includeText = decoded
             } else {
-                NSLog("[ShaderTranslator] Unsupported include %@ in %@", name, path)
+                OWELog.error(.shader, "Unsupported include \(name) in \(path)")
                 return nil
             }
             let fullRange = range.lowerBound...end
@@ -630,14 +629,14 @@ enum SceneShaderTranslator {
         do {
             try process.run()
         } catch {
-            NSLog("[ShaderTranslator] Failed to launch %@: %@", executable, error.localizedDescription)
+            OWELog.error(.shader, "Failed to launch \(executable): \(error.localizedDescription)")
             return false
         }
         process.waitUntilExit()
         if process.terminationStatus != 0 {
             let output = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
                 ?? "no compiler output"
-            NSLog("[ShaderTranslator] %@ %@\n%@", executable, arguments.joined(separator: " "), output)
+            OWELog.error(.shader, "\(executable) \(arguments.joined(separator: " "))\n\(output)")
         }
         return process.terminationStatus == 0
     }

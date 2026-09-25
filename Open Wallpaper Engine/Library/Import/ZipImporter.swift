@@ -18,11 +18,11 @@ enum ZipImporter {
             try process.run()
             process.waitUntilExit()
         } catch {
-            print("ZipImporter: ditto failed: \(error)")
+            OWELog.error(.importer, "ditto failed: \(error)")
             return 0
         }
         guard process.terminationStatus == 0 else {
-            print("ZipImporter: ditto exited with status \(process.terminationStatus)")
+            OWELog.error(.importer, "ditto exited with status \(process.terminationStatus)")
             return 0
         }
 
@@ -42,7 +42,7 @@ enum ZipImporter {
                     }
                     imported += 1
                 } catch {
-                    print("ZipImporter: copy failed for \(url.lastPathComponent): \(error)")
+                    OWELog.error(.importer, "Copy failed for \(url.lastPathComponent): \(error)")
                 }
             }
         }

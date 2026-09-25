@@ -58,7 +58,7 @@ private final class RemoteImageLoader: ObservableObject {
                 guard let image = NSImage(contentsOf: cacheURL) else { return }
                 DispatchQueue.main.async { self?.image = image }
             } catch {
-                NSLog("[RemoteWallpaper] Image cache failed: %@", error.localizedDescription)
+                OWELog.error(.library, "Remote image cache failed: \(error.localizedDescription)")
             }
         }
         task?.resume()

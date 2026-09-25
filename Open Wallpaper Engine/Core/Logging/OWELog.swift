@@ -19,7 +19,17 @@ enum OWELog {
         case workshop = "Workshop"
         case texture = "TEXParser"
         case perf = "Perf"
+        case app = "App"
+        case library = "Library"
+        case web = "Web"
+        case settings = "Settings"
+        case ui = "UI"
     }
+
+    private static let loggers: [Category: Logger] = Dictionary(uniqueKeysWithValues: [
+        Category.scene, .script, .audio, .shader, .importer, .workshop, .texture, .perf,
+        .app, .library, .web, .settings, .ui
+    ].map { ($0, Logger(subsystem: "com.winddog.wallpaper-engine", category: $0.rawValue)) })
 
     /// Debug builds never rise above `.info`, so lifecycle diagnostics stay visible during development.
     nonisolated(unsafe) static var minimumSeverity: Severity = {
@@ -60,7 +70,15 @@ enum OWELog {
     private static func emit(_ severity: Severity,
                              _ category: Category,
                              _ message: () -> String) {
-        guard severity >= minimumSeverity else { return }
-        NSLog("%@", "[\(category.rawValue)] \(message())")
+        guard severity >= minimumSeverity, let logger = loggers[category] else { return }
+        // Public: these messages carry paths and effect names, which the unified log would
+        // otherwise redact to <private> and make useless for diagnosing a wallpaper.
+        let text = message()
+        switch severity {
+        case .debug: logger.debug("\(text, privacy: .public)")
+        case .info: logger.info("\(text, privacy: .public)")
+        case .error: logger.error("\(text, privacy: .public)")
+        case .silent: break
+        }
     }
 }

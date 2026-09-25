@@ -48,7 +48,7 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
                         try data.write(to: url, options: .atomic)
                         try NSWorkspace.shared.setDesktopImageURL(url, for: .main!)
                     } catch {
-                        print(error)
+                        OWELog.error(.web, "Menu bar tint snapshot failed: \(error)")
                     }
                 }
             }
@@ -57,13 +57,13 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
     
     @objc func systemWillSleep(_ notification: Notification) {
         // Handle going to sleep
-        print("System is going to sleep")
+        OWELog.info(.web, "System is going to sleep")
         // Update your SwiftUI state here if needed
     }
         
     @objc func systemDidWake(_ notification: Notification) {
         // Handle waking up
-        print("System woke up from sleep")
+        OWELog.info(.web, "System woke up from sleep")
         // Update your SwiftUI state here if needed
     }
 }

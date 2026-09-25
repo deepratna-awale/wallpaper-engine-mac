@@ -84,7 +84,7 @@ struct FilterResults: View {
                                     } else {
                                         viewModel.showOnly.remove(FRShowOnly(rawValue: 1 << i))
                                     }
-                                    print(String(describing: viewModel.showOnly))
+                                    OWELog.debug(.ui, "Filter viewModel.showOnly = \(String(describing: viewModel.showOnly))")
                                 })) {
                                     HStack(spacing: 2) {
                                         Image(systemName: image)
@@ -126,7 +126,7 @@ struct FilterResults: View {
                                     } else {
                                         viewModel.type.remove(FRType(rawValue: 1 << i))
                                     }
-                                    print(String(describing: viewModel.type))
+                                    OWELog.debug(.ui, "Filter viewModel.type = \(String(describing: viewModel.type))")
                                 }))
                             }
                         }
@@ -140,7 +140,7 @@ struct FilterResults: View {
                                     } else {
                                         viewModel.ageRating.remove(FRAgeRating(rawValue: 1 << i))
                                     }
-                                    print(String(describing: viewModel.ageRating))
+                                    OWELog.debug(.ui, "Filter viewModel.ageRating = \(String(describing: viewModel.ageRating))")
                                 }))
                             }
                         }
@@ -171,7 +171,7 @@ struct FilterResults: View {
                                                 } else {
                                                     viewModel.widescreenResolution.remove(FRWidescreenResolution(rawValue: 1 << i))
                                                 }
-                                                print(String(describing: viewModel.widescreenResolution))
+                                                OWELog.debug(.ui, "Filter viewModel.widescreenResolution = \(String(describing: viewModel.widescreenResolution))")
                                             }))
                                         }
                                     }
@@ -204,7 +204,7 @@ struct FilterResults: View {
                                                 } else {
                                                     viewModel.ultraWidescreenResolution.remove(FRUltraWidescreenResolution(rawValue: 1 << i))
                                                 }
-                                                print(String(describing: viewModel.ultraWidescreenResolution))
+                                                OWELog.debug(.ui, "Filter viewModel.ultraWidescreenResolution = \(String(describing: viewModel.ultraWidescreenResolution))")
                                             }))
                                         }
                                     }
@@ -238,7 +238,7 @@ struct FilterResults: View {
                                                 } else {
                                                     viewModel.dualscreenResolution.remove(FRDualscreenResolution(rawValue: 1 << i))
                                                 }
-                                                print(String(describing: viewModel.dualscreenResolution))
+                                                OWELog.debug(.ui, "Filter viewModel.dualscreenResolution = \(String(describing: viewModel.dualscreenResolution))")
                                             }))
                                         }
                                     }
@@ -271,7 +271,7 @@ struct FilterResults: View {
                                                 } else {
                                                     viewModel.triplescreenResolution.remove(FRTriplescreenResolution(rawValue: 1 << i))
                                                 }
-                                                print(String(describing: viewModel.triplescreenResolution))
+                                                OWELog.debug(.ui, "Filter viewModel.triplescreenResolution = \(String(describing: viewModel.triplescreenResolution))")
                                             }))
                                         }
                                     }
@@ -304,7 +304,7 @@ struct FilterResults: View {
                                                 } else {
                                                     viewModel.potraitscreenResolution.remove(FRPortraitScreenResolution(rawValue: 1 << i))
                                                 }
-                                                print(String(describing: viewModel.potraitscreenResolution))
+                                                OWELog.debug(.ui, "Filter viewModel.potraitscreenResolution = \(String(describing: viewModel.potraitscreenResolution))")
                                             }))
                                         }
                                     }
@@ -322,7 +322,7 @@ struct FilterResults: View {
                                             } else {
                                                 viewModel.miscResolution.remove(FRMiscResolution(rawValue: 1 << i))
                                             }
-                                            print(String(describing: viewModel.miscResolution))
+                                            OWELog.debug(.ui, "Filter viewModel.miscResolution = \(String(describing: viewModel.miscResolution))")
                                         }))
                                     }
                                 }
@@ -339,7 +339,7 @@ struct FilterResults: View {
                                             } else {
                                                 viewModel.source.remove(FRSource(rawValue: 1 << i))
                                             }
-                                            print(String(describing: viewModel.source))
+                                            OWELog.debug(.ui, "Filter viewModel.source = \(String(describing: viewModel.source))")
                                         }))
                                     }
                                 }
@@ -365,7 +365,7 @@ struct FilterResults: View {
                                             } else {
                                                 viewModel.tag.remove(FRTag(rawValue: 1 << i))
                                             }
-                                            print(String(describing: viewModel.tag))
+                                            OWELog.debug(.ui, "Filter viewModel.tag = \(String(describing: viewModel.tag))")
                                         }))
                                     }
                                 }

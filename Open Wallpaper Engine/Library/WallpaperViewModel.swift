@@ -218,7 +218,7 @@ class WallpaperViewModel: ObservableObject {
             DownloadedWallpaperIndex.shared.insert(workshopId)
             return WEWallpaper(using: wallpaper.project, where: destination)
         } catch {
-            print("Failed to promote Workshop preview: \(error)")
+            OWELog.error(.workshop, "Failed to promote Workshop preview: \(error)")
             return wallpaper
         }
     }
@@ -349,7 +349,7 @@ class WallpaperViewModel: ObservableObject {
                     try previewData.write(to: destination.appending(path: "preview.jpg"), options: .atomic)
                     try JSONEncoder().encode(project).write(to: destination.appending(path: "project.json"), options: .atomic)
                 } catch {
-                    NSLog("[Import] Failed to import video: %@", error.localizedDescription)
+                    OWELog.error(.importer, "Failed to import video: \(error.localizedDescription)")
                 }
             }
         }
@@ -388,7 +388,7 @@ class WallpaperViewModel: ObservableObject {
             try JSONEncoder().encode(project)
                 .write(to: finalDestination.appending(path: "project.json"), options: .atomic)
         } catch {
-            NSLog("[Import] Failed to add remote video: %@", error.localizedDescription)
+            OWELog.error(.importer, "Failed to add remote video: \(error.localizedDescription)")
             return
         }
         let wallpaper = WEWallpaper(using: project, where: finalDestination)
@@ -421,7 +421,7 @@ class WallpaperViewModel: ObservableObject {
         Task { [weak self] in
             guard let (data, _) = try? await URLSession.shared.data(from: url),
                   let image = NSImage(data: data), image.size.width > 0 else {
-                NSLog("[Import] Could not download image at %@", url.absoluteString)
+                OWELog.error(.importer, "Could not download image at \(url.absoluteString)")
                 return
             }
             // The scene texture loader looks for materials/<name>.<ext>, so the bytes are stored
@@ -477,7 +477,7 @@ class WallpaperViewModel: ObservableObject {
                 self.setWallpaper(wallpaper, for: self.selectedScreenIds)
                 self.inspect(wallpaper)
             } catch {
-                NSLog("[Import] Failed to build image scene: %@", error.localizedDescription)
+                OWELog.error(.importer, "Failed to build image scene: \(error.localizedDescription)")
             }
         }
     }

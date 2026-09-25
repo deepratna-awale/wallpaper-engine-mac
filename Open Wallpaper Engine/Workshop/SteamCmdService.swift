@@ -365,7 +365,7 @@ class SteamCmdService: ObservableObject {
             if let str = String(data: remaining, encoding: .utf8) { fullOutput += str }
 
             let exitCode = process.terminationStatus
-            print("steamcmd download [\(workshopId)] exit=\(exitCode)\n\(fullOutput)")
+            OWELog.info(.workshop, "steamcmd download [\(workshopId)] exit=\(exitCode)\n\(fullOutput)")
 
             // Find downloaded content
             let sourcePath = steamCmdInstallDirectory

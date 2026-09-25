@@ -9,7 +9,7 @@ struct WEWallpaper: Codable, RawRepresentable, Identifiable {
             let rawValueData = try JSONEncoder().encode(self)
             return String(data: rawValueData, encoding: .utf8)!
         } catch {
-            print(error)
+            OWELog.error(.library, "Encoding wallpaper failed: \(error)")
             return ""
         }
     }

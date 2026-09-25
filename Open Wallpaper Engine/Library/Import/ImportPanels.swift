@@ -115,7 +115,7 @@ extension AppDelegate {
         panel.allowsMultipleSelection = true
         panel.beginSheetModal(for: self.mainWindowController.window) { response in
             if response != .OK { return }
-            print(String(describing: panel.urls))
+            OWELog.debug(.importer, "Import panel selection: \(panel.urls)")
             
             DispatchQueue.main.async {
                 self.contentViewModel.wallpaperUrls.append(contentsOf: panel.urls)

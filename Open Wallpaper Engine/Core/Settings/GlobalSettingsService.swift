@@ -97,7 +97,7 @@ class GlobalSettingsViewModel: ObservableObject {
                 try appService.unregister()
             }
         } catch {
-            print(error)
+            OWELog.error(.settings, "Launch-at-login update failed: \(error)")
         }
     }
     
@@ -111,7 +111,7 @@ class GlobalSettingsViewModel: ObservableObject {
                 let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appending(path: "staticWP_\(AppDelegate.shared.wallpaperViewModel.currentWallpaper.wallpaperDirectory.hashValue).tiff")
                 try NSWorkspace.shared.setDesktopImageURL(url, for: .main!)
             } catch {
-                print(error)
+                OWELog.error(.settings, "Menu bar tint wallpaper update failed: \(error)")
             }
         }
     }
@@ -130,7 +130,7 @@ class GlobalSettingsViewModel: ObservableObject {
     
     func save() {
         let data = try! JSONEncoder().encode(settings)
-        print(String(describing: String(data: data, encoding: .utf8)))
+        OWELog.debug(.settings, "Saved settings: \(String(describing: String(data: data, encoding: .utf8)))")
         UserDefaults.standard.set(data, forKey: "GlobalSettings")
     }
 

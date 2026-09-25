@@ -72,7 +72,7 @@ enum WorkshopDependencyResolver {
                 try fm.createDirectory(at: linkParent, withIntermediateDirectories: true)
                 try fm.createSymbolicLink(at: linkPath, withDestinationURL: categorySource)
             } catch {
-                NSLog("[WorkshopDependencyResolver] Failed to link workshop dependency %@: %@", reference.workshopId, String(describing: error))
+                OWELog.error(.workshop, "Failed to link workshop dependency \(reference.workshopId): \(error)")
             }
         }
     }

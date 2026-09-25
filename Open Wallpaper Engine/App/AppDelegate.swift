@@ -191,7 +191,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 }
             }
         } catch {
-            print(error)
+            OWELog.error(.app, "Clearing cached desktop snapshots failed: \(error)")
         }
     }
     
@@ -436,7 +436,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             let time = CMTimeMake(value: 1, timescale: 1) // 第一帧的时间
             imageGenerator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) { _, cgImage, _, _, error in
                 if let error = error {
-                    print(error)
+                    OWELog.error(.app, "Video thumbnail for desktop picture failed: \(error)")
                 } else if let cgImage = cgImage {
                     let nsImage = NSImage(cgImage: cgImage, size: .zero)
                     if let data = nsImage.tiffRepresentation {
@@ -447,7 +447,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                                 try NSWorkspace.shared.setDesktopImageURL(url, for: screen)
                             }
                         } catch {
-                            print(error)
+                            OWELog.error(.app, "Setting desktop picture failed: \(error)")
                         }
                     }
                 }

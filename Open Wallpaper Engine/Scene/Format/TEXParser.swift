@@ -281,7 +281,7 @@ class TEXParser {
         if let image = extractContainerImage() {
             return image
         }
-        NSLog("[TEXParser] Unsupported or malformed TEX container (%d bytes); refusing embedded thumbnail fallback", data.count)
+        OWELog.error(.texture, "Unsupported or malformed TEX container (\(data.count) bytes); refusing embedded thumbnail fallback")
         return nil
     }
 
