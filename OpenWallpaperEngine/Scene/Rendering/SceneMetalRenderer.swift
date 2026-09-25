@@ -718,7 +718,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         compositeUniform.effects = SIMD4<Float>(1, 1, AudioReactiveScriptEngine.shared.userPropertyValue("_owe_saturation", fallback: 1),
                                                 max(bloomStrength, 0))
         compositeUniform.colorEffects.z = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_hue", fallback: 0)
-        compositeUniform.colorEffects.w = bloom.enabled ? bloom.threshold : 0.55
+        // The app's bloom slider (an app extra) on a scene without WE bloom uses WE's default threshold.
+        compositeUniform.colorEffects.w = bloom.enabled ? bloom.threshold : SceneGeneralDefaults.bloomThreshold
         compositeUniform.bloomTint = SIMD4<Float>(bloom.tint.x, bloom.tint.y, bloom.tint.z, 1)
         // "_owe_blur" defaults to 1 (no extra blur); raising it above 1 blurs the whole composited scene,
         // independent of any per-layer material blur, so the slider is guaranteed to have an effect.

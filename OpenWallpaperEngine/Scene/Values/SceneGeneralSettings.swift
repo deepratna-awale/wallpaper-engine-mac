@@ -9,26 +9,42 @@ extension WESceneGeneral {
     }
 }
 
+/// WE's defaults for the `general` block when a scene doesn't author a field: the scene
+/// settings constructor in `wallpaper64.exe` (0x140186f84…0x1401870e3), matched to the field
+/// names through WE's property table (0x14019a…0x14019b2a0).
+enum SceneGeneralDefaults {
+    static let bloomStrength: Float = 2
+    static let bloomThreshold: Float = 0.65
+    static let bloomTint = SIMD3<Float>(repeating: 1)
+    static let cameraShakeSpeed: Float = 3
+    static let cameraShakeAmplitude: Float = 0.5
+    static let cameraShakeRoughness: Float = 1
+    static let cameraParallaxAmount: Float = 0.5
+    static let cameraParallaxDelay: Float = 0.1
+    static let cameraParallaxMouseInfluence: Float = 0.5
+}
+
 extension SceneBloomSettings {
     init(_ general: WESceneGeneral, in context: SceneValueContext) {
-        let tint = (general.bloomtint ?? "1 1 1").parseVector3()
+        let tint = general.bloomtint.map { $0.parseVector3() }
+            .map { SIMD3<Float>(Float($0.0), Float($0.1), Float($0.2)) } ?? SceneGeneralDefaults.bloomTint
         self.init(enabled: (general.value(.bloom, in: context)?.float ?? 0) != 0,
-                  strength: general.value(.bloomstrength, in: context)?.float ?? 1,
-                  threshold: general.value(.bloomthreshold, in: context)?.float ?? 0.7,
-                  tint: SIMD3<Float>(Float(tint.0), Float(tint.1), Float(tint.2)))
+                  strength: general.value(.bloomstrength, in: context)?.float ?? SceneGeneralDefaults.bloomStrength,
+                  threshold: general.value(.bloomthreshold, in: context)?.float ?? SceneGeneralDefaults.bloomThreshold,
+                  tint: tint)
     }
 }
 
 /// `general.camerashake*` and `general.cameraparallax*`, resolved against the user properties.
 struct SceneCameraEffects: Equatable {
     var shake = false
-    var shakeAmplitude: Float = 0
-    var shakeSpeed: Float = 0
-    var shakeRoughness: Float = 0
+    var shakeAmplitude = SceneGeneralDefaults.cameraShakeAmplitude
+    var shakeSpeed = SceneGeneralDefaults.cameraShakeSpeed
+    var shakeRoughness = SceneGeneralDefaults.cameraShakeRoughness
     var parallax = false
-    var parallaxAmount: Float = 0
-    var parallaxDelay: Float = 0
-    var parallaxMouseInfluence: Float = 0
+    var parallaxAmount = SceneGeneralDefaults.cameraParallaxAmount
+    var parallaxDelay = SceneGeneralDefaults.cameraParallaxDelay
+    var parallaxMouseInfluence = SceneGeneralDefaults.cameraParallaxMouseInfluence
 
     init() {}
 
@@ -37,12 +53,12 @@ struct SceneCameraEffects: Equatable {
             general.value(field, in: context)?.float ?? fallback
         }
         shake = float(.camerashake, 0) != 0
-        shakeAmplitude = float(.camerashakeamplitude, 0)
-        shakeSpeed = float(.camerashakespeed, 0)
-        shakeRoughness = float(.camerashakeroughness, 0)
+        shakeAmplitude = float(.camerashakeamplitude, SceneGeneralDefaults.cameraShakeAmplitude)
+        shakeSpeed = float(.camerashakespeed, SceneGeneralDefaults.cameraShakeSpeed)
+        shakeRoughness = float(.camerashakeroughness, SceneGeneralDefaults.cameraShakeRoughness)
         parallax = float(.cameraparallax, 0) != 0
-        parallaxAmount = float(.cameraparallaxamount, 0)
-        parallaxDelay = float(.cameraparallaxdelay, 0)
-        parallaxMouseInfluence = float(.cameraparallaxmouseinfluence, 0)
+        parallaxAmount = float(.cameraparallaxamount, SceneGeneralDefaults.cameraParallaxAmount)
+        parallaxDelay = float(.cameraparallaxdelay, SceneGeneralDefaults.cameraParallaxDelay)
+        parallaxMouseInfluence = float(.cameraparallaxmouseinfluence, SceneGeneralDefaults.cameraParallaxMouseInfluence)
     }
 }
