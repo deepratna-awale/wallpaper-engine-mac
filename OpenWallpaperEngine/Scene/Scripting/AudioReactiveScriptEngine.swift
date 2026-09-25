@@ -1,7 +1,4 @@
-import CoreMedia
 import Cocoa
-import ScreenCaptureKit
-import Accelerate
 import JavaScriptCore
 
 extension Notification.Name {
@@ -12,7 +9,7 @@ extension Notification.Name {
     static let sceneMusicSettingsDidChange = Notification.Name("SceneMusicSettingsDidChange")
 }
 
-final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegate {
+final class AudioReactiveScriptEngine {
     static let shared = AudioReactiveScriptEngine()
 
     /// WE scripts are authored as ES modules (`export function update`, `export let __workshopId`, etc.),
@@ -157,7 +154,11 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
             g.WEColor={rgb2hsv:c=>{let r=c.x,gc=c.y,b=c.z,m=Math.max(r,gc,b),n=Math.min(r,gc,b),d=m-n,h=0;if(d){if(m===r)h=((gc-b)/d)%6;else if(m===gc)h=(b-r)/d+2;else h=(r-gc)/d+4;h/=6;if(h<0)h+=1;}return new Vec3(h,m?d/m:0,m);},hsv2rgb:c=>{let h=c.x*6,s=c.y,v=c.z,i=Math.floor(h),f=h-i,p=v*(1-s),q=v*(1-f*s),t=v*(1-(1-f)*s);return [new Vec3(v,t,p),new Vec3(q,v,p),new Vec3(p,v,t),new Vec3(p,q,v),new Vec3(t,p,v),new Vec3(v,p,q)][((i%6)+6)%6];},normalizeColor:c=>new Vec3(c.x/255,c.y/255,c.z/255),expandColor:c=>new Vec3(c.x*255,c.y*255,c.z*255)};
             class AudioBuffers { constructor(left=[],right=[]){this.left=left;this.right=right;this.average=left.map((v,i)=>(v+(right[i]||0))/2);} }
             g.AudioBuffers=AudioBuffers;
-            g.createScriptProperties=function(){let values=Object.assign({},g.__scriptProperties||{});let api={};['Checkbox','Text','Slider','Combo','Color'].forEach(type=>api['add'+type]=o=>{if(values[o.name]===undefined)values[o.name]=o.value;return api;});api.finish=()=>values;return api;};
+            // WE's createScriptProperties (assets/scripts/jsclasses/baseclasses.js) gives each property
+            // its authored default (a combo's first option) plus its `_config`; the fallback below is
+            // the same code for when no WE runtime is loaded. The scene's `scriptproperties` win.
+            const weCreateScriptProperties=typeof g.createScriptProperties==='function'?g.createScriptProperties:function(){var vars={};var obj={order:0,addSlider:function(o){vars[o.name]=o.value;vars[o.name+'_config']={order:obj.order++,label:o.label,min:o.min,max:o.max,mode:(o.integer===true)?'int':undefined};return obj;},addCheckbox:function(o){vars[o.name]=o.value;vars[o.name+'_config']={order:obj.order++,label:o.label};return obj;},addText:function(o){vars[o.name]=o.value;vars[o.name+'_config']={order:obj.order++,label:o.label};return obj;},addCombo:function(o){vars[o.name]=o.options[0].value;vars[o.name+'_config']={order:obj.order++,label:o.label,options:o.options,mode:'combo'};return obj;},addColor:function(o){vars[o.name]=o.value;vars[o.name+'_config']={order:obj.order++,label:o.label};return obj;},finish:function(){return vars;}};return obj;};
+            g.createScriptProperties=function(){const api=weCreateScriptProperties.call(g);const finish=api.finish;api.finish=function(){const vars=finish.call(api);const authored=g.__scriptProperties||{};for(const key of Object.keys(authored))vars[key]=authored[key];return vars;};return api;};
             g.shared=g.shared||{};
             g.console={log:(...a)=>__consoleLog(a.join(' ')),error:(...a)=>__consoleError(a.join(' '))};
             g.localStorage={set:(k,v,s)=>__storageSet(String(k),JSON.stringify(v),s||0),get:(k,d,s)=>{let v=__storageGet(String(k),s||0);return v===null||v===undefined?d:JSON.parse(v);},delete:(k,s)=>__storageDelete(String(k),s||0),clear:s=>__storageClear(s||0)};
@@ -225,22 +226,12 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         })(this);
         """#
 
+    /// System audio capture; the engine forwards its audio API until the SceneScript runtime takes over.
+    let audioCapture: SystemAudioCapture
+    /// Per-wallpaper user properties and their music-synced modulation.
+    let propertyService: SceneUserPropertyService
+    /// Guards the layer states, scene clock and cursor, and the pending structure changes.
     private let levelLock = NSLock()
-    private var level: Double = 0
-    private var spectrum = [Double](repeating: 0, count: 64)
-    private var waveform = [Double](repeating: 0, count: 64)
-    private var stream: SCStream?
-    /// Per-wallpaper user properties (guarded by `levelLock`). `userPropertyStrings` and
-    /// `globalValues` are views of the active wallpaper's entry.
-    private var propertyStores = SceneUserPropertyStores()
-    private var globalValues: [String: Double] {
-        get { propertyStores.active.numbers }
-        set { propertyStores.active.numbers = newValue }
-    }
-    private var userPropertyStrings: [String: String] {
-        get { propertyStores.active.strings }
-        set { propertyStores.active.strings = newValue }
-    }
     private var layerStates: [String: [String: Any]] = [:]
     private var layerAliases: [String: String] = [:]
     private var scriptContexts: [String: JSContext] = [:]
@@ -254,106 +245,23 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     private let scriptLock = NSLock()
     private var sceneDeltaTime: Double = 1.0 / 60.0
     private var sceneFrame: Int = 0
-    private var userPropertiesRevision = 0
-    private var scriptPropertyCacheRevision = -1
-    private var scriptPropertyCacheKey = ""
-    private var cachedModulatedGlobals: [String: Double] = [:]
-    private var cachedUserProperties: [String: Any] = [:]
-    private var cachedMusicSyncedKeys: [String] = []
     private var sceneCanvasSize = SIMD2<Double>(1920, 1080)
-    private var propertyNotificationWorkItem: DispatchWorkItem?
+    /// The layer states the render loop reads between `beginFrame` and `endFrame`. Confined to the
+    /// render thread; dictionaries are copy-on-write so taking it is cheap.
+    private var frameLayerStates: [String: [String: Any]]?
 
-    /// Guards `stream`; capture starts and stops on arbitrary tasks.
-    private let captureLock = NSLock()
-    /// Only touched on the main actor. Never calls ScreenCaptureKit while permission is missing,
-    /// because ScreenCaptureKit itself shows the system prompt in that case.
-    @MainActor private lazy var permissionGate = AudioCapturePermissionGate(
-        preflight: { CGPreflightScreenCaptureAccess() },
-        isAlertDismissed: { GlobalSettingsViewModel.isAudioPermissionAlertDismissed })
-    /// Only touched on the main actor. The single owner of capture starts, so at most one
-    /// `SCStream` exists app-wide.
-    @MainActor private lazy var restartScheduler = CaptureRestartScheduler(
-        schedule: { delay, work in
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { MainActor.assumeIsolated(work) }
-        },
-        start: { [weak self] in self?.startSystemAudioCapture() })
-
-    private override init() {
-        super.init()
+    private init() {
         _ = BrowserMediaIntegration.shared
-        // Unit tests run ad-hoc signed with this bundle id; a capture request from them is denied
-        // and that denial replaces the user's Screen Recording grant for the real app.
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        Task { @MainActor [weak self] in self?.setUpSystemAudioCapture() }
-    }
-
-    @MainActor
-    private func setUpSystemAudioCapture() {
-        observeCaptureInterruptions()
-        if permissionGate.canCapture() {
-            restartScheduler.requestRestart()
-        } else {
-            OWELog.info(.audio, "Screen Recording permission not granted; system audio capture is off.")
-            if permissionGate.shouldAlertMissingPermission() {
-                NotificationCenter.default.post(name: .audioCapturePermissionMissing, object: nil)
-            }
-        }
-    }
-
-    /// A ScreenCaptureKit stream does not survive system sleep or display reconfiguration, and
-    /// nothing else would ever start a new one, so every audio-reactive feature would stay silent
-    /// until the app is relaunched.
-    @MainActor
-    private func observeCaptureInterruptions() {
-        NSWorkspace.shared.notificationCenter.addObserver(
-            self, selector: #selector(systemDidWake), name: NSWorkspace.didWakeNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(screenParametersDidChange),
-            name: NSApplication.didChangeScreenParametersNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(applicationDidBecomeActive),
-            name: NSApplication.didBecomeActiveNotification, object: nil)
-    }
-
-    // AppKit posts all three on the main thread.
-    @MainActor @objc private func systemDidWake() {
-        restartSystemAudioCapture(reason: "system woke")
-    }
-
-    @MainActor @objc private func screenParametersDidChange() {
-        restartSystemAudioCapture(reason: "display configuration changed")
-    }
-
-    @MainActor @objc private func applicationDidBecomeActive() {
-        recheckCapturePermission()
+        let capture = SystemAudioCapture()
+        audioCapture = capture
+        propertyService = SceneUserPropertyService(audioLevel: { capture.audioLevel })
     }
 
     /// Starts capture if Screen Recording was granted since the last check. Never prompts, so it is
     /// safe to call whenever the app activates or the Permissions page appears.
     @MainActor
     func recheckCapturePermission() {
-        guard ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil else { return }
-        guard permissionGate.becameGranted() else { return }
-        OWELog.info(.audio, "Screen Recording permission granted; starting system audio capture.")
-        restartScheduler.reset()
-        restartScheduler.requestRestart()
-    }
-
-    @MainActor
-    private func restartSystemAudioCapture(reason: String) {
-        guard permissionGate.canCapture() else { return }
-        OWELog.info(.audio, "Restarting ScreenCaptureKit audio capture: \(reason).")
-        restartScheduler.requestRestart()
-    }
-
-    /// Without this, visuals stay frozen on the last buffer that arrived before capture stopped.
-    private func resetAudioLevels() {
-        levelLock.lock()
-        level = 0
-        spectrum = [Double](repeating: 0, count: spectrum.count)
-        waveform = [Double](repeating: 0, count: waveform.count)
-        levelLock.unlock()
-        audioSpectrumAnalyzer.reset()
+        audioCapture.recheckCapturePermission()
     }
 
     /// Scene-space cursor for per-layer hit testing; the renderer owns the screen-to-scene mapping.
@@ -386,22 +294,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     /// `replacing`, properties missing from `values` are dropped, so nothing from a previous
     /// configuration of that wallpaper lingers.
     func setUserProperties(_ values: [String: String], wallpaper: String, replacing: Bool) {
-        levelLock.lock()
-        let changedKeys = propertyStores.set(values, for: wallpaper, replacing: replacing)
-        if frameSnapshot == nil { propertyStores.activeKey = wallpaper }
-        userPropertiesRevision &+= 1
-        levelLock.unlock()
-        propertyNotificationWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.levelLock.lock()
-            let keys = Array(changedKeys)
-            self.levelLock.unlock()
-            NotificationCenter.default.post(name: .sceneUserPropertiesDidChange, object: nil,
-                                            userInfo: ["keys": keys])
-        }
-        propertyNotificationWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        propertyService.setUserProperties(values, wallpaper: wallpaper, replacing: replacing)
     }
 
     func setSceneClock(deltaTime: Double) {
@@ -413,80 +306,32 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
 
     // MARK: - Frame snapshot
 
-    /// Copy of the engine state the render loop reads. Taken once per frame so per-layer reads
-    /// stop contending with the audio thread. Confined to the render thread; dictionaries are
-    /// copy-on-write so taking it is cheap.
-    struct FrameSnapshot {
-        var globalValues: [String: Double]
-        var userPropertyStrings: [String: String]
-        var layerStates: [String: [String: Any]]
-        var level: Double
-        var revision: Int
-    }
-
-    private var frameSnapshot: FrameSnapshot?
-
     /// Bumped whenever any user property changes. Render-side caches key off this to know when
     /// derived GPU state is still valid.
-    var propertyRevision: Int {
-        if let frameSnapshot { return frameSnapshot.revision }
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return userPropertiesRevision
-    }
+    var propertyRevision: Int { propertyService.propertyRevision }
 
     /// Starts a frame of `wallpaper` (its directory path): reads until `endFrame` see that
-    /// wallpaper's user properties.
+    /// wallpaper's user properties and a snapshot of the layer states, so per-layer reads stop
+    /// contending with the audio thread.
     func beginFrame(wallpaper: String) {
         OWEFrameMetrics.countLockAcquisition()
+        propertyService.beginFrame(wallpaper: wallpaper)
         levelLock.lock()
-        propertyStores.activeKey = wallpaper
-        frameSnapshot = FrameSnapshot(globalValues: globalValues,
-                                      userPropertyStrings: userPropertyStrings,
-                                      layerStates: layerStates,
-                                      level: level,
-                                      revision: userPropertiesRevision)
+        frameLayerStates = layerStates
         levelLock.unlock()
     }
 
     func endFrame() {
-        frameSnapshot = nil
-    }
-
-    private func modulatedValue(_ key: String, fallback: Double, in snapshot: FrameSnapshot) -> Double {
-        let base = snapshot.globalValues[key] ?? fallback
-        guard !key.hasSuffix("_musicSync"), !key.hasSuffix("_musicAmount"),
-              snapshot.userPropertyStrings["\(key)_musicSync"] == "true" else { return base }
-        let amount = snapshot.globalValues["\(key)_musicAmount"] ?? 0
-        guard abs(amount) > 0.0001 else { return base }
-        return base + snapshot.level * amount
+        propertyService.endFrame()
+        frameLayerStates = nil
     }
 
     func userPropertyValue(_ key: String, fallback: Float) -> Float {
-        if let frameSnapshot {
-            return Float(modulatedValue(key, fallback: Double(fallback), in: frameSnapshot))
-        }
-        OWEFrameMetrics.countLockAcquisition()
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return Float(modulatedValueLocked(key, fallback: Double(fallback)))
-    }
-
-    private func modulatedValueLocked(_ key: String, fallback: Double = 0) -> Double {
-        let base = globalValues[key] ?? fallback
-        guard !key.hasSuffix("_musicSync"), !key.hasSuffix("_musicAmount"),
-              userPropertyStrings["\(key)_musicSync"] == "true" else { return base }
-        let amount = globalValues["\(key)_musicAmount"] ?? 0
-        guard abs(amount) > 0.0001 else { return base }
-        return base + level * amount
+        propertyService.userPropertyValue(key, fallback: fallback)
     }
 
     func isMusicSynced(_ key: String) -> Bool {
-        if let frameSnapshot { return frameSnapshot.userPropertyStrings["\(key)_musicSync"] == "true" }
-        OWEFrameMetrics.countLockAcquisition()
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return userPropertyStrings["\(key)_musicSync"] == "true"
+        propertyService.isMusicSynced(key)
     }
 
     // A script that throws does so every frame, so collapse repeats instead of emitting
@@ -516,43 +361,22 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         }
     }
 
-    private func modulatedGlobalValuesLocked() -> [String: Double] {
-        Dictionary(uniqueKeysWithValues: globalValues.map { key, value in
-            (key, modulatedValueLocked(key, fallback: value))
-        })
-    }
-
     func userPropertyString(_ key: String) -> String? {
-        if let frameSnapshot { return frameSnapshot.userPropertyStrings[key] }
-        OWEFrameMetrics.countLockAcquisition()
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return userPropertyStrings[key]
+        propertyService.userPropertyString(key)
     }
 
     /// One wallpaper instance's property, independent of which wallpaper is being rendered.
     func userPropertyString(_ key: String, wallpaper: String) -> String? {
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return propertyStores.entry(for: wallpaper).strings[key]
+        propertyService.userPropertyString(key, wallpaper: wallpaper)
     }
 
     /// Every user property of one wallpaper instance.
     func userProperties(wallpaper: String) -> [String: String] {
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return propertyStores.entry(for: wallpaper).strings
+        propertyService.userProperties(wallpaper: wallpaper)
     }
 
     func audioVisualizationSnapshot() -> AudioVisualizationSnapshot {
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        let bandAverage: (Range<Int>) -> Double = { range in
-            guard !range.isEmpty else { return 0 }
-            return self.spectrum[range].reduce(0, +) / Double(range.count)
-        }
-        return AudioVisualizationSnapshot(level: level, spectrum: spectrum, waveform: waveform,
-                                          bass: bandAverage(0..<8), mid: bandAverage(8..<32), treble: bandAverage(32..<64))
+        audioCapture.audioVisualizationSnapshot()
     }
 
     func resolveLayerVisibility(_ objects: [WESceneObject], initial: [String: Bool], wallpaper: String) -> [String: Bool] {
@@ -608,7 +432,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
             }
             return (current as? NSNumber)?.floatValue ?? fallback
         }
-        if let frameSnapshot { return resolve(frameSnapshot.layerStates) }
+        if let frameLayerStates { return resolve(frameLayerStates) }
         OWEFrameMetrics.countLockAcquisition()
         levelLock.lock()
         defer { levelLock.unlock() }
@@ -622,7 +446,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
                   let y = (value["y"] as? NSNumber)?.floatValue else { return fallback }
             return SIMD2<Float>(x, y)
         }
-        if let frameSnapshot { return resolve(frameSnapshot.layerStates) }
+        if let frameLayerStates { return resolve(frameLayerStates) }
         OWEFrameMetrics.countLockAcquisition()
         levelLock.lock()
         defer { levelLock.unlock() }
@@ -635,7 +459,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
             if let value = states[layerId]?[property] as? NSNumber { return value.boolValue }
             return fallback
         }
-        if let frameSnapshot { return resolve(frameSnapshot.layerStates) }
+        if let frameLayerStates { return resolve(frameLayerStates) }
         OWEFrameMetrics.countLockAcquisition()
         levelLock.lock()
         defer { levelLock.unlock() }
@@ -649,7 +473,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
             if let value = states[layerId]?[property] as? NSNumber { return value.stringValue }
             return nil
         }
-        if let frameSnapshot { return resolve(frameSnapshot.layerStates) }
+        if let frameLayerStates { return resolve(frameLayerStates) }
         OWEFrameMetrics.countLockAcquisition()
         levelLock.lock()
         defer { levelLock.unlock() }
@@ -658,17 +482,14 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
 
     /// `thisScene.camerashake` is a scene-wide toggle rather than per-layer state.
     var cameraShakeEnabled: Bool {
-        if let frameSnapshot { return frameSnapshot.globalValues["__camerashake"] == 1 }
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return globalValues["__camerashake"] == 1
+        propertyService.globalValue("__camerashake") == 1
     }
 
     func setLayerVector2(_ layerId: String, property: String, value: SIMD2<Float>) {
         levelLock.lock()
         layerStates[layerId, default: [:]][property] = ["x": value.x, "y": value.y]
         levelLock.unlock()
-        frameSnapshot?.layerStates[layerId, default: [:]][property] = ["x": value.x, "y": value.y]
+        frameLayerStates?[layerId, default: [:]][property] = ["x": value.x, "y": value.y]
     }
 
     func evaluate(_ script: String, fallback: Float, layerId: String? = nil,
@@ -798,14 +619,10 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
             currentSpectrum[max(0, min(63, Int(index)))]
         }
         let propertyBlock: @convention(block) (String) -> Double = { [weak self] name in
-            self?.levelLock.lock()
-            defer { self?.levelLock.unlock() }
-            return self?.modulatedValueLocked(name) ?? 0
+            self?.propertyService.modulatedValue(name) ?? 0
         }
         let setGlobalBlock: @convention(block) (String, Double) -> Void = { [weak self] name, value in
-            self?.levelLock.lock()
-            self?.globalValues[name] = value
-            self?.levelLock.unlock()
+            self?.propertyService.setGlobalValue(value, forKey: name)
         }
         context?.setObject(audioBlock, forKeyedSubscript: "audio" as NSString)
         context?.setObject(fftBlock, forKeyedSubscript: "fft" as NSString)
@@ -824,34 +641,8 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         let aliases = layerAliases
         let deltaTime = sceneDeltaTime
         let canvasSize = sceneCanvasSize
-        let propertyRevision = userPropertiesRevision
-        let snapshotLevel = level
-        // Converting every user property on each evaluation dominated script cost; rebuild only
-        // when properties actually change, then patch the (usually empty) music-synced subset.
-        if propertyRevision != scriptPropertyCacheRevision || propertyStores.activeKey != scriptPropertyCacheKey {
-            scriptPropertyCacheRevision = propertyRevision
-            scriptPropertyCacheKey = propertyStores.activeKey
-            cachedModulatedGlobals = globalValues
-            cachedMusicSyncedKeys = globalValues.keys.filter {
-                userPropertyStrings["\($0)_musicSync"] == "true"
-            }
-            cachedUserProperties = Dictionary(uniqueKeysWithValues: userPropertyStrings.map { key, value -> (String, Any) in
-                if value.caseInsensitiveCompare("true") == .orderedSame { return (key, true) }
-                if value.caseInsensitiveCompare("false") == .orderedSame { return (key, false) }
-                if let number = Double(value) { return (key, number) }
-                return (key, value)
-            })
-        }
-        var modulatedGlobals = cachedModulatedGlobals
-        var userProperties = cachedUserProperties
-        for key in cachedMusicSyncedKeys {
-            let amount = globalValues["\(key)_musicAmount"] ?? 0
-            guard abs(amount) > 0.0001 else { continue }
-            let modulated = (globalValues[key] ?? 0) + snapshotLevel * amount
-            modulatedGlobals[key] = modulated
-            userProperties[key] = modulated
-        }
         levelLock.unlock()
+        let (modulatedGlobals, userProperties, propertyRevision) = propertyService.scriptInputs()
         context?.setObject(modulatedGlobals, forKeyedSubscript: "global" as NSString)
         context?.setObject(layers, forKeyedSubscript: "__layers" as NSString)
         context?.setObject(aliases, forKeyedSubscript: "__layerAliases" as NSString)
@@ -1020,7 +811,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
             layerStates = updatedLayers
             levelLock.unlock()
             // Scripts mutate layer state mid-frame; keep the snapshot coherent for later layers.
-            frameSnapshot?.layerStates = updatedLayers
+            if frameLayerStates != nil { frameLayerStates = updatedLayers }
         }
         if let dictionary = context?.objectForKeyedSubscript("shared")?.toDictionary() as? [String: Any] {
             scriptLock.lock()
@@ -1050,10 +841,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         }
         if let shake = context?.objectForKeyedSubscript("__camerashake"), !shake.isUndefined {
             let value = Double(shake.toInt32())
-            levelLock.lock()
-            globalValues["__camerashake"] = value
-            levelLock.unlock()
-            frameSnapshot?.globalValues["__camerashake"] = value
+            propertyService.setGlobalValue(value, forKey: "__camerashake", includingFrame: true)
         }
         return value
     }
@@ -1095,243 +883,18 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     }
 
     var audioLevel: Double {
-        if let frameSnapshot { return frameSnapshot.level }
+        if let level = propertyService.frameAudioLevel { return level }
         OWEFrameMetrics.countLockAcquisition()
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return level
+        return audioCapture.audioLevel
     }
 
-    private var audioSpectrum: [Double] {
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return spectrum
-    }
-
-    /// Called only by `restartScheduler`, which guarantees a single start in flight; the previous
-    /// stream is stopped before a new one is created.
-    @MainActor
-    private func startSystemAudioCapture() {
-        captureLock.lock()
-        let previous = stream
-        stream = nil
-        captureLock.unlock()
-        resetAudioLevels()
-        guard permissionGate.canCapture() else {
-            // Revoked while the start was queued. Touching ScreenCaptureKit now would prompt.
-            Task { try? await previous?.stopCapture() }
-            restartScheduler.reset()
-            restartScheduler.finished(success: true)
-            return
-        }
-        Task { [weak self] in
-            if let previous {
-                do { try await previous.stopCapture() } catch {
-                    OWELog.debug(.audio, "Stopping previous capture stream failed: \(error.localizedDescription)")
-                }
-            }
-            let success = await self?.createAndStartStream() ?? false
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                if self.restartScheduler.finished(success: success) {
-                    OWELog.error(.audio, "Giving up on ScreenCaptureKit audio capture after \(self.restartScheduler.maxFailures) failed attempts; it restarts on the next wake, display change or permission change.")
-                }
-            }
-        }
-    }
-
-    private func createAndStartStream() async -> Bool {
-        let content: SCShareableContent
-        do {
-            content = try await SCShareableContent.current
-        } catch {
-            OWELog.error(.audio, "Unable to read shareable content: \(error.localizedDescription)")
-            return false
-        }
-        guard let display = content.displays.first else {
-            OWELog.error(.audio, "No shareable display found for ScreenCaptureKit audio capture.")
-            return false
-        }
-        let filter = SCContentFilter(display: display, excludingApplications: [], exceptingWindows: [])
-        let configuration = SCStreamConfiguration()
-        configuration.capturesAudio = true
-        configuration.excludesCurrentProcessAudio = false
-        configuration.sampleRate = 48_000
-        configuration.channelCount = 2
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: self)
-        do {
-            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: .global(qos: .userInteractive))
-            try await stream.startCapture()
-        } catch {
-            OWELog.error(.audio, "Failed to start ScreenCaptureKit audio capture: \(error.localizedDescription)")
-            return false
-        }
-        setCurrentStream(stream)
-        OWELog.info(.audio, "ScreenCaptureKit audio capture started.")
-        return true
-    }
-
-    private func setCurrentStream(_ stream: SCStream) {
-        captureLock.lock()
-        self.stream = stream
-        captureLock.unlock()
-    }
-
-    func stream(_ stream: SCStream, didStopWithError error: Error) {
-        captureLock.lock()
-        let wasCurrent = stream === self.stream
-        if wasCurrent { self.stream = nil }
-        captureLock.unlock()
-        guard wasCurrent else { return }
-        OWELog.error(.audio, "ScreenCaptureKit audio capture stopped: \(error.localizedDescription)")
-        resetAudioLevels()
-        Task { @MainActor [weak self] in self?.restartSystemAudioCapture(reason: "stream stopped") }
-    }
-
-    func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
-                of outputType: SCStreamOutputType) {
-        guard outputType == .audio else { return }
-        feedAudioSpectrum(sampleBuffer)
-        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
-        var length = 0
-        var dataPointer: UnsafeMutablePointer<Int8>?
-        guard CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
-                                          totalLengthOut: &length, dataPointerOut: &dataPointer) == noErr,
-              let dataPointer, length >= MemoryLayout<Float>.size else { return }
-        let sampleCount = length / MemoryLayout<Float>.size
-        let samples = dataPointer.withMemoryRebound(to: Float.self, capacity: sampleCount) { $0 }
-        var squaredSum: Float = 0
-        vDSP_svesq(samples, 1, &squaredSum, vDSP_Length(sampleCount))
-        let normalizedLevel = min(Double(sqrt(squaredSum / Float(sampleCount))) * 8, 1)
-        let magnitudes = frequencyMagnitudes(samples: samples, count: sampleCount)
-        var waveformValues = [Double](repeating: 0, count: 64)
-        for index in waveformValues.indices {
-            let start = index * sampleCount / waveformValues.count
-            let end = max(start + 1, (index + 1) * sampleCount / waveformValues.count)
-            var sum = 0.0
-            for sampleIndex in start..<min(end, sampleCount) {
-                sum += Double(samples[sampleIndex])
-            }
-            waveformValues[index] = sum / Double(max(end - start, 1))
-        }
-        levelLock.lock()
-        level = normalizedLevel
-        spectrum = magnitudes
-        waveform = waveformValues
-        levelLock.unlock()
-    }
-
-    /// WE's `g_AudioSpectrum*` source. Fed on the audio thread; the analyzer owns its own lock.
-    private let audioSpectrumAnalyzer = AudioSpectrumAnalyzer()
+    private var audioSpectrum: [Double] { audioCapture.audioSpectrum }
 
     /// The latest smoothed WE spectra, without advancing the smoothing. (`audioSpectrum` is
     /// already the legacy 64-band mono array used by the script bindings.)
-    var audioSpectrumSnapshot: AudioSpectrumSnapshot { audioSpectrumAnalyzer.snapshot }
+    var audioSpectrumSnapshot: AudioSpectrumSnapshot { audioCapture.audioSpectrumSnapshot }
 
     /// Advances the spectrum smoothing by one frame. The renderer calls this exactly once per
     /// rendered frame and binds the result to every pass of that frame.
-    func advanceAudioSpectrumFrame() -> AudioSpectrumSnapshot { audioSpectrumAnalyzer.advanceFrame() }
-
-    /// Splits the capture buffer (non-interleaved float32) into its channels for the analyzer.
-    private func feedAudioSpectrum(_ sampleBuffer: CMSampleBuffer) {
-        var sizeNeeded = 0
-        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer, bufferListSizeNeededOut: &sizeNeeded, bufferListOut: nil, bufferListSize: 0,
-            blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0,
-            blockBufferOut: nil) == noErr, sizeNeeded > 0 else { return }
-        let listMemory = UnsafeMutableRawPointer.allocate(byteCount: sizeNeeded,
-                                                          alignment: MemoryLayout<AudioBufferList>.alignment)
-        defer { listMemory.deallocate() }
-        let listPointer = listMemory.bindMemory(to: AudioBufferList.self, capacity: 1)
-        var retainedBlock: CMBlockBuffer?
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer, bufferListSizeNeededOut: nil, bufferListOut: listPointer, bufferListSize: sizeNeeded,
-            blockBufferAllocator: nil, blockBufferMemoryAllocator: nil,
-            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment, blockBufferOut: &retainedBlock)
-        guard status == noErr else {
-            OWELog.debug(.audio, "Audio buffer list unavailable (status \(status))")
-            return
-        }
-        let buffers = UnsafeMutableAudioBufferListPointer(listPointer)
-        func channel(_ buffer: AudioBuffer) -> UnsafeBufferPointer<Float> {
-            guard let data = buffer.mData else { return UnsafeBufferPointer(start: nil, count: 0) }
-            let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
-            return UnsafeBufferPointer(start: data.assumingMemoryBound(to: Float.self), count: count)
-        }
-        guard let first = buffers.first else { return }
-        let left = channel(first)
-        let right = buffers.count > 1 ? channel(buffers[1]) : left
-        withExtendedLifetime(retainedBlock) {
-            audioSpectrumAnalyzer.ingest(left: left, right: right)
-        }
-    }
-
-    // Audio-thread only: the capture stream delivers buffers serially, so these need no locking.
-    private var fftSetup: FFTSetup?
-    private var fftSetupLog2n: vDSP_Length = 0
-    private var fftWindow: [Float] = []
-    private var fftRealParts: [Float] = []
-    private var fftImaginaryParts: [Float] = []
-    private var fftWindowedSamples: [Float] = []
-    private var fftMagnitudes: [Float] = []
-
-    private func prepareFFT(size: Int) -> Bool {
-        let log2n = vDSP_Length(round(log2(Double(size))))
-        guard fftSetupLog2n != log2n || fftSetup == nil else { return true }
-        if let existing = fftSetup { vDSP_destroy_fftsetup(existing) }
-        guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
-            fftSetup = nil
-            return false
-        }
-        fftSetup = setup
-        fftSetupLog2n = log2n
-        fftWindow = [Float](repeating: 0, count: size)
-        vDSP_hann_window(&fftWindow, vDSP_Length(size), Int32(vDSP_HANN_DENORM))
-        fftWindowedSamples = [Float](repeating: 0, count: size)
-        fftRealParts = [Float](repeating: 0, count: size / 2)
-        fftImaginaryParts = [Float](repeating: 0, count: size / 2)
-        fftMagnitudes = [Float](repeating: 0, count: size / 2)
-        return true
-    }
-
-    private func frequencyMagnitudes(samples: UnsafePointer<Float>, count: Int) -> [Double] {
-        let signpost = OWESignpost.begin(OWESignpost.audio, "frequencyMagnitudes")
-        defer { signpost.end() }
-        let capped = min(1024, count)
-        guard capped >= 64 else { return [Double](repeating: 0, count: 64) }
-        // vDSP's radix-2 FFT needs a power-of-two length.
-        let fftSize = 1 << Int(floor(log2(Double(capped))))
-        guard fftSize >= 64, prepareFFT(size: fftSize), let setup = fftSetup else {
-            return [Double](repeating: 0, count: 64)
-        }
-        let start = count - fftSize
-        let halfSize = fftSize / 2
-
-        vDSP_vmul(samples + start, 1, fftWindow, 1, &fftWindowedSamples, 1, vDSP_Length(fftSize))
-
-        var bands = [Double](repeating: 0, count: 64)
-        fftRealParts.withUnsafeMutableBufferPointer { realBuffer in
-            fftImaginaryParts.withUnsafeMutableBufferPointer { imaginaryBuffer in
-                var split = DSPSplitComplex(realp: realBuffer.baseAddress!,
-                                            imagp: imaginaryBuffer.baseAddress!)
-                fftWindowedSamples.withUnsafeBufferPointer { windowed in
-                    windowed.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { interleaved in
-                        vDSP_ctoz(interleaved, 2, &split, 1, vDSP_Length(halfSize))
-                    }
-                }
-                vDSP_fft_zrip(setup, &split, 1, fftSetupLog2n, FFTDirection(FFT_FORWARD))
-                // zrip packs Nyquist into imagp[0]; it is not a real bin and would alias into band 0.
-                imaginaryBuffer[0] = 0
-                vDSP_zvabs(&split, 1, &fftMagnitudes, 1, vDSP_Length(halfSize))
-            }
-        }
-
-        // zrip returns twice the true DFT magnitude, hence 8 rather than the scalar path's 16.
-        let scale = 8.0 / Double(fftSize)
-        for band in bands.indices {
-            let bin = max(1, min(halfSize - 1, (band + 1) * fftSize / 128))
-            bands[band] = min(Double(fftMagnitudes[bin]) * scale, 1)
-        }
-        return bands
-    }
+    func advanceAudioSpectrumFrame() -> AudioSpectrumSnapshot { audioCapture.advanceAudioSpectrumFrame() }
 }

@@ -4,8 +4,8 @@ import Foundation
 ///
 /// Two displays showing different scenes each have their own entry, so neither overwrites the
 /// other's properties, and switching a display to another wallpaper can't leak the previous
-/// wallpaper's keys into the new one. Not thread-safe: the owner (`AudioReactiveScriptEngine`)
-/// guards it with its `levelLock`.
+/// wallpaper's keys into the new one. Not thread-safe: the owner (`SceneUserPropertyService`)
+/// guards it with its lock.
 struct SceneUserPropertyStores {
     struct Entry: Equatable {
         /// Property values as WE stores them ("1", "0.5 0.2 1", "true", a combo value).
