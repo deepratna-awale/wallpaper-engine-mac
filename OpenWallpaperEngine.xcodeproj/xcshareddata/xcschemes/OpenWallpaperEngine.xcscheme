@@ -31,23 +31,12 @@
       <Testables>
          <TestableReference
             skipped = "NO"
-            parallelizable = "YES">
+            parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "5EC47E8B2A2DB2E700120CCC"
-               BuildableName = "Open Wallpaper EngineTests.xctest"
-               BlueprintName = "Open Wallpaper EngineTests"
-               ReferencedContainer = "container:OpenWallpaperEngine.xcodeproj">
-            </BuildableReference>
-         </TestableReference>
-         <TestableReference
-            skipped = "NO"
-            parallelizable = "YES">
-            <BuildableReference
-               BuildableIdentifier = "primary"
-               BlueprintIdentifier = "5EC47E952A2DB2E700120CCC"
-               BuildableName = "Open Wallpaper EngineUITests.xctest"
-               BlueprintName = "Open Wallpaper EngineUITests"
+               BlueprintIdentifier = "EE2000000000000000000001"
+               BuildableName = "OpenWallpaperEngineTests.xctest"
+               BlueprintName = "OpenWallpaperEngineTests"
                ReferencedContainer = "container:OpenWallpaperEngine.xcodeproj">
             </BuildableReference>
          </TestableReference>
