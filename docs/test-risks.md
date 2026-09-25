@@ -306,6 +306,7 @@ Our particles are 2D with a separate alpha: `Particle.position/velocity: SIMD2`,
 - Unit: for GS × `THICKFORMAT` × `SPRITESHEET` × `TRAILRENDERER`, build the vertex descriptor from reflection. Assert that every declared attribute is bound with the right format and offset, and that invalid combos (SPRITESHEET without THICKFORMAT) are never requested.
 - Golden: one particle at (100,100), size 50, rotation 0, colour `(1,0,0,0.5)`, square white texture → covered box exactly 50×50 scene units centred at (100,100), pixel `(1,0,0)` at 50%. Rotation π/4 gives a diamond.
 - A non-square texture (e.g. 64×128) → height = size × `g_Texture0Resolution.y/x`. With a spritesheet, the ratio comes from `g_RenderVar1.w`.
+**Status (particles, H).** Verified by `ParticleMaterialRenderTests.testEveryAttributeTheStageReadsComesFromTheRecord` (every renderer form × both stages: no attribute reads the zero buffer) and `testColourAndAlphaReachThePixel` (`bc63f2d`), with `testSpriteThroughEmulatedGeometryStage` (size), `testBothPathsDrawTheSameRotatedSprite` (radians) and `testClampUVsKeepsTheOppositeEdgeOut` (non-square aspect). The GPU simulation writes the same records (`ParticleSimulationParityTests.testSwiftAndMetalLayoutsAgree`, `testSpriteRecordsMatchTheCPUWriter`). Sizes follow linux-wallpaperengine (quad width = size/2, `0591466`); a WE capture is still Open.
 
 ## I4. Emulated geometry: vertex counts, `maxvertexcount`, strips (Critical, F)
 **Scenario.**
@@ -319,6 +320,7 @@ Our particles are 2D with a separate alpha: `Particle.position/velocity: SIMD2`,
 - A synthetic `.geom` emitting 3 of a max of 6 vertices draws exactly one triangle (count the covered pixels).
 - A `RestartStrip` fixture with two disjoint quads leaves the pixel between them at background.
 - 10 000 sprite particles: vertex buffer ≤ 4 × 10 000 vertices, no per-frame allocation (buffer identity stable over 100 frames).
+**Status (particles, H).** Verified by `testRestartedStripsLeaveTheGapsBetweenThem`, `testEmittingFewerVerticesThanTheBoundDrawsOnlyThoseTriangles`, `testStripTrianglesKeepOneWinding` (`329a12d`), `GeometryShaderEmulationTests.testMaxVertexCountExpressions`, and `ParticleGPURenderTests.testTenThousandSpritesReuseTheirBuffers` (`bc63f2d`: 10 000 sprites keep one record and one particle buffer over 99 frames).
 
 ## I5. Blend-mode table parity and scene-target alpha (High, E)
 **Scenario.** WE material `blending` values seen are `normal`, `translucent`, `additive` (and `disabled` in some workshop content). `EffectGraphRenderer.blendMode` (`Scene/Rendering/EffectGraphRenderer.swift:534-539`) maps `additive` to `(srcAlpha, one)` for **alpha as well**, and anything else to "no blending". The native additive path uses `(one, one)` for alpha (`SceneMetalRenderer.swift:180-183`). A `normal` (overwrite) image layer with transparent texels writes alpha 0 into the scene target. The final composite then blends the scene target with `sourceAlpha` (`SceneMetalRenderer.swift:~575`, `renderPipeline`), which WE never does at present, so holes show the clear colour. Unknown blending strings silently become overwrite.
@@ -352,6 +354,7 @@ Our particles are 2D with a separate alpha: `Particle.position/velocity: SIMD2`,
 - Source test: grep asserts every `newTexture(` in `Scene/` passes `SRGB: false`.
 - Unit: the base-material pipeline's colour format equals `sceneTexture.pixelFormat`. Run with `MTL_DEBUG_LAYER=1` and no validation errors.
 **Status (R1, 2026-09-25).** Fixed 5aa4e95: AppKit converted solid-layer colours into the display's colour space (P3). Verified by `TextureUploadTests.testStraightAlphaImagesUploadAsStored` (Display P3 and sRGB tags are ignored) and `testSolidLayerImageHoldsTheAuthoredColour`. The pipeline key includes the target format, every upload passes `SRGB: false` through `SceneTextureUpload`, and BC formats upload as non-sRGB.
+**Status (particles, H).** Verified for particles by `ParticleMaterialRenderTests.testGreyStaysGreyInTheSceneFormat` (`bc63f2d`: 0x80 stays 0x80 in rgba8 and bgra8 targets); the particle pipeline key includes the target format. BC and ICC-tagged inputs and the `MTL_DEBUG_LAYER` run: Open (texture loading is E's).
 
 ## I8. UV flips, `.tex` padding, `cropoffset`, `clampuvs` (High, E)
 **Scenario.**
@@ -387,6 +390,7 @@ Our particles are 2D with a separate alpha: `Particle.position/velocity: SIMD2`,
 - An R8 particle sprite: alpha = r, RGB = 1.
 - An RG88 normal map with constant (+1,0) under REFRACT over a vertical-stripe background → displacement only along x.
 **Status (R1, 2026-09-25).** Combo resolution and TEXParser's channel expansion are B's. On the image side, `testAMissingTextureOnlyUnbindsItsSlot` covers it. Still open on B's side: `TEXnFORMAT` against RG88 normal maps.
+**Status (particles, H).** Verified for particles by `testCoverageMaskSpriteTakesTheParticlesColour` (`bc63f2d`: TEXParser's white-plus-alpha R8 expansion takes the particle's colour; `TEX0FORMAT` stays unset and genericparticle doesn't read it). RG88 normal maps under REFRACT: Open, REFRACT particles still use the built-in draw (F6).
 
 ## I11. Pipeline and uniform explosion, hundreds of layers (High, E)
 **Scenario.**
@@ -431,6 +435,7 @@ Our particles are 2D with a separate alpha: `Particle.position/velocity: SIMD2`,
 **Test.**
 - Translate `genericropeparticle` for TRAILSUBDIVISION 0..4 × each TRAIL* combo × GS on/off; list failures (expect the two above unless rewritten).
 - A rope fixture with 5 particles on a line → one continuous strip: sample the midpoint of every joint (non-background). Kill the middle particle → no crossing segment.
+**Status (particles, H).** Verified by `testRopeThroughEmulatedGeometryStage` (shader swap), `testSubdividedRopeCurvesThroughItsPoints`, and `testRopeJoinsParticlesInOrder` and `testRopeShaderBuildsForEverySubdivisionAndTrailCombo` (`bc63f2d`: subdivision 0–4 × trail combos; the geometry stage builds everywhere, the no-GS stream everywhere except `TRAILSCROLLALPHA` + `TRAILFADESIZE`, WE's own `sizeStart.w` bug, which the test asserts). The GPU simulation keeps spawn order with an order-preserving compaction (`c6f6fbc`), checked by `ParticleSimulationParityTests` (spawn order, rope and rope-trail records, `testRopeTrailHistory`). Spline shape against WE: Open, needs a WE capture.
 
 ## I15. Custom workshop `.geom` (High, F)
 **Scenario.** WE's `.geom` dialect is pseudo-HLSL:
@@ -444,6 +449,7 @@ Loops can be bounded by combos (unrollable) or by **uniforms** (runtime), which 
 - (b) A loop bound by uniform `g_Count` = 2 of max 8 → 2 quads; set it to 5 at runtime → 5 quads.
 - (c) A line-input geom using `IN[1]`.
 - Each case must render correctly or fail loudly: log once, a dump in `/tmp/owe-failed-shaders`, and the layer on its fallback (I16). Never draw nothing silently.
+**Status (particles, H).** Verified by `testRestartedStripsLeaveTheGapsBetweenThem` and `testEmittingFewerVerticesThanTheBoundDrawsOnlyThoseTriangles` (a loop bounded at runtime in `stripquads.geom`), `GeometryShaderEmulationTests.testLoopBodyRedeclaringTheLoopVariableGetsItsOwnScope` and `testNonPointInputIsReported`; a failed stage falls back (I16).
 
 ## I16. Fallbacks (High, E/F)
 **Scenario.** When the WE path fails, the layer must fall back to the native draw, log once with the wallpaper, layer and reason (architecture "loud failure"), and not retry every frame. Failure causes include:
@@ -463,6 +469,7 @@ Risks:
 - Expose "layers on WE path / fallback" counters and assert ≥ 95% WE-path in the sweep (I17).
 - The same for a particle system with a broken custom `.geom`.
 **Status (R1, 2026-09-25).** Verified by `testLightingNeedsSceneLightsAndFallsBack` and `testMissingShaderFailsLoudly` (1dd7380). A failed pipeline is remembered and logged once (`ImageMaterialRenderer.compile`). Open: the sweep has no counter of WE-path versus fallback layers.
+**Status (particles, H).** Verified for particles by `testRefractionFallsBackToTheBuiltInDraw`, `testFailedPipelineFallsBackToTheBuiltInDraw` and `testAFallbackIsReportedOnce` (`bc63f2d`: one report over 100 frames, `ParticleMaterialRenderer.fallbacksReported`). The built-in draw also works from GPU-simulated particles (`ParticleSimulationParityTests.testBuiltInDrawInstances`, `SceneRendererParticleTests`).
 
 ## I17. Library sweep regressions (High, E/F)
 **Scenario.** `LibrarySweepTests` (`OpenWallpaperEngineTests/LibrarySweepTests.swift:21`) only plans, translates and runs **effects**. Base image materials (133 passes), particle materials (79), rope variants and geometry emulation are not covered, and it uses `ProcessShaderCompiler` rather than the in-process compiler. "44 wallpapers, 0 failures" (roadmap) would stay green while every image layer quietly falls back.
@@ -474,6 +481,7 @@ Risks:
 - Render one frame per wallpaper headless: not blank (not all clear colour), and mean colour within tolerance of a stored baseline. Update the baselines deliberately when I1 changes appearance.
 - Run with both compilers.
 **Status (R1, 2026-09-25).** Verified by `ImageMaterialSweepTests`: every library image material builds a bgra8 pipeline with the in-process compiler. Open: rendering one frame per library wallpaper against a baseline. `SceneRendererParticleTests` (5336d12) shows whole frames now run headless.
+**Status (particles, H).** Verified for particles by `ParticleMaterialSweepTests` (89 systems, 324 pipelines, 0 failures; in-process compiler, shader chosen by renderer) and `ParticleSimulationSweepTests` (`d3ff7e9`: 74 loaded systems through the CPU and GPU simulations, 0 failures). A rendered frame per wallpaper against a baseline: Open.
 
 ## I18. Text layers (Med, E)
 **Scenario.** WE draws text with `font` (`Vendor/we-assets/materials/fonts/basefont*.json`: `g_Color4`, `MSDF`, `COLORFONT`, `g_RenderVar0..3` outline/shadow), not genericimage. Our text is CoreText-rasterised with its colour baked in (`SceneMetalRenderer.swift:921`) and is premultiplied. Routing it through genericimage2 `VERSION` with `g_Color4 = (colour, alpha)` squares the colour. Leaving it native makes text blend differently from images (I1), so a text layer next to an image with the same alpha looks different.
@@ -502,6 +510,7 @@ Risks:
 **Test.**
 - Unit: for each particle variant, every reflected uniform is written by the builtin table or has a material/annotation default; fail on an "unset builtin" list.
 - A `flatpoint` point at a 1080p vs a 2160p target keeps the same size in scene units, or matches WE.
+**Status (particles, H).** Verified by `testEveryParticleUniformHasASource` (`bc63f2d`: every uniform of every particle stage is a built-in, a material or annotation constant, or one `ParticleMaterialUniforms` writes); the rope's `g_RenderVar0` point count comes from the GPU step (`ParticleGPURenderTests.testRopeRenderVarHoldsTheGPUsPointCount`). `flatpoint` size at 1080p vs 2160p against WE: Open, needs a WE capture.
 
 ## I22. `#define HLSL 0` semantics (Med, E/F)
 **Scenario.** The prelude defines `GLSL 1` and `HLSL 0` (`Scene/Shaders/ShaderPrelude.swift:81-82`). So `#ifdef HLSL` blocks are **taken**: 17 in the assets, including the `v_ScreenCoord.y` flip in `genericimage2/3/4.vert`, `common_particles.h` refraction coords and `normal.y` in `genericimage3/4.frag`. Meanwhile `#if HLSL` (8) and `#ifndef HLSL` (2, e.g. the `genericparticle.frag` refraction offset y) take the GL branch. One shader can run HLSL-convention code in one place and GL-convention code in another, a mix WE never ships. It may be right for Metal's y-down textures, or it may flip. *Update:* `9d8c262` now leaves `HLSL`/`HLSL_SM30` undefined (GL branches everywhere, like WE's GLSL backend). The risk is now anything calibrated against the old mix; see Findings E-7.
@@ -527,6 +536,7 @@ Risks:
 - An additive particle with overbright 1.6 over black → channel clamps at 1, alpha behaviour matches WE.
 - A scene with layer A, particles, layer B → particles are occluded by B and cover A.
 - A REFRACT particle reads a snapshot that includes A but not B.
+**Status (particles, H).** Draw order verified by `SceneRendererParticleTests` (`5336d12`: whole `SceneMetalRenderer` frames, GPU and CPU simulation, built-in and material draw; particles cover the layer below and the layer above covers them); overbright saturation by `testAdditiveOverbrightSaturates` (`bc63f2d`). Additive alpha against WE and the REFRACT snapshot: Open (REFRACT particles stay on the built-in draw).
 
 ---
 
@@ -628,3 +638,5 @@ Line numbers are at `61a34d7`. `GeometryShaderEmulationTests` (9) and `ImageMate
 5. **Cost grows as O(N²) per rope segment with subdivision. Low, unmeasured.** Every emulated vertex reruns the whole geometry body (`GeometryShaderEmulation.swift:137-150`), so rope segments cost `3·(2+2S)` × `(4+2S)` vertex evaluations. At `TRAILSUBDIVISION` 8 that is 54 × 20 ≈ 1 000 per segment, which is significant for rope trails with thousands of segments.
    - **Test:** frame time for 2 000 rope-trail segments at S = 0 / 4 / 8 via `OWEFrameMetrics`.
 6. **REFRACT particles (13 library materials) stay on the built-in draw, as intended and logged.** They can't be recalibrated until snapshot support lands. When it does, re-check the I22 conventions: since `9d8c262`, `common_particles.h` no longer flips `v_ScreenCoord.y`, and the `#ifndef HLSL` offset flip in `genericparticle.frag` is taken.
+
+**Status of F1–F6 (particles, H).** F1 fixed by `0591466` (`testRandomSpriteFramesShowOneFrameEvenWithFrameBlending`). F2 fixed by `0591466`, following linux-wallpaperengine and wallpaper-scene-renderer (size/2); a WE capture is still Open. F3 fixed by `0591466` (`.tex` flags pick the sampler: `testClampUVsKeepsTheOppositeEdgeOut`, `testBuilderReadsTheTextureFlags`). F4 fixed by `329a12d` (the three pixel tests above). F5 measured by `ParticleMaterialPerformanceTests.testSubdividedRopeTrailCost`: 2 000 rope-trail segments on an M4 take 2.9 / 1.9 / 3.8 ms GPU at S = 0 / 4 / 8. F6 Open: REFRACT needs scene snapshots for particles.
