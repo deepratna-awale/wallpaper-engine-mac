@@ -1,0 +1,615 @@
+# SceneScript plan
+
+**Status: 2026-09-25, research only.** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
+
+Sources, in order of authority:
+
+1. **WE's own files** in the CrossOver install (`…/steamapps/common/wallpaper_engine`):
+   - `ui/dist/monaco/autocomplete/lib.sceneScript.d.ts`: the editor's *official* type declarations, "VERSION 2.8" (2571 lines). Every member in §1 comes from it unless marked otherwise.
+   - `ui/dist/monaco/autocomplete/lib.es5 … lib.es2019.*.d.ts`: the ES library level the editor offers (ES2019).
+   - `bin/scenescript64.dll` (V8 embedded, version string `2.8.42.SceneScript`) and `wallpaper64.exe`: the strings name every bound member, callback and runtime error message. Quoted in §1.8.
+   - `assets/scripts/jsclasses/baseclasses.js` and `assets/scripts/jsmodules/{wemath,wevector,wecolor}.js`: WE's JS prelude. Byte-identical to our `Vendor/we-assets/scripts`.
+2. **Official docs**: docs.wallpaperengine.io/en/scene/scenescript/ and all 57 reference, event, module and tutorial pages. Text copies and a member-by-member reference with sources (`we-scenescript-api.md`) are in `/Volumes/980Pro/dd-scenescript/spec/`, next to the corpus.
+3. **The local corpus** (§2): 281 distinct scripts, 508 attachment sites, 43 wallpapers and asset packs.
+4. **linux-wallpaperengine** (LWE) as a second implementation to compare against.
+5. **Measurements** on JavaScriptCore on this Mac (§4.6).
+
+Where WE's behaviour is not documented, the plan says so and names the probe that settles it (§5, WP0). Nothing here is guessed silently.
+
+---
+
+## 1. The WE SceneScript specification
+
+### 1.1 Language and modules
+
+- Each script is an **ES module** run by **V8** (`scenescript64.dll` embeds V8; `V8.js`, `v8::Context` strings). The docs promise ECMAScript 2018, and the editor type-checks against the ES2019 library; V8 accepts newer syntax too. JavaScriptCore on macOS 13+ covers all of it (verified: static class fields, private fields, `?.` and `??`).
+- Modules the runtime resolves: `'WEMath'`, `'WEVector'`, `'WEColor'` (from `scripts/jsmodules/`, `import * as WEMath from 'WEMath'`). Nothing else can be imported.
+- Exports the engine reads: the callbacks in §1.2, `scriptProperties` (from `createScriptProperties()…finish()`), and `__workshopId` (the editor inserts it; asset paths depend on it).
+- Global scope code runs **once**, when the module is evaluated. Some calls are *only* legal there and others are *illegal* there (DLL error strings):
+  - only at global scope: `engine.registerAudioBuffers`, `engine.registerAsset`, `requestFeatures`.
+  - illegal at global scope: `thisLayer`/`thisObject`/`thisScene` member access ("`<member> cannot be accessed from global scope`"), `engine.setTimeout`/`setInterval` ("cannot be called from global scope"), clearing timeouts, every `localStorage` call.
+- WE's `baseclasses.js` defines `Vec2`, `Vec3`, `Vec4`, `Mat3`, `Mat4`, `MediaPlaybackEvent`, `IModelData`, `createScriptProperties` and `_Internal` (`updateScriptProperties`, `convertUserProperties`, `stringifyConfig`). The native side calls `_Internal.*` to inject script-property values and user properties, so we must load that file unmodified and call the same hooks.
+
+### 1.2 Callbacks (`IComponent`)
+
+| Callback | When (per the d.ts) | Argument / return |
+|---|---|---|
+| `init(value)` | once, after the object the script belongs to was created | current value of the bound property; **returns the value to apply** |
+| `update(value)` | every frame, for every script that exports it | current value of the bound property; **returns the new value** |
+| `destroy()` | just before the object is destroyed | |
+| `resizeScreen(size)` | on every resolution change; **not** at startup | `Vec2` in pixels |
+| `applyUserProperties(changed)` | once initially at load, then whenever the user changes properties | object with **only the changed** properties (`hasOwnProperty` pattern) |
+| `applyGeneralSettings(changed)` | once initially, then on changes | only changed settings (currently only `language`) |
+| `cursorEnter/Leave(event)` | cursor enters/leaves the object's bounds | `CursorEvent` |
+| `cursorMove(event)` | cursor moved | `CursorEvent` |
+| `cursorDown/Up(event)` | pressed / released over the object | `CursorEvent` |
+| `cursorClick(event)` | pressed and released on the same object | `CursorEvent` |
+| `mediaStatusChanged(e)` | media integration turned on/off | `{enabled}` |
+| `mediaPlaybackChanged(e)` | play/pause/stop | `{state}`; `MediaPlaybackEvent.PLAYBACK_STOPPED/PLAYING/PAUSED` = 0/1/2 |
+| `mediaPropertiesChanged(e)` | track metadata changed | `{title, artist, subTitle, albumTitle, albumArtist, genres, contentType}` |
+| `mediaThumbnailChanged(e)` | artwork changed | `{hasThumbnail, primaryColor, secondaryColor, tertiaryColor, textColor, highContrastColor}` (Vec3) |
+| `mediaTimelineChanged(e)` | position changed (only some players) | `{position, duration}` |
+| `animationEvent(e)` | *not in the d.ts*; named in the DLL | `AnimationEvent {name, frame}` (puppet/timeline events) |
+| `cursorHitTest` | *not in the d.ts*; named in the DLL | unknown, probe P7 |
+
+`CursorEvent`: `worldPosition: Vec3`, `localPosition: Vec3` ("only X and Y are supported"), `hitBox?: String` (the puppet hit box's name); `screenPosition` and `button` are commented out as "NOT USED" (`button` is always 0). The docs say `cursorClick` follows `cursorDown` and `cursorUp` on the same object.
+
+**Values in and out** (docs and d.ts):
+
+- `init(value)` and `update(value)` receive the property's *current* value. The docs' own example `value.y += engine.frametime * 100; return value;` accumulates.
+- Whatever they return is applied. Returning nothing leaves the property unchanged.
+- A number returned for a vector property is broadcast: returning `2` on Scale gives `Vec3(2, 2, 2)`.
+- Colours are normalized `Vec3`s (0…1).
+- In `scene.json`, a bound property is `{value, script, scriptproperties?, user?, animation?}`. All of these can be present together. A `scriptproperties` entry is a literal (colours as `"r g b"`) or a user binding `{user, value}` (38 such entries in the corpus).
+- Script-property values are applied only to keys the script declared. A string becomes a `Vec3` when the default is one (`_Internal.updateScriptProperties`).
+- `init` runs "before any other functions run" (localStorage tutorial).
+
+The d.ts header states the binding model: a script is bound to **one property**; `update` should return a value of that property's type; *assigning* to `thisLayer.<prop>` is allowed "if a script needs to modify multiple properties"; the Visibility property is "typically used" for general-purpose scripts.
+
+### 1.3 Globals
+
+- `thisLayer: ILayer` — the layer the script runs on.
+- `thisObject: IThisPropertyObjectBase` — "the object this property is bound to":
+  - the layer, for layer properties;
+  - the `IEffect`, for `effects[i].visible` (the corpus does `thisObject.visible = event.hasThumbnail` 44 times);
+  - the `IMaterial`, for material constants, whose shader constants are its members by name (`thisObject.multiply`).
+  - Its `getAnimation()` with no name returns "the animation object bound to the current property": the property's own keyframe timeline. For example, `multiply` in 2134765860 carries `animation {mode: single, startpaused: true}`, and its script calls `thisObject.getAnimation().play()` on a thumbnail change.
+- `thisScene: IScene`, `engine: IEngine`, `input: IInput`, `console: IConsole`, `localStorage: ILocalStorage`, `shared: Object` (one object shared by every script in the scene), `renderContext` (empty interface).
+
+### 1.4 `IEngine`
+
+| Member | Kind | Notes |
+|---|---|---|
+| `frametime`, `runtime`, `timeOfDay` | number | seconds since last frame; seconds since start; fraction of the day 0…1 |
+| `screenResolution`, `canvasSize` | Vec2 | screen pixels; scene (canvas) size |
+| `userProperties` | object | converted by `_Internal.convertUserProperties`: `color` → `Vec3`, `usershortcut` → `{isbound, commandtype, file}`, others their value |
+| `isRunningInEditor()`, `isPortrait()`, `isLandscape()`, `isDesktopDevice()`, `isMobileDevice()`, `isWallpaper()`, `isScreensaver()` | **functions** | |
+| `AUDIO_RESOLUTION_16/32/64` | 16/32/64 | there is **no** 128 ("Resolution must be either 16, 32 or 64.") |
+| `registerAudioBuffers(res)` | → `AudioBuffers {left, right, average: Float32Array}` | global scope only; the arrays are live and refreshed each frame |
+| `registerAsset(file, precache)` | → `IAssetHandle` | global scope only |
+| `setTimeout(cb, ms)`, `setInterval(cb, ms)` | → **Function** | "Returns a new callback that can be used to stop the timeout". Not callable at global scope. `clearTimeout` is commented out of the d.ts as "Not implemented. Use returned function to clear." (the DLL string is the cancel function's internals). |
+| `openUserShortcut(name)` | → Boolean | only inside cursor callbacks, once per click (DLL errors) |
+| `isObjectValid`, `requestFeatures` | | DLL only; undocumented |
+
+### 1.5 `IInput`, `ILocalStorage`, `IConsole`
+
+- `input.cursorWorldPosition: Vec3` (scene space), `cursorScreenPosition: Vec2`, `cursorLeftDown: Boolean`.
+- `localStorage.set(key, value, location?)`, `get(key, location?)`, `delete(key, location?) → Boolean`, `clear(location?)`. `LOCATION_GLOBAL = 'global'` (shared by all instances of the wallpaper), `LOCATION_SCREEN = 'screen'` (per instance on multi-monitor setups), **default `'screen'`**. There is no default-value argument; a missing key reads as `undefined`/`null`. Keys must be strings (DLL: "key not a string"). The docs cap it at **100 KB per wallpaper**.
+- `console.log(...)`, `console.error(...)`. They go to the editor's Log tab, or to `wallpaper_engine/log.txt` with the log level set to Verbose.
+
+### 1.6 `IScene`
+
+- Lookup: `getLayer(name|index|id)`, `getLayerByID(id)`, `getLayerCount()`, `enumerateLayers()`, `getLayerIndex(layer|name)`, `getInitialLayerConfig(layer)`.
+- Structure: `createLayer(path|IAssetHandle|config|IModelData)`, `destroyLayer(layer)` ("removed after all scripts on that frame updated"), `sortLayer(layer, index)`, `createModelData(config)` / `destroyModelData`.
+- Camera: `getCameraTransforms()` / `setCameraTransforms({eye, center, up, zoom})`, `fov`, `nearz`, `farz`.
+- `getAnimation(name?)` from any layer.
+- Scene settings (read/write): `bloom`, `bloomstrength`, `bloomthreshold`, `clearenabled`, `clearcolor`, `ambientcolor`, `skylightcolor`, `camerafade`, `camerashake`, `camerashakespeed`, `camerashakeamplitude`, `camerashakeroughness`, `cameraparallax`, `cameraparallaxamount`, `cameraparallaxdelay`, `cameraparallaxmouseinfluence`.
+
+`createLayer` config objects may carry `name`, `origin`, `angles`, `scale`, `text`, `color`, … and `model` (IModelData); the doc example passes `thisLayer.origin` directly.
+
+### 1.7 Layers and their parts
+
+`ILayer` is the union of every layer kind; members that don't apply to a kind are inert.
+
+- **Common**: `origin: Vec3`, `angles: Vec3` (**degrees**), `scale: Vec3`, `parallaxDepth: Vec2`, `name`, `visible` ("currently only for image layers and particles"), `getTransformMatrix()`, `rotateObjectSpace(angles)`, `lookAt(center, up?)`, `lookAtYaw(center, up?)`, `setParent(parent, [attachment], adjustTransforms?)`, `getParent()`, `getChildren()`, attachments (`getAttachmentIndex/Matrix/Origin/Angles`), `getAnimation(name?)`.
+- **Effect layer** (image/text): `getEffect(name|index) → IEffect`, `getEffectCount()`, `transformAttachmentToTexture(...)`, `size: Vec2` (read-only), `perspective`, `solid`.
+- **Image**: `alpha`, `color: Vec3`, `alignment`, `getTextureAnimation() → ITextureAnimation`, `getVideoTexture() → IVideoTexture`, animation layers (`getAnimationLayerCount/getAnimationLayer/createAnimationLayer/playSingleAnimation/destroyAnimationLayer`), bones (`getBoneCount`, `get/setBoneTransform`, `get/setLocalBoneTransform/Angles/Origin`, `getBoneIndex`, `getBoneParentIndex`, `applyBonePhysicsImpulse`, `resetBonePhysicsSimulation`), blend shapes (`getBlendShapeIndex/Weight`, `setBlendShapeWeight`).
+- **Text**: `text`, `color`, `alpha`, `opaquebackground`, `backgroundcolor`, `pointsize`, `font`, `padding`, `horizontalalign`, `verticalalign`, `anchor`, `limitrows`, `maxrows`, `limitwidth`, `maxwidth`.
+- **Sound**: `play()`, `stop()`, `pause()`, `isPlaying()`, `volume`.
+- **Particle system**: `play/pause/stop/isPlaying`, `emitParticles(count?)`, `instance: {alpha, size, count, speed, lifetime, rate, colorn, controlpoint0…7}`.
+- **Model**: `perspective`, `rootmotion`, animation layers. **Camera**: `fov`, `zoom`.
+- `IEffect`: `visible`, `name`, `getMaterial(i) → IMaterial`, `getMaterialCount()`, `setMaterialProperty(name, number|Vec2|Vec3|Vec4)` ("on all materials of this effect that have a matching property"), `executeMaterialFunction(name)`, `getAnimation()`.
+- `ITextureAnimation`: `frameCount`, `duration`, `rate`, `play/pause/stop/isPlaying`, `getFrame/setFrame`, `join`.
+- `IVideoTexture`: `duration`, `rate`, `loop`, `play/pause/stop/isPlaying`, `getCurrentTime/setCurrentTime`, `addEndedCallback`.
+- `IAnimation` (timelines): `fps`, `frameCount`, `duration`, `name`, `rate`, `play/pause/stop/isPlaying`, `getFrame/setFrame`. `IAnimationLayer` adds `blend`, `visible`, `addEndedCallback`.
+
+Beyond the d.ts, any scriptable `scene.json` key of a layer reads and writes as a member. `wallpaper64.exe` binds keys such as `pointsize`, `maxwidth`, `sortorder` and `solid` by their JSON names, and the corpus writes `thisLayer.maxwidth` and `thisLayer.pointsize`. The object model should therefore be generated from the typed field list (`SceneValueFields`), not hand-written per member.
+
+The math classes have quirks that only WE's own code reproduces, so load `baseclasses.js` unmodified instead of reimplementing it:
+
+- `Vec2.perpendicular()` is `(y, -x)`;
+- `new Vec4(x, y, z)` sets `w = z`;
+- `equals` uses an epsilon.
+
+Value semantics: vector getters return **copies**. In the corpus, every in-place write such as `thisLayer.scale.x = …` is commented out (4 scripts), so authors learned that it has no effect. Assigning a new vector is the way to write.
+
+### 1.8 Runtime behaviour visible in WE's binaries
+
+From `scenescript64.dll`: `Script execution has been interrupted because a dead lock was detected.` (WE has a watchdog that terminates long-running scripts), `Error: ` / `Log: ` / `, col ` / ` (line ` (the log format), `JS base class error: %s`, `Cannot execute user command outside of cursor callbacks.`, `Cannot execute more than one user command per cursor click.`, and the storage file magic `LSKV0001`. From `wallpaper64.exe`: `Invalid parent configuration.`, `bin/scenestorage/` (where `localStorage` persists) and `LSBK0001`.
+
+### 1.9 Semantics still to settle with probes
+
+The docs don't answer these; WP0 settles each with a probe wallpaper run in WE under CrossOver.
+
+| # | Question | Default until probed |
+|---|---|---|
+| P1 | Order in a frame: timers, events, `update`s (object order? property order?), timeline animations, destroy | events → timers → updates in object order → deferred destroy → animations (LWE: timers, then updates) |
+| P2 | When a property is also timeline-animated or user-bound, does `value` include the animated or user value, or only the script's last return? | documented: the current value, so accumulators work. Open for animated properties: pass the post-animation value |
+| P3 | Returning a non-coercible value (an object without x/y/z, `NaN`) | property unchanged (the docs cover only "no return") |
+| P4 | A script that throws: keeps being called? Disabled? | keeps running, and that call's result is skipped (LWE does the same); each distinct error logged once |
+| P5 | The watchdog limit, and whether a terminated script is disabled | ~1 s per call; disabled after termination |
+| P6 | Do `update`s run on hidden layers? | yes: the docs' media example hides its layer in `init` and shows it from `mediaPlaybackChanged` |
+| P7 | `cursorHitTest`, which layers receive cursor events (`solid`, alpha test?) | events on layers whose bounds contain the cursor; `solid` layers stop the event going to layers below |
+| P8 | `init` order across objects; is `applyUserProperties` before or after `init`? | module eval (all) → script-property injection → `init` (object order) → `applyUserProperties(all)` |
+| P9 | `thisObject` for particle `instanceoverride` and `general.*` scripts (the effect and material cases are documented in §1.3) | the particle system; the scene |
+
+### 1.10 linux-wallpaperengine as a reference
+
+LWE (github.com/Almamu/linux-wallpaperengine, `src/WallpaperEngine/Scripting/`; copies in `dd-scenescript/spec/lwe/`) added scripting in May–June 2026.
+
+- **Engine:** QuickJS with real modules (`JS_EVAL_TYPE_MODULE`), one module per bound property.
+- **Frame:** `tick()` runs the intervals and timeouts, then every `update(value)`. The value passed in is the last converted result, and an exception skips that frame's result.
+- **Supported:** `thisLayer` is a generic property bag. Also `engine.frametime/runtime/timeOfDay/setTimeout/setInterval`, `input.cursor*`, `thisScene.getLayer` plus scene properties, `console`, `createScriptProperties`, WEMath/WEColor, Vec2/3/4, `shared`, and media events with hard-coded thumbnail colours.
+- **Missing:** `registerAudioBuffers`, `createLayer`, cursor callbacks, `applyUserProperties`, `resizeScreen`, the effect, material, animation, particle and sound APIs, and the global-scope rules. `localStorage` is a non-persistent stub.
+
+It confirms the chaining and timers-before-updates choices. It is not an API target: WE's d.ts and `baseclasses.js` are.
+
+---
+
+## 2. The corpus
+
+**Location:** `/Volumes/980Pro/dd-scenescript/corpus` (outside the repo).
+
+- `extract.py` (one level up) reads `scene.json` from disk or from `scene.pkg` (PKGV header, entry table) plus every other `.json` in the wallpaper. It walks all JSON and records every object that has a string `script`.
+- Each site is attributed to wallpaper, file, object id, name, kind and field path, with `value`, `scriptproperties` and `user` recorded.
+- `scripts/<sha1-12>.js` holds each distinct source, `index.json` holds every site, `api-usage.json` and `per-script.json` come from `analyze.py`.
+
+**Size.**
+
+- Libraries: 52 Workshop items plus 97 in OpenWallpaperStorage. One item is in both.
+- 93 scenes. 43 items have scripts: 36 scenes and 7 editor asset packs (`assets.json`, category "Asset", which users import into their own scenes).
+- **508 attachment sites and 281 distinct scripts.**
+- One web wallpaper ships 64 `.js` files; they are web JS, not SceneScript, and are out of scope here.
+- The earlier snapshot counted 184 scripts in 18 wallpapers. The Workshop folder more than doubled the sample.
+
+**Language.**
+
+- All 281 parse as ES modules (JSC `checkModuleSyntax`) except one: `8bb9b9a54120`, a text-layer `visible` script in 3802509485 with a string literal broken across two lines. WE can't compile it either, so the right behaviour is to log it once and keep the authored value.
+- `'use strict'`: 272 scripts. `let`/`const`: 226. Arrow functions: 19. Spread: 5. Template literals: 3. `??`: 1.
+- None use classes, async/await, Promises, generators, `export default`, `export {…}` or re-exports.
+- Imports are only `import * as X from 'WEMath' | 'WEColor' | 'WEVector'` (18 scripts).
+- `Date`: 62 scripts (clocks). `Math.random`: 7.
+
+**Where scripts attach** (sites):
+
+| Field | Sites | Typical callbacks and APIs |
+|---|---|---|
+| text `text` | 135 | `update` (113), `mediaPropertiesChanged` (33), `scriptProperties` (90) |
+| effect constant (`effects[i].passes[j].constantshadervalues.*`) | 86 | `update` (64), `init` (28), `mediaThumbnailChanged` (30), `thisObject.getAnimation` (22) |
+| `visible` | 70 | `update` (50), `init` (28), `applyUserProperties` (26), `thisScene.getLayer` (24), `mediaPlaybackChanged` (23), cursor (15), `createLayer`/`sortLayer` (3) |
+| `origin` | 56 | `getLayer` (32), `init` (31), `applyUserProperties` (25), `update` (23), cursor (20) |
+| `effects[i].visible` | 46 | `mediaThumbnailChanged` (45), `thisObject.visible` (44), `createLayer` (1) |
+| `alpha` | 43 | `update` (35), `thisObject.getAnimation` (8) |
+| `scale` | 26 | `update` (24), `cursorEnter/Leave` (8 each) |
+| particle `instanceoverride.*` | 22 | rate 12, alpha 8, colorn 1, lifetime 1 |
+| `angles` | 18 | `update` |
+| `color` | 4 | |
+| `general.bloomstrength`, `general.camerashake` | 1 each | scene-level fields can be scripted too |
+
+**Exports** (scripts / sites / wallpapers):
+
+| Export | Scripts | Sites | Wallpapers |
+|---|---|---|---|
+| `update` | 213 | 357 | 43 |
+| `__workshopId` | 127 | 268 | 31 |
+| `init` | 79 | 115 | 23 |
+| `scriptProperties` | 59 | 124 | 35 |
+| `applyUserProperties` | 48 | 60 | 6 |
+| `mediaPropertiesChanged` | 27 | 42 | 12 |
+| `mediaPlaybackChanged` | 23 | 30 | 6 |
+| `mediaThumbnailChanged` | 21 | 85 | 10 |
+| `cursorClick` | 11 | 18 | 6 |
+| `cursorDown` | 6 | 8 | 4 |
+| `cursorEnter` / `cursorLeave` | 5 | 9 | 3 |
+| `mediaTimelineChanged` | 4 | 4 | 2 |
+| `cursorMove`, `cursorUp` | 3 | 5 | 3 |
+| `mediaStatusChanged` | 1 | 1 | 1 |
+
+Ten further exports are the authors' own helpers (`skip`, `playTrack`, …); WE ignores them.
+
+**API surface** (scripts / sites / wallpapers):
+
+- `engine.frametime` 54/92/20
+- `thisScene.getLayer` 56/68/7
+- `createScriptProperties`: `addCheckbox` 49/112/33, `addText` 39/94/32, `addSlider` 23/36/12, `addCombo` 17/41/21, `addColor` 1
+- `new Vec3` 49/62/12
+- `engine.registerAudioBuffers` 33/62/19. Resolutions: 16 (most), 32, 64. Always at module scope.
+- `thisLayer.origin` 41/47/8, `.alpha` 28/31/6, `.visible` 18/26/4, `.text` 12/27/8, `.scale`, `.color`, `.size`, `.alignment`, `.maxwidth`, `.pointsize`
+- `thisObject.getAnimation` 15/36/9, `thisObject.visible` 6/44/7
+- `MediaPlaybackEvent.*` 18+6+4
+- `WEMath.smoothStep` 12/29/6, `WEMath.mix`, `WEColor.hsv2rgb`
+- `engine.timeOfDay` 10/25/6
+- `shared.*` 48 scripts, practically all in 3453730450 (numbers only)
+- `thisLayer.getTextureAnimation` 5/9/2
+- `engine.runtime` 4/6/4
+- `thisScene.createLayer` 4/4/4 (asset path `'models/bar.json'` ×3, `getInitialLayerConfig` ×1), `sortLayer` 3, `getLayerIndex` 3, `enumerateLayers` 2, `getLayerCount` 1, `getInitialLayerConfig` 1
+- `engine.setTimeout` 3/22/7. Its return value is **called** to cancel: `lastHideEvent()`.
+- `engine.canvasSize` 2/4/3, `engine.userProperties` 1, `engine.isScreensaver()` 1
+- `input.cursorWorldPosition` 1, `input.cursorLeftDown` 1, `console.log` 3
+- Writes via layer references: `parallaxDepth` 3, sound `volume` 3, texture-animation `rate` 5, `solid` 1
+- **Zero** uses of `getEffect`, `getMaterial`, `setMaterialProperty`, `localStorage`, bones, animation layers, `createModelData` or camera transforms. These are still part of the WE API and common in the wider Workshop, so they are in the plan, only lower in the order.
+
+**Wallpapers by script weight** (sites / distinct scripts):
+
+- 3000562427 Steam Summer Sale 2023: 80/61. Media, timers, `getAnimation`.
+- 3453730450 Moon: 71/54. `shared`, cursor, audio.
+- 2963872291 Pixelart Alice City: 39/35. Every cursor callback, media.
+- 2134765860 Bunk: 32/10. Media, timers, `getAnimation`, general script.
+- 2978204069, 2176097362 (Dance Club: `getTextureAnimation`, general script), 3546971487, 3187908708, 3109042108, 3352730400, 2978738836, 2370927443.
+- Then 31 smaller ones: clocks, audio bars with `createLayer`, cursor toys.
+
+---
+
+## 3. Our implementation today
+
+Files:
+
+- `OpenWallpaperEngine/Scene/Scripting/AudioReactiveScriptEngine.swift` (1336 lines): audio capture, FFT, the property store, layer state and the JS runtime, all in one process-wide singleton.
+- `BrowserMediaIntegration.swift`: polls browser tab titles with AppleScript every 2 s.
+
+Call sites:
+
+- `SceneMetalRenderer` (`configureLayers`, `executeSceneScript`, `layerBoolean/Value/Vector2/String`, `evaluate*` for alpha, colour, size, text, brightness and bloom, drains for `createLayer`/`sortLayer`/`destroyLayer`).
+- `SceneObjectMotion.local` (origin, scale and angles scripts).
+- `LiveSceneValueContext.evaluateScript` (effect constants and every `SceneValue` script).
+- `ParticleFrameInputs` (particle rate, drag, fade).
+- `SceneWallpaperViewModel.resolvedVisibility` (visible scripts, once).
+
+### 3.1 How it runs a script
+
+1. **Context per key.** The context is keyed by `"<layerId|global>:<full source>"`. Particle and effect scripts have no layer id, so identical sources on different objects share one context and its state.
+2. **Rebuilt every call.** Every `evaluate*` call re-sets about 15 globals: `engine` rebuilt from a Swift dictionary, `input`, `__layers` (a JSON copy of *every* layer's state), `shared`, `thisScene` (a new object literal, evaluated from a string), `thisLayer` (another copy), plus `registerAudioBuffers`. Every layer is then re-decorated with about 60 closures.
+3. **Script source.** The source goes through regex rewriting: `export` is stripped and `import * as` / `import {}` become `__requireModule`. It is evaluated once; then `init(input)` runs, `applyUserProperties(all)` runs when the property revision changed, then `__dispatchRuntimeEvents` (cursor, enter/leave, animation stubs, timers), then `update(input)`.
+4. **Read-back.** Afterwards `__layers.toDictionary()` and `shared.toDictionary()` are copied back into Swift and replace the global state. Pending creations, orders and removals are drained, and `__camerashake` is read.
+
+The measured cost in the snapshot is about 0.3 ms plus 0.12 ms per layer, per script, per frame: roughly 400 ms per frame for 3453730450.
+
+### 3.2 Status per API
+
+Legend: ✅ works like WE · 🟡 partial or wrong in a way the corpus hits · ❌ missing or broken · ⚪ missing, unused in the corpus.
+
+| API | WE semantics | Ours | Corpus (scripts/sites/wp) |
+|---|---|---|---|
+| ES module syntax | real modules, own scope per script | 🟡 regex rewrite; top-level `let` collides in the shared visibility context | all 281 |
+| imports `WEMath/WEColor/WEVector` | WE jsmodules | ✅ via the bundled WE files | 18/37/9 |
+| `update(value)` return → property | chained: the next call receives the current value; no return = unchanged; number broadcast to vectors | 🟡 input is always the authored/base value, so accumulators never move; `undefined` → `"undefined"` text or (0,0,0) vectors; a number `n` returned for a vector becomes `(n, 0, 0)` through `parseVector3`, not `(n, n, n)` | 213/357/43 |
+| `init(value)` return → property | applied | ❌ return ignored | 79/115/23 |
+| visible scripts | every frame | ❌ once at load, in a separate stub context; hidden objects are dropped and can never be shown | 70 sites |
+| effect `visible` scripts, `thisObject.visible` on an effect | toggles the effect | ❌ never run; effects hidden at load are dropped; `thisObject` is a copy of the layer | 46 sites/7 wp |
+| effect constant scripts | per frame | 🟡 run per frame, but with no `scriptproperties`, `thisObject` = layer copy, and a context shared across objects | 86 sites |
+| particle `instanceoverride` scripts | per frame | 🟡 only `rate` runs; alpha, colorn and lifetime are ignored; no layer id | 22 sites |
+| `general.*` scripts | per frame | ❌ evaluated once at load (`SceneGeneralSettings` at `time: 0`) | 2 |
+| `thisLayer.<prop>` writes | stick | ❌ `thisLayer` is a copy; only writes through `thisScene.getLayer(...)` survive the read-back | 41+ scripts |
+| `thisLayer.angles` | degrees | 🟡 radians are handed out and read back as radians | 18 sites |
+| `thisObject` | the property's owner | ❌ always `thisLayer`'s copy | 21 scripts/80 sites |
+| `thisObject.getAnimation()` | the property's timeline | ❌ a JS stub with its own frame counter, not linked to the keyframes; decays to `{}` after the read-back | 15/36/9 |
+| `getTextureAnimation()` | spritesheet control | ❌ stub | 5/9/2 |
+| `thisScene.getLayer/ByID/Count/enumerate/getLayerIndex` | live objects | 🟡 copies; indices follow dictionary key order, not draw order; sound, particle and hidden objects are missing | 56/68/7 |
+| `createLayer(path \| config)` | loads that asset or config | 🟡 always clones `thisLayer` and ignores the path | 4 wp |
+| `sortLayer`, `destroyLayer` | reorder; remove after the frame's updates | 🟡 applied next frame; only clones can be destroyed | 3 wp |
+| `getInitialLayerConfig` | authored config | 🟡 a JSON copy of the current state | 1 |
+| `shared` | one live object | 🟡 round-tripped through Swift each call; functions and prototypes are lost | 48 scripts |
+| `createScriptProperties` / `scriptProperties` | WE's builder, then values from `scriptproperties` via `_Internal.updateScriptProperties` | 🟡 our shim replaces WE's builder (`addCombo` takes `value`, not `options[0].value`); values reach only origin/text scripts; user-bound entries are unresolved | 59/124/35 |
+| `engine.frametime`, `runtime`, `timeOfDay`, `canvasSize` | | ✅ (`runtime` time base differs by call site) | |
+| `engine.screenResolution` | the screen's pixels | 🟡 `NSScreen.main` points, not this wallpaper's display | |
+| `engine.userProperties` | converted (colour → Vec3) | 🟡 colours are strings | 1 |
+| `engine.is*()` | functions | ❌ missing; `engine.isScreensaver()` throws | 1 |
+| `engine.registerAudioBuffers` | live `Float32Array`s, left/right/average, 16/32/64 | ❌ a frozen snapshot of the legacy 64-band mono FFT; `left == right`; plain arrays | 33/62/19 |
+| `engine.setTimeout/setInterval` | return a cancel **function** | ❌ return a number, so `cancel()` throws; they tick only when the owning script is evaluated | 3/22/7 |
+| `engine.registerAsset` | asset handle | 🟡 stub object | |
+| `engine.openUserShortcut` | runs a user shortcut | ⚪ | |
+| `applyUserProperties` | changed keys only; all at load | 🟡 all keys every time | 48/60/6 |
+| `applyGeneralSettings` | `{language}` | ⚪ | |
+| `resizeScreen` | on resize only | 🟡 also called on the first evaluation | |
+| `input.cursorWorldPosition` | scene space | ❌ screen points (`NSEvent.mouseLocation`) | 1 |
+| `input.cursorLeftDown` | | 🟡 counts clicks in any app | 1 |
+| cursor callbacks | only for the object under the cursor | 🟡 click/down/up/move fire for every script regardless of position; enter/leave test origin ± size/2 (no scale, rotation or parents); event positions are screen points | 23 scripts |
+| media callbacks (5) | from the OS media session | ❌ never called; `BrowserMediaIntegration` knows only browser tab titles | 76 scripts/162 sites/12 wp |
+| `localStorage` | per wallpaper, `'screen'` default, `get(key, location)` | 🟡 `UserDefaults.standard` (breaks the no-globals rule), not namespaced per wallpaper, wrong signature `get(k, default, scope)`, numeric scopes | 0 |
+| `console.log/error` | | ✅ (`log` → `.debug`) | 3 |
+| `Vec2/3/4`, `Mat3/4` | WE baseclasses | ✅ WE's classes load first and win; the shim's copies are dead code | |
+| `WEMath` as a global | module only | 🟡 the shim defines `WEMath.deg2rad` as a *function*; WE's is a number | |
+| `getEffect`, `getMaterial`, `setMaterialProperty` | effect and material control | ⚪ stubs returning null/{} | 0 |
+| sound layer API | play/stop/pause/volume | ⚪ stubs; sound objects are not script-visible | 3 (volume) |
+| particle `instance`, `emitParticles`, `play/stop` | | ⚪ stub object | 0 |
+| animation layers, bones, blend shapes, attachments, `lookAt`, `setParent`, `getTransformMatrix` | | ⚪ stubs (need areas 6/7) | 0 |
+| camera transforms, scene settings (`bloom*`, `clearcolor`, …) | read/write | 🟡 only `camerashake` | 1 |
+| `destroy` | before destruction | 🟡 only on reconfigure | |
+| exceptions | logged | 🟡 logged with the **entire script source** in the context key; rate-limited | |
+| infinite loops | watchdog | ❌ a hang freezes the render thread forever | |
+
+### 3.3 Other problems in the current code
+
+1. **One process-wide singleton** (`AudioReactiveScriptEngine.shared`). With two displays, each renderer's `configureLayers` replaces `layerStates` and **destroys every context**, including the other display's, so two scenes clobber each other. The context keys (`layerId:source`) also collide between two instances of the same wallpaper. This breaks the architecture invariant "state belongs to a wallpaper instance".
+2. **Invented, non-WE globals** that no WE script uses:
+   - functions `audio()`, `fft()`, `property()`, `setGlobal()`, and globals `time`, `cursor`, `global`
+   - `engine.spectrum/waveform/bass/mid/treble/audio/audioLevel/audioVisualization/media`, `engine.AUDIO_RESOLUTION_128`
+   - `input.mouse/buttons/modifiers/leftDown/rightDown/cursorScenePosition`
+   - `thisScene.time/currentTime/dt/fps`, `Vec2.rotate(radians)`
+   - They mask script bugs and should go.
+3. `loadSceneScript` guesses `script.js`, `scene.js` and `scenescript.js` in the wallpaper folder when `scene.json` has no `script` key. WE has no scene-level script file; no scene in the corpus has a top-level `script`. It would execute any stray `.js` a scene ships.
+4. The compatibility shim assigns `createScriptProperties`, `WEMath`, `WEVector`, `WEColor` and `AudioBuffers` as global properties **after** WE's `baseclasses.js`. That replaces WE's `createScriptProperties`, whose combo default is `options[0].value`.
+5. `resolveLayerVisibility` evaluates every visible script in *one* context. A top-level `let` in a second script throws a redeclaration error, and that script's result is silently lost (`exceptionHandler = { _, _ in }`).
+6. `evaluateString` returns `"undefined"` when `update` returns nothing. `evaluateVector*` returns (0,0,0) for `undefined` (the string parse of "undefined").
+7. `reportScriptException` puts `contextKey` (layer id plus the **full source**) into every log line.
+8. The engine reads `NSEvent.pressedMouseButtons`/`mouseLocation` on the render thread and ties cursor state to one global `__lastCursor` per context.
+9. `localStorage` writes `UserDefaults.standard` (CONTRIBUTING rule 3) and uses `dictionaryRepresentation()` scans for `clear`.
+10. `BrowserMediaIntegration` runs AppleScript against eight browsers every 2 s. That triggers Automation permission prompts, reports tab titles rather than media, and never dispatches events.
+11. Effects hidden at load (`isEffectVisible`) are not built at all, so no script or user property can show them later. The same holds for objects (roadmap area 8 item 3 and item 10).
+12. Particle scripts use the particle system's elapsed time as `engine.runtime`, while layer scripts use scene time.
+13. `SceneValueContext` has a `properties` parameter that `LiveSceneValueContext` ignores (its doc comment says so), so `scriptproperties` never reach effect, particle or visible scripts.
+14. The audio capture, FFT, property store and the render-side property reads (`userPropertyValue`, `_owe_*`) all live in the script engine file. The script runtime can't be extracted or tested without them.
+15. There are **no** SceneScript tests. `SceneUserPropertyStoreTests` and `SceneReviewFixTests` touch only the property store.
+
+---
+
+## 4. Design
+
+### 4.1 Shape
+
+```
+SceneRenderContent ──► SceneScriptRuntime (one per wallpaper instance, owned by the renderer)
+                         ├─ JSVirtualMachine + one JSContext
+                         ├─ prelude: WE baseclasses.js + jsmodules (unmodified) + our runtime/*.js
+                         ├─ ScriptInstance[] (one per attachment site, in scene order)
+                         ├─ SceneScriptObjectTable (shared memory with the renderer)
+                         └─ SceneScriptHost (protocol): assets, audio, media, input, storage, clock, log
+```
+
+- **Per instance, no singleton.** Two displays mean two runtimes. `shared` is per runtime. `localStorage` `'screen'` is keyed per instance (wallpaper id plus display id) and `'global'` per wallpaper id.
+- **One context per scene.** Every script is its own *module scope* inside it (§4.2), so top-level names never collide, and `shared`, `thisScene` and layer objects are genuinely shared.
+- **Confined to the render thread.** The runtime is not thread-safe and never touched elsewhere. Anything from other threads (property changes, media events, resizes) goes into a locked inbox that the runtime drains at the start of a frame.
+
+### 4.2 Modules without private API
+
+The corpus uses only `export function|let|var|const NAME` and `import * as X from 'Y'` (§2). Each script becomes a factory with public-API `evaluateScript(_:withSourceURL:)`:
+
+```js
+// header joined on line 1, so line numbers stay exact
+(function (__rt, thisLayer, thisObject, WEMath, WEVector, WEColor) { 'use strict';
+  /* original source with `export ` removed and import lines blanked (kept as empty lines) */
+  return __rt.exports({ get update(){ return typeof update==='function'?update:undefined }, … });
+})
+```
+
+- A **tokenizer**, not regexes, finds `import` and `export` at the top level. It skips strings, comments, regex and template literals. Unsupported forms (`export default`, `export {…}`, re-exports, dynamic `import()`) are compile errors logged once. None occur in the corpus.
+- Export getters keep `export let` bindings live.
+- `sourceURL` = `owe://<workshopId>/<object name>#<id>/<field>`, so errors name the wallpaper, layer and field (CONTRIBUTING rule 2).
+- Global-scope rules (§1.1) are enforced in a phase flag: `__rt.phase = 'global'` while the factory body runs, then `'callback'`. `registerAudioBuffers`/`registerAsset` throw outside `global`; `setTimeout` and `localStorage` throw inside it. Access to `thisLayer` members at global scope is allowed (lenient superset); only the call rules WE errors on are enforced, because a script that does them is broken in WE too.
+- Real JSC modules exist only as SPI: `JSScript` with `kJSScriptTypeModule`, `-[JSContext evaluateJSScript:]` and `moduleLoaderDelegate` were all present in the probe. The wrapper covers 100 % of the corpus without them. Keep the SPI as a fallback if a script ever needs `export {…}`.
+
+### 4.3 Live objects and state writeback
+
+**The object table.** `SceneScriptObjectTable` is a struct-of-arrays that the renderer owns and the runtime shares:
+
+- per object slot: origin xyz, angles xyz (degrees at the API, radians stored), scale xyz, alpha, colour rgb, visible, parallaxDepth, size, …
+- plus per-effect `visible` and per-material constant slots.
+- Numeric fields sit in one `Float32Array` created with `JSObjectMakeTypedArrayWithBytesNoCopy` over Swift-owned memory. JS and Swift read and write the **same bytes**, so there is nothing to marshal per frame.
+
+**JS classes** live in `runtime/layers.js`. `Layer`, `TextLayer`, `ParticleSystem`, `SoundLayer`, `Effect`, `Material` and `Animation` are plain JS classes with getters and setters over the table:
+
+- `get origin(){ return new Vec3(t[i], t[i+1], t[i+2]) }` returns a copy, like WE.
+- `set origin(v){ t[i]=v.x; t[i+1]=v.y; t[i+2]=v.z; dirty[i]=1 }`.
+- Strings and rare fields (`text`, `font`, `name`, `horizontalalign`, …) live on the JS object with a dirty bit. The renderer pulls dirty strings once per frame with one `__rt.drainStringWrites()` call. A text layer's text changes at most once a second.
+- Methods that need native work (`play`, `setFrame`, `emitParticles`, `setMaterialProperty`, `createLayer`) append to a command ring (`Int32Array` + args), which Swift executes after the script phase. Queries that need native answers (`getTransformMatrix`, `getBoneTransform`) read the table's world-matrix slots, which the renderer writes after each transform pass.
+- One JS object per scene object, created once. `thisScene.getLayer` returns the same object every time, so `thisLayer === thisScene.getLayer(thisLayer.name)`.
+
+**Property scripts.** A `ScriptInstance` bound to a field keeps the current value:
+
+- `update(value)` receives it (a fresh `Vec3` for vector fields, created per call like WE, or cached when P2 shows WE reuses one).
+- The return value is coerced to the field's type: number, bool, string, `Vec2/3/4` from objects with x/y/z/w or strings `"x y z"`, and a number broadcast to every component (WE: `2` on Scale is `Vec3(2, 2, 2)`).
+- The coerced value becomes the field's value (written into the table) and the next call's input. `undefined` or an uncoercible value leaves it unchanged (P3).
+- `init(value)`'s return is applied the same way.
+
+**Fields feeding the table**, in precedence order:
+
+1. authored or user value,
+2. the timeline animation (P2),
+3. the property script's return,
+4. direct writes by *any* script this frame (last writer wins, in execution order).
+
+**The renderer** stops calling `layerValue`/`evaluate*` per draw. It reads the table after the script phase. `SceneObjectMotion`, `ParticleFrameInputs` and `LiveSceneValueContext.evaluateScript` read the resolved field from the table instead of running scripts themselves.
+
+**Hidden objects** stay in the table and the draw list with `visible = 0`. Their scripts keep running (P6). Hidden effects are built and skipped. This closes roadmap area 8 items 3 and 10 for scripts.
+
+### 4.4 Frame order
+
+The load phase runs once, in scene object order (P8 to confirm):
+
+1. Evaluate every module factory (global scope: `registerAudioBuffers`, `registerAsset`, `createScriptProperties().finish()`).
+2. Inject `scriptproperties` through WE's `_Internal.updateScriptProperties`. User-bound entries are resolved through `Scene/Values` and re-injected when the user property changes.
+3. `init(value)` per script, applying its return.
+4. `applyUserProperties(all)`, then `applyGeneralSettings({language})`.
+
+Each frame:
+
+1. Frame globals: `engine.frametime/runtime/timeOfDay`, `input.*` in scene space, audio buffers refilled in place.
+2. Inbox events, in arrival order: `applyUserProperties(changed)`, `resizeScreen`, media events, cursor events. Cursor hit tests use last frame's world transforms (§4.8).
+3. Due timers.
+4. `update(value)` for every instance in scene order. Within an object, fields go in a fixed order (visible, origin, scale, angles, alpha, color, text, effects, instanceoverride) until P1 says otherwise.
+5. Deferred structure: `destroyLayer` (after all updates, per the docs), `createLayer` materialisation, `sortLayer`, `destroy()` callbacks.
+6. Swift executes the command ring, then timeline animations, particles and transforms (which write world matrices back into the table), then render.
+
+**One native→JS call per frame** (`__rt.frame(dt)`) runs steps 1–5 in JS. Swift only fills the shared buffers before it and drains the command ring and dirty strings after it.
+
+### 4.5 Errors, the watchdog and the sandbox
+
+**Isolation.** Every callback runs inside `__rt.invoke(instance, name, args)`, a JS `try/catch`.
+
+- An exception is recorded on the instance: the message, `sourceURL:line:col` and the stack. It is reported to Swift through a per-frame error array, and each distinct (instance, message) is logged once through `OWELog.error(.script, …)`.
+- Other scripts are unaffected.
+- A compile error disables that instance, and its field keeps the authored value. `8bb9b9a54120` is the corpus case.
+- A runtime error keeps the instance running (P4).
+
+**Watchdog.** `JSContextGroupSetExecutionTimeLimit` (private C symbol, resolved with `dlsym`; nil means no watchdog, with an `.info` log).
+
+- Verified on this Mac: `while(true){}` is terminated after 0.21 s with a 0.2 s limit, and the context stays usable afterwards.
+- The limit applies per native→JS entry, so it covers the whole `__rt.frame`. On termination, `__rt.current` names the running instance. It is disabled (WE: "dead lock was detected") and the frame is retried without it next time.
+- Suggested limit: 1 s at load, 250 ms per frame.
+
+**Sandbox.**
+
+- JSC contexts have no file system, network, `require` or DOM. We expose only the WE API. The invented globals of §3.3 are deleted, and no Swift block is callable except the runtime's own narrow ones.
+- `localStorage` has WE's documented cap of 100 KB per wallpaper.
+- `console` is rate-limited.
+- `eval` and `Function` stay available (V8 allows them), but they run inside the same watchdog.
+- There is no public JSC heap limit. Watch `JSVirtualMachine` memory through `JSGarbageCollect` statistics in debug, and cap object creation per frame (`createLayer` > 1000 live clones is logged).
+
+### 4.6 Performance targets
+
+| Cost | Today | Target |
+|---|---|---|
+| Per script per frame | 0.3 ms + 0.12 ms × layers | ≈ 1–5 µs (one JS call inside the frame loop) |
+| Per frame, 3453730450 (71 sites) | ~400 ms | < 0.5 ms |
+| Bridging per frame | ~15 `setObject` + `toDictionary` of all layers per call | 1 call + buffer reads |
+| Allocations | dictionaries per call | one `Vec3` per vector getter or argument (like WE) |
+
+Per-frame budget assertions go into the harness (§5, WP9) as `measure` tests, with a baseline per scene.
+
+### 4.7 Audio, media and storage sources
+
+- **Audio buffers.** Take `AudioSpectrumAnalyzer`'s WE-style smoothed spectra, the same source `g_AudioSpectrum16/32/64` uses, split into left and right. Fill the registered `Float32Array`s in place each frame; `average` is (l+r)/2. Every `registerAudioBuffers` call in the corpus is at module scope, as WE requires.
+- **Media.**
+  - A `MediaSessionSource` protocol with one macOS implementation. The candidates are the MediaRemote framework (restricted for third-party bundles since macOS 15.4, so it needs the `/usr/bin/perl` adapter technique or a helper), or `ScriptingBridge` for Music and Spotify as a fallback.
+  - Thumbnail colours: primary, secondary and tertiary from a k-means/median-cut over the artwork, `textColor` and `highContrastColor` by contrast. LWE hardcodes these; we should compute them.
+  - `BrowserMediaIntegration` is deleted.
+- **localStorage.** A per-wallpaper JSON file in Application Support: `scenestorage/<workshopId|dir-hash>/{global,screen-<displayID>}.json`. Values go through `_Internal.stringifyConfig`, so `Vec3` survives through `toConfigString`.
+
+### 4.8 Input
+
+- The renderer publishes the scene-space cursor (it already has `sceneCursor` and `cursorTracker`) and the left-button state **only for clicks on the desktop** (the wallpaper window receives the events; the global `NSEvent.pressedMouseButtons` is not used).
+- `input.cursorScreenPosition` is in display pixels.
+- **Hit test.** Invert each object's world matrix from the table, test against its size box, and fill `localPosition`. Enter/leave/move/down/up/click go only to objects containing the cursor, topmost first. A `solid` object stops propagation to objects under it (P7 settles the details and `cursorHitTest`).
+
+---
+
+## 5. Implementation plan
+
+Work packages are ordered; packages in the same step touch disjoint files and can run in parallel. Each lands as small conventional commits with tests (CONTRIBUTING). Moves and renames get their own commits.
+
+### Step 0 (serial)
+
+**WP0 — Ground-truth probes.** No app code.
+
+- Build probe wallpapers under `/Volumes/980Pro/dd-scenescript/probes/` that `console.log` markers for P1–P9. For example, `update` on three objects and several fields, a timeline-animated property with a script, `update` returning `undefined`, a throwing script, `while(true)`, a hidden layer, and `solid` layers stacked under the cursor.
+- Run them in WE under CrossOver and collect WE's log (`Log:`/`Error:` lines).
+- Record the answers in §1.9 of this document.
+- Test: the probe outputs are saved as fixtures (`Tests/Fixtures/SceneScript/probes/*.json`) that WP9 asserts against.
+
+**WP1 — Split the file, moves only.** Move audio capture, FFT and `SceneUserPropertyStores` usage out of `AudioReactiveScriptEngine.swift`:
+
+- `Audio/SystemAudioCapture.swift` (capture, restart, spectrum analyzer feed)
+- `Scene/Values/SceneUserPropertyService.swift` (property store, music sync, `userPropertyValue`)
+- The old type keeps only scripting and forwards. No logic changes; must build.
+
+**WP2 — Runtime skeleton and interfaces.**
+
+- `Scene/Scripting/Runtime/SceneScriptRuntime.swift`: VM, context, watchdog, prelude loading, the `frame(dt)` driver, the error channel.
+- `SceneScriptHost.swift`: the protocol for assets, audio, media, input, storage, clock and log.
+- `SceneScriptInstance.swift`.
+- `SceneScriptObjectTable.swift`: the slot layout only.
+- `Resources/SceneScript/runtime.js`: `__rt.invoke`, the phase flag, the error array.
+- WE's `baseclasses.js` and jsmodules are loaded **unmodified** from `WallpaperEngineAssets`.
+- Tests: a fake host; `while(true)` is terminated and disabled; an exception in one instance leaves the next one running; the context survives termination.
+
+### Step 1 (parallel; each owns the files listed)
+
+**WP3 — Module compiler.** `Scripting/Modules/SceneScriptTokenizer.swift`, `SceneScriptModuleTransformer.swift`.
+
+- Tests: every corpus script compiles except `8bb9b9a54120`, which reports a compile error with its line; line numbers match the original; unsupported export forms are rejected; fixtures are synthetic snippets.
+- The full-corpus test reads `/Volumes/980Pro/dd-scenescript/corpus` and is skipped when absent (like `LibrarySweepTests`).
+
+**WP4 — Engine, input, console, timers, storage.** `Resources/SceneScript/engine.js`, `timers.js`, `storage.js`; `Scripting/Engine/SceneScriptStorage.swift`; `SceneScriptInput.swift`.
+
+- `engine.*` including the `is*()` functions and `userProperties` via `_Internal.convertUserProperties`.
+- `setTimeout`/`setInterval` returning cancel functions, global-scope rules, `localStorage` per §4.7, `openUserShortcut` (logs "unsupported" until user shortcuts exist).
+- Tests: timer order and cancel (`lastHideEvent()` pattern); storage isolation between two instances and two wallpapers; the `'screen'` default; `Vec3` round-trip; quota.
+
+**WP5 — Audio buffers.** `Scripting/Engine/SceneScriptAudioBuffers.swift`, plus a read-only accessor on `AudioSpectrumAnalyzer`.
+
+- Tests: feed a synthetic left-only tone and assert `left ≠ right` at 16/32/64; the arrays are the same objects every frame with values updated in place; a resolution of 128 throws WE's message; calling from a callback throws.
+
+**WP6 — Media.** `Scripting/Media/MediaSessionSource.swift`, `MacMediaSessionSource.swift`, `ArtworkPalette.swift`; delete `BrowserMediaIntegration.swift`.
+
+- Tests: a fake source drives all five events with WE's field names; the palette on fixture images; no AppleScript anywhere.
+
+**WP7 — Object model (layers, scene, effects, materials).** `Resources/SceneScript/layers.js`, `scene.js`; `Scripting/Objects/SceneScriptObjectTable.swift` (fill), `SceneScriptCommandRing.swift`.
+
+- `getLayer*`, `enumerateLayers` and `getLayerIndex` in draw order with identity preserved; `getParent`/`getChildren`; degrees↔radians; copies on get; `getEffect(name|index).visible`; `getMaterial`/`setMaterialProperty` onto material constant slots; `getTextureAnimation`; particle `instance` and `emitParticles`; sound `play/stop/pause/volume`; scene settings.
+- Tests: headless, against a table: writes stick; `thisLayer === getLayer(name)`; the angles unit; effect visibility toggles; an unknown member is inert rather than throwing, where WE members are inert.
+
+### Step 2 (parallel)
+
+**WP8 — Property binding.** `Scene/Values/` (`SceneValueContext`, `SceneValueResolver`, `SceneParticleOverrides`, `SceneGeneralSettings`), `Scene/Loading/` script-site collection.
+
+- Every `{"script":…}` site becomes a `ScriptInstance` with its field type, value, `scriptproperties` (user-bound entries resolved) and `thisObject` (layer, effect or particle system, per P9).
+- Effect-visible, effect-constant, all `instanceoverride` fields, `general.*` and visible scripts run every frame.
+- `update`/`init` chaining and return coercion.
+- Delete `resolveLayerVisibility` and `loadSceneScript`.
+- Tests: an accumulator script moves; `undefined` keeps the value; a text script never renders "undefined"; an effect hidden at load can be shown by a media event; `scriptproperties` from `{"user":…}` update on property change.
+
+**WP9 — Corpus replay harness.** `OpenWallpaperEngineTests/SceneScriptCorpusTests.swift`, `SceneScriptTestHost.swift`, `Tests/Fixtures/SceneScript/` (synthetic scripts plus probe expectations).
+
+- For every corpus wallpaper, build the real script sites from its `scene.json` or `.pkg` through WP8's collector, with a headless host (fake clock, silent and tone audio, scripted cursor path, media event sequence, property changes).
+- Run load plus N = 600 frames.
+- Assert:
+  - (a) no uncaught exception, except in an allowlist keyed by script hash with a reason; each entry is an `XCTExpectFailure` naming the gap;
+  - (b) no watchdog trips;
+  - (c) every text site yields a string, not "undefined";
+  - (d) every numeric or vector site yields finite values;
+  - (e) expected effects per script class: clocks match `Date` formatting at a fixed clock, audio-driven fields vary under the tone and not under silence, cursor scripts react to the scripted click, media scripts set `thisObject.visible` from `hasThumbnail`;
+  - (f) per-frame time under budget (`measure`).
+- Skipped when the corpus folder is absent (CI). A small synthetic fixture set runs in CI.
+
+**WP10 — Input and cursor events.** `Scripting/Engine/SceneCursorHitTester.swift`, plus the renderer's cursor publishing (only the lines that publish).
+
+- Tests: rotated, scaled and parented layers are hit correctly; `solid` stops propagation; enter/leave pairs; clicks outside the wallpaper window never fire.
+
+### Step 3 (serial)
+
+**WP11 — Renderer integration and deletion.**
+
+- `SceneMetalRenderer`, `SceneObjectMotion` and `ParticleFrameInputs` read the object table.
+- The command ring is executed there.
+- `createLayer` from an asset path or config through the existing loaders (`Scene/Loading` builds one object at runtime).
+- `destroyLayer` for any layer, freeing GPU state after the in-flight frame (reuse `deferredReleases`).
+- `sortLayer` in the same frame.
+- Delete `AudioReactiveScriptEngine`'s scripting half, the shim and the invented globals, and rename what remains per the architecture doc (move-only commit).
+- Tests: the existing render tests plus `RenderCheckTests` for a scripted layer that moves, hides and shows; the clone stress test from test-risks (create and destroy 1000 frames, memory flat).
+
+### Step 4 (after areas 3, 6 and 7)
+
+**WP12** — Timeline and animation APIs (`getAnimation` on properties and scene, `IAnimation` bound to `SceneValueAnimation`); video textures; animation layers, bones, attachments, `lookAt`/`setParent`; `createModelData`; camera transforms. Each gets its own tests as its engine feature lands.
+
+### Order and dependencies
+
+```
+WP0 ─┐
+WP1 ─┴─ WP2 ─┬─ WP3 ─┐
+             ├─ WP4 ─┤
+             ├─ WP5 ─┼─ WP8 ─┬─ WP11 ─ WP12
+             ├─ WP6 ─┤  WP9 ─┤
+             └─ WP7 ─┘  WP10 ┘
+```
+
+WP9 starts as soon as WP3 lands (compile-only replay) and grows with each package. It is the progress meter: the allowlist should shrink to zero.
