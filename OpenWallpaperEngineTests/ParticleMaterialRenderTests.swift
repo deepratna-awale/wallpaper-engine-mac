@@ -261,6 +261,200 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertEqual(value.w, 1, accuracy: 1e-6)
     }
 
+    // MARK: - Risks (docs/test-risks.md)
+
+    /// I3: every attribute a stage reads is fed from the record, for every renderer form.
+    func testEveryAttributeTheStageReadsComesFromTheRecord() throws {
+        let sheet = SpriteSheet(columns: 2, rows: 2, frames: 4, duration: 1)
+        for (name, spriteSheet) in [("sprite", nil), ("sprite", sheet), ("spritetrail", nil), ("spritetrail", sheet),
+                                    ("rope", nil), ("ropetrail", nil)] as [(String, SpriteSheet?)] {
+            let plan = try builder.build(materialPath: "materials/solid.json", renderer: try decodeRenderer(#"{"name":"\#(name)"}"#),
+                                         flags: 0, baseTexture: .image(NSImage()), spriteSheet: spriteSheet)
+            XCTAssertEqual(plan.stages.count, 2, name)
+            for stage in plan.stages {
+                let function = try XCTUnwrap(try device.makeLibrary(source: stage.variant.vertexMSL, options: nil)
+                    .makeFunction(name: "main0"))
+                for attribute in function.vertexAttributes ?? [] where attribute.isActive {
+                    let names = stage.variant.attributes.filter { $0.value == attribute.attributeIndex }.keys
+                    XCTAssertTrue(names.contains { plan.format.recordOffset(ofAttribute: $0) != nil },
+                                  "\(name)\(spriteSheet == nil ? "" : " sheet") \(stage.geometry): \(names.sorted()) would read zero")
+                }
+            }
+        }
+    }
+
+    /// I3: `a_Color` carries the particle's colour and alpha to the pixel.
+    func testColourAndAlphaReachThePixel() throws {
+        let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        var red = particle(at: SIMD2(128, 128), size: 80)
+        red.color = SIMD4(1, 0, 0, 0.5)
+        let pixels = try render(plan, particles: [red])
+        let index = (128 * Self.size + 128) * 4
+        XCTAssertEqual(Double(pixels.bytes[index]), 128, accuracy: 2, "half-transparent red over black")
+        XCTAssertLessThan(pixels.bytes[index + 1], 2)
+        XCTAssertLessThan(pixels.bytes[index + 2], 2)
+    }
+
+    /// I7: a mid-grey texel stays mid-grey in the scene target's format (no sRGB conversion).
+    func testGreyStaysGreyInTheSceneFormat() throws {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
+        let grey = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        grey.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0,
+                     withBytes: [UInt8](repeating: 0x80, count: 64).enumerated().map { $0.offset % 4 == 3 ? 255 : $0.element },
+                     bytesPerRow: 16)
+        let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        for format in [MTLPixelFormat.rgba8Unorm, .bgra8Unorm] {
+            let pixels = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 80)], texture: grey, pixelFormat: format)
+            let index = (128 * Self.size + 128) * 4
+            for channel in 0..<3 {
+                XCTAssertEqual(Double(pixels.bytes[index + channel]), 128, accuracy: 1, "\(format.rawValue) channel \(channel)")
+            }
+        }
+    }
+
+    /// I10: a coverage-mask sprite (R8, which TEXParser expands to white with alpha) takes its
+    /// colour from the particle and its alpha from the mask.
+    func testCoverageMaskSpriteTakesTheParticlesColour() throws {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
+        let mask = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        mask.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0,
+                     withBytes: [UInt8](repeating: 255, count: 64).enumerated().map { $0.offset % 4 == 3 ? 128 : $0.element },
+                     bytesPerRow: 16)
+        let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
+        XCTAssertNil(plan.stages[0].variant.combos["TEX0FORMAT"], "TEXParser already expanded the format")
+        var tinted = particle(at: SIMD2(128, 128), size: 80)
+        tinted.color = SIMD4(1, 0.5, 0, 1)
+        let pixels = try render(plan, particles: [tinted], texture: mask)
+        let index = (128 * Self.size + 128) * 4
+        XCTAssertEqual(Double(pixels.bytes[index]), 128, accuracy: 2)
+        XCTAssertEqual(Double(pixels.bytes[index + 1]), 64, accuracy: 2)
+        XCTAssertLessThan(pixels.bytes[index + 2], 2)
+    }
+
+    /// I16: a system that can't use its material is reported once, however many frames ask.
+    func testAFallbackIsReportedOnce() throws {
+        let plan = try builder.build(materialPath: "materials/refract.json", renderer: nil, flags: 0,
+                                     baseTexture: .image(NSImage()), spriteSheet: nil)
+        let system = ParticleSystemRuntime(texture: white, configuration: Self.configuration(plan: plan))
+        for _ in 0..<100 {
+            XCTAssertFalse(renderer.prepare(system, pixelFormat: .rgba8Unorm, opacity: { _ in 1 }))
+            XCTAssertNil(renderer.prepareSimulated(system, pixelFormat: .rgba8Unorm))
+        }
+        XCTAssertEqual(renderer.fallbacksReported, 1)
+    }
+
+    /// I21: every uniform a particle stage declares gets a value: a built-in, a material or
+    /// annotation constant, or one of the particle uniforms `ParticleMaterialUniforms` writes.
+    func testEveryParticleUniformHasASource() throws {
+        let particleUniforms: Set = ["g_OrientationRight", "g_OrientationUp", "g_OrientationForward", "g_EyePosition",
+                                     "g_RenderVar0", "g_RenderVar1"]
+        let sheet = SpriteSheet(columns: 2, rows: 2, frames: 4, duration: 1)
+        for (name, spriteSheet) in [("sprite", nil), ("sprite", sheet), ("spritetrail", nil), ("rope", nil),
+                                    ("ropetrail", nil)] as [(String, SpriteSheet?)] {
+            for material in ["materials/solid.json", "materials/additive_overbright.json"] {
+                let plan = try builder.build(materialPath: material, renderer: try decodeRenderer(#"{"name":"\#(name)"}"#),
+                                             flags: 0, baseTexture: .image(NSImage()), spriteSheet: spriteSheet)
+                for stage in plan.stages {
+                    for member in (stage.variant.uniforms?.members ?? [:]).keys {
+                        let sourced = BuiltinUniforms.isBuiltin(member) || particleUniforms.contains(member)
+                            || stage.constants.staticValues[member] != nil
+                            || stage.constants.dynamic.contains { $0.uniform == member }
+                        XCTAssertTrue(sourced, "\(material) \(name) \(stage.geometry): \(member) is never set")
+                    }
+                }
+            }
+        }
+    }
+
+    /// I14: a rope joins its particles in their order; without a particle, its neighbours join.
+    func testRopeJoinsParticlesInOrder() throws {
+        let plan = try self.plan("materials/solid.json", renderer: "rope", keeping: .emulated(vertexCount: 6))
+        let zigzag = [SIMD2<Float>(32, 64), SIMD2(96, 192), SIMD2(160, 64), SIMD2(224, 192)]
+            .map { particle(at: $0, size: 20) }
+        // Scene y is up; pixel rows run down.
+        func lit(_ pixels: Pixels, _ point: SIMD2<Float>) -> Bool { pixels.red(x: Int(point.x), y: Self.size - Int(point.y)) > 250 }
+        let whole = try render(plan, particles: zigzag)
+        for (a, b) in zip(zigzag, zigzag.dropFirst()) {
+            XCTAssertTrue(lit(whole, (a.position + b.position) / 2), "segment \(a.position) → \(b.position)")
+        }
+        XCTAssertFalse(lit(whole, SIMD2(128, 128 + 40)), "no segment skips a particle")
+        let gap = try render(plan, particles: [zigzag[0], zigzag[1], zigzag[3]])
+        XCTAssertTrue(lit(gap, (zigzag[1].position + zigzag[3].position) / 2), "the neighbours join")
+        XCTAssertFalse(lit(gap, (zigzag[1].position + zigzag[2].position) / 2), "nothing is drawn to the removed particle")
+    }
+
+    /// I14: `genericropeparticle` builds for every subdivision and trail combo through its
+    /// geometry stage, and through WE's no-geometry-shader stream except where WE's own shader
+    /// doesn't compile: with `TRAILSCROLLALPHA` and `TRAILFADESIZE` it writes `sizeStart.w` on a
+    /// float.
+    func testRopeShaderBuildsForEverySubdivisionAndTrailCombo() throws {
+        let comboSets: [[String: Int]] = [[:], ["TRAILSCROLLALPHA": 1], ["TRAILSCROLLALPHA": 1, "TRAILFADEALPHA": 1],
+                                          ["TRAILSCROLLALPHA": 1, "TRAILFADESIZE": 1],
+                                          ["TRAILSCROLLALPHA": 1, "TRAILFADEALPHA": 1, "TRAILFADESIZE": 1]]
+        let roots = [Fixtures.url("Particles"), ShaderVariantTests.weAssets]
+        var failures: [String] = []
+        for combos in comboSets {
+            let json = try JSONSerialization.data(withJSONObject: ["passes": [[
+                "blending": "translucent", "shader": "genericparticle", "textures": ["particle/solid"], "combos": combos]]])
+            let builder = ParticleMaterialPlanBuilder(
+                translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil),
+                readFile: { path in
+                    path == "materials/rope.json" ? json
+                        : roots.lazy.compactMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }.first
+                },
+                loadTexture: { _, _ in nil })
+            for name in ["rope", "ropetrail"] {
+                for subdivision in 0...4 {
+                    let label = "\(name) S=\(subdivision) \(combos.keys.sorted())"
+                    let plan = try builder.build(materialPath: "materials/rope.json",
+                                                 renderer: try decodeRenderer(#"{"name":"\#(name)","subdivision":\#(subdivision)}"#),
+                                                 flags: 0, baseTexture: .image(NSImage()), spriteSheet: nil)
+                    XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: .bgra8Unorm), label)
+                    let geometries = plan.stages.map(\.geometry)
+                    let shippedBug = combos["TRAILSCROLLALPHA"] == 1 && combos["TRAILFADESIZE"] == 1
+                    if geometries.contains(.expandedQuads) == shippedBug {
+                        failures.append("\(label): vertex stage \(shippedBug ? "builds; drop the exception" : "missing")")
+                    }
+                    if !geometries.contains(where: { if case .emulated = $0 { return true } else { return false } }) {
+                        failures.append("\(label): no geometry stage")
+                    }
+                    for stage in plan.stages {
+                        if let failure = renderer.pipelineFailure(stage, plan: plan, pixelFormat: .bgra8Unorm) {
+                            failures.append("\(label) \(stage.geometry): \(failure)")
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
+    }
+
+    /// I24: additive particles with overbright above 1 saturate the 8-bit target.
+    func testAdditiveOverbrightSaturates() throws {
+        let overbright = #"{"passes":[{"blending":"additive","shader":"genericparticle","textures":["particle/solid"],"#
+            + #""constantshadervalues":{"ui_editor_properties_overbright":1.6}}]}"#
+        let roots = [Fixtures.url("Particles"), ShaderVariantTests.weAssets]
+        let builder = ParticleMaterialPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil),
+            readFile: { path in
+                path == "materials/overbright.json" ? Data(overbright.utf8)
+                    : roots.lazy.compactMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }.first
+            },
+            loadTexture: { _, _ in nil })
+        let built = try builder.build(materialPath: "materials/overbright.json", renderer: try decodeRenderer(#"{"name":"sprite"}"#),
+                                      flags: 0, baseTexture: .image(NSImage()), spriteSheet: nil)
+        let plan = ParticleMaterialPlan(materialPath: built.materialPath, shader: built.shader, format: built.format,
+                                        blending: built.blending, stages: built.stages.filter { $0.geometry == .emulated(vertexCount: 6) },
+                                        trailLengths: built.trailLengths, spriteSheet: nil)
+        var dim = particle(at: SIMD2(128, 128), size: 80)
+        dim.color = SIMD4(0.8, 0.5, 0.25, 1)
+        let pixels = try render(plan, particles: [dim])
+        let index = (128 * Self.size + 128) * 4
+        XCTAssertEqual(pixels.bytes[index], 255, "0.8 × 1.6 clamps at 1")
+        XCTAssertEqual(Double(pixels.bytes[index + 1]), 0.5 * 1.6 * 255, accuracy: 2)
+        XCTAssertEqual(Double(pixels.bytes[index + 2]), 0.25 * 1.6 * 255, accuracy: 2)
+    }
+
     // MARK: - Helpers
 
     private func decodeRenderer(_ json: String) throws -> WEParticleRenderer {
@@ -299,18 +493,19 @@ final class ParticleMaterialRenderTests: XCTestCase {
     }
 
     private func render(_ plan: ParticleMaterialPlan, particles: [Particle], texture: MTLTexture? = nil,
-                        animationMode: String = "sequence", cull: (MTLCullMode, MTLWinding)? = nil) throws -> Pixels {
+                        animationMode: String = "sequence", cull: (MTLCullMode, MTLWinding)? = nil,
+                        pixelFormat: MTLPixelFormat = .rgba8Unorm) throws -> Pixels {
         let size = Self.size
-        XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: .rgba8Unorm), "pipelines still compiling")
+        XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: pixelFormat), "pipelines still compiling")
         for stage in plan.stages {
-            XCTAssertNil(renderer.pipelineFailure(stage, plan: plan, pixelFormat: .rgba8Unorm))
+            XCTAssertNil(renderer.pipelineFailure(stage, plan: plan, pixelFormat: pixelFormat))
         }
         let system = ParticleSystemRuntime(texture: texture ?? white,
                                            configuration: Self.configuration(plan: plan, animationMode: animationMode))
         system.particles = particles
-        XCTAssertTrue(renderer.prepare(system, pixelFormat: .rgba8Unorm, opacity: { _ in 1 }), "draws through the material")
+        XCTAssertTrue(renderer.prepare(system, pixelFormat: pixelFormat, opacity: { _ in 1 }), "draws through the material")
 
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: size, height: size, mipmapped: false)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: size, height: size, mipmapped: false)
         descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .shared
         let target = try XCTUnwrap(device.makeTexture(descriptor: descriptor))

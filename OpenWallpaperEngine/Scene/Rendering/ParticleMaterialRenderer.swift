@@ -68,6 +68,8 @@ final class ParticleMaterialRenderer {
 
     /// Counters for tests and diagnostics.
     private(set) var drawsEncoded = 0
+    /// Systems logged as falling back to the built-in draw; each is reported once.
+    private(set) var fallbacksReported = 0
 
     init?(device: MTLDevice) {
         self.device = device
@@ -267,6 +269,7 @@ final class ParticleMaterialRenderer {
         }
         if !state.reportedFallback {
             state.reportedFallback = true
+            fallbacksReported += 1
             OWELog.error(.scene, "Particle material \(plan.materialPath) (\(plan.shader)) can't render; "
                          + "using the built-in particle draw: \(reasons.joined(separator: "; "))")
         }

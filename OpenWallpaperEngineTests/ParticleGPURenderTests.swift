@@ -59,6 +59,28 @@ final class ParticleGPURenderTests: XCTestCase {
         XCTAssertEqual([values[0], values[1], values[2], values[3]], [count, 0, 1, count])
     }
 
+    /// I4: 10 000 GPU-simulated sprites draw from buffers made once, not every frame.
+    func testTenThousandSpritesReuseTheirBuffers() throws {
+        let plan = try self.plan(renderer: "sprite")
+        var system = system(renderer: "sprite", plan: plan)
+        system.maximum = 10_000
+        system.emissionRate = 1_000_000
+        system.lifetime = 100...100
+        let runtime = ParticleSystemRuntime(texture: white, configuration: system.configuration, seed: 5)
+        var records = Set<ObjectIdentifier>(), particles = Set<ObjectIdentifier>()
+        for frame in 0..<100 {
+            let simulated = try XCTUnwrap(materials.prepareSimulated(runtime, pixelFormat: .rgba8Unorm))
+            try step(runtime, simulated: simulated)
+            guard frame > 0, let gpu = runtime.gpu, let recordBuffer = gpu.records, let state = gpu.particles else { continue }
+            records.insert(ObjectIdentifier(recordBuffer))
+            particles.insert(ObjectIdentifier(state))
+            XCTAssertLessThanOrEqual(recordBuffer.length, 10_000 * MemoryLayout<ParticleSpriteInstance>.stride + 16)
+        }
+        XCTAssertEqual(runtime.gpu?.completedCount, 10_000)
+        XCTAssertEqual(records.count, 1, "one record buffer for 99 frames")
+        XCTAssertEqual(particles.count, 1, "one particle buffer for 99 frames")
+    }
+
     // MARK: - Helpers
 
     private func system(renderer: String, plan: ParticleMaterialPlan) -> ParticleTestSystem {
