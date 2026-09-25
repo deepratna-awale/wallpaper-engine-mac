@@ -446,11 +446,13 @@ class TEXParser {
         case 9:
             guard width > 0, height > 0, visibleWidth > 0, visibleHeight > 0,
                   bytes.count >= width * height else { return nil }
-            // R8 particle textures are coverage masks: the channel is alpha,
-            // while the visible particle color is supplied by the particle system.
-            var rgba = [UInt8](repeating: 255, count: width * height * 4)
+            // As a one-channel texture samples in WE: (r, 0, 0, 1). Opacity masks and depth maps
+            // read `.r`; particle shaders turn an R8 albedo into (1, 1, 1, r) by `TEX<n>FORMAT`
+            // (`ConvertTexture0Format`).
+            var rgba = [UInt8](repeating: 0, count: width * height * 4)
             for pixel in 0..<(width * height) {
-                rgba[pixel * 4 + 3] = bytes[pixel]
+                rgba[pixel * 4] = bytes[pixel]
+                rgba[pixel * 4 + 3] = 255
             }
             return rawRGBAImage(rgba, width: width, height: height,
                                 visibleWidth: visibleWidth, visibleHeight: visibleHeight)

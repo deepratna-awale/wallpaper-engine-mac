@@ -325,9 +325,9 @@ final class ParticleMaterialRenderTests: XCTestCase {
     /// An RG88 normal map (loaded as (r, g, 0, 1)) refracts by `DecompressNormalWithMask`'s RG88
     /// branch: x from green, y from red, the mask (alpha) 1.
     func testRG88NormalMapRefractsThroughItsFormatCombo() throws {
-        let built = try rg88Builder().build(materialPath: "materials/refract_rg88.json",
-                                            renderer: try decodeRenderer(#"{"name":"sprite"}"#), flags: 0,
-                                            baseTexture: .image(NSImage()), spriteSheet: nil)
+        let built = try reducedFormatBuilder().build(materialPath: "materials/refract_rg88.json",
+                                                     renderer: try decodeRenderer(#"{"name":"sprite"}"#), flags: 0,
+                                                     baseTexture: .image(NSImage()), spriteSheet: nil)
         let plan = emulated(built)
         XCTAssertEqual(plan.stages.first?.variant.combos["TEX1FORMAT"], 8)
         let normal = try rg88Texture([128, 255])
@@ -340,9 +340,9 @@ final class ParticleMaterialRenderTests: XCTestCase {
 
     /// An RG88 albedo reads as luminance and alpha (`ConvertTexture0Format`'s `.rrrg`).
     func testRG88AlbedoReadsAsLuminanceAndAlpha() throws {
-        let built = try rg88Builder().build(materialPath: "materials/albedo_rg88.json",
-                                            renderer: try decodeRenderer(#"{"name":"sprite"}"#), flags: 0,
-                                            baseTexture: .image(NSImage()), spriteSheet: nil)
+        let built = try reducedFormatBuilder().build(materialPath: "materials/albedo_rg88.json",
+                                                     renderer: try decodeRenderer(#"{"name":"sprite"}"#), flags: 0,
+                                                     baseTexture: .image(NSImage()), spriteSheet: nil)
         let plan = emulated(built)
         XCTAssertEqual(plan.stages.first?.variant.combos["TEX0FORMAT"], 8)
         let pixels = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 80)], texture: try rg88Texture([255, 128]))
@@ -421,19 +421,18 @@ final class ParticleMaterialRenderTests: XCTestCase {
         }
     }
 
-    /// I10: a coverage-mask sprite (R8, which TEXParser expands to white with alpha) takes its
-    /// colour from the particle and its alpha from the mask.
+    /// I10: a coverage-mask sprite (R8, loaded as (r, 0, 0, 1) like the GPU samples it) takes its
+    /// colour from the particle and its alpha from the mask: `TEX0FORMAT` makes
+    /// `ConvertTexture0Format` read it as (1, 1, 1, r).
     func testCoverageMaskSpriteTakesTheParticlesColour() throws {
-        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)
-        let mask = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
-        mask.replace(region: MTLRegionMake2D(0, 0, 4, 4), mipmapLevel: 0,
-                     withBytes: [UInt8](repeating: 255, count: 64).enumerated().map { $0.offset % 4 == 3 ? 128 : $0.element },
-                     bytesPerRow: 16)
-        let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
-        XCTAssertNil(plan.stages[0].variant.combos["TEX0FORMAT"], "TEXParser already expanded the format")
+        let built = try reducedFormatBuilder().build(materialPath: "materials/albedo_r8.json",
+                                                     renderer: try decodeRenderer(#"{"name":"sprite"}"#), flags: 0,
+                                                     baseTexture: .image(NSImage()), spriteSheet: nil)
+        let plan = emulated(built)
+        XCTAssertEqual(plan.stages.first?.variant.combos["TEX0FORMAT"], 9)
         var tinted = particle(at: SIMD2(128, 128), size: 80)
         tinted.color = SIMD4(1, 0.5, 0, 1)
-        let pixels = try render(plan, particles: [tinted], texture: mask)
+        let pixels = try render(plan, particles: [tinted], texture: try reducedTexture(format: 9, texel: [128]))
         let index = (128 * Self.size + 128) * 4
         XCTAssertEqual(Double(pixels.bytes[index]), 128, accuracy: 2)
         XCTAssertEqual(Double(pixels.bytes[index + 1]), 64, accuracy: 2)
@@ -613,11 +612,13 @@ final class ParticleMaterialRenderTests: XCTestCase {
                                     trailLengths: built.trailLengths, spriteSheet: nil)
     }
 
-    /// A builder that also finds the RG88 `.tex` files the `*_rg88.json` fixtures name.
-    private func rg88Builder() -> ParticleMaterialPlanBuilder {
+    /// A builder that also finds the RG88 and R8 `.tex` files the `*_rg88.json` and `*_r8.json`
+    /// fixtures name.
+    private func reducedFormatBuilder() -> ParticleMaterialPlanBuilder {
         let roots = [Fixtures.url("Particles"), ShaderVariantTests.weAssets]
         let generated = ["materials/refractnormal_rg88.tex": TextureRG88Tests.tex(format: 8),
-                         "materials/albedo_rg88.tex": TextureRG88Tests.tex(format: 8)]
+                         "materials/albedo_rg88.tex": TextureRG88Tests.tex(format: 8),
+                         "materials/albedo_r8.tex": TextureRG88Tests.tex(format: 9)]
         return ParticleMaterialPlanBuilder(
             translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil),
             readFile: { path in
@@ -634,7 +635,12 @@ final class ParticleMaterialRenderTests: XCTestCase {
 
     /// A 4×4 RG88 texture of one texel value, loaded as the scene loader loads it.
     private func rg88Texture(_ texel: [UInt8]) throws -> MTLTexture {
-        let data = TextureRG88Tests.tex(format: 8, width: 4, height: 4, pixels: (0..<16).flatMap { _ in texel })
+        try reducedTexture(format: 8, texel: texel)
+    }
+
+    /// A 4×4 `.tex` of `format` (RG88 or R8) filled with `texel`, loaded and uploaded as the app does.
+    private func reducedTexture(format: UInt32, texel: [UInt8]) throws -> MTLTexture {
+        let data = TextureRG88Tests.tex(format: format, width: 4, height: 4, pixels: (0..<16).flatMap { _ in texel })
         let image = try XCTUnwrap(TEXParser(data: data).extractImage()?.cgImage(forProposedRect: nil, context: nil, hints: nil))
         return try SceneTextureUpload.texture(from: image, loader: MTKTextureLoader(device: device), device: device)
     }

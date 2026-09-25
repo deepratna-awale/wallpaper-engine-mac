@@ -101,14 +101,14 @@ struct ParticleMaterialPlanBuilder {
 
     /// `TEX<n>FORMAT` for the textures the GPU samples as stored, as WE sets it from each bound
     /// texture: `DecompressNormal` reads a block-compressed or RG88 normal map's channels by it, and
-    /// `ConvertTexture0Format` turns an RG88 albedo (stored as (r, g, 0, 1)) into `.rrrg`. The
-    /// formats `TEXParser` expands to RGBA (R8 and the uncompressed ones) stay `FORMAT_RGBA8888`,
-    /// as does a block-compressed texture 0, which no particle shader converts.
+    /// `ConvertTexture0Format` turns an RG88 albedo (stored as (r, g, 0, 1)) into `.rrrg` and an R8
+    /// one (stored as (r, 0, 0, 1)) into (1, 1, 1, r). The formats `TEXParser` expands to RGBA stay
+    /// `FORMAT_RGBA8888`, as does a block-compressed texture 0, which no particle shader converts.
     static func textureFormatCombos(_ headers: [Int: Data]) -> [String: Int] {
         var combos: [String: Int] = [:]
         for (slot, header) in headers {
             guard let format = TEXImageFormat(texData: header),
-                  format == .rg88 || (format.isBlockCompressed && slot > 0) else { continue }
+                  format.isChannelReduced || (format.isBlockCompressed && slot > 0) else { continue }
             combos["TEX\(slot)FORMAT"] = Int(format.rawValue)
         }
         return combos

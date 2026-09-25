@@ -175,6 +175,57 @@ final class EffectGraphTests: XCTestCase {
         XCTAssertGreaterThan(difference(result.input, result.output), 0.1)
     }
 
+    /// Shine casts rays only from what its R8 opacity mask lets through: the mask reads `.r`, so
+    /// light never appears beyond the rays' reach from the masked area. A mid-grey image clears
+    /// the threshold everywhere; only the left quarter is masked in.
+    func testShineStaysInsideItsR8Mask() throws {
+        let size = 256
+        let maskSize = 128
+        let maskPixels = (0..<(maskSize * maskSize)).map { UInt8($0 % maskSize < maskSize / 4 ? 255 : 0) }
+        let mask = TextureRG88Tests.tex(format: 9, width: UInt32(maskSize), height: UInt32(maskSize), pixels: maskPixels)
+        let root = ShaderVariantTests.weAssets
+        let maskedBuilder = SceneEffectPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache),
+            readFile: { FileManager.default.contents(atPath: root.appending(path: $0).path) },
+            loadTexture: { name, materialPath in
+                if name == "masks/left_quarter" { return TEXParser(data: mask).extractImage().map { .image($0) } }
+                let effectDirectory = materialPath.split(separator: "/").prefix(2).joined(separator: "/")
+                for path in ["materials/\(name).tex", "\(effectDirectory)/materials/\(name).tex"] {
+                    if let data = FileManager.default.contents(atPath: root.appending(path: path).path),
+                       let image = TEXParser(data: data).extractImage() { return .image(image) }
+                }
+                return nil
+            })
+        let json = #"{"file":"effects/shine/effect.json","passes":[{"textures":[null,"masks/left_quarter",null],"constantshadervalues":{"raythreshold":0.26,"noiseamount":0.01}},{"constantshadervalues":{"raylength":0.1}},{},{},{}]}"#
+        let plan = try maskedBuilder.build(try effect(json))
+        XCTAssertEqual(plan.passes.first?.variant?.combos["MASK"], 1)
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: size, height: size, mipmapped: false)
+        let input = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        let grey = [UInt8](repeating: 0, count: size * size * 4).enumerated().map { $0.offset % 4 == 3 ? UInt8(255) : UInt8(128) }
+        input.replace(region: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0, withBytes: grey, bytesPerRow: size * 4)
+        let loader = MTKTextureLoader(device: device)
+        let context = EffectGraphRenderer.Context(
+            frame: BuiltinFrameContext(time: 1.5), values: FixedValues(),
+            assetTexture: { _, source in
+                guard case .image(let image) = source, let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+                return try? SceneTextureUpload.texture(from: cg, loader: loader, device: self.device) // test upload; nil fails below
+            },
+            sceneSnapshot: nil, layerColor: SIMD3(1, 1, 1), layerAlpha: 1)
+        XCTAssertTrue(renderer.waitUntilReady([plan], width: size, height: size), "pipelines still compiling")
+        let buffer = try XCTUnwrap(queue.makeCommandBuffer())
+        let output = try XCTUnwrap(renderer.apply([plan], to: input, layerID: "shine", context: context, commandBuffer: buffer))
+        buffer.commit()
+        buffer.waitUntilCompleted()
+        let pixels = try read(output, queue: queue)
+        func red(_ x: Int) -> Double { Double(pixels[(size / 2 * size + x) * 4]) }
+        XCTAssertGreaterThan(red(size / 8), 150, "the masked quarter shines")
+        // Horizontal rays reach 5% of the width past the mask, and the blur about a dozen texels more.
+        for x in stride(from: size / 2, to: size, by: 8) {
+            XCTAssertEqual(red(x), 128, accuracy: 2, "no shine at x \(x), beyond the rays' reach from the mask")
+        }
+    }
+
     func testEveryBuiltinEffectRunsWithDefaults() throws {
         let effects = ShaderVariantTests.weAssets.appending(path: "effects")
         var failures: [String] = []
