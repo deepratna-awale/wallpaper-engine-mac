@@ -13,6 +13,8 @@ enum ParticleRandom {
         case spawnAngle = 0, spawnRadius, boxX, boxY, offsetX, offsetY, size, alpha
         case red, green, blue, velocityX, velocityY, ringSpeedX, ringSpeedY
         case lifetime, rotation, angularVelocity, spriteFrame, emitterSpeed
+        /// Whether a parent particle's event makes a child instance (keyed by the parent's serial).
+        case eventProbability
     }
 
     /// Per-frame draws (turbulence): the frame index with the high bit set, so they never meet a

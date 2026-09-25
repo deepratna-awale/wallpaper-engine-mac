@@ -274,4 +274,5 @@ kernel void particleLayoutSizes(device uint *sizes [[buffer(0)]]) {
     sizes[3] = sizeof(SpriteRecord);
     sizes[4] = sizeof(RopeRecord);
     sizes[5] = sizeof(FallbackInstance);
+    sizes[6] = sizeof(ParticleInstanceState);
 }

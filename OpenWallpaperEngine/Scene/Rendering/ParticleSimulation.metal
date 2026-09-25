@@ -46,7 +46,7 @@ kernel void particleBegin(device uint *control [[buffer(0)]],
 }
 
 /// `ParticleCPUSimulation.spawn`.
-static ParticleState spawn(uint serial, constant ParticleParameters &p, constant ParticleFrame &f) {
+static ParticleState spawn(uint serial, constant ParticleParameters &p, constant ParticleFrame &f, FramePoints points) {
     const uint seed = p.counts.z;
     const uint flags = p.counts.y;
     const float angle = randomValue(0, 2 * M_PI_F, seed, serial, sSpawnAngle);
@@ -71,7 +71,7 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     const float4 color = float4(randomValue(p.colorMinimum.x, p.colorMaximum.x, seed, serial, sRed),
                                 randomValue(p.colorMinimum.y, p.colorMaximum.y, seed, serial, sGreen),
                                 randomValue(p.colorMinimum.z, p.colorMaximum.z, seed, serial, sBlue), 1);
-    float2 position = f.points.xy + spawnOffset + authoredOffset;
+    float2 position = points.spawnOrigin + spawnOffset + authoredOffset;
     float2 velocity = float2(randomValue(p.velocityRange.x, p.velocityRange.z, seed, serial, sVelocityX),
                              randomValue(p.velocityRange.y, p.velocityRange.w, seed, serial, sVelocityY));
     velocity = float2x2(f.velocityRotation.xy, f.velocityRotation.zw) * velocity;
@@ -85,7 +85,7 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
         sequence = p.sequence.z > 0.5 && lap % 2 == 1
             ? 1 - float(slot) / float(spanCount - 1)
             : float(slot) / float(spanCount - 1);
-        const float2 start = f.sequence.xy, end = f.sequence.zw;
+        const float2 start = points.sequenceStart, end = points.sequenceEnd;
         const float2 axis = end - start;
         const float2 normal = float2(-axis.y, axis.x);
         const float2 arc = normal * p.sequence.y * sin(sequence * M_PI_F) * 0.5f;
@@ -105,7 +105,7 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     }
     if (flags & kInitialRemap) {
         const float range = max(p.initialRemap.y - p.initialRemap.x, 0.001f);
-        const float factor = saturateValue((length(position - f.anchor.xy) - p.initialRemap.x) / range);
+        const float factor = saturateValue((length(position - points.remapAnchor) - p.initialRemap.x) / range);
         const bool multiply = p.initialRemap.z > 0.5;
         if (p.initialRemap.w == 0) size = multiply ? size * factor : factor;
         else if (p.initialRemap.w == 1) alpha = multiply ? alpha * factor : factor;
@@ -124,20 +124,39 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     return particle;
 }
 
+/// The instance whose spawns this step include spawn `index` (`ParticleCPUSimulation.step`
+/// spawns instance by instance): the last one starting at or before it.
+static uint spawningInstance(device const ParticleInstanceState *instances, uint count, uint index) {
+    uint low = 0, high = count;
+    while (low + 1 < high) {
+        const uint middle = (low + high) / 2;
+        if (instances[middle].state.w <= index) low = middle; else high = middle;
+    }
+    return low;
+}
+
 kernel void particleEmit(device ParticleState *particles [[buffer(0)]],
                          device const uint *control [[buffer(1)]],
                          constant ParticleParameters &p [[buffer(2)]],
                          constant ParticleFrame &f [[buffer(3)]],
+                         device const ParticleInstanceState *instances [[buffer(4)]],
                          uint gid [[thread_position_in_grid]]) {
     if (gid >= control[cEmit]) return;
-    particles[control[cCount] + gid] = spawn(control[cSerialBase] + gid, p, f);
+    const uint serial = control[cSerialBase] + gid;
+    if (p.counts.y & kInstanced) {
+        const uint instance = spawningInstance(instances, p.instancing.y, gid);
+        ParticleState particle = spawn(serial, p, f, framePoints(f, instances[instance].place.xy));
+        particle.trail.z = float(instance);
+        particles[control[cCount] + gid] = particle;
+    } else {
+        particles[control[cCount] + gid] = spawn(serial, p, f, framePoints(f, float2(0)));
+    }
 }
 
-/// `ParticleCPUSimulation.follow`: carries a particle along with its emitter's move.
+/// `ParticleCPUSimulation.follow`: carries a particle along with its emitter's move, `linear`
+/// and `translation`.
 static void follow(thread ParticleState &particle, device float2 *own, constant ParticleParameters &p,
-                   constant ParticleFrame &f) {
-    const float2x2 linear = float2x2(f.motionLinear.xy, f.motionLinear.zw);
-    const float2 translation = f.constraintMotion.zw;
+                   constant ParticleFrame &f, float2x2 linear, float2 translation) {
     particle.positionVelocity = float4(linear * particle.positionVelocity.xy + translation,
                                        linear * particle.positionVelocity.zw);
     particle.life.zw *= f.motionExtras.x;
@@ -156,13 +175,31 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
                              device const uint *control [[buffer(4)]],
                              constant ParticleParameters &p [[buffer(5)]],
                              constant ParticleFrame &f [[buffer(6)]],
+                             device ParticleInstanceState *instances [[buffer(7)]],
                              uint gid [[thread_position_in_grid]]) {
     const uint total = control[cTotal];
     if (gid >= total) return;
     const uint flags = p.counts.y;
     const float deltaTime = f.time.x;
     ParticleState particle = particles[gid];
-    if (f.motionExtras.z > 0.5 && gid < control[cCount]) follow(particle, history + gid * p.counts.w, p, f);
+    const float2x2 motion = float2x2(f.motionLinear.xy, f.motionLinear.zw);
+    device float2 *own = history + gid * p.counts.w;
+    float2 shift = float2(0);
+    bool clearing = false;
+    if (flags & kInstanced) {
+        // `ParticleCPUSimulation.followInstance`: the instance's move around its own position.
+        const uint index = uint(particle.trail.z);
+        const ParticleInstanceState instance = instances[index];
+        shift = instance.place.xy;
+        clearing = (instance.state.x & iClearing) != 0;
+        const bool moved = f.motionExtras.z > 0.5 || any(instance.place.xy != instance.place.zw);
+        if (!(flags & kWorldSpace) && moved && gid < control[cCount]) {
+            follow(particle, own, p, f, motion, instance.place.xy + f.constraintMotion.zw - motion * instance.place.zw);
+        }
+    } else if (f.motionExtras.z > 0.5 && gid < control[cCount]) {
+        follow(particle, own, p, f, motion, f.constraintMotion.zw);
+    }
+    const FramePoints points = framePoints(f, shift);
     float2 position = particle.positionVelocity.xy;
     float2 velocity = particle.positionVelocity.zw;
     position += velocity * deltaTime;
@@ -175,12 +212,12 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         velocity += direction * magnitude * p.turbulenceMask.yz * deltaTime;
     }
     if (flags & kAttractor) {
-        const float2 offset = f.points.zw - position;
+        const float2 offset = points.attractor - position;
         const float distance = max(length(offset), 0.001f);
         if (distance < p.attractor.y) velocity += offset / distance * p.attractor.x * deltaTime;
     }
     if (flags & kVortex) {
-        const float2 offset = position - f.origins.xy;
+        const float2 offset = position - points.vortex;
         const float distance = length(offset);
         const float inner = p.vortex.z, outer = p.vortex.w;
         if (distance > 0.001f && distance >= inner && distance <= max(outer, inner)) {
@@ -212,17 +249,17 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         }
     }
     if (flags & kReduction) {
-        const float distance = length(position - f.origins.zw);
+        const float distance = length(position - points.reduction);
         if (distance < p.reduction.y) {
             const float progress = saturateValue((distance - p.reduction.x) / max(p.reduction.y - p.reduction.x, 0.001f));
             velocity *= max(1 - p.reduction.z * (1 - progress) * deltaTime, 0.0f);
         }
     }
     if (flags & kConstraint) {
-        velocity += (f.constraintMotion.xy - position) * p.reduction.w * deltaTime;
+        velocity += (points.constraint - position) * p.reduction.w * deltaTime;
     }
     if ((flags & kMaintainSequence) && f.anchor.z > 0.5) {
-        const float2 anchor = f.sequence.xy + (f.sequence.zw - f.sequence.xy) * particle.trail.y;
+        const float2 anchor = points.sequenceStart + (points.sequenceEnd - points.sequenceStart) * particle.trail.y;
         velocity += (anchor - position) * 10 * deltaTime;
     }
     velocity += f.gravityExtent.xy * deltaTime;
@@ -283,8 +320,15 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         }
     }
     particle.positionVelocity = float4(position, velocity);
+    if (clearing) particle.life.x = particle.life.y;
     stepped[gid] = particle;
-    alive[gid] = particle.life.x >= particle.life.y ? 0 : 1;
+    const bool lives = particle.life.x < particle.life.y;
+    alive[gid] = lives ? 1 : 0;
+    if ((flags & kInstanced) && lives) {
+        // `state.z`: uint 18 of the 24 in an instance.
+        device uint *live = (device uint *)(instances + uint(particle.trail.z)) + 18;
+        atomic_fetch_add_explicit((device atomic_uint *)live, 1u, memory_order_relaxed);
+    }
 }
 
 // MARK: - Compaction
@@ -310,10 +354,11 @@ kernel void particleScanBlocks(device const uint *values [[buffer(0)]],
 }
 
 /// Turns the group totals into group offsets (one threadgroup) and stores the grand total in
-/// `control[indices.y]`.
+/// `grandTotals[indices.y]`; the value count is `control[indices.x]`.
 kernel void particleScanBlockSums(device uint *blockSums [[buffer(0)]],
-                                  device uint *control [[buffer(1)]],
+                                  device const uint *control [[buffer(1)]],
                                   constant uint2 &indices [[buffer(2)]],
+                                  device uint *grandTotals [[buffer(3)]],
                                   uint lid [[thread_index_in_threadgroup]],
                                   uint lane [[thread_index_in_simdgroup]],
                                   uint simdIndex [[simdgroup_index_in_threadgroup]],
@@ -333,7 +378,7 @@ kernel void particleScanBlockSums(device uint *blockSums [[buffer(0)]],
         if (lid == kGroup - 1) carry = running + prefix + value;
         threadgroup_barrier(mem_flags::mem_threadgroup);
     }
-    if (lid == 0) control[indices.y] = carry;
+    if (lid == 0) grandTotals[indices.y] = carry;
 }
 
 /// Moves the survivors back to `particles`, in order, with their trail history.

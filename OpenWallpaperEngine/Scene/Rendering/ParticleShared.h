@@ -16,7 +16,7 @@ struct ParticleState {
     float4 alphaRotation;    // alpha, base alpha, rotation, angular velocity
     float4 color;
     float4 baseColor;
-    float4 trail;            // history timer, sequence
+    float4 trail;            // history timer, sequence, instance
     uint4 identity;          // serial, sprite frame, history count, history start
 };
 
@@ -54,6 +54,18 @@ struct ParticleParameters {
     float4 trail;            // history interval, trail length, rope subdivision, fades (1 alpha, 2 size)
     float4 spriteSheet;      // frames, columns, rows, duration
     float4 sprite;           // mode (0 sequence, 1 once, 2 random frame), sequence multiplier, opacity multiplier, refractive
+    uint4 instancing;        // link kind (0 none, `ParticleChildLink.Kind`), instances, -, instantaneous
+    float4 link;             // probability
+};
+
+/// One instance of an instanced child system (`ParticleGPUInstance`, `ParticleInstance`).
+struct ParticleInstanceState {
+    float4 place;       // translation xy, previous translation xy
+    float4 source;      // source velocity xy, size, rotation
+    float4 sourceColor; // source colour, alpha
+    float4 emission;    // source angular velocity, emission remainder
+    uint4 state;        // flags (`iActive`…), source serial, live particles, first spawn
+    uint4 spawn;        // spawned this step
 };
 
 struct ParticleFrame {
@@ -71,6 +83,7 @@ struct ParticleFrame {
     float4 constraintMotion; // constraint origin xy, motion translation xy
     float4 motionLinear;     // motion column 0 xy, column 1 xy
     float4 motionExtras;     // motion size scale, turn, has motion
+    uint4 extra;             // points that stay put in every instance (`ParticleFrameInputs.AbsolutePoints`)
 };
 
 // `ParticleSpriteInstance` and `ParticleRopeSegmentInstance` (ParticleInstanceLayout.swift).
@@ -105,11 +118,21 @@ constant uint kReduction = 1u << 4, kConstraint = 1u << 5, kMaintainSequence = 1
 constant uint kAlphaChange = 1u << 8, kColorChange = 1u << 9, kOscillateSize = 1u << 10, kOscillateAlpha = 1u << 11;
 constant uint kOscillatePosition = 1u << 12, kRemapAlpha = 1u << 13, kSequenceSpan = 1u << 14, kSequenceRing = 1u << 15;
 constant uint kInitialRemap = 1u << 16, kHistory = 1u << 17, kBoxEmitter = 1u << 18, kMaximumSpeed = 1u << 19;
-constant uint kSpriteSheet = 1u << 20;
+constant uint kSpriteSheet = 1u << 20, kInstanced = 1u << 21, kWorldSpace = 1u << 22;
+
+// Instance flags (`ParticleGPUInstance`).
+constant uint iActive = 1u << 0, iEmitting = 1u << 1, iFresh = 1u << 2, iClearing = 1u << 3;
+
+// Link kinds (`ParticleChildLink.Kind`).
+constant uint lStatic = 1, lFollow = 2, lSpawn = 3, lDeath = 4;
+
+// Absolute points (`ParticleFrameInputs.AbsolutePoints`).
+constant uint aSpawnOrigin = 1u << 0, aAttractor = 1u << 1, aSequenceStart = 1u << 2, aSequenceEnd = 1u << 3;
+constant uint aRemapAnchor = 1u << 4;
 
 // Control words (`ParticleGPUSystem.Control`).
 constant uint cCount = 0, cEmit = 1, cTotal = 2, cSerial = 3, cRemainder = 4, cTrailTotal = 6, cSerialBase = 7;
-constant uint cDispatch = 8, cMaterialDraw = 12, cFallbackDraw = 16;
+constant uint cDispatch = 8, cMaterialDraw = 12, cFallbackDraw = 16, cEventTotal = 20;
 
 // Draw kinds (`ParticleGPUDrawKind`); 0 (sprite records) and 3 (built-in sprites) need no case.
 constant uint kDrawRope = 1, kDrawRopeTrail = 2;
@@ -140,6 +163,7 @@ constant uint sRotation = 16;
 constant uint sAngularVelocity = 17;
 constant uint sSpriteFrame = 18;
 constant uint sEmitterSpeed = 19;
+constant uint sEventProbability = 20;
 
 static uint pcg(uint value) {
     const uint state = value * 747796405u + 2891336453u;
@@ -153,6 +177,28 @@ static float unitRandom(uint seed, uint serial, uint stream) {
 
 static float randomValue(float a, float b, uint seed, uint serial, uint stream) {
     return a + (b - a) * unitRandom(seed, serial, stream);
+}
+
+// MARK: - Points
+
+/// The frame's points for one instance (`ParticleFrameInputs.placed(at:)`): shifted by the
+/// instance's position unless they come from the cursor. A system without instances shifts by 0.
+struct FramePoints {
+    float2 spawnOrigin, attractor, sequenceStart, sequenceEnd, remapAnchor, vortex, reduction, constraint;
+};
+
+static FramePoints framePoints(constant ParticleFrame &f, float2 shift) {
+    const uint absolute = f.extra.x;
+    FramePoints points;
+    points.spawnOrigin = f.points.xy + ((absolute & aSpawnOrigin) ? float2(0) : shift);
+    points.attractor = f.points.zw + ((absolute & aAttractor) ? float2(0) : shift);
+    points.sequenceStart = f.sequence.xy + ((absolute & aSequenceStart) ? float2(0) : shift);
+    points.sequenceEnd = f.sequence.zw + ((absolute & aSequenceEnd) ? float2(0) : shift);
+    points.remapAnchor = f.anchor.xy + ((absolute & aRemapAnchor) ? float2(0) : shift);
+    points.vortex = f.origins.xy + shift;
+    points.reduction = f.origins.zw + shift;
+    points.constraint = f.constraintMotion.xy + shift;
+    return points;
 }
 
 // MARK: - Helpers

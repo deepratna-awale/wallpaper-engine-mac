@@ -11,7 +11,9 @@ final class ParticleGPUSystem {
         /// `MTLDrawPrimitivesIndirectArguments` for the material draw and the built-in draw.
         static let materialDrawOffset = 12 * 4
         static let fallbackDrawOffset = 16 * 4
-        static let words = 20
+        /// Events an instanced system's parent made this step (`ParticleInstances.metal`).
+        static let eventTotal = 20
+        static let words = 24
     }
 
     let parameters: MTLBuffer
@@ -20,6 +22,15 @@ final class ParticleGPUSystem {
     let historyLimit: Int
     let tracksHistory: Bool
     let maximumCount: Int
+    /// An instanced system's instances (`ParticleGPUInstance`), zeroed at creation.
+    let instances: MTLBuffer?
+    /// Scratch for an event child, sized for its parent's particles: event flags, their prefix
+    /// sums and the listed events.
+    private(set) var eventFlags: MTLBuffer?
+    private(set) var eventOffsets: MTLBuffer?
+    private(set) var eventBlockSums: MTLBuffer?
+    private(set) var events: MTLBuffer?
+    private var eventCapacity = 0
 
     private let device: MTLDevice
     private(set) var capacity = 0
@@ -53,7 +64,19 @@ final class ParticleGPUSystem {
         self.control = control
         historyLimit = values.historyLimit
         tracksHistory = configuration.rendererName == "ropetrail"
-        maximumCount = max(configuration.maximumParticleCount, 0)
+        if configuration.isInstanced {
+            let slots = max(configuration.link?.maximumInstances ?? 0, 0)
+            // Every instance may hold the system's maximum.
+            maximumCount = max(configuration.maximumParticleCount, 0) * slots
+            guard let instances = device.makeBuffer(length: max(slots, 1) * MemoryLayout<ParticleGPUInstance>.stride,
+                                                    options: .storageModeShared) else { return nil }
+            memset(instances.contents(), 0, instances.length)
+            instances.label = "Particle instances"
+            self.instances = instances
+        } else {
+            maximumCount = max(configuration.maximumParticleCount, 0)
+            instances = nil
+        }
         parameters.label = "Particle parameters"
         control.label = "Particle control"
     }
@@ -76,6 +99,8 @@ final class ParticleGPUSystem {
             let spawns = Double(max(inputs.emissionRate, 0)) * Double(inputs.deltaTime)
             let bound = Double(upperBound) + spawns.rounded(.down) + 1 + Double(inputs.burst)
             upperBound = Int(min(bound, Double(maximumCount)))
+            // Any instance may start this step, so an instanced system holds its whole budget.
+            if instances != nil { upperBound = maximumCount }
         }
         guard upperBound > capacity || particles == nil else { return true }
         let grown = max(upperBound, capacity * 2, 256)
@@ -122,6 +147,27 @@ final class ParticleGPUSystem {
         trailCounts = newTrailCounts
         capacity = newCapacity
         records = nil
+        return true
+    }
+
+    /// Sizes the event scratch for a parent holding up to `parentCapacity` particles. False when
+    /// a buffer can't be allocated.
+    func reserveEvents(parentCapacity: Int) -> Bool {
+        guard parentCapacity > eventCapacity || events == nil else { return true }
+        let slots = (max(parentCapacity, 1) + 255) / 256 * 256
+        func buffer(_ bytes: Int, _ label: String) -> MTLBuffer? {
+            let buffer = device.makeBuffer(length: max(bytes, 16), options: .storageModePrivate)
+            buffer?.label = label
+            return buffer
+        }
+        guard let flags = buffer(slots * 4, "Particle event flags"), let offsets = buffer(slots * 4, "Particle event offsets"),
+              let blockSums = buffer((slots / 256 + 1) * 4, "Particle event block sums"),
+              let list = buffer(slots * 4, "Particle events") else { return false }
+        eventFlags = flags
+        eventOffsets = offsets
+        eventBlockSums = blockSums
+        events = list
+        eventCapacity = slots
         return true
     }
 

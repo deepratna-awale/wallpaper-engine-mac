@@ -450,12 +450,15 @@ class SceneWallpaperViewModel: ObservableObject {
             layer?.bindings = SceneLayerBindings(object: object, builtWith: valueContext)
             return layer
         }
-        let particleSystems: [SceneMetalParticleSystem] = scene.objects.enumerated().compactMap { index, object in
-            guard visibility[String(object.id ?? -1)] ?? false else { return nil }
-            var system = buildMetalParticleSystem(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
-                                                  transforms: authoredTransforms)
-            system?.order = index
-            return system
+        var particleSystems: [SceneMetalParticleSystem] = []
+        for (index, object) in scene.objects.enumerated() where visibility[String(object.id ?? -1)] ?? false {
+            let base = particleSystems.count
+            for var system in buildParticleFamily(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
+                                                  transforms: authoredTransforms) {
+                system.order = index
+                system.link?.parentIndex += base
+                particleSystems.append(system)
+            }
         }
         if !layers.isEmpty || !particleSystems.isEmpty {
             var transforms = authoredTransforms
@@ -1095,11 +1098,31 @@ class SceneWallpaperViewModel: ObservableObject {
         return motions
     }
 
-    private func buildMetalParticleSystem(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
-                                          transforms: SceneTransformHierarchy) -> SceneMetalParticleSystem? {
-        guard let particlePath = object.particle,
-              let particleSystem: WEParticleSystem = loadJSON(path: particlePath, wallpaperDir: wallpaperDir),
-              let materialPath = particleSystem.material,
+    /// A particle object's system followed by its children (`ParticleFamilyBuilder`).
+    private func buildParticleFamily(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
+                                     transforms: SceneTransformHierarchy) -> [SceneMetalParticleSystem] {
+        guard let particlePath = object.particle else { return [] }
+        // The emitter's full world transform: its own and its parents' origin, scale and angle.
+        let world = object.id.map { transforms.world(of: String($0)) }
+            ?? SceneAffineTransform(SceneLocalTransform(object: object, sceneSize: sceneSize))
+        let builder = ParticleFamilyBuilder(
+            load: { [weak self] path in self?.loadJSON(path: path, wallpaperDir: wallpaperDir) },
+            build: { [weak self] path, system, world, overrides in
+                self?.buildMetalParticleSystem(path, particleSystem: system, object: object, world: world,
+                                               overrides: overrides, wallpaperDir: wallpaperDir)
+            },
+            report: { message in OWELog.error(.scene, "Particle object \(object.id ?? -1): \(message)") })
+        var family = builder.family(particlePath, world: world,
+                                    overrides: SceneParticleOverrides(object.instanceoverride, in: userValueContext))
+        // Only the root is the object; its children follow it through their links.
+        for index in family.indices.dropFirst() { family[index].objectID = nil }
+        return family
+    }
+
+    private func buildMetalParticleSystem(_ particlePath: String, particleSystem: WEParticleSystem, object: WESceneObject,
+                                          world: SceneAffineTransform, overrides: SceneParticleOverrides,
+                                          wallpaperDir: URL) -> SceneMetalParticleSystem? {
+        guard let materialPath = particleSystem.material,
               let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir),
               let textureName = material.passes?.first?.textures?.first else { return nil }
         let source = loadMetalTexture(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir)
@@ -1109,12 +1132,8 @@ class SceneWallpaperViewModel: ObservableObject {
                           wallpaperDir: wallpaperDir, source: source)
 
         let emitter = particleSystem.emitter?.first
-        // The emitter's full world transform: its own and its parents' origin, scale and angle.
-        let world = object.id.map { transforms.world(of: String($0)) }
-            ?? SceneAffineTransform(SceneLocalTransform(object: object, sceneSize: sceneSize))
         let emitterSpace = SceneParticleEmitterSpace(world: world)
         let origin = emitterSpace.origin
-        let overrides = SceneParticleOverrides(object.instanceoverride, in: userValueContext)
         let rate = Float(emitter?.rate ?? 100) * overrides.rate
         let rateScript = overrides.rateScript ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)

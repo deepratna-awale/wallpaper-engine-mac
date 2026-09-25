@@ -13,10 +13,34 @@ struct ParticleGPUState {
     var alphaRotation: SIMD4<Float>
     var color: SIMD4<Float>
     var baseColor: SIMD4<Float>
-    /// History timer, sequence.
+    /// History timer, sequence, instance.
     var trail: SIMD4<Float>
     /// Serial, sprite frame, history count, history start.
     var identity: SIMD4<UInt32>
+}
+
+/// One instance of an instanced child system on the GPU (`ParticleInstance` on the CPU).
+struct ParticleGPUInstance {
+    struct Flag: OptionSet {
+        let rawValue: UInt32
+        static let active = Flag(rawValue: 1 << 0), emitting = Flag(rawValue: 1 << 1)
+        static let fresh = Flag(rawValue: 1 << 2), clearing = Flag(rawValue: 1 << 3)
+    }
+
+    /// Translation xy, previous translation xy.
+    var place: SIMD4<Float>
+    /// Source velocity xy, size, rotation.
+    var source: SIMD4<Float>
+    /// Source colour and alpha.
+    var sourceColor: SIMD4<Float>
+    /// Source angular velocity, emission remainder.
+    var emission: SIMD4<Float>
+    /// Flags, source serial, live particles, first spawn.
+    var state: SIMD4<UInt32>
+    /// Spawned this step.
+    var spawn: SIMD4<UInt32>
+
+    var flags: Flag { Flag(rawValue: state.x) }
 }
 
 /// What a system's GPU records are drawn with this frame (`ParticleSimulation.metal`).
@@ -74,6 +98,8 @@ struct ParticleGPUFrame {
     var motionLinear: SIMD4<Float>
     /// Motion size scale, turn, has motion.
     var motionExtras: SIMD4<Float>
+    /// `ParticleFrameInputs.absolutePoints`.
+    var extra: SIMD4<UInt32>
 
     static let noRenderVar = UInt32.max
 
@@ -98,6 +124,7 @@ struct ParticleGPUFrame {
                                  motion.translation.x, motion.translation.y)
         motionLinear = Self.columns(motion.linear)
         motionExtras = SIMD4(inputs.motionScale, inputs.motionAngle, inputs.motion == nil ? 0 : 1, 0)
+        extra = SIMD4(inputs.absolutePoints.rawValue, 0, 0, 0)
     }
 
     static func columns(_ matrix: simd_float2x2) -> SIMD4<Float> {
@@ -119,7 +146,8 @@ struct ParticleGPUParameters {
         static let sequenceSpan = Flag(rawValue: 1 << 14), sequenceRing = Flag(rawValue: 1 << 15)
         static let initialRemap = Flag(rawValue: 1 << 16), history = Flag(rawValue: 1 << 17)
         static let boxEmitter = Flag(rawValue: 1 << 18), maximumSpeed = Flag(rawValue: 1 << 19)
-        static let spriteSheet = Flag(rawValue: 1 << 20)
+        static let spriteSheet = Flag(rawValue: 1 << 20), instanced = Flag(rawValue: 1 << 21)
+        static let worldSpace = Flag(rawValue: 1 << 22)
     }
 
     var counts = SIMD4<UInt32>.zero
@@ -160,6 +188,10 @@ struct ParticleGPUParameters {
     var trail = SIMD4<Float>.zero
     var spriteSheet = SIMD4<Float>.zero
     var sprite = SIMD4<Float>.zero
+    /// Link kind (0: none), instances, -, instantaneous.
+    var instancing = SIMD4<UInt32>.zero
+    /// Probability.
+    var link = SIMD4<Float>.zero
 
     /// Samples each `ropetrail` particle keeps.
     var historyLimit: Int { Int(counts.w) }
@@ -268,6 +300,13 @@ struct ParticleGPUParameters {
         default: mode = 0
         }
         sprite = SIMD4(mode, c.sequenceMultiplier, c.opacityMultiplier, c.refractive ? 1 : 0)
+        if c.worldSpace { flags.insert(.worldSpace) }
+        if let link = c.link, link.instanced {
+            flags.insert(.instanced)
+            instancing = SIMD4(link.kind.rawValue, UInt32(clamping: link.maximumInstances), 0,
+                               UInt32(clamping: max(c.instantaneous, 0)))
+            self.link = SIMD4(link.probability, 0, 0, 0)
+        }
         counts = SIMD4(UInt32(clamping: c.maximumParticleCount), flags.rawValue, seed, UInt32(historyLimit))
     }
 }

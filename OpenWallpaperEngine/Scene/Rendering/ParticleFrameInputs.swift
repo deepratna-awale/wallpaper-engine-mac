@@ -39,6 +39,17 @@ struct ParticleFrameInputs {
     var vortexOrigin = SIMD2<Float>.zero
     var reductionOrigin = SIMD2<Float>.zero
     var constraintOrigin = SIMD2<Float>.zero
+    /// Points that come from the cursor rather than the emitter: they stay put in every instance
+    /// of an instanced system (`placed(at:)`).
+    var absolutePoints: AbsolutePoints = []
+
+    struct AbsolutePoints: OptionSet {
+        let rawValue: UInt32
+        static let spawnOrigin = AbsolutePoints(rawValue: 1 << 0), attractor = AbsolutePoints(rawValue: 1 << 1)
+        static let sequenceStart = AbsolutePoints(rawValue: 1 << 2), sequenceEnd = AbsolutePoints(rawValue: 1 << 3)
+        static let remapAnchor = AbsolutePoints(rawValue: 1 << 4)
+    }
+
     /// How the emitter moved since the last step, for systems whose particles live in its space:
     /// applied to every particle alive before this step's spawns. Nil when it did not move.
     var motion: SceneAffineTransform?
@@ -66,13 +77,14 @@ struct ParticleFrameInputs {
         inputs.deltaTime = deltaTime
         inputs.elapsedTime = system.elapsedTime
         inputs.frameIndex = system.frameIndex
-        let world = emitter ?? configuration.authoredWorld
+        let world = emitter ?? childEmitter(system) ?? configuration.authoredWorld
         inputs.motion = motion(of: system, to: world)
         let time = Double(system.elapsedTime)
         inputs.emissionRate = configuration.emissionRateScript.map {
             AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.emissionRate, time: time)
         } ?? configuration.emissionRate
-        inputs.burst = system.frameIndex == 1 ? max(configuration.instantaneous, 0) : 0
+        // An instanced system bursts per instance instead (`ParticleCPUSimulation.updateInstances`).
+        inputs.burst = system.frameIndex == 1 && !configuration.isInstanced ? max(configuration.instantaneous, 0) : 0
         // Without a rate a system only shows its burst, if it has one.
         let idle = inputs.emissionRate <= 0.0001 && configuration.instantaneous <= 0
         if idle || configuration.opacityMultiplier <= 0.0001 {
@@ -94,6 +106,12 @@ struct ParticleFrameInputs {
         inputs.fadeOut = system.fadeOut
         inputs.place(configuration, in: SceneParticleEmitterSpace(world: world), cursor: cursor)
         return inputs
+    }
+
+    /// A child's emitter this frame: from its parent's, which stepped first.
+    private static func childEmitter(_ system: ParticleSystemRuntime) -> SceneAffineTransform? {
+        guard let link = system.configuration.link, let parent = system.parent else { return nil }
+        return link.emitter(parent: parent.lastEmitter ?? parent.configuration.authoredWorld)
     }
 
     /// The emitter's move since the last step for a system whose particles follow it, and records
@@ -118,22 +136,46 @@ struct ParticleFrameInputs {
         constraintOrigin = origin + (configuration.maintainControlPointDistance?.offset ?? .zero)
         if let controlPoint = configuration.cursorControlPoint, configuration.emitterControlPoint == controlPoint.id {
             spawnOrigin = cursor + controlPoint.offset
+            absolutePoints.insert(.spawnOrigin)
         } else {
             spawnOrigin = origin
         }
         if let attractor = configuration.attractor {
             attractorOrigin = configuration.cursorControlPoint.map { cursor + $0.offset } ?? origin + attractor.offset
+            if configuration.cursorControlPoint != nil { absolutePoints.insert(.attractor) }
         }
+        func locked(_ id: Int) -> Bool { configuration.controlPoints.first { $0.id == id }?.locksToCursor == true }
         if let span = configuration.sequenceSpan {
+            if locked(span.startControlPoint) { absolutePoints.insert(.sequenceStart) }
+            if locked(span.endControlPoint) { absolutePoints.insert(.sequenceEnd) }
             sequenceStart = Self.controlPointPosition(span.startControlPoint, configuration: configuration,
                                                       space: space, cursor: cursor)
             sequenceEnd = Self.controlPointPosition(span.endControlPoint, configuration: configuration,
                                                     space: space, cursor: cursor)
         }
         if let remap = configuration.initialRemap {
+            if locked(remap.controlPoint) { absolutePoints.insert(.remapAnchor) }
             remapAnchor = Self.controlPointPosition(remap.controlPoint, configuration: configuration,
                                                     space: space, cursor: cursor)
         }
+    }
+
+    /// These inputs for one instance of an instanced system, whose emitter sits at `translation`
+    /// (on top of the shared emitter transform the inputs were placed with).
+    func placed(at translation: SIMD2<Float>) -> ParticleFrameInputs {
+        var inputs = self
+        func shift(_ point: SIMD2<Float>, _ absolute: AbsolutePoints) -> SIMD2<Float> {
+            absolutePoints.contains(absolute) ? point : point + translation
+        }
+        inputs.spawnOrigin = shift(spawnOrigin, .spawnOrigin)
+        inputs.attractorOrigin = shift(attractorOrigin, .attractor)
+        inputs.sequenceStart = sequenceStart.map { shift($0, .sequenceStart) }
+        inputs.sequenceEnd = sequenceEnd.map { shift($0, .sequenceEnd) }
+        inputs.remapAnchor = shift(remapAnchor, .remapAnchor)
+        inputs.vortexOrigin += translation
+        inputs.reductionOrigin += translation
+        inputs.constraintOrigin += translation
+        return inputs
     }
 
     static func controlPointPosition(_ id: Int, configuration: SceneMetalParticleSystem,

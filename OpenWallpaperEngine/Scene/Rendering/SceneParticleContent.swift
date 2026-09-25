@@ -91,6 +91,13 @@ struct SceneMetalParticleSystem {
     var minimumSpawnRatio: Float = 0
     /// `sphererandom` `sign`: forces a spawn offset axis positive (1) or negative (−1); 0 leaves it.
     var emitterSign = SIMD2<Float>.zero
+    /// Set for a child system: how it hangs off its parent.
+    var link: ParticleChildLink? = nil
+    /// The system has event children, which read its spawns and deaths.
+    var hasEventChildren = false
+
+    /// Runs as instances (`ParticleChildLink`).
+    var isInstanced: Bool { link?.instanced == true }
 
     /// The emitter's authored world transform.
     var authoredWorld: SceneAffineTransform {

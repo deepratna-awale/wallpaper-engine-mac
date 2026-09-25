@@ -17,7 +17,7 @@ final class ParticleSimulationSweepTests: XCTestCase {
         let texture = try XCTUnwrap(device.makeTexture(descriptor: .texture2DDescriptor(
             pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)))
 
-        var systems = 0, particles = 0
+        var systems = 0, children = 0, particles = 0
         var failures: [String] = []
         for id in try FileManager.default.contentsOfDirectory(atPath: library.path).sorted() {
             let directory = library.appending(path: id, directoryHint: .isDirectory)
@@ -32,24 +32,34 @@ final class ParticleSimulationSweepTests: XCTestCase {
             guard let content = SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory)).metalContent()
             else { continue }
             let extent = max(content.size.x, content.size.y)
-            for (index, configuration) in content.particleSystems.enumerated() {
-                systems += 1
-                let seed = ParticleRandom.pcg(UInt32(index))
-                let cpu = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: seed)
-                let gpu = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: seed)
-                let kind = ParticleGPUDrawKind.fallback(rendererName: configuration.rendererName)
-                let cursor = content.size / 2
-                var last: MTLCommandBuffer?
-                for _ in 0..<90 {
-                    ParticleCPUSimulation.update([cpu], deltaTime: 1 / 60, cursor: cursor)
-                    let inputs = ParticleFrameInputs.advance(gpu, deltaTime: 1 / 60, cursor: cursor)
-                    let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
-                    simulator.encode([.init(system: gpu, inputs: inputs, kind: kind)], sceneSize: content.size,
-                                     targetSize: content.size, commandBuffer: commandBuffer)
-                    commandBuffer.commit()
-                    last = commandBuffer
+            // Families step together, parents first, as the renderer steps them.
+            let configurations = content.particleSystems
+            let cpuSystems = configurations.enumerated().map { index, configuration in
+                ParticleSystemRuntime(texture: texture, configuration: configuration, seed: ParticleRandom.pcg(UInt32(index)))
+            }
+            let gpuSystems = configurations.enumerated().map { index, configuration in
+                ParticleSystemRuntime(texture: texture, configuration: configuration, seed: ParticleRandom.pcg(UInt32(index)))
+            }
+            ParticleSystemRuntime.linkFamilies(cpuSystems)
+            ParticleSystemRuntime.linkFamilies(gpuSystems)
+            let cursor = content.size / 2
+            var last: MTLCommandBuffer?
+            for _ in 0..<90 {
+                ParticleCPUSimulation.update(cpuSystems, deltaTime: 1 / 60, cursor: cursor)
+                let requests = gpuSystems.map { gpu in
+                    ParticleGPUSimulator.Request(system: gpu, inputs: ParticleFrameInputs.advance(gpu, deltaTime: 1 / 60, cursor: cursor),
+                                                 kind: .fallback(rendererName: gpu.configuration.rendererName))
                 }
-                last?.waitUntilCompleted()
+                let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+                simulator.encode(requests, sceneSize: content.size, targetSize: content.size, commandBuffer: commandBuffer)
+                commandBuffer.commit()
+                last = commandBuffer
+            }
+            last?.waitUntilCompleted()
+            for (index, configuration) in configurations.enumerated() {
+                systems += 1
+                if configuration.link != nil { children += 1 }
+                let cpu = cpuSystems[index], gpu = gpuSystems[index]
                 let states = simulator.snapshot(gpu, queue: queue)
                 particles += states.count
                 let label = "\(id) system \(index) (\(configuration.rendererName), max \(configuration.maximumParticleCount))"
@@ -82,7 +92,7 @@ final class ParticleSimulationSweepTests: XCTestCase {
                 }
             }
         }
-        print("Particle simulation sweep: \(systems) systems, \(particles) GPU particles after 90 frames, \(failures.count) failures")
+        print("Particle simulation sweep: \(systems) systems (\(children) children), \(particles) GPU particles after 90 frames, \(failures.count) failures")
         XCTAssertTrue(failures.isEmpty, failures.joined(separator: "\n"))
     }
 }

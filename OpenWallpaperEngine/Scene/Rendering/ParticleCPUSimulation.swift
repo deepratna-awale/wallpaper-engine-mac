@@ -22,6 +22,8 @@ struct Particle {
     var sequence: Float = 0
     /// Spawn order within the system; with the system's seed it names the particle's random draws.
     var serial: UInt32 = 0
+    /// The instance it belongs to, in an instanced system (`ParticleChildLink`).
+    var instance: Int = 0
 
     /// `history` is a circular buffer; this returns it oldest-first so a trail can be walked.
     var orderedHistory: [SIMD2<Float>] {
@@ -51,6 +53,14 @@ final class ParticleSystemRuntime {
     var gpu: ParticleGPUSystem?
     /// The emitter's world transform at the last step (`ParticleFrameInputs.motion`).
     var lastEmitter: SceneAffineTransform?
+    /// The system this one is a child of (`SceneMetalParticleSystem.link`).
+    weak var parent: ParticleSystemRuntime?
+    /// An instanced system's instances (`ParticleChildLink`), on the CPU.
+    var instances: [ParticleInstance] = []
+    /// A parent's particles spawned and died in its last CPU step, in array order, for its event
+    /// children.
+    var spawnedThisStep: [Particle] = []
+    var diedThisStep: [Particle] = []
 
     init(texture: MTLTexture, configuration: SceneMetalParticleSystem, seed: UInt32 = 0) {
         self.texture = texture
@@ -58,6 +68,19 @@ final class ParticleSystemRuntime {
         self.seed = seed
         self.fadeIn = configuration.fadeIn
         self.fadeOut = configuration.fadeOut
+        if configuration.isInstanced {
+            instances = Array(repeating: ParticleInstance(), count: max(configuration.link?.maximumInstances ?? 0, 0))
+        }
+    }
+
+    /// Points each child at its parent (`SceneMetalParticleSystem.link`), in a scene's list of
+    /// systems; a system that couldn't be prepared is nil and leaves its children without one.
+    static func linkFamilies(_ systems: [ParticleSystemRuntime?]) {
+        for system in systems {
+            guard let system, let parentIndex = system.configuration.link?.parentIndex,
+                  systems.indices.contains(parentIndex) else { continue }
+            system.parent = systems[parentIndex]
+        }
     }
 }
 
@@ -91,24 +114,49 @@ enum ParticleCPUSimulation {
 
     static func step(_ system: ParticleSystemRuntime, inputs: ParticleFrameInputs) {
         let configuration = system.configuration
+        system.spawnedThisStep.removeAll(keepingCapacity: true)
+        system.diedThisStep.removeAll(keepingCapacity: true)
         if inputs.clears {
             system.particles.removeAll(keepingCapacity: true)
             system.emissionRemainder = 0
+            for index in system.instances.indices { system.instances[index] = ParticleInstance() }
             return
         }
-        if let motion = inputs.motion {
-            let scale = inputs.motionScale, angle = inputs.motionAngle
-            for index in system.particles.indices {
-                follow(&system.particles[index], motion: motion, scale: scale, angle: angle)
+        let firstSerial = system.nextSerial
+        var instanceInputs: [ParticleFrameInputs] = []
+        if configuration.isInstanced {
+            updateInstances(system, inputs: inputs)
+            instanceInputs = system.instances.map { inputs.placed(at: $0.translation) }
+            if !configuration.worldSpace {
+                for index in system.particles.indices {
+                    let instance = system.instances[system.particles[index].instance]
+                    followInstance(&system.particles[index], instance: instance, inputs: inputs)
+                }
+            }
+            for (index, instance) in system.instances.enumerated() where instance.spawnCount > 0 {
+                for _ in 0..<instance.spawnCount {
+                    var particle = spawn(serial: system.nextSerial, system: system, inputs: instanceInputs[index])
+                    particle.instance = index
+                    system.particles.append(particle)
+                    system.nextSerial &+= 1
+                }
+            }
+        } else {
+            if let motion = inputs.motion {
+                let scale = inputs.motionScale, angle = inputs.motionAngle
+                for index in system.particles.indices {
+                    follow(&system.particles[index], motion: motion, scale: scale, angle: angle)
+                }
+            }
+            let emitted = emissionCount(liveCount: system.particles.count, maximum: configuration.maximumParticleCount,
+                                        rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
+                                        remainder: &system.emissionRemainder, burst: inputs.burst)
+            for _ in 0..<emitted {
+                system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: inputs))
+                system.nextSerial &+= 1
             }
         }
-        let emitted = emissionCount(liveCount: system.particles.count, maximum: configuration.maximumParticleCount,
-                                    rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
-                                    remainder: &system.emissionRemainder, burst: inputs.burst)
-        for _ in 0..<emitted {
-            system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: inputs))
-            system.nextSerial &+= 1
-        }
+        let spawned = system.nextSerial &- firstSerial
         if configuration.boids != nil {
             system.neighborPositions.removeAll(keepingCapacity: true)
             system.neighborVelocities.removeAll(keepingCapacity: true)
@@ -118,9 +166,21 @@ enum ParticleCPUSimulation {
             }
         }
         for index in system.particles.indices {
-            advance(&system.particles[index], index: index, system: system, inputs: inputs)
+            let instance = system.particles[index].instance
+            let own = instanceInputs.isEmpty ? inputs : instanceInputs[instance]
+            advance(&system.particles[index], index: index, system: system, inputs: own)
+            if !instanceInputs.isEmpty, system.instances[instance].clearing {
+                system.particles[index].age = system.particles[index].lifetime
+            }
+        }
+        if configuration.hasEventChildren {
+            for particle in system.particles {
+                if particle.serial &- firstSerial < spawned { system.spawnedThisStep.append(particle) }
+                if particle.age >= particle.lifetime { system.diedThisStep.append(particle) }
+            }
         }
         system.particles.removeAll { $0.age >= $0.lifetime }
+        if configuration.isInstanced { countInstanceParticles(system) }
     }
 
     /// Carries a particle that lives in its emitter's space along with the emitter's move.
