@@ -81,15 +81,4 @@ final class EffectGraphCachingTests: XCTestCase {
         let b = ShaderVariantTranslator.cacheKey(vertex: source, fragment: source, combos: [:], toolchain: "glslang:2")
         XCTAssertNotEqual(a, b)
     }
-
-    func testToolchainFingerprintTracksTheBinary() throws {
-        let directory = FileManager.default.temporaryDirectory.appending(path: "owe-tool-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let tool = directory.appending(path: "glslang")
-        try Data("v1".utf8).write(to: tool)
-        let before = ShaderVariantTranslator.toolchainFingerprint(tools: [tool.path])
-        try Data("version2".utf8).write(to: tool)
-        XCTAssertNotEqual(before, ShaderVariantTranslator.toolchainFingerprint(tools: [tool.path]))
-    }
 }

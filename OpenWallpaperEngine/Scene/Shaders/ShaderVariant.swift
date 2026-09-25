@@ -55,32 +55,14 @@ final class ShaderVariantTranslator {
 
     let compiler: ShaderCompiler
     let cacheDirectory: URL?
-    /// Identifies the glslang/spirv-cross binaries so a toolchain upgrade retranslates.
-    let toolchainFingerprint: String
+    /// The compiler's backend, versions and options (`ShaderCompiler.cacheFingerprint`).
+    var toolchainFingerprint: String { compiler.cacheFingerprint }
     private let lock = NSLock()
     private var memory: [String: TranslatedShaderVariant] = [:]
 
     init(compiler: ShaderCompiler, cacheDirectory: URL? = ShaderVariantTranslator.defaultCacheDirectory) {
         self.compiler = compiler
         self.cacheDirectory = cacheDirectory
-        if let process = compiler as? ProcessShaderCompiler {
-            toolchainFingerprint = Self.toolchainFingerprint(tools: [process.glslang, process.spirvCross])
-        } else {
-            toolchainFingerprint = ""
-        }
-    }
-
-    /// Path, size and modification date of each tool binary (symlinks resolved, so a Homebrew
-    /// upgrade that repoints `bin/glslang` changes it). A missing tool contributes its path only.
-    static func toolchainFingerprint(tools: [String]) -> String {
-        tools.map { path in
-            let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
-            // Optional: an unreadable tool fails later, at translation, with a real error.
-            guard let attributes = try? FileManager.default.attributesOfItem(atPath: resolved) else { return resolved }
-            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-            let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
-            return "\(resolved):\(size):\(modified)"
-        }.joined(separator: "|")
     }
 
     static var defaultCacheDirectory: URL? {

@@ -12,9 +12,12 @@ enum ShaderCompilerError: Error, CustomStringConvertible {
     }
 }
 
-/// The GLSL → SPIR-V → MSL toolchain. Behind a protocol so the process-spawning implementation can
-/// be replaced by in-process glslang/SPIRV-Cross (Phase 2, M9) without touching callers.
+/// The GLSL → SPIR-V → MSL toolchain: `InProcessShaderCompiler` (linked libraries) or
+/// `ProcessShaderCompiler` (the command line tools, kept as a fallback).
 protocol ShaderCompiler {
+    /// Identifies everything that decides the output: backend, tool/library versions and options.
+    /// Part of the variant cache key; never machine-specific (no paths or dates).
+    var cacheFingerprint: String { get }
     /// Runs the GLSL preprocessor only, resolving every `#if` against the defined macros.
     func preprocess(_ source: String, stage: ShaderStage) throws -> String
     /// Compiles preprocessed, fully decorated GLSL to MSL and returns it with SPIRV-Cross's
@@ -25,10 +28,12 @@ protocol ShaderCompiler {
 struct ProcessShaderCompiler: ShaderCompiler {
     let glslang: String
     let spirvCross: String
+    let cacheFingerprint: String
 
     init(glslang: String, spirvCross: String) {
         self.glslang = glslang
         self.spirvCross = spirvCross
+        cacheFingerprint = "process|" + Self.versions(glslang: glslang, spirvCross: spirvCross)
     }
 
     init() throws {
@@ -62,6 +67,29 @@ struct ProcessShaderCompiler: ShaderCompiler {
         }
     }
 
+    /// `glslangValidator --version` and `spirv-cross --revision`, so an upgrade retranslates.
+    /// A tool that can't report its version contributes its file name only; it fails loudly
+    /// later, at translation.
+    static func versions(glslang: String, spirvCross: String) -> String {
+        let compiler = ProcessShaderCompiler(glslang: glslang, spirvCross: spirvCross, fingerprint: "")
+        func version(_ tool: String, _ arguments: [String]) -> String {
+            do {
+                return try compiler.run(tool, arguments, step: "version", acceptAnyStatus: true)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } catch {
+                OWELog.error(.shader, "Could not read the version of \(tool): \(error)")
+                return URL(fileURLWithPath: tool).lastPathComponent
+            }
+        }
+        return version(glslang, ["--version"]) + "|" + version(spirvCross, ["--revision"])
+    }
+
+    private init(glslang: String, spirvCross: String, fingerprint: String) {
+        self.glslang = glslang
+        self.spirvCross = spirvCross
+        cacheFingerprint = fingerprint
+    }
+
     private func withScratch<T>(_ body: (URL) throws -> T) throws -> T {
         let directory = FileManager.default.temporaryDirectory.appending(path: "owe-shader-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -72,13 +100,15 @@ struct ProcessShaderCompiler: ShaderCompiler {
     /// A single translation step normally takes milliseconds; anything this long is stuck.
     static let timeout: TimeInterval = 30
 
-    private func run(_ executable: String, _ arguments: [String], step: String) throws -> String {
+    private func run(_ executable: String, _ arguments: [String], step: String,
+                     acceptAnyStatus: Bool = false) throws -> String {
         // Pipes and their file handles are autoreleased; a caller translating many variants in
         // one loop would otherwise run out of file descriptors ("Bad file descriptor").
-        try autoreleasepool { try runDrained(executable, arguments, step: step) }
+        try autoreleasepool { try runDrained(executable, arguments, step: step, acceptAnyStatus: acceptAnyStatus) }
     }
 
-    private func runDrained(_ executable: String, _ arguments: [String], step: String) throws -> String {
+    private func runDrained(_ executable: String, _ arguments: [String], step: String,
+                            acceptAnyStatus: Bool) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -115,6 +145,8 @@ struct ProcessShaderCompiler: ShaderCompiler {
         try? output.fileHandleForReading.close() // already at EOF; a close error changes nothing
         try? errors.fileHandleForReading.close() // same
         let text = String(decoding: stdout, as: UTF8.self)
+        // `spirv-cross --revision` prints to stderr and exits 1.
+        if acceptAnyStatus { return text + String(decoding: stderr, as: UTF8.self) }
         guard process.terminationStatus == 0 else {
             let message = (text + String(decoding: stderr, as: UTF8.self))
                 .split(separator: "\n").filter { $0.contains("ERROR") || $0.contains("error") }.prefix(8)
@@ -122,5 +154,18 @@ struct ProcessShaderCompiler: ShaderCompiler {
             throw ShaderCompilerError.failed(step: step, output: message.isEmpty ? "exit \(process.terminationStatus)" : message)
         }
         return text
+    }
+}
+
+/// Picks the shader compiler for the app: in-process unless it crashed with these libraries.
+enum ShaderCompilerFactory {
+    static func makeDefault(stateDirectory: URL? = ShaderVariantTranslator.defaultCacheDirectory?
+        .deletingLastPathComponent().appending(path: "shader-compiler", directoryHint: .isDirectory)) throws -> ShaderCompiler {
+        guard let stateDirectory else { return InProcessShaderCompiler() }
+        let crashGuard = InProcessCompileCrashGuard(directory: stateDirectory)
+        if crashGuard.allowsInProcess(fingerprint: InProcessShaderCompiler.libraryFingerprint) {
+            return InProcessShaderCompiler(crashGuard: crashGuard)
+        }
+        return try ProcessShaderCompiler()
     }
 }
