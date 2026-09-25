@@ -348,7 +348,9 @@ class SceneWallpaperViewModel: ObservableObject {
             if values[prefix + "font"] == nil, let font = object.font {
                 values[prefix + "font"] = font
             }
-            if values[prefix + "size"] == nil, let pointSize = object.pointsize {
+            // A user-bound point size follows its property; a seeded override would pin it.
+            if values[prefix + "size"] == nil, object.values[.pointsize]?.userPropertyName == nil,
+               let pointSize = object.pointsize {
                 values[prefix + "size"] = String(pointSize)
             }
         }
@@ -407,7 +409,11 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         let signpost = OWESignpost.begin(OWESignpost.scene, "metalContent")
         defer { signpost.end() }
-        guard let scene = loadedScene, let wallpaperDir = loadedWallpaperDirectory else { return nil }
+        guard let authoredScene = loadedScene, let wallpaperDir = loadedWallpaperDirectory else { return nil }
+        // Content is built from what the user properties say; a property change rebuilds it.
+        let valueContext = userValueContext
+        var scene = authoredScene
+        scene.objects = authoredScene.objects.map { $0.resolvingUserBindings(in: valueContext) }
         let sceneSize = metalSceneSize(for: scene)
         let sceneScript = loadSceneScript(scene.script, wallpaperDir: wallpaperDir)
         let visibility = resolvedVisibility(for: scene)
@@ -426,6 +432,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
             layer?.order = index
+            layer?.bindings = SceneLayerBindings(object: object, builtWith: valueContext)
             return layer
         }
         let particleSystems: [SceneMetalParticleSystem] = scene.objects.enumerated().compactMap { index, object in
@@ -438,6 +445,7 @@ class SceneWallpaperViewModel: ObservableObject {
         if !layers.isEmpty || !particleSystems.isEmpty {
             let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
                                             sceneScript: sceneScript, bloom: bloomSettings(for: scene.general),
+                                            camera: SceneCameraEffects(scene.general, in: valueContext),
                                             wallpaperKey: propertyStoreKey)
             cachedContent = content
             cachedContentRevision = metalRevision
@@ -546,11 +554,12 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func bloomSettings(for general: WESceneGeneral) -> SceneBloomSettings {
-        let tint = (general.bloomtint ?? "1 1 1").parseVector3()
-        return SceneBloomSettings(enabled: general.bloom ?? false,
-                                  strength: Float(general.bloomstrength ?? 1),
-                                  threshold: Float(general.bloomthreshold ?? 0.7),
-                                  tint: SIMD3<Float>(Float(tint.0), Float(tint.1), Float(tint.2)))
+        SceneBloomSettings(general, in: userValueContext)
+    }
+
+    /// Resolves user-bound values against this wallpaper's properties.
+    private var userValueContext: LiveSceneValueContext {
+        LiveSceneValueContext(time: 0, wallpaper: propertyStoreKey)
     }
 
     private func metalSceneSize(for scene: WEScene) -> SIMD2<Float> {
@@ -1143,14 +1152,15 @@ class SceneWallpaperViewModel: ObservableObject {
         let isSnowParticle = object.name?.localizedCaseInsensitiveContains("snow") == true
         let objectScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let origin = effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
-        let rate = Float((emitter?.rate ?? 100) * (object.instanceoverride?.rate?.value ?? 1))
-        let rateScript = object.instanceoverride?.rate?.script ?? emitter?.$rate.script
+        let overrides = SceneParticleOverrides(object.instanceoverride, in: userValueContext)
+        let rate = Float(emitter?.rate ?? 100) * overrides.rate
+        let rateScript = overrides.rateScript ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)
         let presetScale = particlePath.localizedCaseInsensitiveContains("4k") ? sceneSize.y / 2160 : 1
         let spawnExtent = SIMD2<Float>(abs(Float(distance.0 * objectScale.0)) * presetScale,
                            abs(Float(distance.1 * objectScale.1)) * presetScale)
         var lifetime: ClosedRange<Float> = 1...1
-        var size: ClosedRange<Float> = Float(object.instanceoverride?.size ?? 1) * 20...Float(object.instanceoverride?.size ?? 1) * 20
+        var size: ClosedRange<Float> = overrides.size * 20...overrides.size * 20
         var minimumVelocity = SIMD2<Float>.zero
         var maximumVelocity = SIMD2<Float>.zero
         var alpha: ClosedRange<Float> = 1...1
@@ -1184,7 +1194,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 let lifetimeMax = Float(initializer.max?.doubleValue ?? 1)
                 lifetime = min(lifetimeMin, lifetimeMax)...max(lifetimeMin, lifetimeMax)
             case "sizerandom":
-                let multiplier = Float(object.instanceoverride?.size ?? 1)
+                let multiplier = overrides.size
                 let sizeMin = Float(initializer.min?.doubleValue ?? 20) * multiplier
                 let sizeMax = Float(initializer.max?.doubleValue ?? 20) * multiplier
                 size = min(sizeMin, sizeMax)...max(sizeMin, sizeMax)
@@ -1258,6 +1268,15 @@ class SceneWallpaperViewModel: ObservableObject {
             minimumColor = SIMD4<Float>(1, 1, 1, 1)
             maximumColor = SIMD4<Float>(1, 1, 1, 1)
         }
+        // Negative multipliers would invert the ranges; WE treats them as 0.
+        let lifetimeScale = max(overrides.lifetime, 0), alphaScale = max(overrides.alpha, 0)
+        lifetime = lifetime.lowerBound * lifetimeScale...lifetime.upperBound * lifetimeScale
+        alpha = alpha.lowerBound * alphaScale...alpha.upperBound * alphaScale
+        minimumVelocity *= overrides.speed
+        maximumVelocity *= overrides.speed
+        let colorOverride = SIMD4<Float>(overrides.tint * overrides.brightness, 1)
+        minimumColor *= colorOverride
+        maximumColor *= colorOverride
         var gravity = SIMD2<Float>.zero
         var drag: Float = 0
         var fadeIn: Float = 0
@@ -1386,7 +1405,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let opacityMultiplier = refractAmount.map { max(0.04, min(abs(Float($0)), 1)) } ?? 1
         return SceneMetalParticleSystem(source: source, origin: origin, emissionRate: max(rate, 0),
                 emissionRateScript: rateScript,
-                                        maximumParticleCount: min(particleSystem.maxcount ?? 1000, 1000),
+                                        maximumParticleCount: min(max(Int((Float(particleSystem.maxcount ?? 1000) * overrides.count).rounded()), 0), 1000),
                                         spawnExtent: spawnExtent, lifetime: lifetime, size: size,
                                         minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity,
                                         gravity: gravity, drag: drag, dragScript: dragScript, alpha: alpha,

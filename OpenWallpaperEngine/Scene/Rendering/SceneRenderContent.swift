@@ -47,6 +47,8 @@ struct SceneMetalLayer {
     var sceneInput = false
     /// Index of the object in scene.json: layers and particle systems draw in that order.
     var order = 0
+    /// User-bound transform/colour values, re-resolved each frame.
+    var bindings = SceneLayerBindings()
 
     /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
     var readsScene: Bool { sceneInput || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) } }
@@ -118,6 +120,7 @@ struct SceneMetalContent {
     let particleSystems: [SceneMetalParticleSystem]
     let sceneScript: String?
     let bloom: SceneBloomSettings
+    var camera = SceneCameraEffects()
     /// The wallpaper instance's key in the script engine's user-property store (its directory path).
     var wallpaperKey = ""
 }
