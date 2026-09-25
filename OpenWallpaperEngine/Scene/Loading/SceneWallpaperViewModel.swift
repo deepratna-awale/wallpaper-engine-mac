@@ -8,6 +8,7 @@
 
 import SwiftUI
 import CoreText
+import CryptoKit
 
 class SceneWallpaperViewModel: ObservableObject {
     static func log(_ msg: String) {
@@ -178,6 +179,14 @@ class SceneWallpaperViewModel: ObservableObject {
         bumpRevision()
     }
 
+    /// Cache file name for a packaged audio entry: stable across launches (`hashValue` is seeded
+    /// per process), and distinct per wallpaper since entry paths repeat across packages.
+    static func sceneAudioCacheName(entry: String, wallpaperDirectory: URL?) -> String {
+        let key = "\(wallpaperDirectory?.standardizedFileURL.path ?? "")|\(entry)"
+        let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return "\(digest).\(URL(fileURLWithPath: entry).pathExtension)"
+    }
+
     func sceneAudioURL() -> URL? {
         let extensions = Set(["mp3", "ogg", "wav", "m4a", "flac"])
         let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
@@ -185,7 +194,7 @@ class SceneWallpaperViewModel: ObservableObject {
         if let entry = pkgParser?.fileList.first(where: { extensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) }),
            let data = pkgParser?.extractFile(named: entry) {
             try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-            let destination = cacheDirectory.appending(path: "\(entry.hashValue).\(URL(fileURLWithPath: entry).pathExtension)")
+            let destination = cacheDirectory.appending(path: Self.sceneAudioCacheName(entry: entry, wallpaperDirectory: loadedWallpaperDirectory))
             if !FileManager.default.fileExists(atPath: destination.path) {
                 try? data.write(to: destination, options: .atomic)
             }
@@ -356,7 +365,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 values[name] = sceneUserPropertyString(option)
             }
         }
-        for object in scene.objects where object.textValue != nil {
+        for object in SceneObjectIdentity.assigningFallbackIDs(scene.objects) where object.textValue != nil {
             let prefix = "_owe_text_\(object.id ?? -1)_"
             if values[prefix + "font"] == nil, let font = object.font {
                 values[prefix + "font"] = font
@@ -411,14 +420,12 @@ class SceneWallpaperViewModel: ObservableObject {
         // Content is built from what the user properties say; a property change rebuilds it.
         let valueContext = userValueContext
         var scene = authoredScene
-        scene.objects = authoredScene.objects.map { $0.resolvingUserBindings(in: valueContext) }
+        scene.objects = SceneObjectIdentity.assigningFallbackIDs(
+            authoredScene.objects.map { $0.resolvingUserBindings(in: valueContext) })
         let sceneSize = metalSceneSize(for: scene)
         let sceneScript = loadSceneScript(scene.script, wallpaperDir: wallpaperDir)
         let visibility = resolvedVisibility(for: scene)
-        var objectsByID: [Int: WESceneObject] = [:]
-        for (index, object) in scene.objects.enumerated() {
-            objectsByID[object.id ?? index] = object
-        }
+        let authoredTransforms = SceneTransformHierarchy(objects: scene.objects, sceneSize: sceneSize)
         // WE draws objects in scene.json order; both lists carry that index so the renderer can interleave them.
         let layers: [SceneMetalLayer] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
@@ -426,22 +433,22 @@ class SceneWallpaperViewModel: ObservableObject {
                     userProperty("_owe_text_\(object.id ?? -1)_enabled") == "false" {
                 return nil
             }
-            var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
-                ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
-                ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
+            var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+                ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+                ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
             layer?.order = index
             layer?.bindings = SceneLayerBindings(object: object, builtWith: valueContext)
             return layer
         }
         let particleSystems: [SceneMetalParticleSystem] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
-            var system = buildMetalParticleSystem(object, wallpaperDir: wallpaperDir,
-                                                  sceneSize: sceneSize, objectsByID: objectsByID)
+            var system = buildMetalParticleSystem(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
+                                                  transforms: authoredTransforms)
             system?.order = index
             return system
         }
         if !layers.isEmpty || !particleSystems.isEmpty {
-            var transforms = SceneTransformHierarchy(objects: scene.objects, sceneSize: sceneSize)
+            var transforms = authoredTransforms
             for layer in layers where layer.fillsScene {
                 transforms.makeRoot(layer.id, local: SceneLocalTransform(origin: layer.position, scale: layer.scale, angle: layer.rotation))
             }
@@ -581,25 +588,12 @@ class SceneWallpaperViewModel: ObservableObject {
         return SIMD2<Float>(widest, tallest)
     }
 
-    /// Where an object's origin lands in scene space once its parents' full transforms apply.
-    private func worldOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>,
-                             objectsByID: [Int: WESceneObject]) -> SIMD2<Float> {
-        let hierarchy = SceneTransformHierarchy(objects: objectsByID.sorted { $0.key < $1.key }.map { id, object in
-            var keyed = object
-            keyed.id = id
-            return keyed
-        }, sceneSize: sceneSize)
-        guard let id = object.id else { return SceneLocalTransform(object: object, sceneSize: sceneSize).origin }
-        return hierarchy.world(of: String(id)).translation
-    }
-
     /// An object's own `origin`, relative to its parent.
     private func localOrigin(for object: WESceneObject, sceneSize: SIMD2<Float>) -> SIMD2<Float> {
         SceneLocalTransform(object: object, sceneSize: sceneSize).origin
     }
 
-    private func buildMetalLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
-                                 objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
+    private func buildMetalLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>) -> SceneMetalLayer? {
         guard let imagePath = object.image,
               let model: WEModel = loadJSON(path: imagePath, wallpaperDir: wallpaperDir),
               let materialPath = model.material,
@@ -608,7 +602,7 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         if model.solidlayer == true {
             return buildSolidLayer(object, material: material, wallpaperDir: wallpaperDir,
-                                   sceneSize: sceneSize, objectsByID: objectsByID)
+                                   sceneSize: sceneSize)
         }
         guard let textureName = material.passes?.first?.textures?.first,
               let source = loadMetalTexture(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir) else {
@@ -670,7 +664,7 @@ class SceneWallpaperViewModel: ObservableObject {
     /// The colour is baked into a generated texture so authored effects see the coloured image, as
     /// they do in WE; `alpha` stays on the layer and is applied when the quad is drawn.
     private func buildSolidLayer(_ object: WESceneObject, material: WEMaterial, wallpaperDir: URL,
-                                 sceneSize: SIMD2<Float>, objectsByID: [Int: WESceneObject]) -> SceneMetalLayer {
+                                 sceneSize: SIMD2<Float>) -> SceneMetalLayer {
         let authoredSize = object.size.map { value -> SIMD2<Float> in
             let parsed = value.parseVector2()
             return SIMD2<Float>(Float(parsed.0), Float(parsed.1))
@@ -714,8 +708,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     /// Text is laid out and rasterised by the renderer every frame (its string can change); the
     /// layer's source is only a placeholder. `size` is the block before auto-sizing.
-    private func buildMetalTextLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
-                                     objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
+    private func buildMetalTextLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>) -> SceneMetalLayer? {
         guard let text = object.textValue else { return nil }
         let sizeValue = object.size?.parseVector2() ?? (0, 0)
         let textScale = object.scale?.parseVector3() ?? (1, 1, 1)
@@ -758,8 +751,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     /// Standalone "shape" objects (e.g. a DIRECTDRAW light-shaft quad) have no image/particle of their own;
     /// they exist purely to host a procedural effect, so give them a full-scene solid layer to render onto.
-    private func buildShapeLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
-                                 objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
+    private func buildShapeLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>) -> SceneMetalLayer? {
         guard object.shape != nil, let effects = object.effects, !effects.isEmpty else { return nil }
         let plans = buildEffectPlans(effects, objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         guard !plans.isEmpty else { return nil }
@@ -968,8 +960,14 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func isEffectVisible(_ effect: WEObjectEffect) -> Bool {
+        Self.isEffectVisible(effect, userProperty: userProperty)
+    }
+
+    /// An effect bound to a user property follows it; with the property missing it keeps its
+    /// authored `visible` (default true), as objects do.
+    static func isEffectVisible(_ effect: WEObjectEffect, userProperty: (String) -> String?) -> Bool {
         if let property = effect.visibleUserProperty {
-            guard let selectedValue = userProperty(property) else { return false }
+            guard let selectedValue = userProperty(property) else { return effect.visible != false }
             if let condition = effect.visibleCondition {
                 return normalizeVariant(condition) == normalizeVariant(selectedValue)
             }
@@ -979,6 +977,10 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func normalizeVariant(_ value: String) -> String {
+        Self.normalizeVariant(value)
+    }
+
+    private static func normalizeVariant(_ value: String) -> String {
         value.lowercased().filter { $0.isLetter || $0.isNumber }
     }
 
@@ -1044,7 +1046,7 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func buildMetalParticleSystem(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
-                                          objectsByID: [Int: WESceneObject]) -> SceneMetalParticleSystem? {
+                                          transforms: SceneTransformHierarchy) -> SceneMetalParticleSystem? {
         guard let particlePath = object.particle,
               let particleSystem: WEParticleSystem = loadJSON(path: particlePath, wallpaperDir: wallpaperDir),
               let materialPath = particleSystem.material,
@@ -1057,16 +1059,16 @@ class SceneWallpaperViewModel: ObservableObject {
                           wallpaperDir: wallpaperDir, source: source)
 
         let emitter = particleSystem.emitter?.first
-        let isSnowParticle = object.name?.localizedCaseInsensitiveContains("snow") == true
-        let objectScale = object.scale?.parseVector3() ?? (1, 1, 1)
-        let origin = worldOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
+        // The emitter's full world transform: its own and its parents' origin, scale and angle.
+        let world = object.id.map { transforms.world(of: String($0)) }
+            ?? SceneAffineTransform(SceneLocalTransform(object: object, sceneSize: sceneSize))
+        let emitterSpace = SceneParticleEmitterSpace(world: world)
+        let origin = emitterSpace.origin
         let overrides = SceneParticleOverrides(object.instanceoverride, in: userValueContext)
         let rate = Float(emitter?.rate ?? 100) * overrides.rate
         let rateScript = overrides.rateScript ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)
-        let presetScale = particlePath.localizedCaseInsensitiveContains("4k") ? sceneSize.y / 2160 : 1
-        let spawnExtent = SIMD2<Float>(abs(Float(distance.0 * objectScale.0)) * presetScale,
-                           abs(Float(distance.1 * objectScale.1)) * presetScale)
+        let spawnExtent = emitterSpace.extent(SIMD2<Float>(Float(distance.0), Float(distance.1)))
         var lifetime: ClosedRange<Float> = 1...1
         var size: ClosedRange<Float> = overrides.size * 20...overrides.size * 20
         var minimumVelocity = SIMD2<Float>.zero
@@ -1090,7 +1092,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let controlPoints: [ParticleControlPoint] = (particleSystem.controlpoint ?? []).map { controlPoint in
             let offset = (controlPoint.offset ?? "0 0 0").parseVector3()
             return ParticleControlPoint(id: controlPoint.id ?? 0,
-                                        offset: SIMD2<Float>(Float(offset.0), -Float(offset.1)) * presetScale,
+                                        offset: emitterSpace.offset(SIMD2<Float>(Float(offset.0), -Float(offset.1))),
                                         locksToCursor: controlPoint.locktopointer == true
                                             || ((controlPoint.flags ?? 0) & 1) != 0)
         }
@@ -1119,8 +1121,8 @@ class SceneWallpaperViewModel: ObservableObject {
             case "positionoffsetrandom":
                 let minimum = initializer.min?.vectorValue ?? (0, 0, 0)
                 let maximum = initializer.max?.vectorValue ?? (0, 0, 0)
-                positionOffsetMinimum = SIMD2<Float>(Float(minimum.0), -Float(minimum.1))
-                positionOffsetMaximum = SIMD2<Float>(Float(maximum.0), -Float(maximum.1))
+                positionOffsetMinimum = emitterSpace.offset(SIMD2<Float>(Float(minimum.0), -Float(minimum.1)))
+                positionOffsetMaximum = emitterSpace.offset(SIMD2<Float>(Float(maximum.0), -Float(maximum.1)))
             case "hsvcolorrandom":
                 minimumColor = normalizedParticleColor(initializer.min?.vectorValue ?? (1, 1, 1))
                 maximumColor = normalizedParticleColor(initializer.max?.vectorValue ?? (1, 1, 1))
@@ -1129,10 +1131,8 @@ class SceneWallpaperViewModel: ObservableObject {
                 let alphaMax = Float(initializer.max?.doubleValue ?? 1)
                 alpha = min(alphaMin, alphaMax)...max(alphaMin, alphaMax)
             case "colorrandom":
-                if !isSnowParticle {
-                    minimumColor = normalizedParticleColor(initializer.min?.vectorValue ?? (1, 1, 1))
-                    maximumColor = normalizedParticleColor(initializer.max?.vectorValue ?? (1, 1, 1))
-                }
+                minimumColor = normalizedParticleColor(initializer.min?.vectorValue ?? (1, 1, 1))
+                maximumColor = normalizedParticleColor(initializer.max?.vectorValue ?? (1, 1, 1))
             case "rotationrandom":
                 minimumRotation = Float(initializer.min?.vectorValue.2 ?? 0)
                 maximumRotation = Float(initializer.max?.vectorValue.2 ?? 0)
@@ -1166,15 +1166,11 @@ class SceneWallpaperViewModel: ObservableObject {
                 }
                 initialRemap = ParticleInitialRemap(controlPoint: initializer.inputcontrolpoint0 ?? 0,
                                                     rangeMinimum: Float(initializer.inputrangemin ?? 0),
-                                                    rangeMaximum: Float(initializer.inputrangemax ?? 1) * presetScale,
+                                                    rangeMaximum: Float(initializer.inputrangemax ?? 1),
                                                     multiply: initializer.operation?.lowercased() != "set",
                                                     output: output)
             default: break
             }
-        }
-        if isSnowParticle {
-            minimumColor = SIMD4<Float>(1, 1, 1, 1)
-            maximumColor = SIMD4<Float>(1, 1, 1, 1)
         }
         // Negative multipliers would invert the ranges; WE treats them as 0.
         let lifetimeScale = max(overrides.lifetime, 0), alphaScale = max(overrides.alpha, 0)
@@ -1273,8 +1269,8 @@ class SceneWallpaperViewModel: ObservableObject {
                 if `operator`.output?.lowercased() == "velocity" {
                     let minimum = `operator`.outputrangemin?.vectorValue ?? (0, 0, 0)
                     let maximum = `operator`.outputrangemax?.vectorValue ?? (0, 0, 0)
-                    minimumVelocity = SIMD2<Float>(Float(minimum.0), Float(minimum.1)) * presetScale
-                    maximumVelocity = SIMD2<Float>(Float(maximum.0), Float(maximum.1)) * presetScale
+                    minimumVelocity = SIMD2<Float>(Float(minimum.0), Float(minimum.1))
+                    maximumVelocity = SIMD2<Float>(Float(maximum.0), Float(maximum.1))
                 } else {
                     remapAlpha = ParticleRemap(scale: Float(`operator`.transforminputscale ?? 1),
                                                 outputMinimum: Float(`operator`.outputrangemin?.doubleValue ?? 0),
