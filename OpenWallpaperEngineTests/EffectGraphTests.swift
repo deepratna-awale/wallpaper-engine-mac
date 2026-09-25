@@ -161,4 +161,30 @@ final class EffectGraphTests: XCTestCase {
         XCTAssertEqual(shake.encoded, 3, "shake reads g_Time and must render every frame")
         XCTAssertEqual(shake.reused, 0)
     }
+
+    func testParametersComeFromShaderAnnotations() throws {
+        let root = ShaderVariantTests.weAssets
+        let parameters = SceneEffectParameters.parameters(for: "effects/shake/effect.json") {
+            FileManager.default.contents(atPath: root.appending(path: $0).path)
+        }
+        let strength = try XCTUnwrap(parameters.first { $0.materialKey == "strength" })
+        XCTAssertEqual(strength.title, "Strength")
+        XCTAssertEqual(strength.defaultValue, [0.1], accuracy: 1e-6)
+        XCTAssertEqual(strength.minimum, 0.01, accuracy: 1e-6)
+        XCTAssertEqual(strength.maximum, 0.5, accuracy: 1e-6)
+        XCTAssertEqual(parameters.first { $0.materialKey == "friction" }?.defaultValue.count, 2, "vec2")
+    }
+
+    func testInspectorOverrideWinsOverAuthoredValue() throws {
+        let effect = try effect(#"{"file":"effects/shake/effect.json","passes":[{"constantshadervalues":{"strength":0.2}}]}"#)
+        let plan = try builder.build(effect, overrides: { $0 == "strength" ? "0.4" : nil })
+        let constants = try XCTUnwrap(plan.passes.first?.constants)
+        XCTAssertEqual(constants.staticValues["g_Amp"]?.components.first ?? 0, 0.4, accuracy: 1e-6)
+        XCTAssertTrue(constants.dynamic.isEmpty, "an override is a static literal")
+    }
+}
+
+private func XCTAssertEqual(_ a: [Double], _ b: [Double], accuracy: Double, file: StaticString = #filePath, line: UInt = #line) {
+    XCTAssertEqual(a.count, b.count, file: file, line: line)
+    for (x, y) in zip(a, b) { XCTAssertEqual(x, y, accuracy: accuracy, file: file, line: line) }
 }

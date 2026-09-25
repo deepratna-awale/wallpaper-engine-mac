@@ -977,7 +977,10 @@ class SceneWallpaperViewModel: ObservableObject {
                 continue
             }
             do {
-                plans.append(try builder.build(effect))
+                plans.append(try builder.build(effect, overrides: { key in
+                    AudioReactiveScriptEngine.shared.userPropertyString(
+                        sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key))
+                }))
                 handled.insert(index)
             } catch {
                 OWELog.error(.scene, "Effect \(effect.file) on object \(objectID) can't use WE shaders: \(error)")

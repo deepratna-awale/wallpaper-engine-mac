@@ -221,57 +221,51 @@ private final class SceneInspectorModel: ObservableObject {
 
     private func makeEffects(_ effects: [WEObjectEffect], objectID: Int,
                              storedValues: [String: String]) -> [SceneInspectorEffect] {
-        effects.enumerated().map { effectIndex, effect in
+        let wallpaperDirectory = directory
+        let assets = WallpaperEngineAssets.directory
+        let readFile: (String) -> Data? = { path in
+            FileManager.default.contents(atPath: wallpaperDirectory.appending(path: path).path)
+                ?? assets.flatMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }
+        }
+        return effects.enumerated().map { effectIndex, effect in
             let name = ((effect.file as NSString).deletingLastPathComponent as NSString).lastPathComponent.lowercased()
-            let definition = SceneEffectRegistry.all.first { $0.name == name }
-            let authored = effect.passes?.first?.constantshadervalues ?? [:]
-            var keys = Set(authored.keys.map { $0.lowercased() })
-            keys.formUnion(definition?.parameters.map(\.key) ?? [])
             let effectID = "\(objectID):\(effectIndex)"
             let enabledKey = sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: effectIndex)
             effectEnabled[effectID] = storedValues[enabledKey].map { $0.lowercased() != "false" }
                 ?? effect.visible.map { $0 != false } ?? true
+            // Parameters come from the effect's own shaders, as in WE's editor.
+            let parameters = SceneEffectParameters.parameters(for: effect.file, readFile: readFile)
+            let authored = effect.passes?.first?.constants ?? [:]
             var controls: [SceneInspectorEffectControl] = []
-            for key in keys.sorted() {
-                let authoredConstant = authored.first { $0.key.lowercased() == key }?.value
-                let authoredValues: [Double]
-                if let number = authoredConstant?.number {
-                    authoredValues = [number]
-                } else if let string = authoredConstant?.string {
-                    authoredValues = string.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Double($0) }
-                } else if let parameter = definition?.parameters.first(where: { $0.key == key }),
-                          let value = Double(parameter.defaultValue) {
-                    authoredValues = [value]
-                } else {
-                    authoredValues = [0]
-                }
-                let overrideKey = sceneAuthoredEffectOverrideKey(objectID: objectID,
-                                                                  effectIndex: effectIndex,
-                                                                  parameter: key)
+            for parameter in parameters {
+                let authoredValue = authored.first { $0.key.caseInsensitiveCompare(parameter.materialKey) == .orderedSame }?
+                    .value.valueSource.flatMap { source -> [Double]? in
+                        if case .literal(let value) = source { return value.components.map(Double.init) }
+                        return nil
+                    }
+                let baseValues = authoredValue ?? parameter.defaultValue
+                let overrideKey = sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: effectIndex,
+                                                                  parameter: parameter.materialKey)
                 let overrideValues = storedValues[overrideKey]?
                     .split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Double($0) }
-                let hasOverride = overrideValues?.isEmpty == false
-                let values = hasOverride ? overrideValues! : authoredValues
-                let displayValues = hasOverride ? values : values.map { Self.displayEffectValue($0, key: key) }
-                let known = definition?.parameters.first { $0.key == key }
-                let magnitude = max(displayValues.map(abs).max() ?? 1, 1)
-                for component in displayValues.indices {
-                    let controlID = "\(effectID):\(key):\(component)"
-                    effectValues[controlID] = displayValues[component]
-                    let suffix = displayValues.count > 1 ? " \(["X", "Y", "Z", "W"][min(component, 3)])" : ""
+                let values = overrideValues?.isEmpty == false ? overrideValues! : baseValues
+                for component in parameter.defaultValue.indices {
+                    let controlID = "\(effectID):\(parameter.materialKey):\(component)"
+                    let value = values.indices.contains(component) ? values[component] : parameter.defaultValue[component]
+                    effectValues[controlID] = value
+                    let suffix = parameter.defaultValue.count > 1
+                        ? " " + (parameter.isColor ? ["R", "G", "B", "A"] : ["X", "Y", "Z", "W"])[min(component, 3)] : ""
                     controls.append(SceneInspectorEffectControl(
-                        id: controlID, effectID: effectID, key: key, component: component,
-                        title: (known?.title ?? key.capitalized) + suffix,
-                        minimum: key == "direction" ? -180 : known?.normalizedMinimum ?? (displayValues[component] < 0 ? -magnitude * 2 : 0),
-                        maximum: key == "direction" ? 180 : known?.normalizedMaximum ?? magnitude * 2,
-                        defaultValue: authoredValues.indices.contains(component) ? Self.displayEffectValue(authoredValues[component], key: key) : 0,
-                        displaysDegrees: key == "direction"
-                    ))
+                        id: controlID, effectID: effectID, key: parameter.materialKey, component: component,
+                        title: parameter.title + suffix,
+                        minimum: min(parameter.minimum, value), maximum: max(parameter.maximum, value),
+                        defaultValue: baseValues.indices.contains(component) ? baseValues[component] : 0,
+                        displaysDegrees: false))
                 }
             }
             let maskPath = effect.passes?.first?.textures?.compactMap { $0 }.first
             return SceneInspectorEffect(id: effectID, name: name,
-                                        title: definition?.title ?? name.capitalized,
+                                        title: name.replacingOccurrences(of: "_", with: " ").capitalized,
                                         maskPath: maskPath, controls: controls)
         }
     }

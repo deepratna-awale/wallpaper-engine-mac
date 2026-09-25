@@ -69,7 +69,8 @@ struct SceneEffectPlanBuilder {
 
     private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
 
-    func build(_ effect: WEObjectEffect) throws -> SceneEffectPlan {
+    /// `overrides` returns the user's edit for a WE material key (inspector), as a WE value string.
+    func build(_ effect: WEObjectEffect, overrides: (String) -> String? = { _ in nil }) throws -> SceneEffectPlan {
         // An effect's materials, shaders and textures live under its own folder
         // (`effects/tint/materials/...`), like a small asset root of its own.
         let effectDirectory = (effect.file as NSString).deletingLastPathComponent
@@ -94,7 +95,7 @@ struct SceneEffectPlanBuilder {
             let (material, resolvedMaterialPath): (MaterialDocument, String) = try scoped.decode(materialPath)
             guard let materialPass = material.passes.first else { throw SceneEffectPlanError.missing("\(materialPath) passes") }
             if let plan = try scoped.buildPass(pass, materialPass: materialPass, materialPath: resolvedMaterialPath,
-                                               instance: instance, fbos: document.fbos) {
+                                               instance: instance, fbos: document.fbos, overrides: overrides) {
                 passes.append(plan)
             }
         }
@@ -107,7 +108,7 @@ struct SceneEffectPlanBuilder {
     }
 
     fileprivate func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
-                               instance: WEObjectEffectPass?, fbos: [EffectFBO],
+                               instance: WEObjectEffectPass?, fbos: [EffectFBO], overrides: (String) -> String?,
                                shaderReader: @escaping (String) -> Data?, effectDirectory: String = "") throws -> SceneEffectPassPlan? {
         let loader = ShaderSourceLoader(readFile: shaderReader)
         let vertex = try loader.load(materialPass.shader, stage: .vertex)
@@ -151,7 +152,8 @@ struct SceneEffectPlanBuilder {
         let constants = ShaderConstantResolver.resolve(
             uniforms: uniforms.map { .init(name: $0.name, glslType: $0.type, arrayCount: $0.arrayCount ?? 1, annotation: $0.annotation) },
             material: materialPass.constantshadervalues.compactMapValues(\.valueSource),
-            instance: (instance?.constants ?? [:]).compactMapValues(\.valueSource))
+            instance: Self.applyingOverrides(overrides, to: (instance?.constants ?? [:]).compactMapValues(\.valueSource),
+                                             uniforms: uniforms))
         return SceneEffectPassPlan(command: .render,
                                    variantKey: ShaderVariantTranslator.cacheKey(vertex: vertex, fragment: fragment, combos: combos),
                                    variant: variant, blending: materialPass.blending ?? "normal", target: pass.target,
@@ -174,6 +176,19 @@ struct SceneEffectPlanBuilder {
             return nil
         }
         return .asset(key: "\(materialPath)|\(name)", source: source)
+    }
+
+    /// The user's inspector edits win over the scene's authored value; they're static literals, so
+    /// an edited chain can still be reused frame to frame (an edit rebuilds the scene content).
+    static func applyingOverrides(_ overrides: (String) -> String?, to instance: [String: SceneValueSource],
+                                  uniforms: [ShaderUniformDeclaration]) -> [String: SceneValueSource] {
+        var result = instance
+        for uniform in uniforms {
+            guard let key = uniform.materialKey, let raw = overrides(key), let value = ShaderValue(string: raw) else { continue }
+            result = result.filter { $0.key.caseInsensitiveCompare(key) != .orderedSame }
+            result[key] = .literal(value)
+        }
+        return result
     }
 
     /// WE conditions are a list of combo requirements; any one fully matching enables the pass.
@@ -211,11 +226,12 @@ private struct Scoped {
     }
 
     func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
-                   instance: WEObjectEffectPass?, fbos: [EffectFBO]) throws -> SceneEffectPassPlan? {
+                   instance: WEObjectEffectPass?, fbos: [EffectFBO],
+                   overrides: (String) -> String?) throws -> SceneEffectPassPlan? {
         let read = builder.readFile
         let scopes = candidates
         return try builder.buildPass(pass, materialPass: materialPass, materialPath: materialPath,
-                                     instance: instance, fbos: fbos,
+                                     instance: instance, fbos: fbos, overrides: overrides,
                                      shaderReader: { path in scopes(path).lazy.compactMap(read).first },
                                      effectDirectory: directory)
     }
