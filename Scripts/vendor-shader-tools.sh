@@ -16,6 +16,10 @@ if [[ -z "$APP" || ! -d "$APP" ]]; then
 fi
 
 DEST="$APP/Contents/Resources/shader-tools"
+# Start from an empty folder every build. Rewriting a signed binary in place keeps its inode, and
+# the kernel then checks its pages against the old cached signature and SIGKILLs it on launch
+# ("rejecting invalid page"). Fresh files get fresh inodes.
+rm -rf "$DEST"
 mkdir -p "$DEST"
 
 # Runs as a build phase, so bail out early when the vendored copies are already current.
@@ -137,7 +141,9 @@ copy_license "$SPIRV" spirv-cross
 # install_name_tool invalidates signatures, so re-sign. Nested executables must carry the same
 # identity as the app for notarization, so prefer the identity Xcode is already using.
 SIGN_IDENTITY="${EXPANDED_CODE_SIGN_IDENTITY_NAME:-${CODE_SIGN_IDENTITY:-}}"
-if [[ -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" || "$SIGN_IDENTITY" == "Sign to Run Locally" ]]; then
+# CODE_SIGNING_ALLOWED=NO (CI) still leaves CODE_SIGN_IDENTITY set, but no identity is available.
+if [[ "${CODE_SIGNING_ALLOWED:-YES}" == "NO" || -z "$SIGN_IDENTITY" || "$SIGN_IDENTITY" == "-" \
+      || "$SIGN_IDENTITY" == "Sign to Run Locally" ]]; then
     SIGN_IDENTITY="-"
     echo "note: signing shader tools ad-hoc; re-sign with your Developer ID before notarizing"
 fi
@@ -171,8 +177,10 @@ for file in "$DEST"/*; do
             *.dylib) entitlements=() ;;
             *) entitlements=(--entitlements "$ENTITLEMENTS") ;;
         esac
-        codesign --force --options runtime --timestamp=none "${entitlements[@]}" \
-            --sign "$SIGN_IDENTITY" "$file" >/dev/null 2>&1 || true
+        # ${arr[@]+...}: bash 3.2 under `set -u` treats an empty array as unbound, which silently
+        # skipped signing every dylib and left them with invalid signatures (SIGKILL on load).
+        codesign --force --options runtime --timestamp=none ${entitlements[@]+"${entitlements[@]}"} \
+            --sign "$SIGN_IDENTITY" "$file" >/dev/null
     fi
 done
 
@@ -180,10 +188,14 @@ echo "--- verifying ---"
 # Check stderr too: a dyld failure here means the tools are unusable at runtime, and redirecting
 # only stdout previously let that pass silently.
 for tool in glslangValidator spirv-cross; do
-    if output=$("$DEST/$tool" --version 2>&1) || [[ "$output" != *"dyld"* ]]; then
+    # spirv-cross --version exits 1 normally, so only a dyld error or a signal (status >= 128,
+    # e.g. SIGKILL for an invalid signature, which prints nothing) counts as failure.
+    status=0
+    output=$("$DEST/$tool" --version 2>&1) || status=$?
+    if (( status < 128 )) && [[ "$output" != *"dyld"* ]]; then
         echo "$tool: OK"
     else
-        echo "error: $tool cannot run:" >&2
+        echo "error: $tool cannot run (status $status):" >&2
         echo "$output" | head -n 3 >&2
         exit 1
     fi
