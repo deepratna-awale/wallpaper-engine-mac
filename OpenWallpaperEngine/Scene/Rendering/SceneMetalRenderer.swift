@@ -279,14 +279,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     ]
                     layerAliases[entry.layer.name] = entry.layer.id
                 }
-                // Other objects (groups, particle systems) can be moved by scripts too.
+                // Other objects (groups, particle systems) can be moved by scripts too. A value
+                // registered here reads as script-set state, so a timeline-animated one is left out
+                // for its animation to drive.
                 for (id, motion) in content.motions where scriptLayers[id] == nil {
-                    scriptLayers[id] = [
-                        "id": id, "name": motion.name, "visible": true,
-                        "origin": ["x": motion.origin.x, "y": motion.origin.y, "z": 0],
-                        "scale": ["x": motion.scale.x, "y": motion.scale.y, "z": 1],
-                        "angles": ["x": 0, "y": 0, "z": motion.angle],
-                    ]
+                    var state: [String: Any] = ["id": id, "name": motion.name, "visible": true]
+                    if motion.originAnimation == nil, motion.bindings.fields[.origin] == nil {
+                        state["origin"] = ["x": motion.origin.x, "y": motion.origin.y, "z": 0]
+                    }
+                    if motion.scaleAnimation == nil, motion.bindings.fields[.scale] == nil { state["scale"] = ["x": motion.scale.x, "y": motion.scale.y, "z": 1] }
+                    if motion.anglesAnimation == nil, motion.bindings.fields[.angles] == nil { state["angles"] = ["x": 0, "y": 0, "z": motion.angle] }
+                    scriptLayers[id] = state
                     if layerAliases[motion.name] == nil { layerAliases[motion.name] = id }
                 }
                 AudioReactiveScriptEngine.shared.configureLayers(scriptLayers, aliases: layerAliases,
