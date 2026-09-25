@@ -301,6 +301,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         spectrum = [Double](repeating: 0, count: spectrum.count)
         waveform = [Double](repeating: 0, count: waveform.count)
         levelLock.unlock()
+        audioSpectrumAnalyzer.reset()
     }
 
     /// Scene-space cursor for per-layer hit testing; the renderer owns the screen-to-scene mapping.
@@ -1130,7 +1131,9 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
                 of outputType: SCStreamOutputType) {
-        guard outputType == .audio, let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
+        guard outputType == .audio else { return }
+        feedAudioSpectrum(sampleBuffer)
+        guard let blockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer) else { return }
         var length = 0
         var dataPointer: UnsafeMutablePointer<Int8>?
         guard CMBlockBufferGetDataPointer(blockBuffer, atOffset: 0, lengthAtOffsetOut: nil,
@@ -1157,6 +1160,51 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         spectrum = magnitudes
         waveform = waveformValues
         levelLock.unlock()
+    }
+
+    /// WE's `g_AudioSpectrum*` source. Fed on the audio thread; the analyzer owns its own lock.
+    private let audioSpectrumAnalyzer = AudioSpectrumAnalyzer()
+
+    /// The latest smoothed WE spectra, without advancing the smoothing. (`audioSpectrum` is
+    /// already the legacy 64-band mono array used by the script bindings.)
+    var audioSpectrumSnapshot: AudioSpectrumSnapshot { audioSpectrumAnalyzer.snapshot }
+
+    /// Advances the spectrum smoothing by one frame. The renderer calls this exactly once per
+    /// rendered frame and binds the result to every pass of that frame.
+    func advanceAudioSpectrumFrame() -> AudioSpectrumSnapshot { audioSpectrumAnalyzer.advanceFrame() }
+
+    /// Splits the capture buffer (non-interleaved float32) into its channels for the analyzer.
+    private func feedAudioSpectrum(_ sampleBuffer: CMSampleBuffer) {
+        var sizeNeeded = 0
+        guard CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: &sizeNeeded, bufferListOut: nil, bufferListSize: 0,
+            blockBufferAllocator: nil, blockBufferMemoryAllocator: nil, flags: 0,
+            blockBufferOut: nil) == noErr, sizeNeeded > 0 else { return }
+        let listMemory = UnsafeMutableRawPointer.allocate(byteCount: sizeNeeded,
+                                                          alignment: MemoryLayout<AudioBufferList>.alignment)
+        defer { listMemory.deallocate() }
+        let listPointer = listMemory.bindMemory(to: AudioBufferList.self, capacity: 1)
+        var retainedBlock: CMBlockBuffer?
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer, bufferListSizeNeededOut: nil, bufferListOut: listPointer, bufferListSize: sizeNeeded,
+            blockBufferAllocator: nil, blockBufferMemoryAllocator: nil,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment, blockBufferOut: &retainedBlock)
+        guard status == noErr else {
+            OWELog.debug(.audio, "Audio buffer list unavailable (status \(status))")
+            return
+        }
+        let buffers = UnsafeMutableAudioBufferListPointer(listPointer)
+        func channel(_ buffer: AudioBuffer) -> UnsafeBufferPointer<Float> {
+            guard let data = buffer.mData else { return UnsafeBufferPointer(start: nil, count: 0) }
+            let count = Int(buffer.mDataByteSize) / MemoryLayout<Float>.size
+            return UnsafeBufferPointer(start: data.assumingMemoryBound(to: Float.self), count: count)
+        }
+        guard let first = buffers.first else { return }
+        let left = channel(first)
+        let right = buffers.count > 1 ? channel(buffers[1]) : left
+        withExtendedLifetime(retainedBlock) {
+            audioSpectrumAnalyzer.ingest(left: left, right: right)
+        }
     }
 
     // Audio-thread only: the capture stream delivers buffers serially, so these need no locking.
