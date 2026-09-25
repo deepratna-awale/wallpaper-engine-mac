@@ -64,14 +64,46 @@ final class ParticleEmitterMotionTests: XCTestCase {
     func testTurningAndScalingTheEmitterTurnsAndScalesItsParticles() throws {
         let system = stillSystem(worldSpace: false)
         step(system, emitter: translation(SIMD2(100, 100)), frames: 20)
+        XCTAssertEqual(system.drawLinear, matrix_identity_float2x2)
         let before = system.particles
         let turned = SceneAffineTransform(SceneLocalTransform(origin: SIMD2(100, 100), scale: SIMD2(2, 2), angle: .pi / 2))
         step(system, emitter: turned)
         for (old, new) in zip(before, system.particles) {
             let expected = turned.apply(old.position - SIMD2(100, 100))
             XCTAssertLessThan(simd_distance(new.position, expected), 1e-3)
-            XCTAssertEqual(new.size, old.size * 2, accuracy: 1e-3)
-            XCTAssertEqual(new.rotation, old.rotation - .pi / 2, accuracy: 1e-4, "a clockwise quarter turn")
+            XCTAssertEqual(new.size, old.size, "sizes stay the emitter's own")
+            XCTAssertEqual(new.rotation, old.rotation)
+        }
+        XCTAssertEqual(system.drawLinear, turned.linear, "the emitter's transform draws them, as WE's model matrix")
+    }
+
+    /// WE expands a sprite in its system's space and draws it through the system's model matrix,
+    /// so a non-uniform scale squashes it (and a turn turns it).
+    func testANonUniformScaleSquashesSprites() throws {
+        let system = stillSystem(worldSpace: false)
+        let squashed = SceneAffineTransform(SceneLocalTransform(origin: SIMD2(100, 100), scale: SIMD2(3, 0.5), angle: 0))
+        step(system, emitter: squashed)
+        let axes = system.spriteAxes(size: 10, rotation: 0, scale: SIMD2(1, 1))
+        XCTAssertEqual(axes.x.x, 30, accuracy: 1e-4)
+        XCTAssertEqual(axes.x.y, 0, accuracy: 1e-4)
+        XCTAssertEqual(axes.y.x, 0, accuracy: 1e-4)
+        XCTAssertEqual(axes.y.y, 5, accuracy: 1e-4)
+        // A quarter-turned sprite swaps its axes before the scale: now tall and narrow.
+        let turned = system.spriteAxes(size: 10, rotation: .pi / 2, scale: SIMD2(1, 1))
+        XCTAssertEqual(simd_length(turned.x), 5, accuracy: 1e-4)
+        XCTAssertEqual(simd_length(turned.y), 30, accuracy: 1e-4)
+        XCTAssertEqual(system.drawSizeScale, 1, "sprites take the transform whole")
+    }
+
+    func testWorldSpaceParticlesTakeTheEmitterScaleWhenTheySpawn() throws {
+        let system = stillSystem(worldSpace: true)
+        let scaled = SceneAffineTransform(SceneLocalTransform(origin: SIMD2(100, 100), scale: SIMD2(2, 2), angle: 0))
+        step(system, emitter: scaled, frames: 5)
+        XCTAssertEqual(system.drawLinear, matrix_identity_float2x2, "they left the emitter's space")
+        let local = stillSystem(worldSpace: false)
+        step(local, emitter: scaled, frames: 5)
+        for (world, own) in zip(system.particles, local.particles) {
+            XCTAssertEqual(world.size, own.size * 2, accuracy: 1e-4)
         }
     }
 

@@ -98,7 +98,8 @@ struct ParticleGPUFrame {
     var constraintMotion: SIMD4<Float>
     /// Motion linear part, column 0 xy, column 1 xy.
     var motionLinear: SIMD4<Float>
-    /// Motion size scale, turn, has motion.
+    /// Spawn size scale, spawn turn (`ParticleFrameInputs.spawnSizeScale`), has motion, trail and
+    /// rope record size scale (`drawSizeScale`).
     var motionExtras: SIMD4<Float>
     /// `ParticleFrameInputs.absolutePoints`, maximum.
     var extra: SIMD4<UInt32>
@@ -110,6 +111,8 @@ struct ParticleGPUFrame {
     var audioScales: SIMD4<Float>
     /// `ParticleFrameInputs.periodLimit` (`noLimit`: none), starts a period, one per frame.
     var emission: SIMD4<UInt32>
+    /// `ParticleFrameInputs.drawLinear`, column 0 xy, column 1 xy.
+    var drawLinear: SIMD4<Float>
 
     static let noRenderVar = UInt32.max
     static let noLimit = UInt32.max
@@ -134,7 +137,8 @@ struct ParticleGPUFrame {
         constraintMotion = SIMD4(inputs.constraintOrigin.x, inputs.constraintOrigin.y,
                                  motion.translation.x, motion.translation.y)
         motionLinear = Self.columns(motion.linear)
-        motionExtras = SIMD4(inputs.motionScale, inputs.motionAngle, inputs.motion == nil ? 0 : 1, 0)
+        motionExtras = SIMD4(inputs.spawnSizeScale, inputs.spawnTurn, inputs.motion == nil ? 0 : 1, inputs.drawSizeScale)
+        drawLinear = Self.columns(inputs.drawLinear)
         extra = SIMD4(inputs.absolutePoints.rawValue, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count), 0)
         audioScales = SIMD4(inputs.audioVelocityScale, inputs.turbulenceScale, inputs.vortexScale, 0)
         spawnScale = inputs.spawnScale

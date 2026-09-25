@@ -75,17 +75,20 @@ struct ParticleFrameInputs {
     /// applied to every particle alive before this step's spawns. Nil when it did not move.
     var motion: SceneAffineTransform?
 
-    /// The particle size factor of `motion`: its area scale's square root.
-    var motionScale: Float {
-        guard let motion else { return 1 }
-        return sqrt(abs(simd_determinant(motion.linear)))
-    }
+    /// What the emitter's scale and rotation make of a spawned particle's size and rotation, for a
+    /// `worldspace` system, whose particles leave its space when they spawn: the area scale's
+    /// square root and the turn. A system whose particles stay in its space draws them through its
+    /// transform instead (`drawLinear`), and keeps 1 and 0.
+    var spawnSizeScale: Float = 1
+    var spawnTurn: Float = 0
 
-    /// The turn of `motion`, counter-clockwise in radians, which particles' own rotation takes.
-    var motionAngle: Float {
-        guard let motion else { return 0 }
-        return atan2(motion.linear.columns.0.y, motion.linear.columns.0.x)
-    }
+    /// The emitter's scale, rotation and shear its particles are drawn through, as WE draws a system
+    /// through its model matrix: a sprite is squashed and turned with it
+    /// (`ParticleSystemRuntime.drawLinear`). Identity for a `worldspace` system.
+    var drawLinear = matrix_identity_float2x2
+    /// The factor on the size of trail and rope records, whose width the shaders don't take from
+    /// `drawLinear`: its area scale's square root (`ParticleSystemRuntime.drawSizeScale`).
+    var drawSizeScale: Float = 1
 
     /// Advances `system`'s clock and evaluates this step's inputs. `emitter` is the emitter's
     /// world transform this frame; nil keeps the authored one.
@@ -143,6 +146,9 @@ struct ParticleFrameInputs {
         inputs.vortexScale = configuration.vortexAudio?.response(audio) ?? 1
         let space = SceneParticleEmitterSpace(world: world)
         inputs.place(configuration, in: space, cursor: cursor)
+        system.drawLinear = configuration.worldSpace ? matrix_identity_float2x2 : world.linear
+        inputs.drawLinear = system.drawLinear
+        inputs.drawSizeScale = system.drawSizeScale
         inputs.collisions = configuration.collisions.flatMap { collision in
             collision.placed(in: space) { id in
                 controlPointPosition(id, configuration: configuration, space: space, cursor: cursor)
@@ -186,6 +192,11 @@ struct ParticleFrameInputs {
                                 cursor: SIMD2<Float>) {
         let origin = space.origin
         extentScale = space.world.axisScale
+        if configuration.worldSpace {
+            let linear = space.world.linear
+            spawnSizeScale = sqrt(abs(simd_determinant(linear)))
+            spawnTurn = atan2(linear.columns.0.y, linear.columns.0.x)
+        }
         offsetLinear = space.offsetLinear
         velocityRotation = space.rotation
         gravity = configuration.worldGravity ? configuration.gravity : space.direction(configuration.gravity)

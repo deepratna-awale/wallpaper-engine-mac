@@ -56,6 +56,9 @@ final class ParticleSystemRuntime {
     var gpu: ParticleGPUSystem?
     /// The emitter's world transform at the last step (`ParticleFrameInputs.motion`).
     var lastEmitter: SceneAffineTransform?
+    /// The emitter's scale, rotation and shear the particles are drawn through
+    /// (`ParticleFrameInputs.drawLinear`), from the last step.
+    var drawLinear = matrix_identity_float2x2
     /// The emitter's timing (`ParticleEmitterTiming`) for a system that isn't instanced.
     var emitterClock = ParticleEmitterClock()
     /// What the rate emitted in the current period (`ParticleFrameInputs.periodLimit`), on the CPU.
@@ -155,10 +158,7 @@ enum ParticleCPUSimulation {
             }
         } else {
             if let motion = inputs.motion {
-                let scale = inputs.motionScale, angle = inputs.motionAngle
-                for index in system.particles.indices {
-                    follow(&system.particles[index], motion: motion, scale: scale, angle: angle)
-                }
+                for index in system.particles.indices { follow(&system.particles[index], motion: motion) }
             }
             if inputs.startsPeriod { system.periodEmitted = 0 }
             let limit = ParticleEmitterClock.rateLimit(periodLimit: inputs.periodLimit, emitted: system.periodEmitted,
@@ -201,13 +201,12 @@ enum ParticleCPUSimulation {
         if configuration.isInstanced { countInstanceParticles(system) }
     }
 
-    /// Carries a particle that lives in its emitter's space along with the emitter's move.
-    static func follow(_ particle: inout Particle, motion: SceneAffineTransform, scale: Float, angle: Float) {
+    /// Carries a particle that lives in its emitter's space along with the emitter's move. Its size
+    /// and rotation stay the emitter's own: it is drawn through the emitter's transform
+    /// (`ParticleSystemRuntime.drawLinear`).
+    static func follow(_ particle: inout Particle, motion: SceneAffineTransform) {
         particle.position = motion.apply(particle.position)
         particle.velocity = motion.linear * particle.velocity
-        particle.size *= scale
-        particle.baseSize *= scale
-        particle.rotation += angle
         for sample in particle.history.indices {
             particle.history[sample] = motion.apply(particle.history[sample])
         }
@@ -294,11 +293,13 @@ enum ParticleCPUSimulation {
             case .velocity: velocity = remap.multiply ? velocity * factor : velocity
             }
         }
+        // A worldspace particle leaves the emitter's space: it takes the emitter's scale and turn now.
+        size *= inputs.spawnSizeScale
         return Particle(
             position: position, velocity: velocity, age: 0,
             lifetime: random(configuration.lifetime.lowerBound * scale.z, configuration.lifetime.upperBound * scale.z, .lifetime),
             size: size, baseSize: size, alpha: alpha, baseAlpha: alpha,
-            rotation: random(configuration.minimumRotation, configuration.maximumRotation, .rotation),
+            rotation: random(configuration.minimumRotation, configuration.maximumRotation, .rotation) + inputs.spawnTurn,
             angularVelocity: random(configuration.minimumAngularVelocity, configuration.maximumAngularVelocity, .angularVelocity),
             color: color, baseColor: color,
             spriteFrame: ParticleRandom.index(configuration.spriteSheet?.frames ?? 1, seed: seed, serial: serial, .spriteFrame),
@@ -452,6 +453,28 @@ enum ParticleCPUSimulation {
         let alignment = averageVelocity - particle.velocity
         let cohesion = averagePosition - particle.position
         particle.velocity += (alignment * boids.alignment + cohesion * boids.cohesion + separation * boids.separation) * deltaTime
+    }
+}
+
+extension ParticleSystemRuntime {
+    /// The factor on a trail's or rope's size (`ParticleFrameInputs.drawSizeScale`): the area scale
+    /// of `drawLinear`, which WE's trail and rope shaders apply along directions of their own.
+    /// Sprites take `drawLinear` whole and keep 1.
+    var drawSizeScale: Float {
+        let name = configuration.rendererName
+        guard name.contains("trail") || name.hasPrefix("rope") else { return 1 }
+        return sqrt(abs(simd_determinant(drawLinear)))
+    }
+
+    /// A built-in sprite's quad axes (`LayerUniform.quadAxisX`, y up) for a particle of `size` and
+    /// `rotation` drawn through `drawLinear`, as WE's model matrix draws it. `scale` takes scene
+    /// units to the target's pixels. `spriteAxes` in `ParticleShared.h` is the GPU's.
+    func spriteAxes(size: Float, rotation: Float, scale: SIMD2<Float>) -> (x: SIMD2<Float>, y: SIMD2<Float>) {
+        let c = cos(rotation), s = sin(rotation)
+        // Rotated in the shader's y-down corner space, then flipped to y up.
+        let x: SIMD2<Float> = drawLinear * (SIMD2(c, -s) * size)
+        let y: SIMD2<Float> = drawLinear * (SIMD2(-s, -c) * size)
+        return (x * scale, -y * scale)
     }
 }
 

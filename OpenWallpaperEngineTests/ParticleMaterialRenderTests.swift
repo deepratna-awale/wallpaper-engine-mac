@@ -43,6 +43,21 @@ final class ParticleMaterialRenderTests: XCTestCase {
         XCTAssertEqual(renderer.drawsEncoded, 1, "one instanced draw per system")
     }
 
+    /// WE draws a system through its model matrix: a non-uniform scale squashes the sprite
+    /// (`g_Orientation*` carry the emitter's transform).
+    func testANonUniformEmitterScaleSquashesTheSprite() throws {
+        for geometry in [ParticleMaterialPlan.Stage.Geometry.emulated(vertexCount: 6), .expandedQuads] {
+            let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: geometry)
+            // Size 80 draws a 40-wide quad; scaled 2 across and 0.5 up it is 80 by 20.
+            let pixels = try render(plan, particles: [particle(at: SIMD2(128, 128), size: 80)],
+                                    drawLinear: simd_float2x2(diagonal: SIMD2(2, 0.5)))
+            XCTAssertGreaterThan(pixels.red(x: 128 + 36, y: 128), 250, "\(geometry): twice as wide")
+            XCTAssertLessThan(pixels.red(x: 128 + 44, y: 128), 5, "\(geometry)")
+            XCTAssertGreaterThan(pixels.red(x: 128, y: 128 + 8), 250, "\(geometry)")
+            XCTAssertLessThan(pixels.red(x: 128, y: 128 + 12), 5, "\(geometry): half as tall")
+        }
+    }
+
     func testSpriteThroughNoGeometryShaderStream() throws {
         let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .expandedQuads)
         let pixels = try render(plan, particles: [particle(at: SIMD2(64, 192), size: 80),
@@ -674,7 +689,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
     private func render(_ plan: ParticleMaterialPlan, particles: [Particle], texture: MTLTexture? = nil,
                         animationMode: String = "sequence", cull: (MTLCullMode, MTLWinding)? = nil,
                         pixelFormat: MTLPixelFormat = .rgba8Unorm, scene: [UInt8]? = nil,
-                        values: SceneValueContext = NoValues(),
+                        values: SceneValueContext = NoValues(), drawLinear: simd_float2x2 = matrix_identity_float2x2,
                         assetTexture: @escaping (String, SceneMetalTextureSource) -> MTLTexture? = { _, _ in nil }) throws -> Pixels {
         let size = Self.size
         XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: pixelFormat), "pipelines still compiling")
@@ -684,6 +699,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
         let system = ParticleSystemRuntime(texture: texture ?? white,
                                            configuration: Self.configuration(plan: plan, animationMode: animationMode))
         system.particles = particles
+        system.drawLinear = drawLinear
         XCTAssertTrue(renderer.prepare(system, pixelFormat: pixelFormat, opacity: { _ in 1 }), "draws through the material")
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: size, height: size, mipmapped: false)

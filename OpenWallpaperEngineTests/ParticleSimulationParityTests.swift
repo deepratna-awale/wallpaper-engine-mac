@@ -316,6 +316,22 @@ final class ParticleSimulationParityTests: XCTestCase {
         }
     }
 
+    /// The built-in sprite goes through the emitter's transform on both paths (`spriteAxes`).
+    func testBuiltInSpritesTakeTheEmitterTransform() throws {
+        var system = ParticleTestSystem()
+        let turn = simd_float2x2(SIMD2(0.8, 0.6), SIMD2(-0.6, 0.8))
+        system.emitterLinear = turn * simd_float2x2(diagonal: SIMD2(2.5, 0.5))
+        let (cpu, gpu) = try runBoth(system, frames: 30, kind: .fallbackSprite)
+        let actual = simulator.records(gpu.runtime, as: LayerUniform.self, queue: queue).records
+        XCTAssertEqual(actual.count, cpu.particles.count)
+        XCTAssertEqual(cpu.drawLinear, system.emitterLinear)
+        for (record, particle) in zip(actual, cpu.particles) {
+            let axes = cpu.spriteAxes(size: particle.size, rotation: particle.rotation, scale: SIMD2(1, 1))
+            XCTAssertLessThan(simd_distance(record.quadAxisX, axes.x), 1e-2)
+            XCTAssertLessThan(simd_distance(record.quadAxisY, axes.y), 1e-2)
+        }
+    }
+
     // MARK: - Helpers
 
     private struct GPURun {

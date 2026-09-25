@@ -108,7 +108,7 @@ extension ParticleCPUSimulation {
         let carried = SceneAffineTransform(linear: motion.linear,
                                            translation: instance.translation + motion.translation
                                                - motion.linear * instance.previousTranslation)
-        follow(&particle, motion: carried, scale: inputs.motionScale, angle: inputs.motionAngle)
+        follow(&particle, motion: carried)
     }
 
     /// Each instance's particles after the step.

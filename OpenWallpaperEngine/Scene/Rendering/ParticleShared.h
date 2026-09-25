@@ -95,12 +95,13 @@ struct ParticleFrame {
     float4 origins;          // vortex origin xy, reduction origin xy
     float4 constraintMotion; // constraint origin xy, motion translation xy
     float4 motionLinear;     // motion column 0 xy, column 1 xy
-    float4 motionExtras;     // motion size scale, turn, has motion
+    float4 motionExtras;     // spawn size scale, spawn turn, has motion, trail and rope record size scale
     uint4 extra;             // points that stay put in every instance (`ParticleFrameInputs.AbsolutePoints`), maximum, collisions
     float4 spawnScale;       // instance overrides: size, alpha, lifetime, speed
     float4 colorScale;       // instance overrides: tint times brightness
     float4 audioScales;      // audio responses: turbulentvelocityrandom, turbulence, vortex
     uint4 emission;          // period limit (~0: none), starts a period, one per frame
+    float4 drawLinear;       // the emitter's linear its particles are drawn through: column 0 xy, column 1 xy
 };
 
 // `ParticleSpriteInstance` and `ParticleRopeSegmentInstance` (ParticleInstanceLayout.swift).
@@ -306,6 +307,19 @@ static FallbackInstance fallbackInstance(float2 position, float2 size, float opa
     instance.quadAxisX = float2(0);
     instance.quadAxisY = float2(0);
     return instance;
+}
+
+/// A built-in sprite drawn through the emitter's `linear` (`ParticleSystemRuntime.drawLinear`), as
+/// WE's model matrix draws it: the quad's axes, in the target's pixels (`LayerUniform.quadAxisX`).
+/// The shader's corners run y down, rotated by `rotation`, and its axes are y up.
+static void spriteAxes(thread FallbackInstance &instance, float2x2 linear, float rotation, float size,
+                       constant ParticleFrame &f) {
+    const float2 scale = f.scene.zw / f.scene.xy;
+    const float c = cos(rotation), s = sin(rotation);
+    // Rotated in the corners' y-down space, then flipped to y up.
+    const float2 x = float2(c, -s) * size, y = float2(-s, -c) * size;
+    instance.quadAxisX = linear * x * scale;
+    instance.quadAxisY = -(linear * y) * scale;
 }
 
 static float2 catmullRom(float2 previous, float2 start, float2 end, float2 following, float t) {

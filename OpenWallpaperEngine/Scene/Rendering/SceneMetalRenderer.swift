@@ -523,6 +523,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                                    drawableSize: drawableSize, placement: .stretch)
                         uniform.particleShape = 1
                         uniform.rotation = particle.rotation
+                        let axes = system.spriteAxes(size: particle.size, rotation: particle.rotation,
+                                                     scale: drawableSize / sceneSize)
+                        uniform.quadAxisX = axes.x
+                        uniform.quadAxisY = axes.y
                         uniform.color = particle.color
                         let uv = spriteSheetUV(for: particle, configuration: system.configuration)
                         uniform.uvOrigin = uv.origin
@@ -1294,8 +1298,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                      drawableSize: SIMD2<Float>) {
         let speed = simd_length(particle.velocity)
         let stretch = max(system.configuration.trailLength, 1)
-        let length = max(particle.size, min(particle.size * stretch, particle.size + speed * 0.08))
-        let width = system.configuration.refractive ? max(2, particle.size * 0.08) : particle.size
+        let size = particle.size * system.drawSizeScale
+        let length = max(size, min(size * stretch, size + speed * 0.08))
+        let width = system.configuration.refractive ? max(2, size * 0.08) : size
         var uniform = layerUniform(position: particle.position,
                                    size: SIMD2<Float>(width, length),
                                    opacity: particleOpacity(particle, in: system), drawableSize: drawableSize, placement: .stretch)
@@ -1351,7 +1356,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard length > 0.01 else { continue }
             // 0 at the oldest sample, 1 at the particle itself.
             let progress = Float(index + 1) / Float(spline.count - 1)
-            let width = configuration.fadeTrailSize ? particle.size * progress : particle.size
+            let size = particle.size * system.drawSizeScale
+            let width = configuration.fadeTrailSize ? size * progress : size
             var uniform = layerUniform(position: (start + end) / 2,
                                        size: SIMD2<Float>(length, max(width, 0.01)),
                                        opacity: configuration.fadeTrailAlpha ? opacity * progress : opacity,
@@ -1392,7 +1398,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             let delta = end.position - start.position
             let length = simd_length(delta)
             guard length > 0.01 else { continue }
-            let averageSize = (start.size + end.size) / 2
+            let averageSize = (start.size + end.size) / 2 * system.drawSizeScale
             var uniform = layerUniform(position: (start.position + end.position) / 2,
                                        size: SIMD2<Float>(length, averageSize),
                                        opacity: (start.opacity + end.opacity) / 2,

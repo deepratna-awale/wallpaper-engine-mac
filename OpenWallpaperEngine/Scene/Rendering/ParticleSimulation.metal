@@ -117,12 +117,15 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
         else if (p.initialRemap.w == 1) alpha = multiply ? alpha * factor : factor;
         else if (multiply) velocity = velocity * factor;
     }
+    // A worldspace particle leaves the emitter's space: it takes the emitter's scale and turn now.
+    size *= f.motionExtras.x;
     const uint frames = max(uint(p.spriteSheet.x), 1u);
     ParticleState particle;
     particle.positionVelocity = float4(position, velocity);
     particle.life = float4(0, randomValue(p.lifetimeSize.x * scale.z, p.lifetimeSize.y * scale.z, seed, serial, sLifetime),
                            size, size);
-    particle.alphaRotation = float4(alpha, alpha, randomValue(p.alphaRotation.z, p.alphaRotation.w, seed, serial, sRotation),
+    const float rotation = randomValue(p.alphaRotation.z, p.alphaRotation.w, seed, serial, sRotation) + f.motionExtras.y;
+    particle.alphaRotation = float4(alpha, alpha, rotation,
                                     randomValue(p.angularSpawn.x, p.angularSpawn.y, seed, serial, sAngularVelocity));
     particle.color = color;
     particle.baseColor = color;
@@ -237,11 +240,9 @@ static void collide(CollisionPlacement collision, float2 shift, thread float2 &p
 /// `ParticleCPUSimulation.follow`: carries a particle along with its emitter's move, `linear`
 /// and `translation`.
 static void follow(thread ParticleState &particle, device float2 *own, constant ParticleParameters &p,
-                   constant ParticleFrame &f, float2x2 linear, float2 translation) {
+                   float2x2 linear, float2 translation) {
     particle.positionVelocity = float4(linear * particle.positionVelocity.xy + translation,
                                        linear * particle.positionVelocity.zw);
-    particle.life.zw *= f.motionExtras.x;
-    particle.alphaRotation.z += f.motionExtras.y;
     if (p.counts.y & kHistory) {
         for (uint sample = 0; sample < particle.identity.z; ++sample) own[sample] = linear * own[sample] + translation;
     }
@@ -276,10 +277,10 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
         clearing = (instance.state.x & iClearing) != 0;
         const bool moved = f.motionExtras.z > 0.5 || any(instance.place.xy != instance.place.zw);
         if (!(flags & kWorldSpace) && moved && gid < control[cCount]) {
-            follow(particle, own, p, f, motion, instance.place.xy + f.constraintMotion.zw - motion * instance.place.zw);
+            follow(particle, own, p, motion, instance.place.xy + f.constraintMotion.zw - motion * instance.place.zw);
         }
     } else if (f.motionExtras.z > 0.5 && gid < control[cCount]) {
-        follow(particle, own, p, f, motion, f.constraintMotion.zw);
+        follow(particle, own, p, motion, f.constraintMotion.zw);
     }
     const FramePoints points = framePoints(f, shift);
     float2 position = particle.positionVelocity.xy;

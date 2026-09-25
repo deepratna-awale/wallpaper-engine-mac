@@ -9,8 +9,14 @@ struct ParticleMaterialUniforms {
     let modelViewProjection: simd_float4x4
     let renderVars: [Int: SIMD4<Float>]
     let eyePosition: SIMD3<Float>
+    /// `g_OrientationRight` and `g_OrientationUp`: the scene camera's axes (2D scenes look down −z
+    /// with y up) through the emitter's scale, rotation and shear (`ParticleSystemRuntime.drawLinear`).
+    /// WE expands a sprite along the camera's axes in the system's own space and draws it through
+    /// the system's model matrix; the particles here are in scene space, so the axes carry it.
+    let orientationRight: SIMD3<Float>
+    let orientationUp: SIMD3<Float>
 
-    /// The scene camera's axes (2D scenes look down −z with y up), as WE binds them to particles.
+    /// The scene camera's axes, as WE binds them to particles.
     static let orientationRight = SIMD3<Float>(1, 0, 0)
     static let orientationUp = SIMD3<Float>(0, 1, 0)
     static let orientationForward = SIMD3<Float>(0, 0, 1)
@@ -24,6 +30,9 @@ struct ParticleMaterialUniforms {
         let size = simd_max(sceneSize, SIMD2(1, 1))
         modelViewProjection = PassMatrices.ortho(left: 0, right: size.x, bottom: size.y, top: 0)
         eyePosition = SIMD3(size.x / 2, size.y / 2, Self.eyeDistance)
+        let linear = system.drawLinear
+        orientationRight = SIMD3(linear.columns.0, 0)
+        orientationUp = SIMD3(linear.columns.1, 0)
         var renderVars: [Int: SIMD4<Float>] = [:]
         switch plan.format {
         case .sprite: renderVars[0] = plan.trailLengths
@@ -68,8 +77,8 @@ struct ParticleMaterialUniforms {
     /// change with the system every frame.
     func patch(_ bytes: inout [UInt8], layout: UniformLayout) {
         let values: [(String, [Float])] = [
-            ("g_OrientationRight", Self.flat(Self.orientationRight)),
-            ("g_OrientationUp", Self.flat(Self.orientationUp)),
+            ("g_OrientationRight", Self.flat(orientationRight)),
+            ("g_OrientationUp", Self.flat(orientationUp)),
             ("g_OrientationForward", Self.flat(Self.orientationForward)),
             ("g_EyePosition", Self.flat(eyePosition)),
             ("g_RenderVar0", Self.flat(renderVars[0] ?? .zero)),
