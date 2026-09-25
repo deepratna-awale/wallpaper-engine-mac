@@ -10,11 +10,6 @@ extension Notification.Name {
 /// the way Wallpaper Engine does (`window.wallpaperPropertyListener.applyUserProperties` and
 /// `window.wallpaperRegisterAudioListener`).
 enum WebWallpaperPropertyBridge {
-    /// UserDefaults key of the sidebar's stored values for a wallpaper.
-    static func storageKey(for wallpaperDirectory: URL) -> String {
-        "SceneUserProperties.\(wallpaperDirectory.path)"
-    }
-
     struct Property: Equatable {
         var type: String
         var defaultValue: String

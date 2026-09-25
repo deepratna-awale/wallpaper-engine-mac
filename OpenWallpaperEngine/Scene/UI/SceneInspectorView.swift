@@ -70,12 +70,15 @@ private final class SceneInspectorModel: ObservableObject {
     private let directory: URL
     private let package: PKGParser?
     private let storageKey: String
+    private let explicitKey: String
     private var textureLoadGeneration = 0
     private var pendingSave: DispatchWorkItem?
 
     init(wallpaper: WEWallpaper) {
         directory = wallpaper.wallpaperDirectory
-        storageKey = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
+        let settings = WallpaperSettingsIdentity.resolve(wallpaper)
+        storageKey = settings.key(.userProperties)
+        explicitKey = settings.key(.explicitUserProperties)
         let scenePath = wallpaper.project.file
         let packageURL = directory.appending(path: (scenePath as NSString).deletingPathExtension + ".pkg")
         package = try? PKGParser(url: packageURL)
@@ -648,11 +651,9 @@ private final class SceneInspectorModel: ObservableObject {
     private func persist(_ values: [String: String]) {
         AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: directory.path, replacing: false)
         pendingSave?.cancel()
-        let explicitKey = storageKey.replacingOccurrences(of: "SceneUserProperties.",
-                                                           with: "SceneUserPropertiesExplicit.")
         let work = DispatchWorkItem {
             UserDefaults.standard.set(values, forKey: self.storageKey)
-            UserDefaults.standard.set(true, forKey: explicitKey)
+            UserDefaults.standard.set(true, forKey: self.explicitKey)
         }
         pendingSave = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)

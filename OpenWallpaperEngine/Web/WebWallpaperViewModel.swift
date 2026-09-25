@@ -126,7 +126,7 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
     private func applyAllProperties(to webView: WKWebView) {
         let properties = declaredProperties
         let stored = UserDefaults.standard.dictionary(
-            forKey: WebWallpaperPropertyBridge.storageKey(for: currentWallpaper.wallpaperDirectory)) as? [String: String] ?? [:]
+            forKey: WallpaperSettingsIdentity.resolve(currentWallpaper).key(.userProperties)) as? [String: String] ?? [:]
         let values = WebWallpaperPropertyBridge.currentValues(properties: properties, stored: stored)
         if let script = WebWallpaperPropertyBridge.applyUserPropertiesScript(
             WebWallpaperPropertyBridge.payload(properties: properties, values: values)) {

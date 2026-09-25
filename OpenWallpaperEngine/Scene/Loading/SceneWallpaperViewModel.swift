@@ -62,6 +62,8 @@ class SceneWallpaperViewModel: ObservableObject {
     private var loadedScene: WEScene?
     private var loadedWallpaperDirectory: URL?
     private var assetDataCache: [String: Data] = [:]
+    /// Where the loaded wallpaper's settings are stored, and the directory it was resolved for.
+    private var settings: (directory: URL, identity: WallpaperSettingsIdentity)?
     /// Other Workshop items' assets (`…/workshop/<id>/…`), loose or inside the item's `.pkg`.
     private var workshopAssets = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())
     /// WE's fixed copies of broken Workshop shaders (`assets/zcompat`).
@@ -105,8 +107,8 @@ class SceneWallpaperViewModel: ObservableObject {
     /// `decodeScene` bakes per-object origin and JSON edits into the parsed scene, so those edits
     /// have to take part in the cache key or a reload serves the pre-edit scene and the object
     /// snaps back to its authored position.
-    private static func overrideSignature(forWallpaperPath path: String) -> String {
-        let values = UserDefaults.standard.dictionary(forKey: "SceneUserProperties.\(path)") as? [String: String] ?? [:]
+    private static func overrideSignature(settingsKey: String) -> String {
+        let values = UserDefaults.standard.dictionary(forKey: settingsKey) as? [String: String] ?? [:]
         let edits = values.filter { $0.key.hasPrefix("_owe_scene_object_") }
         guard !edits.isEmpty else { return "-" }
         return String(edits.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }
@@ -250,6 +252,7 @@ class SceneWallpaperViewModel: ObservableObject {
         WorkshopDependencyResolver.linkInstalledDependencies(for: wallpaper)
         let dir = wallpaper.wallpaperDirectory
         let sceneFile = wallpaper.project.file  // e.g. "scene.json" or "gifscene.json"
+        let settingsKey = settingsIdentity(for: dir).key(.userProperties)
 
         // Derive PKG name from scene file: "scene.json" → "scene.pkg", "gifscene.json" → "gifscene.pkg"
         let pkgName = (sceneFile as NSString).deletingPathExtension + ".pkg"
@@ -262,7 +265,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let hasPackage = FileManager.default.fileExists(atPath: pkgURL.path(percentEncoded: false))
         let sourceURL = hasPackage ? pkgURL : looseSceneURL
         let signature = Self.sourceSignature(for: sourceURL)
-            + "|" + Self.overrideSignature(forWallpaperPath: dir.path)
+            + "|" + Self.overrideSignature(settingsKey: settingsKey)
 
         if let cached = Self.cachedParse(for: dir, signature: signature) {
             self.pkgParser = cached.parser
@@ -273,7 +276,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 let parser = try PKGParser(url: pkgURL)
                 self.pkgParser = parser
                 if let data = parser.extractFile(named: sceneFile) {
-                    scene = try decodeScene(data, wallpaperPath: dir.path)
+                    scene = try decodeScene(data, settingsKey: settingsKey)
                 }
             } catch {
                 Self.log("Failed to parse PKG: \(error)")
@@ -283,7 +286,7 @@ class SceneWallpaperViewModel: ObservableObject {
             self.pkgParser = nil
             do {
                 let data = try Data(contentsOf: looseSceneURL)
-                scene = try decodeScene(data, wallpaperPath: dir.path)
+                scene = try decodeScene(data, settingsKey: settingsKey)
             } catch {
                 Self.log("Failed to parse loose \(sceneFile): \(error)")
             }
@@ -318,12 +321,12 @@ class SceneWallpaperViewModel: ObservableObject {
         bumpRevision()
     }
 
-    private func decodeScene(_ data: Data, wallpaperPath: String) throws -> WEScene {
+    private func decodeScene(_ data: Data, settingsKey: String) throws -> WEScene {
         guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               var objects = root["objects"] as? [[String: Any]] else {
             return try JSONDecoder().decode(WEScene.self, from: data)
         }
-            let values = UserDefaults.standard.dictionary(forKey: "SceneUserProperties.\(wallpaperPath)") as? [String: String] ?? [:]
+            let values = UserDefaults.standard.dictionary(forKey: settingsKey) as? [String: String] ?? [:]
         for index in objects.indices {
             let objectID = (objects[index]["id"] as? NSNumber)?.intValue ?? index
             guard let override = values["_owe_scene_object_\(objectID)_json"],
@@ -345,10 +348,20 @@ class SceneWallpaperViewModel: ObservableObject {
         return try JSONDecoder().decode(WEScene.self, from: resolvedData)
     }
 
+    /// The settings identity of the wallpaper in `directory`, resolved (and old path keys moved)
+    /// once per load.
+    private func settingsIdentity(for directory: URL) -> WallpaperSettingsIdentity {
+        if let settings, settings.directory == directory { return settings.identity }
+        let identity = WallpaperSettingsIdentity.resolve(directory: directory)
+        settings = (directory, identity)
+        return identity
+    }
+
     private func prepareSceneUserPropertyDefaults(for wallpaper: WEWallpaper, scene: WEScene) {
         guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame else { return }
-        let key = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
-        let explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
+        let identity = settingsIdentity(for: wallpaper.wallpaperDirectory)
+        let key = identity.key(.userProperties)
+        let explicitKey = identity.key(.explicitUserProperties)
         let defaults = UserDefaults.standard
         let stored = defaults.bool(forKey: explicitKey)
             ? defaults.dictionary(forKey: key) as? [String: String] ?? [:]
@@ -1572,7 +1585,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func loadJSON<T: Decodable>(path: String, wallpaperDir: URL) -> T? {
         guard let original = assetData(named: path, wallpaperDir: wallpaperDir) else { return nil }
-        let storageKey = "SceneUserProperties.\(wallpaperDir.path)"
+        let storageKey = settingsIdentity(for: wallpaperDir).key(.userProperties)
         let overrideKey = "_owe_scene_asset_\(path)_json"
         let data: Data
         if let values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String],

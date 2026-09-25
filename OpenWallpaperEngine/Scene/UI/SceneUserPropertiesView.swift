@@ -63,8 +63,9 @@ private final class SceneUserPropertiesModel: ObservableObject {
 
     init(wallpaper: WEWallpaper) {
         wallpaperPath = wallpaper.wallpaperDirectory.path
-        storageKey = WebWallpaperPropertyBridge.storageKey(for: wallpaper.wallpaperDirectory)
-        explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
+        let settings = WallpaperSettingsIdentity.resolve(wallpaper)
+        storageKey = settings.key(.userProperties)
+        explicitKey = settings.key(.explicitUserProperties)
         load(wallpaper)
     }
 

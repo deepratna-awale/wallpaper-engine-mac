@@ -23,6 +23,18 @@ enum Fixtures {
 }
 
 extension Fixtures {
+    /// Removes what loading the wallpaper in `directory` stores in the app's defaults (its settings,
+    /// under its identity and any old path key), so tests leave nothing behind.
+    static func removeStoredSettings(for directory: URL) {
+        let identity = WallpaperSettingsIdentity(directory: directory,
+                                                 projectData: FileManager.default.contents(atPath: directory.appending(path: "project.json").path))
+        for family in WallpaperSettingsIdentity.Family.allCases {
+            UserDefaults.standard.removeObject(forKey: identity.key(family))
+            UserDefaults.standard.removeObject(forKey: family.rawValue + directory.path)
+        }
+        UserDefaults.standard.removeObject(forKey: "SceneAdditionalControlsVersion." + directory.path)
+    }
+
     /// True when WE's effect shader sources are reachable (a configured install or a bundled copy
     /// with GLSL). Tests that need an effect to plan skip without them.
     static var hasWEShaderSources: Bool {

@@ -10,9 +10,7 @@ final class RenderCheckTests: XCTestCase {
         let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/layers/project.json"))
         let wallpaper = WEWallpaper(using: project, where: directory)
         defer {
-            for prefix in ["SceneUserProperties.", "SceneUserPropertiesExplicit.", "SceneAdditionalControlsVersion."] {
-                UserDefaults.standard.removeObject(forKey: prefix + directory.path)
-            }
+            Fixtures.removeStoredSettings(for: directory)
         }
         let content = try XCTUnwrap(SceneWallpaperViewModel(wallpaper: wallpaper).metalContent())
         let ids = Set(content.layers.map(\.id))

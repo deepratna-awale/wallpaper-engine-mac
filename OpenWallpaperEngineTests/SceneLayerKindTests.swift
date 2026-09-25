@@ -9,9 +9,7 @@ final class SceneLayerKindTests: XCTestCase {
         let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/\(fixture)/project.json"))
         let wallpaper = WEWallpaper(using: project, where: directory)
         addTeardownBlock {
-            for prefix in ["SceneUserProperties.", "SceneUserPropertiesExplicit.", "SceneAdditionalControlsVersion."] {
-                UserDefaults.standard.removeObject(forKey: prefix + directory.path)
-            }
+            Fixtures.removeStoredSettings(for: directory)
         }
         return try XCTUnwrap(SceneWallpaperViewModel(wallpaper: wallpaper).metalContent())
     }
