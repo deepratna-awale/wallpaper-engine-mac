@@ -4,4 +4,7 @@ Shaders have been translated from GLSL to Metal Shading Language; effect manifes
 textures, models, particle definitions and the SceneScript runtime are included in their original
 form. Editor preview art and the original GLSL sources have been omitted.
 
+The fonts in fonts/ are Wallpaper Engine's built-in fonts. Each keeps its own licence; the
+licence files shipped next to them (e.g. "SIL Open Font License.txt") are included unchanged.
+
 Wallpaper Engine: https://www.wallpaperengine.io
