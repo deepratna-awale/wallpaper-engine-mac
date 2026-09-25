@@ -309,12 +309,19 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.pointer = simd_clamp(cursor / max(sceneSize, SIMD2(1, 1)), SIMD2(0, 0), SIMD2(1, 1))
         effectFrame.screenSize = drawableSize
         effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
+        // Text is rasterised first so its effects run on the finished text, like an image layer's.
+        var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
         for (layerIndex, entry) in layers.enumerated() {
             guard AudioReactiveScriptEngine.shared.layerBoolean(entry.stateId, property: "visible", fallback: true) else { continue }
+            if entry.layer.text != nil {
+                let baseSize = layerBaseSize(entry, time: time)
+                textFrames[layerIndex] = (layerTextFrame(entry, baseSize: baseSize, time: time), baseSize)
+            }
             // Layers that read the scene run inside the scene pass, once what's beneath them is drawn.
             if entry.layer.readsScene { continue }
             if !entry.layer.weEffects.isEmpty {
-                dynamicTextures[layerIndex] = runEffects(entry, input: textureFrame(for: entry, time: time).texture,
+                let input = textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)
+                dynamicTextures[layerIndex] = runEffects(entry, input: input.texture,
                                                          snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
                 continue
             }
@@ -345,7 +352,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
                 let input = entry.layer.sceneInput
                     ? snapshot.flatMap { sceneRegion(of: $0, under: entry.layer, commandBuffer: commandBuffer) }
-                    : textureFrame(for: entry, time: time).texture
+                    : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)).texture
                 dynamicTextures[layerIndex] = input.flatMap {
                     runEffects(entry, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
                 }
@@ -372,12 +379,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "origin",
                     fallback: vector2(timelineVector3(entry.layer.positionAnimation, at: time,
                         fallback: SIMD3<Float>(entry.layer.position.x, entry.layer.position.y, 0))))
-            let baseSize = entry.layer.sizeScript.flatMap {
-                AudioReactiveScriptEngine.shared.evaluateVector2($0, fallback: entry.layer.size, layerId: entry.stateId)
-            }
-                ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "size",
-                    fallback: vector2(timelineVector3(entry.layer.sizeAnimation, at: time,
-                        fallback: SIMD3<Float>(entry.layer.size.x, entry.layer.size.y, 0))))
+            let baseSize = textFrames[layerIndex]?.baseSize ?? layerBaseSize(entry, time: time)
             let scale = entry.layer.scaleScript.flatMap { script -> SIMD2<Float>? in
                 AudioReactiveScriptEngine.shared.evaluateVector3(script,
                     fallback: SIMD3<Float>(entry.layer.scale.x, entry.layer.scale.y, 1),
@@ -458,27 +460,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             uniform.transform = SIMD4<Float>(materialEffects.transformAngle, materialEffects.transformOffset.x,
                                              materialEffects.transformOffset.y, materialEffects.transformScale.x)
             uniform.transformScaleY = materialEffects.transformScale.y
-            let textureFrame: RenderTextureFrame
-            if let text = entry.layer.text {
-                let value: String
-                if let clock = text.clock {
-                    value = clockValue(clock)
-                } else if let scripted = AudioReactiveScriptEngine.shared.layerString(entry.stateId, property: "text") {
-                    // Scripts assign layer.text directly for score counters, now-playing labels, etc.
-                    value = scripted
-                } else {
-                    value = text.script.map {
-                        AudioReactiveScriptEngine.shared.evaluateString($0, fallback: text.value,
-                                                                          layerId: entry.stateId, time: Double(time))
-                    } ?? text.value
-                }
-                // Rasterised at the unscaled box so layout (padding, wrapping, point size) is
-                // computed once; the quad then scales the finished block uniformly.
-                textureFrame = makeTextFrame(text, value: value, size: baseSize, layerID: entry.layer.id)
-                    ?? self.textureFrame(for: entry, time: time)
-            } else {
-                textureFrame = self.textureFrame(for: entry, time: time)
-            }
+            let textureFrame = textFrames[layerIndex]?.frame
+                ?? (entry.layer.text != nil
+                    ? layerTextFrame(entry, baseSize: baseSize, time: time)
+                    : self.textureFrame(for: entry, time: time))
             uniform.uvOrigin = textureFrame.uvOrigin
             uniform.uvAxisX = textureFrame.uvAxisX
             uniform.uvAxisY = textureFrame.uvAxisY
@@ -564,6 +549,36 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    /// The layer's unscaled size this frame: script, then script-set state, then timeline, then authored.
+    private func layerBaseSize(_ entry: PreparedLayer, time: Float) -> SIMD2<Float> {
+        entry.layer.sizeScript.flatMap {
+            AudioReactiveScriptEngine.shared.evaluateVector2($0, fallback: entry.layer.size, layerId: entry.stateId)
+        }
+            ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "size",
+                fallback: vector2(timelineVector3(entry.layer.sizeAnimation, at: time,
+                    fallback: SIMD3<Float>(entry.layer.size.x, entry.layer.size.y, 0))))
+    }
+
+    /// A text layer's current string, rasterised (through the text cache) at the unscaled box so
+    /// layout (padding, wrapping, point size) is computed once; the quad scales the finished block.
+    private func layerTextFrame(_ entry: PreparedLayer, baseSize: SIMD2<Float>, time: Float) -> RenderTextureFrame {
+        guard let text = entry.layer.text else { return textureFrame(for: entry, time: time) }
+        let value: String
+        if let clock = text.clock {
+            value = clockValue(clock)
+        } else if let scripted = AudioReactiveScriptEngine.shared.layerString(entry.stateId, property: "text") {
+            // Scripts assign layer.text directly for score counters, now-playing labels, etc.
+            value = scripted
+        } else {
+            value = text.script.map {
+                AudioReactiveScriptEngine.shared.evaluateString($0, fallback: text.value,
+                                                                  layerId: entry.stateId, time: Double(time))
+            } ?? text.value
+        }
+        return makeTextFrame(text, value: value, size: baseSize, layerID: entry.layer.id)
+            ?? textureFrame(for: entry, time: time)
     }
 
     private func runEffects(_ entry: PreparedLayer, input: MTLTexture, snapshot: MTLTexture?,

@@ -31,6 +31,17 @@ final class SceneLayerKindTests: XCTestCase {
         return SIMD4<Float>(pixel.map { Float($0) / 255 })
     }
 
+    func testTextLayersKeepTheirAuthoredEffects() throws {
+        do {
+            _ = try ProcessShaderCompiler()
+        } catch {
+            throw XCTSkip("WE shader toolchain unavailable: \(error)")
+        }
+        let text = try XCTUnwrap(try content("ordering").layers.first { $0.id == "10" })
+        XCTAssertNotNil(text.text)
+        XCTAssertEqual(text.weEffects.count, 1, "B2: text layers must run their effects")
+    }
+
     func testSolidLayersRenderTheirColourAtTheirSize() throws {
         let layers = Dictionary(uniqueKeysWithValues: try content("solid").layers.map { ($0.id, $0) })
         XCTAssertEqual(Set(layers.keys), ["1", "2", "3"])

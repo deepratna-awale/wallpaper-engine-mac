@@ -413,7 +413,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 return nil
             }
             let layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
-                ?? buildMetalTextLayer(object, sceneSize: sceneSize, objectsByID: objectsByID)
+                ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
             return layer
         }.sorted { first, second in
@@ -702,7 +702,7 @@ class SceneWallpaperViewModel: ObservableObject {
         return image
     }
 
-    private func buildMetalTextLayer(_ object: WESceneObject, sceneSize: SIMD2<Float>,
+    private func buildMetalTextLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
                                      objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
         guard let text = object.textValue, let sizeString = object.size else { return nil }
         let sizeValue = sizeString.parseVector2()
@@ -722,7 +722,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                          maxRows: object.limitrows == true ? object.maxrows : nil,
                                          useEllipsis: object.limituseellipsis ?? false,
                                          clock: clock)
-        return SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
+        var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                                source: .image(renderText(textConfig, size: CGSize(width: sizeValue.0, height: sizeValue.1))),
                                position: position, size: SIMD2<Float>(Float(sizeValue.0), Float(sizeValue.1)),
                                scale: SIMD2<Float>(Float(textScale.0), Float(textScale.1)), scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
@@ -737,6 +737,9 @@ class SceneWallpaperViewModel: ObservableObject {
                                effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                                              exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                                              transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
+        // WE runs a text object's effects on its rasterised text; the renderer rasterises before effects run.
+        layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
+        return layer
     }
 
     private func clockConfiguration(for object: WESceneObject) -> SceneClock? {
