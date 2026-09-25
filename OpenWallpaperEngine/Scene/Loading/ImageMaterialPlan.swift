@@ -1,0 +1,150 @@
+import Foundation
+
+/// An image layer's own material (`genericimage`, `genericimage2/3/4` or a Workshop shader),
+/// resolved at load like pass 0 of an effect: the variant, its textures, combos and constants.
+///
+/// The renderer draws the layer with it: `g_Texture0` is the layer's image (after its effects),
+/// and the layer's live transform, colour, alpha and brightness are its built-ins. A final class
+/// so the renderer can key per-plan state on its identity.
+final class ImageMaterialPlan {
+    /// The material JSON, for logging.
+    let materialPath: String
+    /// `variant`, textures (slot 0 is `.current`, the layer image), constants and blending.
+    let pass: SceneEffectPassPlan
+    /// The shader reads its UVs through `g_Texture0Rotation/Translation` (`SPRITESHEET`), so the
+    /// quad carries plain 0...1 texture coordinates.
+    let usesSpriteSheetUniforms: Bool
+    /// Material-authored factors of the uniforms the layer's live values drive (`g_Brightness`,
+    /// `g_UserAlpha`); the live value is multiplied by them.
+    let liveFactors: [String: Float]
+
+    init(materialPath: String, pass: SceneEffectPassPlan, usesSpriteSheetUniforms: Bool, liveFactors: [String: Float]) {
+        self.materialPath = materialPath
+        self.pass = pass
+        self.usesSpriteSheetUniforms = usesSpriteSheetUniforms
+        self.liveFactors = liveFactors
+    }
+
+    var readsSceneSnapshot: Bool { pass.readsSceneSnapshot }
+
+    /// Uniforms that follow the layer's live colour, alpha and brightness rather than a constant.
+    static let liveUniforms: Set<String> = ["g_Brightness", "g_UserAlpha", "g_Alpha", "g_Color", "g_Color4"]
+}
+
+enum ImageMaterialPlanError: Error, CustomStringConvertible {
+    case missing(String)
+    case invalid(String, Error)
+    /// The material needs an engine feature that doesn't exist yet; the layer draws natively.
+    case unsupported(String)
+
+    var description: String {
+        switch self {
+        case .missing(let path): return "missing \(path)"
+        case .invalid(let path, let error): return "\(path): \(error)"
+        case .unsupported(let reason): return "unsupported: \(reason)"
+        }
+    }
+}
+
+/// Builds an `ImageMaterialPlan` from a model's material.
+struct ImageMaterialPlanBuilder {
+    let translator: ShaderVariantTranslator
+    /// Reads a file relative to the wallpaper, falling back to the WE assets.
+    let readFile: (String) -> Data?
+    /// Loads a texture by WE name relative to a material path.
+    let loadTexture: (_ name: String, _ materialPath: String) -> SceneMetalTextureSource?
+
+    private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
+    /// Combos whose inputs (scene lights, reflection targets) the renderer does not provide yet.
+    private static let unsupportedCombos = ["LIGHTING", "REFLECTION"]
+
+    /// nil when the material has no image to draw: no texture in slot 0 (solid layers' `flat`) or a
+    /// render target there (composition layers), which keep their own paths.
+    /// `colorBlendMode` is the object's WE blend mode (`BLENDMODE` combo), when authored.
+    func build(materialPath: String, colorBlendMode: Int?) throws -> ImageMaterialPlan? {
+        guard let data = readFile(materialPath) else { throw ImageMaterialPlanError.missing(materialPath) }
+        let material: MaterialDocument
+        do {
+            material = try decodeTolerant(MaterialDocument.self, from: data)
+        } catch {
+            throw ImageMaterialPlanError.invalid(materialPath, error)
+        }
+        guard let materialPass = material.passes.first else { throw ImageMaterialPlanError.missing("\(materialPath) passes") }
+        guard let image = materialPass.textures.first ?? nil, !image.hasPrefix("_rt_") else { return nil }
+
+        let loader = ShaderSourceLoader(readFile: readFile)
+        let vertex = try loader.load(materialPass.shader, stage: .vertex)
+        let fragment = try loader.load(materialPass.shader, stage: .fragment)
+
+        var inputs: [Int: SceneEffectTextureInput] = [:]
+        for (slot, name) in materialPass.textures.enumerated() where slot > 0 {
+            guard let name else { continue }
+            inputs[slot] = try textureInput(named: name, materialPath: materialPath)
+        }
+        var overrides = [materialPass.combos]
+        if let colorBlendMode { overrides.append(["BLENDMODE": colorBlendMode]) }
+        let combos = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment, overrides: overrides,
+                                                           boundTextureSlots: Set(inputs.keys).union([0]))
+        for combo in Self.unsupportedCombos where (combos[combo] ?? 0) != 0 {
+            throw ImageMaterialPlanError.unsupported("\(combo) needs scene lights (roadmap area 5)")
+        }
+
+        let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)
+        let sampled = Set(variant.textureSlots)
+        guard sampled.contains(0) else { return nil }
+        inputs = inputs.filter { sampled.contains($0.key) }
+        for sampler in vertex.samplers + fragment.samplers {
+            guard let slot = sampler.textureSlot, slot != 0, sampled.contains(slot), inputs[slot] == nil,
+                  let name = sampler.defaultTexture else { continue }
+            inputs[slot] = try textureInput(named: name, materialPath: materialPath)
+        }
+        inputs[0] = .current
+        if let unbound = sampled.subtracting(inputs.keys).min() {
+            throw ImageMaterialPlanError.unsupported("g_Texture\(unbound) has no texture")
+        }
+
+        let uniforms = (vertex.uniforms + fragment.uniforms).filter { !$0.isSampler }
+            .reduce(into: [ShaderUniformDeclaration]()) { result, uniform in
+                if !result.contains(where: { $0.name == uniform.name }) { result.append(uniform) }
+            }
+        var materialValues = materialPass.constantshadervalues.compactMapValues(\.valueSource)
+        // `usershadervalues` binds a material key to a user property; the constant stays the fallback.
+        for (key, property) in materialPass.usershadervalues ?? [:] {
+            let fallback = materialValues[key] ?? uniforms.first { $0.materialKey == key }
+                .flatMap { $0.annotation["default"] }.flatMap(ShaderValue.init(json:)).map(SceneValueSource.literal)
+            materialValues[key] = .user(name: property, condition: nil, fallback: fallback ?? .literal(.zero))
+        }
+        let resolved = ShaderConstantResolver.resolve(
+            uniforms: uniforms.map { .init(name: $0.name, glslType: $0.type, arrayCount: $0.arrayCount ?? 1, annotation: $0.annotation) },
+            material: materialValues, instance: [:])
+        // The layer's live values drive these; a static material value scales them.
+        var liveFactors: [String: Float] = [:]
+        for name in ["g_Brightness", "g_UserAlpha"] {
+            if let value = resolved.staticValues[name] { liveFactors[name] = value.float }
+        }
+        let constants = ShaderConstantResolver.ResolvedConstants(
+            staticValues: resolved.staticValues.filter { !ImageMaterialPlan.liveUniforms.contains($0.key) },
+            dynamic: resolved.dynamic)
+
+        let pass = SceneEffectPassPlan(command: .render,
+                                       variantKey: ShaderVariantTranslator.cacheKey(vertex: vertex, fragment: fragment, combos: combos),
+                                       variant: variant, blending: materialPass.blending ?? "normal", target: nil,
+                                       textures: inputs, constants: constants)
+        return ImageMaterialPlan(materialPath: materialPath, pass: pass,
+                                 usesSpriteSheetUniforms: (variant.combos["SPRITESHEET"] ?? 0) != 0,
+                                 liveFactors: liveFactors)
+    }
+
+    /// nil (logged) for a texture that isn't there: the slot stays unbound, and so does its combo.
+    private func textureInput(named name: String, materialPath: String) throws -> SceneEffectTextureInput? {
+        if Self.sceneSnapshotNames.contains(name) { return .sceneSnapshot }
+        if name.hasPrefix("_rt_") || name.hasPrefix("_alias_") {
+            throw ImageMaterialPlanError.unsupported("render target \(name)")
+        }
+        guard let source = loadTexture(name, materialPath) else {
+            OWELog.error(.scene, "Texture \(name) not found for \(materialPath)")
+            return nil
+        }
+        return .asset(key: "\(materialPath)|\(name)", source: source)
+    }
+}
