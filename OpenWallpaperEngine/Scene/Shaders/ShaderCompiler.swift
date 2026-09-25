@@ -73,6 +73,12 @@ struct ProcessShaderCompiler: ShaderCompiler {
     static let timeout: TimeInterval = 30
 
     private func run(_ executable: String, _ arguments: [String], step: String) throws -> String {
+        // Pipes and their file handles are autoreleased; a caller translating many variants in
+        // one loop would otherwise run out of file descriptors ("Bad file descriptor").
+        try autoreleasepool { try runDrained(executable, arguments, step: step) }
+    }
+
+    private func runDrained(_ executable: String, _ arguments: [String], step: String) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
@@ -105,6 +111,9 @@ struct ProcessShaderCompiler: ShaderCompiler {
             throw ShaderCompilerError.failed(step: step, output: "timed out after \(Int(Self.timeout)) s")
         }
         group.wait()
+        // Close our read ends now instead of whenever the handles are deallocated.
+        try? output.fileHandleForReading.close() // already at EOF; a close error changes nothing
+        try? errors.fileHandleForReading.close() // same
         let text = String(decoding: stdout, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             let message = (text + String(decoding: stderr, as: UTF8.self))
