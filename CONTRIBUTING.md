@@ -45,8 +45,10 @@ There is **one type per file** unless the types are tiny and private to it. A fi
 
 ## Tests
 
-- Every bug fix and feature comes with a test, once the test target exists (Phase 1). Put format and value tests in the unit-test target, and rendering checks in the headless render harness, with a small fixture wallpaper under `Tests/Fixtures/`.
-- Before opening a PR, `xcodebuild build` and `xcodebuild test` must pass locally, and CI runs both.
+- **Where tests go:** the `OpenWallpaperEngineTests` target (unit tests hosted in the app, which starts without its delegate under XCTest). Fixtures live in `Tests/Fixtures/`, outside the target, and are read with `Fixtures.url(_:)`.
+- **Every fix or feature comes with a test.** Format and value tests decode fixtures. Rendering checks go in `RenderCheckTests`.
+- **Known gaps** are asserted with `XCTExpectFailure("<snapshot id>: …")`. It's strict, so fixing a gap makes its test fail until you delete the expectation.
+- **Before pushing,** run `xcodebuild test -project OpenWallpaperEngine.xcodeproj -scheme OpenWallpaperEngine`. CI (`.github/workflows/ci.yml`) runs the same command on every push and PR.
 
 ## Commits and PRs
 

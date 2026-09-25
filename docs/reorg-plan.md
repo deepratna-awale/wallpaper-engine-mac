@@ -1,6 +1,6 @@
 # Phase 1 reorganization plan
 
-**Status:** approved 2026-09-25; steps 1–5 done, step 6 in progress, on `deepratna/feature-work` (PR #2).
+**Status:** approved 2026-09-25; steps 1–6 done (Phase 1 complete), on `deepratna/feature-work` (PR #2).
 
 **Aim:** move the code into the layout described in [`architecture.md`](architecture.md) and add the safety net, *without changing behaviour*. Type renames and logic changes are out of scope; they happen in Phases 2–6 as each area is rewritten.
 
