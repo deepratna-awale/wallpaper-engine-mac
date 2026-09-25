@@ -1,7 +1,0 @@
-These files are derived from Wallpaper Engine (Kristjan Skutta / Wallpaper Engine Team).
-
-Shaders have been translated from GLSL to Metal Shading Language; effect manifests, materials,
-textures, models, particle definitions and the SceneScript runtime are included in their original
-form. Editor preview art and the original GLSL sources have been omitted.
-
-Wallpaper Engine: https://www.wallpaperengine.io
