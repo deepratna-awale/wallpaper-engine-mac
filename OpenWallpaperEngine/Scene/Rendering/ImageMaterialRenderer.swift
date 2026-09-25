@@ -45,6 +45,8 @@ final class ImageMaterialRenderer {
 
     /// Layers drawn through their material, for tests and diagnostics.
     private(set) var drawsEncoded = 0
+    /// Layer instances holding uniform state, for tests and diagnostics.
+    var programCount: Int { programs.count }
 
     init?(device: MTLDevice, archive: EffectPipelineArchive?) {
         self.device = device

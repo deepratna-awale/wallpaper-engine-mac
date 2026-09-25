@@ -110,8 +110,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var layerIndexByStateId: [String: Int] = [:]
     /// The most recently committed frame, so state a removal frees can wait for it.
     private var lastCommandBuffer: MTLCommandBuffer?
-    /// Removed clones' state ids, freed once `after` completes.
-    private var pendingEffectReleases: [(ids: [String], after: MTLCommandBuffer?)] = []
+    /// Removed clones' state ids, freed once the frame that last drew them completes.
+    private var deferredReleases = SceneDeferredReleases()
     /// Told how long each frame took on the CPU, including the wait for a drawable.
     var frameTimeObserver: ((CFTimeInterval) -> Void)?
 
@@ -222,7 +222,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             transforms = .empty
             lastPointer = nil
             cursorTracker = SceneCursorTracker()
-            pendingEffectReleases.removeAll()
+            deferredReleases.removeAll()
             lastCommandBuffer = nil
             return
         }
@@ -318,22 +318,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             for id in removals { textRasterScales.removeValue(forKey: id) }
             // The last frame that drew these clones may still be on the GPU; free their effect
             // targets once it has finished (`releaseFinishedEffectState`).
-            if !removed.isEmpty { pendingEffectReleases.append((removed, lastCommandBuffer)) }
+            deferredReleases.enqueue(removed, after: lastCommandBuffer)
         }
     }
 
     /// Frees the effect state of removed clones whose last frame the GPU has finished. A clone
     /// re-created under the same id meanwhile keeps its (new) state.
     private func releaseFinishedEffectState() {
-        guard !pendingEffectReleases.isEmpty else { return }
-        let live = Set(layers.map(\.stateId))
-        pendingEffectReleases.removeAll { pending in
-            if let buffer = pending.after, buffer.status != .completed, buffer.status != .error { return false }
-            for id in pending.ids where !live.contains(id) {
-                effectGraph?.releaseLayer(id)
-                imageMaterials?.releaseLayer(id)
-            }
-            return true
+        guard deferredReleases.count > 0 else { return }
+        deferredReleases.drain(live: Set(layers.map(\.stateId))) { id in
+            effectGraph?.releaseLayer(id)
+            imageMaterials?.releaseLayer(id)
         }
     }
 

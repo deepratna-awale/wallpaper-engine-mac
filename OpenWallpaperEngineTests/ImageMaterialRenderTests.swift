@@ -303,6 +303,28 @@ final class ImageMaterialRenderTests: XCTestCase {
         XCTAssertEqual(built, 1)
     }
 
+    /// Risk #14: script clones share their source's plan but each has its own uniform state,
+    /// and removing them frees it all.
+    func testRemovedClonesFreeTheirUniformState() throws {
+        let plan = try XCTUnwrap(try builder.build(materialPath: "materials/image4.json", colorBlendMode: nil))
+        let texture = try Self.checkerTexture(device: device)
+        let ids = (0..<100).map { "clone\($0)" }
+        _ = try render { encoder, format in
+            XCTAssertTrue(self.renderer.waitUntilReady(plan, pixelFormat: format))
+            for (index, id) in ids.enumerated() {
+                let layer = Layer(center: SIMD2(Float(index), 128), rotation: 0)
+                XCTAssertTrue(self.renderer.draw(plan, ImageMaterialRenderer.Draw(
+                    layerID: id, quad: layer.quad, sceneSize: Self.sceneSize, color: layer.color, alpha: 1, brightness: 1,
+                    texture: texture, contentSize: nil, uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1),
+                    sceneSnapshot: nil, frame: BuiltinFrameContext(), values: EffectGraphTests.FixedValues(),
+                    assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder))
+            }
+        }
+        XCTAssertEqual(renderer.programCount, 100)
+        for id in ids { renderer.releaseLayer(id) }
+        XCTAssertEqual(renderer.programCount, 0)
+    }
+
     // MARK: - Helpers
 
     struct Layer {
