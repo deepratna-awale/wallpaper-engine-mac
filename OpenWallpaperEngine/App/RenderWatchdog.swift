@@ -15,11 +15,15 @@ import QuartzCore
 /// - the median wallpaper frame time over the last `frameWindow` exceeding `slowFrameMedian`.
 ///
 /// Frame times come from the scene renderer (CPU time per frame, including video drawn through
-/// the scene pipeline) and from web wallpapers (`requestAnimationFrame` intervals, posted once a
-/// second). Two gaps remain: a web page whose JavaScript hangs outright posts nothing, and an
-/// `AVPlayerLayer` video renders out of process with no per-frame callback short of copying every
-/// frame through `AVPlayerItemVideoOutput`. Neither blocks the app's main thread, which the ping
-/// still covers.
+/// the scene pipeline), from web wallpapers (`requestAnimationFrame` intervals, posted once a
+/// second) and from `AVPlayer` videos (`VideoPlaybackProbe`: how far playback advanced, and the
+/// frames it dropped, once a second, without copying frames).
+///
+/// A third signal covers a web page whose JavaScript hangs outright and so posts no frames at
+/// all: a source that promised a heartbeat (`recordHeartbeat(from:expectingMore: true)`: its page
+/// is visible and its window on screen) and then stays silent for `heartbeatTimeout` trips like
+/// lag. A hidden page, an occluded window or sleeping displays promise nothing. The page runs in
+/// WebKit's own process, so the main-thread ping never sees it.
 ///
 /// The clock is uptime-based (`CACurrentMediaTime`), so system sleep never reads as a stall.
 ///
@@ -33,11 +37,14 @@ final class RenderWatchdog: @unchecked Sendable {
         var frameWindow: TimeInterval = 10
         var minimumFrameSamples = 5
         var pollInterval: TimeInterval = 0.5
+        /// A web page posts every second while visible; this much silence means it is hung.
+        var heartbeatTimeout: TimeInterval = 10
     }
 
     enum Trip: Equatable {
         case mainThreadStalled(seconds: TimeInterval)
         case slowFrames(medianSeconds: TimeInterval)
+        case heartbeatStopped(seconds: TimeInterval)
     }
 
     let thresholds: Thresholds
@@ -47,6 +54,8 @@ final class RenderWatchdog: @unchecked Sendable {
     private var hasTripped = false
     private var frames: [(time: TimeInterval, duration: TimeInterval)] = []
     private var pingSentAt: TimeInterval?
+    /// Per heartbeat source: when it last promised another beat, or nil while it promises none.
+    private var heartbeats: [ObjectIdentifier: TimeInterval?] = [:]
     private var timer: DispatchSourceTimer?
 
     init(thresholds: Thresholds = Thresholds(), clock: @escaping () -> TimeInterval = CACurrentMediaTime) {
@@ -105,6 +114,17 @@ final class RenderWatchdog: @unchecked Sendable {
         lock.withLock { pingSentAt = nil }
     }
 
+    /// `source` is alive now. `expectingMore` says whether it will keep beating: false while its
+    /// page is hidden, its window is off screen or the displays sleep.
+    func recordHeartbeat(from source: ObjectIdentifier, expectingMore: Bool) {
+        lock.withLock { heartbeats[source] = .some(expectingMore ? clock() : nil) }
+    }
+
+    /// `source` is gone (its wallpaper was torn down).
+    func endHeartbeat(from source: ObjectIdentifier) {
+        lock.withLock { heartbeats[source] = nil }
+    }
+
     // MARK: - Judgement
 
     /// Returns a trip once per arming when either signal is degraded past its threshold.
@@ -122,6 +142,13 @@ final class RenderWatchdog: @unchecked Sendable {
                     hasTripped = true
                     return .mainThreadStalled(seconds: stall)
                 }
+            }
+
+            // A beat promised during the grace period only counts from its end.
+            let silence = heartbeats.values.compactMap { $0.map { now - max($0, graceEnd) } }.max() ?? 0
+            if silence > thresholds.heartbeatTimeout {
+                hasTripped = true
+                return .heartbeatStopped(seconds: silence)
             }
 
             pruneFrames(now: now)

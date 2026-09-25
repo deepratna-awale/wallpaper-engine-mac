@@ -29,8 +29,13 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         return WebCompatPatches(workshopId: id, assetsDirectory: WallpaperEngineAssets.directory)
             ?? WebCompatPatches(workshopId: id, assetsDirectory: WallpaperEngineAssets.bundled)
     }
-    /// Receives the page's frame intervals (the render watchdog's frame times).
-    var frameTimeObserver: ((TimeInterval) -> Void)?
+    /// Receives the page's frame intervals and heartbeats (a page that stops beating is hung).
+    weak var renderWatchdog: RenderWatchdog?
+    private var heartbeatGate = WebHeartbeatGate()
+    /// Whether the current page has beaten yet: one that never runs the bridge (a load error
+    /// page) is not judged.
+    private var pageHasBeaten = false
+    private var visibilityObservers: [NSObjectProtocol] = []
     private var audioTimer: Timer?
     private var propertyObserver: NSObjectProtocol?
 
@@ -44,13 +49,64 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemWillSleep(_:)), name: NSWorkspace.screensDidSleepNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemDidWake(_:)), name: NSWorkspace.didWakeNotification, object: nil)
+        observeVisibility()
     }
     
     deinit {
         NotificationCenter.default.removeObserver(self)
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         if let propertyObserver { NotificationCenter.default.removeObserver(propertyObserver) }
+        for observer in visibilityObservers {
+            NotificationCenter.default.removeObserver(observer)
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
         audioTimer?.invalidate()
+        renderWatchdog?.endHeartbeat(from: ObjectIdentifier(self))
+    }
+
+    // MARK: Heartbeat
+
+    /// Tracks what makes WebKit stop the page's timers: an occluded window and sleeping displays
+    /// (system sleep also sleeps the displays).
+    private func observeVisibility() {
+        let workspace = NSWorkspace.shared.notificationCenter
+        let displays: [(Notification.Name, Bool)] = [
+            (NSWorkspace.screensDidSleepNotification, false), (NSWorkspace.screensDidWakeNotification, true),
+            (NSWorkspace.willSleepNotification, false), (NSWorkspace.didWakeNotification, true),
+            (NSWorkspace.sessionDidResignActiveNotification, false), (NSWorkspace.sessionDidBecomeActiveNotification, true),
+        ]
+        for (name, awake) in displays {
+            visibilityObservers.append(workspace.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.heartbeatGate.displaysAwake = awake
+                self?.reportHeartbeatGate()
+            })
+        }
+        visibilityObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let self, let window = notification.object as? NSWindow, window === self.webView?.window else { return }
+            self.heartbeatGate.windowVisible = window.occlusionState.contains(.visible)
+            self.reportHeartbeatGate()
+        })
+    }
+
+    /// A new page is loading; it is judged from its first heartbeat on.
+    func pageWillLoad() {
+        pageHasBeaten = false
+        renderWatchdog?.recordHeartbeat(from: ObjectIdentifier(self), expectingMore: false)
+    }
+
+    /// Restarts the heartbeat clock when the gate opens and stops it when it closes.
+    private func reportHeartbeatGate() {
+        guard pageHasBeaten else { return }
+        renderWatchdog?.recordHeartbeat(from: ObjectIdentifier(self), expectingMore: heartbeatGate.expectsHeartbeats)
+    }
+
+    fileprivate func heartbeatReceived(_ heartbeat: WebWallpaperPropertyBridge.Heartbeat) {
+        heartbeat.intervals.forEach { renderWatchdog?.recordFrame(duration: $0) }
+        heartbeatGate.pageVisible = heartbeat.visible
+        pageHasBeaten = true
+        reportHeartbeatGate()
     }
 
     // MARK: Wallpaper Engine web API
@@ -159,8 +215,11 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
         case WebWallpaperPropertyBridge.audioMessageName:
             owner?.audioListenerRegistered()
         case WebWallpaperPropertyBridge.frameMessageName:
-            guard let observer = owner?.frameTimeObserver else { return }
-            WebWallpaperPropertyBridge.frameIntervals(from: message.body).forEach(observer)
+            guard let heartbeat = WebWallpaperPropertyBridge.heartbeat(from: message.body) else {
+                OWELog.debug(.web, "Ignoring a malformed heartbeat message")
+                return
+            }
+            owner?.heartbeatReceived(heartbeat)
         default:
             break
         }

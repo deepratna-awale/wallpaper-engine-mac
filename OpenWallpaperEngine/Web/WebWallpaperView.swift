@@ -27,9 +27,7 @@ struct WebWallpaperView: NSViewRepresentable {
         configuration.mediaTypesRequiringUserActionForPlayback = []
         viewModel.installBridge(on: configuration.userContentController)
         configuration.setURLSchemeHandler(viewModel.schemeHandler, forURLScheme: WebWallpaperSchemeHandler.scheme)
-        if let watchdog = wallpaperViewModel.renderWatchdog {
-            viewModel.frameTimeObserver = { watchdog.recordFrame(duration: $0) }
-        }
+        viewModel.renderWatchdog = wallpaperViewModel.renderWatchdog
 
         let nsView = WKWebView(frame: .zero, configuration: configuration)
         nsView.navigationDelegate = viewModel
@@ -41,6 +39,7 @@ struct WebWallpaperView: NSViewRepresentable {
     /// Load wallpaper — uses loadHTMLString for URL-based wallpapers (YouTube/Vimeo)
     /// so the origin isn't file://, or loadFileURL for local wallpapers.
     private static func loadWallpaper(_ webView: WKWebView, viewModel: WebWallpaperViewModel) {
+        viewModel.pageWillLoad()
         let fileUrl = viewModel.fileUrl
         // Check if the HTML contains a redirect/embed to an external URL
         if let html = try? String(contentsOf: fileUrl, encoding: .utf8),

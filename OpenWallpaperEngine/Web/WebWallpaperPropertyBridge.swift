@@ -111,6 +111,18 @@ enum WebWallpaperPropertyBridge {
     static let audioMessageName = "oweAudioListener"
     static let frameMessageName = "oweFrameIntervals"
 
+    /// One heartbeat message: whether the page was visible and its frame intervals since the last.
+    struct Heartbeat: Equatable {
+        var visible: Bool
+        var intervals: [TimeInterval]
+    }
+
+    /// Decodes `{visible, intervals}`; malformed intervals are dropped, a malformed body is nil.
+    static func heartbeat(from body: Any) -> Heartbeat? {
+        guard let object = body as? [String: Any], let visible = object["visible"] as? Bool else { return nil }
+        return Heartbeat(visible: visible, intervals: frameIntervals(from: object["intervals"] ?? []))
+    }
+
     /// The frame intervals (seconds) a heartbeat message carries; anything malformed is dropped.
     static func frameIntervals(from body: Any) -> [TimeInterval] {
         guard let values = body as? [Any] else { return [] }
@@ -137,9 +149,10 @@ enum WebWallpaperPropertyBridge {
       window.wallpaperRegisterMediaThumbnailListener = noop;
       window.wallpaperRegisterMediaPlaybackListener = noop;
       window.wallpaperRegisterMediaTimelineListener = noop;
-      // Frame heartbeat for the render watchdog: requestAnimationFrame intervals while the page
-      // is visible, posted once a second. A hidden page gets no callbacks, so the gap across a
-      // hide is not a frame.
+      // Heartbeat for the render watchdog, posted once a second: whether the page is visible and
+      // its requestAnimationFrame intervals since the last post. A hidden page gets no frame
+      // callbacks, so the gap across a hide is not a frame. A page whose script hangs posts
+      // nothing, which the watchdog notices while the page should be visible.
       var last = 0, intervals = [];
       document.addEventListener('visibilitychange', function(){ last = 0; });
       var beat = function(t){
@@ -149,8 +162,8 @@ enum WebWallpaperPropertyBridge {
       };
       window.requestAnimationFrame(beat);
       setInterval(function(){
-        if (!intervals.length) return;
-        try { window.webkit.messageHandlers.\(frameMessageName).postMessage(intervals); } catch(e) {}
+        var message = { visible: document.visibilityState === 'visible', intervals: intervals };
+        try { window.webkit.messageHandlers.\(frameMessageName).postMessage(message); } catch(e) {}
         intervals = [];
       }, 1000);
     })();

@@ -41,6 +41,9 @@ class VideoWallpaperViewModel: ObservableObject {
     private var sleepObserver: NSObjectProtocol?
     private var wakeObserver: NSObjectProtocol?
     private var musicSyncObserver: NSObjectProtocol?
+    /// Samples playback once a second for the render watchdog.
+    private var probe = VideoPlaybackProbe()
+    private var probeTimer: Timer?
 
     /// Rates last handed to AVFoundation, so redundant assignments can be skipped.
     private var appliedVideoRate: Float?
@@ -76,6 +79,8 @@ class VideoWallpaperViewModel: ObservableObject {
             self?.videoMusicSyncAudioLevelDidChange(notification)
         }
 
+        startPlaybackProbe()
+
         wallpaperViewModel.$playRate
             .receive(on: DispatchQueue.main)
             .sink { [weak self] rate in
@@ -104,6 +109,30 @@ class VideoWallpaperViewModel: ObservableObject {
         if let sleepObserver { NSWorkspace.shared.notificationCenter.removeObserver(sleepObserver) }
         if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
         if let musicSyncObserver { NotificationCenter.default.removeObserver(musicSyncObserver) }
+        probeTimer?.invalidate()
+    }
+
+    // MARK: - Watchdog
+
+    private func startPlaybackProbe() {
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.samplePlayback() }
+        }
+        timer.tolerance = 0.2
+        RunLoop.main.add(timer, forMode: .common)
+        probeTimer = timer
+    }
+
+    private func samplePlayback() {
+        guard let watchdog = wallpaperViewModel.renderWatchdog, let item = player.currentItem else { return }
+        // Optional: an item keeps no access log until playback starts.
+        let events = item.accessLog()?.events.filter { $0.numberOfDroppedVideoFrames >= 0 } ?? []
+        let video = item.tracks.first { $0.assetTrack?.mediaType == .video }
+        let sample = VideoPlaybackProbe.Sample(
+            time: CACurrentMediaTime(), mediaTime: item.currentTime().seconds, rate: player.rate,
+            droppedFrames: events.isEmpty ? nil : events.reduce(0) { $0 + $1.numberOfDroppedVideoFrames },
+            frameRate: Double(video?.currentVideoFrameRate ?? 0))
+        if let duration = probe.frameDuration(after: sample) { watchdog.recordFrame(duration: duration) }
     }
 
     func setAudioEnabled(_ enabled: Bool) {
@@ -155,6 +184,7 @@ class VideoWallpaperViewModel: ObservableObject {
 
     private func playerDidFinishPlaying(_ notification: Notification) {
         wallpaperViewModel.advancePlaylistIfVideoEnds(currentWallpaper)
+        probe.reset()
         self.player.seek(to: CMTime.zero)
         self.audioPlayer.seek(to: CMTime.zero)
         updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
@@ -187,6 +217,7 @@ class VideoWallpaperViewModel: ObservableObject {
         // New AVPlayers start at rate 0, so the cached values no longer describe them.
         appliedVideoRate = nil
         appliedAudioRate = nil
+        probe.reset()
         let url = wallpaper.mediaURL
         let videoItem = AVPlayerItem(url: url)
         let audioItem = AVPlayerItem(url: url)

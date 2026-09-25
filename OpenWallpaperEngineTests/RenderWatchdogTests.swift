@@ -8,7 +8,8 @@ final class RenderWatchdogTests: XCTestCase {
 
     private let thresholds = RenderWatchdog.Thresholds(gracePeriod: 20, mainThreadStall: 3,
                                                        slowFrameMedian: 0.25, frameWindow: 10,
-                                                       minimumFrameSamples: 5, pollInterval: 0.5)
+                                                       minimumFrameSamples: 5, pollInterval: 0.5,
+                                                       heartbeatTimeout: 10)
 
     private func makeWatchdog() -> (RenderWatchdog, Clock) {
         let clock = Clock()
@@ -127,5 +128,68 @@ final class RenderWatchdogTests: XCTestCase {
         XCTAssertEqual(RenderWatchdog.median([3, 1, 2]), 2)
         XCTAssertEqual(RenderWatchdog.median([4, 1, 2, 3]), 2.5)
         XCTAssertEqual(RenderWatchdog.median([]), 0)
+    }
+
+    // MARK: - Heartbeats
+
+    private final class Page {}
+
+    func testSilentVisiblePageTripsAfterTheTimeout() {
+        let (watchdog, clock) = makeWatchdog()
+        let page = ObjectIdentifier(Page())
+        watchdog.arm()
+        clock.now += 20
+        for _ in 0..<30 {
+            clock.now += 1
+            watchdog.recordHeartbeat(from: page, expectingMore: true)
+            XCTAssertNil(watchdog.evaluate(), "a page beating every second is alive")
+        }
+        clock.now += 9.9
+        XCTAssertNil(watchdog.evaluate())
+        clock.now += 0.2
+        guard case .heartbeatStopped(let seconds) = watchdog.evaluate() else { return XCTFail("expected a hang") }
+        XCTAssertEqual(seconds, 10.1, accuracy: 1e-6)
+    }
+
+    func testHiddenOrSleepingPagesMayGoSilent() {
+        let (watchdog, clock) = makeWatchdog()
+        let page = ObjectIdentifier(Page())
+        watchdog.arm()
+        clock.now += 20
+        watchdog.recordHeartbeat(from: page, expectingMore: false)
+        clock.now += 600
+        XCTAssertNil(watchdog.evaluate(), "hidden, occluded or with the displays asleep")
+        watchdog.recordHeartbeat(from: page, expectingMore: true)
+        clock.now += 5
+        XCTAssertNil(watchdog.evaluate(), "showing again restarts the clock")
+    }
+
+    func testEndedSourcesAndOtherPagesDoNotMaskEachOther() {
+        let (watchdog, clock) = makeWatchdog()
+        let pages = [Page(), Page(), Page()] // alive, so their identifiers stay distinct
+        let (hung, healthy, gone) = (ObjectIdentifier(pages[0]), ObjectIdentifier(pages[1]), ObjectIdentifier(pages[2]))
+        watchdog.arm()
+        clock.now += 20
+        watchdog.recordHeartbeat(from: hung, expectingMore: true)
+        watchdog.recordHeartbeat(from: gone, expectingMore: true)
+        watchdog.endHeartbeat(from: gone)
+        for _ in 0..<9 {
+            clock.now += 1
+            watchdog.recordHeartbeat(from: healthy, expectingMore: true)
+            XCTAssertNil(watchdog.evaluate())
+        }
+        clock.now += 1.5
+        watchdog.recordHeartbeat(from: healthy, expectingMore: true)
+        XCTAssertNotNil(watchdog.evaluate(), "another display's healthy page doesn't hide a hung one")
+    }
+
+    func testHeartbeatSilenceDuringGraceCountsFromItsEnd() {
+        let (watchdog, clock) = makeWatchdog()
+        watchdog.arm()
+        watchdog.recordHeartbeat(from: ObjectIdentifier(Page()), expectingMore: true)
+        clock.now += 29
+        XCTAssertNil(watchdog.evaluate(), "a page loading during the grace period")
+        clock.now += 1.5
+        XCTAssertNotNil(watchdog.evaluate())
     }
 }
