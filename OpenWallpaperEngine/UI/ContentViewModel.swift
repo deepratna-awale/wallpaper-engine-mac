@@ -124,6 +124,21 @@ class ContentViewModel: ObservableObject, DropDelegate {
         InstalledLibrary.wallpapers(in: FileManager.default.wallpapersDirectory,
                                     hiding: steamCmd.dependencyIndex.ids)
     }
+
+    /// After wallpapers were deleted: removes the dependency-only items none of the remaining ones use.
+    func removeUnusedWorkshopDependencies() {
+        let library = FileManager.default.wallpapersDirectory
+        let index = steamCmd.dependencyIndex
+        Task.detached(priority: .utility) {
+            let removed = WorkshopDependencyCleanup.removeOrphans(in: library, index: index)
+            guard !removed.isEmpty else { return }
+            await MainActor.run {
+                for id in removed {
+                    DownloadedWallpaperIndex.shared.remove(directory: library.appending(path: id))
+                }
+            }
+        }
+    }
     
     private var searchedWallpapers: [WEWallpaper] {
         allWallpapers.filter { wallpaper in

@@ -102,4 +102,34 @@ final class InstalledLibraryTests: XCTestCase {
         let effect = try XCTUnwrap(resolver.url(for: "effects/workshop/2000000002/glow/effect.json"))
         XCTAssertEqual(effect.standardizedFileURL, library.appending(path: "2000000002/effects/glow/effect.json").standardizedFileURL)
     }
+
+    // MARK: - Cleanup
+
+    func testDependenciesInUseAreKept() {
+        XCTAssertTrue(WorkshopDependencyCleanup.orphanedDependencies(in: library, dependencyIds: ["2000000002", "3000000003"]).isEmpty)
+    }
+
+    func testDeletingTheLastUserRemovesItsDependencyChain() throws {
+        let directory = try temporaryLibrary()
+        let index = WorkshopDependencyIndex(libraryDirectory: { directory })
+        index.recordDependencyDownload("2000000002", copiedIntoLibrary: true)
+        index.recordDependencyDownload("3000000003", copiedIntoLibrary: true)
+        try FileManager.default.removeItem(at: directory.appending(path: "1000000001"))
+
+        XCTAssertEqual(WorkshopDependencyCleanup.removeOrphans(in: directory, index: index), ["2000000002", "3000000003"])
+        let remaining = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { !$0.hasPrefix(".") }
+        XCTAssertEqual(remaining, ["4000000004"])
+        XCTAssertTrue(index.ids.isEmpty)
+    }
+
+    func testUserItemsAreNeverCleanedUp() throws {
+        let directory = try temporaryLibrary()
+        let index = WorkshopDependencyIndex(libraryDirectory: { directory })
+        index.recordDependencyDownload("3000000003", copiedIntoLibrary: true)
+        try FileManager.default.removeItem(at: directory.appending(path: "1000000001"))
+
+        // The asset item is unreferenced now too, but the user got it themselves.
+        XCTAssertEqual(WorkshopDependencyCleanup.removeOrphans(in: directory, index: index), ["3000000003"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appending(path: "2000000002").path))
+    }
 }

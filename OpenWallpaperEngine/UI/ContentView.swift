@@ -132,6 +132,7 @@ struct ContentView: View {
                     }
                     wallpaperViewModel.removeWallpaperFromAllScreens(directory: url)
                     viewModel.hoveredWallpaper = nil
+                    viewModel.removeUnusedWorkshopDependencies()
                 }
                 Button("Move to Trash") {
                     if (try? FileManager.default.trashItem(at: url, resultingItemURL: nil)) != nil {
@@ -139,6 +140,7 @@ struct ContentView: View {
                     }
                     wallpaperViewModel.removeWallpaperFromAllScreens(directory: url)
                     viewModel.hoveredWallpaper = nil
+                    viewModel.removeUnusedWorkshopDependencies()
                 }
             }
             Button("Cancel", role: .cancel) {
@@ -157,6 +159,7 @@ struct ContentView: View {
                     wallpaperViewModel.removeWallpaperFromAllScreens(directory: url)
                 }
                 viewModel.clearSelection()
+                viewModel.removeUnusedWorkshopDependencies()
             }
             Button("Move All \(viewModel.selectedWallpapers.count) to Trash") {
                 for url in viewModel.selectedWallpapers {
@@ -166,6 +169,7 @@ struct ContentView: View {
                     wallpaperViewModel.removeWallpaperFromAllScreens(directory: url)
                 }
                 viewModel.clearSelection()
+                viewModel.removeUnusedWorkshopDependencies()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
