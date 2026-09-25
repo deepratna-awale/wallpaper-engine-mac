@@ -27,7 +27,7 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 
 1. ~~Instance overrides (rate, count, size, alpha, speed, lifetime, color)~~: done; user-bound fields resolve every frame, and `controlpoint<n>` places control points. A property change still triggers a content rebuild, which restarts the particles.
 2. ~~Child particle systems (`children`)~~: done. Static children and event children (`eventfollow`, `eventspawn`, `eventdeath`) with probability, instance budget (`maxcount`), nesting and `inherit…fromevent`, on the GPU (events never leave it) and the CPU. Open: link flag 1 (child control points from the parent's particles) and a rope renderer per instance are reported, not implemented.
-3. Audio-reactive particle properties and collision operators.
+3. ~~Audio-reactive particle properties and collision operators~~: done. Audio response on emitters' rate, `turbulentvelocityrandom`, `turbulence` and `vortex`; `collisionplane`, `collisionsphere`, `collisionquad` and `collisionbounds` with bounce, slide, stop and delete (`collisionbox` is a no-op in WE). Open: `collisionmodel` (needs area 6), periodic emission (`minperiodicdelay`…), emitter `delay`/`duration`, and RG88 refraction normal maps (upload as (r, g, 0, 1) with `TEX1FORMAT=8`; the texture loader expands RG88 to (l, l, l, a)).
 4. Particles through WE's `genericparticle` shaders and materials: blend modes, sprite and trail material options, refraction.
 5. ~~Effects on particle systems~~: WE has no per-particle-system effects; wallpapers use composition layers, which already work.
 
