@@ -10,11 +10,9 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 - Phase 1: guidelines, reorganization, tests, CI.
 - Phase 2: effects and shaders through WE's own shaders (M1–M8), plus the library sweep.
 - Phase 3: composition, fullscreen and solid layers, `_rt_FullFrameBuffer`, effects on text layers, object draw order.
-
-## In progress
-
-- **Phase 4: generic value bindings.** User properties on every field, per-wallpaper property store, sidebar conditions and property types, web wallpaper properties and audio.
-- **Phase 5: text and transforms.** Parent transforms, image alignment, WE text layout, text color, Retina-sharp text.
+- Phase 4: user properties on every field, per-wallpaper property store, sidebar conditions and property types, web wallpaper properties and audio.
+- Phase 5: parent transforms, image alignment, WE text layout and colour.
+- M8: library sweep passes (44 wallpapers, 0 failures).
 
 ## Next, in order
 
@@ -99,4 +97,3 @@ Ranked; the area each item belongs to is in brackets.
 22. Script clones share `layer.id` with their source (text and effect state), and effect state is never pruned. [4]
 23. Objects without an `id`: the hierarchy uses the index, layers use −1, so the parent link is lost. [new]
 24. Dead `_owe_effect_*` UI code; toggling parallax triggers a full rebuild. [new]
-25. Library sweep: 7 Workshop failures (`iris_movement__`, `cutout_vignette` type mismatches; `or` as an identifier in `dot_matrix_mobile_fix`). The M8 agent is fixing these. [1]
