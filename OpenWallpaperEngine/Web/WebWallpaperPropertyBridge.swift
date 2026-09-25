@@ -109,6 +109,13 @@ enum WebWallpaperPropertyBridge {
     }
 
     static let audioMessageName = "oweAudioListener"
+    static let frameMessageName = "oweFrameIntervals"
+
+    /// The frame intervals (seconds) a heartbeat message carries; anything malformed is dropped.
+    static func frameIntervals(from body: Any) -> [TimeInterval] {
+        guard let values = body as? [Any] else { return [] }
+        return values.compactMap { ($0 as? NSNumber)?.doubleValue }.filter { $0.isFinite && $0 > 0 }
+    }
 
     /// Injected at document start: WE's registration functions. Media/other listeners are
     /// accepted and never called.
@@ -130,6 +137,22 @@ enum WebWallpaperPropertyBridge {
       window.wallpaperRegisterMediaThumbnailListener = noop;
       window.wallpaperRegisterMediaPlaybackListener = noop;
       window.wallpaperRegisterMediaTimelineListener = noop;
+      // Frame heartbeat for the render watchdog: requestAnimationFrame intervals while the page
+      // is visible, posted once a second. A hidden page gets no callbacks, so the gap across a
+      // hide is not a frame.
+      var last = 0, intervals = [];
+      document.addEventListener('visibilitychange', function(){ last = 0; });
+      var beat = function(t){
+        if (document.visibilityState === 'visible') { if (last) intervals.push((t - last) / 1000); last = t; }
+        else { last = 0; }
+        window.requestAnimationFrame(beat);
+      };
+      window.requestAnimationFrame(beat);
+      setInterval(function(){
+        if (!intervals.length) return;
+        try { window.webkit.messageHandlers.\(frameMessageName).postMessage(intervals); } catch(e) {}
+        intervals = [];
+      }, 1000);
     })();
     """
 }

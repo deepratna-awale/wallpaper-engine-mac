@@ -27,6 +27,9 @@ struct WebWallpaperView: NSViewRepresentable {
         configuration.mediaTypesRequiringUserActionForPlayback = []
         viewModel.installBridge(on: configuration.userContentController)
         configuration.setURLSchemeHandler(viewModel.schemeHandler, forURLScheme: WebWallpaperSchemeHandler.scheme)
+        if let watchdog = wallpaperViewModel.renderWatchdog {
+            viewModel.frameTimeObserver = { watchdog.recordFrame(duration: $0) }
+        }
 
         let nsView = WKWebView(frame: .zero, configuration: configuration)
         nsView.navigationDelegate = viewModel

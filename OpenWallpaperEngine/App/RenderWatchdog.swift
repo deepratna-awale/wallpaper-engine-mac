@@ -14,6 +14,13 @@ import QuartzCore
 /// - the main thread not answering a ping from a background queue for `mainThreadStall`;
 /// - the median wallpaper frame time over the last `frameWindow` exceeding `slowFrameMedian`.
 ///
+/// Frame times come from the scene renderer (CPU time per frame, including video drawn through
+/// the scene pipeline) and from web wallpapers (`requestAnimationFrame` intervals, posted once a
+/// second). Two gaps remain: a web page whose JavaScript hangs outright posts nothing, and an
+/// `AVPlayerLayer` video renders out of process with no per-frame callback short of copying every
+/// frame through `AVPlayerItemVideoOutput`. Neither blocks the app's main thread, which the ping
+/// still covers.
+///
 /// The clock is uptime-based (`CACurrentMediaTime`), so system sleep never reads as a stall.
 ///
 /// Thread safety: `lock` owns every stored `var`. `recordFrame` is called from render callbacks,

@@ -29,6 +29,8 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         return WebCompatPatches(workshopId: id, assetsDirectory: WallpaperEngineAssets.directory)
             ?? WebCompatPatches(workshopId: id, assetsDirectory: WallpaperEngineAssets.bundled)
     }
+    /// Receives the page's frame intervals (the render watchdog's frame times).
+    var frameTimeObserver: ((TimeInterval) -> Void)?
     private var audioTimer: Timer?
     private var propertyObserver: NSObjectProtocol?
 
@@ -57,6 +59,7 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         controller.addUserScript(WKUserScript(source: WebWallpaperPropertyBridge.bootstrapScript,
                                               injectionTime: .atDocumentStart, forMainFrameOnly: true))
         controller.add(WeakScriptMessageHandler(self), name: WebWallpaperPropertyBridge.audioMessageName)
+        controller.add(WeakScriptMessageHandler(self), name: WebWallpaperPropertyBridge.frameMessageName)
     }
 
     private var declaredProperties: [String: WebWallpaperPropertyBridge.Property] {
@@ -152,7 +155,14 @@ private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.name == WebWallpaperPropertyBridge.audioMessageName else { return }
-        owner?.audioListenerRegistered()
+        switch message.name {
+        case WebWallpaperPropertyBridge.audioMessageName:
+            owner?.audioListenerRegistered()
+        case WebWallpaperPropertyBridge.frameMessageName:
+            guard let observer = owner?.frameTimeObserver else { return }
+            WebWallpaperPropertyBridge.frameIntervals(from: message.body).forEach(observer)
+        default:
+            break
+        }
     }
 }
