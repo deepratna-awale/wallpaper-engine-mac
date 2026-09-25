@@ -605,6 +605,7 @@ final class AudioReactiveScriptEngine {
                 context?.evaluateScript(runtime)
             }
             context?.evaluateScript(Self.compatibilityBootstrap)
+            context?.evaluateScript(SceneScriptPropertiesShim.source)
         }
         let currentLevel = audioLevel
         let currentSpectrum = audioSpectrum
