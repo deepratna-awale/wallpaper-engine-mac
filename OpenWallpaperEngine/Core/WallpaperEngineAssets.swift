@@ -33,4 +33,25 @@ enum WallpaperEngineAssets {
     static var isUsingBundledAssets: Bool {
         configured == nil && bundled != nil
     }
+
+    /// Where shared assets are looked up, in order: the user's installation, then the bundled
+    /// copy, so a file an older installation lacks still resolves and the app works without WE.
+    static var searchDirectories: [URL] {
+        var directories: [URL] = []
+        for directory in [configured, bundled].compactMap({ $0 }) where !directories.contains(directory) {
+            directories.append(directory)
+        }
+        return directories
+    }
+
+    /// The first of `relativePaths` that exists, trying every path in each directory before the next.
+    static func locate(_ relativePaths: [String], in directories: [URL]) -> URL? {
+        for directory in directories {
+            for path in relativePaths {
+                let candidate = directory.appending(path: path).standardizedFileURL
+                if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            }
+        }
+        return nil
+    }
 }

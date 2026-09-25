@@ -1506,7 +1506,8 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func sharedAssetData(named path: String) -> Data? {
-        guard let assetsDirectory = WallpaperEngineAssets.directory else {
+        let assetsDirectories = WallpaperEngineAssets.searchDirectories
+        guard !assetsDirectories.isEmpty else {
             Self.logDetail("Shared asset lookup skipped: no Wallpaper Engine assets available")
             return nil
         }
@@ -1520,17 +1521,15 @@ class SceneWallpaperViewModel: ObservableObject {
         } else if !normalizedPath.hasPrefix("materials/") {
             relativePaths.append("materials/\(normalizedPath)")
         }
-        var seenPaths: Set<String> = []
-        let candidates = relativePaths
-            .map { assetsDirectory.appending(path: $0).standardizedFileURL }
-            .filter { seenPaths.insert($0.path).inserted }
-        for candidate in candidates where FileManager.default.fileExists(atPath: candidate.path) {
-            if let data = try? Data(contentsOf: candidate) {
-                Self.logDetail("Using shared asset '\(candidate.path)'")
-                return data
-            }
+        guard let candidate = WallpaperEngineAssets.locate(relativePaths, in: assetsDirectories) else { return nil }
+        do {
+            let data = try Data(contentsOf: candidate)
+            Self.logDetail("Using shared asset '\(candidate.path)'")
+            return data
+        } catch {
+            OWELog.error(.scene, "Could not read shared asset \(candidate.path): \(error)")
+            return nil
         }
-        return nil
     }
 
     private func loadTexture(named name: String, materialDir: String, wallpaperDir: URL) -> NSImage? {
