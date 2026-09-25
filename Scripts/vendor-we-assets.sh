@@ -38,7 +38,7 @@ rsync -a --prune-empty-dirs \
 rsync -a --prune-empty-dirs --exclude 'HLSL/' --exclude 'editor/' --exclude '.DS_Store' \
     "$ASSETS/shaders/" "$DEST/shaders/"
 
-for dir in fonts materials models particles scripts; do
+for dir in fonts materials models particles scripts zcompat; do
     [[ -d "$ASSETS/$dir" ]] || continue
     rsync -a --exclude '.DS_Store' "$ASSETS/$dir/" "$DEST/$dir/"
 done
