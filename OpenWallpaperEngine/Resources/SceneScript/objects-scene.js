@@ -170,6 +170,25 @@
 
     native.initial.objects.forEach(function (record) { objects.order.push(register(record)); });
 
+    // MARK: engine.registerAsset (IAssetHandle)
+
+    // IAssetHandle: what `registerAsset` returns. `createLayer` and `_Internal.stringifyConfig`
+    // take its path through `toConfigString()`, like WE's other handles (IModelData).
+    class AssetHandle {
+        constructor(path) { Object.defineProperty(this, '_path', { value: path }); }
+        toConfigString() { return this._path; }
+    }
+    objects.AssetHandle = AssetHandle;
+
+    // WE loads the asset with the scene when `precache` is set, and marks it for publishing; here
+    // the renderer loads it when `createLayer` needs it, so both are the same handle.
+    // Extensions share one `engine` object, whichever installs first.
+    if (global.engine === undefined) global.engine = {};
+    global.engine.registerAsset = function (file, precache) {
+        rt.requireGlobalScope('registerAsset');
+        return new AssetHandle(String(file));
+    };
+
     // MARK: thisLayer / thisObject
 
     // The object a binding names (SceneScriptObjectBinding), or null when it no longer exists.
@@ -185,6 +204,14 @@
 
     objects.bind = function (id, binding) { objects.bindings.set(id, binding); };
 
+    // What `thisObject` is for script `id`: the binding it was defined with
+    // (SceneScriptInstance.binding), else one set through `bind` before its load.
+    objects.bindingOf = function (id) {
+        const record = rt.byId.get(id);
+        if (record !== undefined && record.binding !== null && record.binding !== undefined) return record.binding;
+        return objects.bindings.get(id);
+    };
+
     objects.slotForID = function (id) {
         const layer = objects.byID.get(id);
         return layer === undefined || layer._dead ? -1 : layer._slot;
@@ -199,7 +226,7 @@
     // `thisObject` the owner of the bound property, else the layer, else the scene (§1.3, P9).
     rt.hooks.scope = function (record) {
         const layer = record.slot >= 0 ? objects.bySlot.get(record.slot) : undefined;
-        const binding = objects.bindings.get(record.id);
+        const binding = record.binding !== null && record.binding !== undefined ? record.binding : objects.bindings.get(record.id);
         let thisObject = binding ? objects.bindingTarget(binding) : null;
         if (thisObject === null || thisObject === undefined) thisObject = layer !== undefined ? layer : thisScene;
         return { thisLayer: layer, thisObject: thisObject };
@@ -216,23 +243,31 @@
         });
     }
 
+    // The layers' scripts get their `destroy()` first, while the layers are still in the scene
+    // ("just before the object is destroyed": `thisLayer` writes land, `getLayer` finds it; SF11);
+    // then the layers go. A `destroy()` that destroys more layers starts another round.
     function destroyPending() {
-        if (pendingDestroy.length === 0) return;
-        const doomed = [];
-        pendingDestroy.forEach(function (layer) { collect(layer, doomed); });
-        pendingDestroy.length = 0;
-        doomed.forEach(function (layer) {
-            const slot = layer._slot;
-            const index = objects.order.indexOf(layer);
-            if (index >= 0) objects.order.splice(index, 1);
-            objects.bySlot.delete(slot);
-            if (objects.byID.get(layer._id) === layer) objects.byID.delete(layer._id);
-            rt.records.forEach(function (record) {
-                if (record.slot === slot && !record.pendingDestroy) rt.remove(record.id);
+        while (pendingDestroy.length > 0) {
+            const doomed = [];
+            pendingDestroy.forEach(function (layer) { collect(layer, doomed); });
+            pendingDestroy.length = 0;
+            doomed.forEach(function (layer) {
+                rt.records.forEach(function (record) {
+                    if (record.slot === layer._slot && !record.pendingDestroy) rt.remove(record.id);
+                });
             });
-            objects.push(OP.destroy, slot);
-            objects.detachLayer(layer);
-        });
+            rt.destroyPending();
+            doomed.forEach(function (layer) {
+                if (layer._dead) return;
+                const slot = layer._slot;
+                const index = objects.order.indexOf(layer);
+                if (index >= 0) objects.order.splice(index, 1);
+                objects.bySlot.delete(slot);
+                if (objects.byID.get(layer._id) === layer) objects.byID.delete(layer._id);
+                objects.push(OP.destroy, slot);
+                objects.detachLayer(layer);
+            });
+        }
     }
 
     rt.addPhaseHandler('deferred', function () {

@@ -6,7 +6,10 @@
 (function (global) {
     const rt = global.__rt;
     const native = rt.native.objects;
-    const RAD2DEG = 180 / Math.PI, DEG2RAD = Math.PI / 180;
+    const DEG2RAD = Math.PI / 180;
+    // Radians → degrees in float, like WE's C++: exactly 90, 45, 180, 360 for their Float32 radians.
+    const RAD2DEG_F = Math.fround(180 / Math.PI);
+    function toDegrees(radians) { return Math.fround(radians * RAD2DEG_F); }
     // WE's classes from baseclasses.js (global lexical bindings, not properties of `global`).
     const HAS_VEC = typeof Vec3 === 'function' && typeof Vec2 === 'function';
 
@@ -86,10 +89,27 @@
         case 'bool': return t[i] !== 0;
         case 'vec2': return objects.vec2(t[i], t[i + 1]);
         case 'vec3': return objects.vec3(t[i], t[i + 1], t[i + 2]);
-        case 'degrees': return objects.vec3(t[i] * RAD2DEG, t[i + 1] * RAD2DEG, t[i + 2] * RAD2DEG);
+        case 'degrees': return objects.vec3(toDegrees(t[i]), toDegrees(t[i + 1]), toDegrees(t[i + 2]));
         default: return undefined;
         }
     };
+
+    // Angles are degrees at the API and Float32 radians in the table, so a plain round trip turns
+    // 90 into 89.99999… or 90.0000025 and `angles.z += 0.36` drifts (SF13, S15). The degrees a
+    // script wrote stay authoritative while the stored radians are the ones that write produced;
+    // radians anyone else wrote (the renderer, an animation) convert in float.
+    function readDegrees(owner, offset, t, i) {
+        const cached = owner._deg === undefined ? undefined : owner._deg[offset];
+        if (cached !== undefined && cached.r[0] === t[i] && cached.r[1] === t[i + 1] && cached.r[2] === t[i + 2]) {
+            return objects.vec3(cached.d[0], cached.d[1], cached.d[2]);
+        }
+        return objects.read('degrees', t, i);
+    }
+
+    function rememberDegrees(owner, offset, degrees, t, i) {
+        if (owner._deg === undefined) Object.defineProperty(owner, '_deg', { value: {} });
+        owner._deg[offset] = { d: degrees, r: [t[i], t[i + 1], t[i + 2]] };
+    }
 
     // Defines `name` on `proto` over a shared buffer. Instances carry `_t` (the Float32Array),
     // `_base` (their first float), `_d` (the dirty bytes) and `_di` (their dirty index); a
@@ -100,13 +120,16 @@
         Object.defineProperty(proto, name, {
             configurable: true,
             enumerable: true,
-            get: function () { return objects.read(type, this._t, this._base + offset); },
+            get: type === 'degrees'
+                ? function () { return readDegrees(this, offset, this._t, this._base + offset); }
+                : function () { return objects.read(type, this._t, this._base + offset); },
             set: readOnly ? function (value) {} : function (value) {
                 if (this._dead) return;
                 const c = objects.convert(type, value);
                 if (c === undefined) return;
                 const t = this._t, i = this._base + offset;
                 for (let k = 0; k < count; k++) t[i + k] = c[k];
+                if (type === 'degrees') rememberDegrees(this, offset, components(value, 3), t, i);
                 this._d[this._di] = 1;
             },
         });

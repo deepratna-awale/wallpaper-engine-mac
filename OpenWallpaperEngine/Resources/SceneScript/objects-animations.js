@@ -106,7 +106,7 @@
     // animation object bound to the current property").
     objects.currentProperty = function (owner) {
         if (rt.current === null) return undefined;
-        const binding = objects.bindings.get(rt.current);
+        const binding = objects.bindingOf(rt.current);
         if (!binding || objects.bindingTarget(binding) !== owner) return undefined;
         return binding.property;
     };
