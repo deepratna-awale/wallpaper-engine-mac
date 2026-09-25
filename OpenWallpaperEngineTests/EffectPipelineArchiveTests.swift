@@ -130,6 +130,35 @@ final class EffectPipelineArchiveTests: XCTestCase {
         }()), "the rewritten archive opens")
     }
 
+    /// A real archive cut short (killed mid-write by a build without the rename, disk full) is
+    /// discarded like random bytes, never handed to the driver.
+    func testTruncatedArchiveIsDiscarded() throws {
+        let first = EffectPipelineArchive(device: device, directory: directory)
+        _ = try EffectGraphRenderer.makePipeline(try descriptor(), device: device, archive: first, key: "a")
+        first.flush()
+        let url = first.url
+        let bytes = try Data(contentsOf: url)
+        XCTAssertGreaterThan(bytes.count, 64)
+        try bytes.prefix(bytes.count / 2).write(to: url)
+        let archive = EffectPipelineArchive(device: device, directory: directory)
+        // Metal may open a cut file and just miss; either way the pipeline must still compile.
+        _ = try EffectGraphRenderer.makePipeline(try descriptor(), device: device, archive: archive, key: "a")
+        archive.flush()
+        XCTAssertEqual(archive.writeFailures, 0)
+    }
+
+    /// Every GPU gets its own file, named by its registry ID, so a binary built for one GPU is
+    /// never handed to another (dGPU/iGPU switching, eGPUs, a display on another GPU).
+    func testEachGPUHasItsOwnArchive() throws {
+        let devices = MTLCopyAllDevices()
+        let urls = devices.map { EffectPipelineArchive(device: $0, directory: directory).url }
+        XCTAssertEqual(Set(urls).count, devices.count)
+        for (device, url) in zip(devices, urls) {
+            XCTAssertTrue(url.lastPathComponent.contains("-\(String(device.registryID, radix: 16))--"), url.lastPathComponent)
+            XCTAssertTrue(EffectPipelineArchive.shared(device: device, directory: directory).url == url)
+        }
+    }
+
     func testArchivesForAnotherBuildOfThisGPUAreDeleted() throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let prefix = EffectPipelineArchive.devicePrefix(device)
