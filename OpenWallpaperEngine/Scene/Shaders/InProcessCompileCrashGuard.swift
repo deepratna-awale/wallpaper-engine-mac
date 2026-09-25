@@ -7,7 +7,8 @@ import Foundation
 /// `pending-<pid>` file exists in `directory`. A pending file whose process is gone on the next
 /// launch means that process died mid-compile. After `disableThreshold` such deaths,
 /// in-process compiling is disabled for that library build (the process compiler takes over,
-/// when it is installed) until the linked libraries change.
+/// when it is installed) until the linked libraries change. A compile that hangs
+/// (`recordHang`) counts like a death: the thread can't be killed, so it is as lost as a crash.
 ///
 /// Separate from the app's safe-restart ledger (`SafeRestartLedger`), which reacts to the same
 /// crash per wallpaper (not restoring it); this one reacts per shader library build. Neither
@@ -94,6 +95,18 @@ final class InProcessCompileCrashGuard {
             OWELog.error(.shader, "In-process shader compiling is off until the shader libraries change")
         }
         return allowed
+    }
+
+    /// Records a compile that overran its timeout against `fingerprint`, so a wallpaper that hangs
+    /// the libraries again on a later launch turns in-process compiling off like a crash would.
+    func recordHang(fingerprint: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        var record = loadRecord()
+        if record?.fingerprint != fingerprint { record = Record(fingerprint: fingerprint, deaths: 0) }
+        record!.deaths += 1
+        OWELog.error(.shader, "An in-process shader compile hung (\(record!.deaths) deaths or hangs with these libraries)")
+        save(record!)
     }
 
     private func loadRecord() -> Record? {

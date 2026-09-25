@@ -164,7 +164,7 @@ enum ShaderCompilerFactory {
         guard let stateDirectory else { return InProcessShaderCompiler() }
         let crashGuard = InProcessCompileCrashGuard(directory: stateDirectory)
         if crashGuard.allowsInProcess(fingerprint: InProcessShaderCompiler.libraryFingerprint) {
-            return InProcessShaderCompiler(crashGuard: crashGuard)
+            return InProcessShaderCompiler(crashGuard: crashGuard, fallback: { try ProcessShaderCompiler() })
         }
         do {
             return try ProcessShaderCompiler()

@@ -186,5 +186,101 @@ final class InProcessShaderCompilerTests: XCTestCase {
         let left = try FileManager.default.contentsOfDirectory(atPath: directory.path)
         XCTAssertEqual(left, [])
     }
+
+    // MARK: - Watchdog
+
+    /// Stands in for the process compiler.
+    private struct StubCompiler: ShaderCompiler {
+        var cacheFingerprint: String { "stub" }
+        func preprocess(_ source: String, stage: ShaderStage) throws -> String { "stub:" + source }
+        func compileToMSL(_ source: String, stage: ShaderStage) throws -> (msl: String, reflection: Data) {
+            ("stub", Data("{}".utf8))
+        }
+    }
+
+    /// A job that never returns until the test ends (a thread can't be killed).
+    private func hang() -> () -> String {
+        let release = DispatchSemaphore(value: 0)
+        addTeardownBlock { release.signal() }
+        return { release.wait(); return "late" }
+    }
+
+    func testCompileThreadTimesOutAndFailsQueuedJobs() throws {
+        let thread = ShaderCompileThread(timeout: 0.2)
+        XCTAssertEqual(try thread.run { 42 }, 42)
+        let hung = hang()
+        let queued = expectation(description: "queued job fails")
+        let start = Date()
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.05) {
+            do {
+                _ = try thread.run { "never" }
+                XCTFail("a job queued behind the hung one must fail")
+            } catch ShaderCompileThread.Failure.stuck {
+                queued.fulfill()
+            } catch {
+                XCTFail("\(error)")
+            }
+        }
+        XCTAssertThrowsError(try thread.run(hung)) { error in
+            guard case ShaderCompileThread.Failure.timedOut = error else { return XCTFail("\(error)") }
+        }
+        wait(for: [queued], timeout: 5)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 3, "callers are released, not held by the hung job")
+        XCTAssertTrue(thread.isStuck)
+        XCTAssertThrowsError(try thread.run { 1 }, "the stuck thread is never used again")
+    }
+
+    func testTimeoutCountsRunTimeNotQueueTime() throws {
+        let thread = ShaderCompileThread(timeout: 0.3)
+        let results = DispatchQueue.global()
+        let group = DispatchGroup()
+        var failures = 0
+        let lock = NSLock()
+        // Eight 0.1 s jobs queue for up to 0.8 s, longer than the timeout, but none overruns it.
+        for _ in 0..<8 {
+            results.async(group: group) {
+                do {
+                    _ = try thread.run { Thread.sleep(forTimeInterval: 0.1) }
+                } catch {
+                    lock.withLock { failures += 1 }
+                }
+            }
+        }
+        group.wait()
+        XCTAssertEqual(failures, 0)
+        XCTAssertFalse(thread.isStuck)
+    }
+
+    func testHungCompileFailsItsVariantAndHandsOverToTheFallback() throws {
+        let directory = try guardDirectory()
+        let crashGuard = InProcessCompileCrashGuard(directory: directory)
+        let compiler = InProcessShaderCompiler(crashGuard: crashGuard, timeout: 0.2, fallback: { StubCompiler() })
+        XCTAssertTrue(compiler.cacheFingerprint.hasPrefix("in-process|"))
+        XCTAssertThrowsError(try compiler.dispatch(step: "preprocess", fallback: { _ in "fallback" }, hang())) { error in
+            XCTAssertTrue("\(error)".contains("timed out"), "\(error)")
+        }
+        XCTAssertTrue(compiler.isStuck)
+        XCTAssertEqual(try compiler.preprocess("x", stage: .vertex), "stub:x", "routed away from the held glslang lock")
+        XCTAssertEqual(compiler.cacheFingerprint, "stub", "fallback output is cached under the fallback's key")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), ["disabled"],
+                       "the hang is recorded and no compile marker is left behind")
+
+        let libraries = InProcessShaderCompiler.libraryFingerprint
+        XCTAssertTrue(InProcessCompileCrashGuard(directory: directory).allowsInProcess(fingerprint: libraries),
+                      "one hang is not enough")
+        InProcessCompileCrashGuard(directory: directory).recordHang(fingerprint: libraries)
+        XCTAssertFalse(InProcessCompileCrashGuard(directory: directory).allowsInProcess(fingerprint: libraries),
+                       "a hang that recurs turns in-process compiling off on the next launch")
+    }
+
+    func testHungCompileWithoutFallbackFailsFast() throws {
+        let compiler = InProcessShaderCompiler(timeout: 0.2)
+        XCTAssertThrowsError(try compiler.dispatch(step: "glslang", fallback: { _ in "fallback" }, hang()))
+        let start = Date()
+        XCTAssertThrowsError(try compiler.preprocess("void main() {}", stage: .vertex)) { error in
+            XCTAssertTrue("\(error)".contains("stuck"), "\(error)")
+        }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 1)
+    }
 }
 
