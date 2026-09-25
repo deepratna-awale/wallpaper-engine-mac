@@ -352,6 +352,8 @@ Our particles are 2D with a separate alpha: `Particle.position/velocity: SIMD2`,
 - An additive layer over a transparent area: final pixel equals WE's.
 **Status (R1, 2026-09-25).** Fixed 320b7ec (opaque composite). Verified by `testNormalBlendingOverwritesTheScene`, `testCompositeIgnoresTheSceneAlpha` and `testAdditiveBlendingMatchesTheNativeAdditiveDraw`. Open: an unknown `blending` string silently overwrites (`EffectGraphRenderer.blendMode`, which is B's); fixing it needs WE's full list of blending values.
 
+**Status (R2, 2026-09-25).** Fixed d03f50e: an unknown `blending` value still overwrites, as `normal` does, and is now logged once. `normal`, `disabled`, `translucent` and `additive` are known; the bundled assets and the 49-wallpaper library use only `normal` (416), `translucent` (213) and `additive` (56). Verified by `EffectGraphCachingTests.testBlendingTable`. Open: WE's full list of values.
+
 ## I6. `colorBlendMode` / `BLENDMODE` and `_rt_FullFrameBuffer` (High, E)
 **Scenario.** 33 library objects set `colorBlendMode`. `genericimage2/3/4` then sample `g_Texture4 = _rt_FullFrameBuffer` at `v_ScreenPos` and write `gl_FragColor.a = screen.a`:
 - **Snapshots.** Each such layer needs the snapshot taken *just before it*, as `readsScene` layers do (`SceneMetalRenderer.swift:~520`, end encoder + blit). At 5K with 10+ blend-mode layers, that is 10+ full-screen blits per frame (a performance risk).
