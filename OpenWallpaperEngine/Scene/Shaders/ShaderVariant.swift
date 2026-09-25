@@ -55,12 +55,32 @@ final class ShaderVariantTranslator {
 
     let compiler: ShaderCompiler
     let cacheDirectory: URL?
+    /// Identifies the glslang/spirv-cross binaries so a toolchain upgrade retranslates.
+    let toolchainFingerprint: String
     private let lock = NSLock()
     private var memory: [String: TranslatedShaderVariant] = [:]
 
     init(compiler: ShaderCompiler, cacheDirectory: URL? = ShaderVariantTranslator.defaultCacheDirectory) {
         self.compiler = compiler
         self.cacheDirectory = cacheDirectory
+        if let process = compiler as? ProcessShaderCompiler {
+            toolchainFingerprint = Self.toolchainFingerprint(tools: [process.glslang, process.spirvCross])
+        } else {
+            toolchainFingerprint = ""
+        }
+    }
+
+    /// Path, size and modification date of each tool binary (symlinks resolved, so a Homebrew
+    /// upgrade that repoints `bin/glslang` changes it). A missing tool contributes its path only.
+    static func toolchainFingerprint(tools: [String]) -> String {
+        tools.map { path in
+            let resolved = URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+            // Optional: an unreadable tool fails later, at translation, with a real error.
+            guard let attributes = try? FileManager.default.attributesOfItem(atPath: resolved) else { return resolved }
+            let size = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+            let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+            return "\(resolved):\(size):\(modified)"
+        }.joined(separator: "|")
     }
 
     static var defaultCacheDirectory: URL? {
@@ -87,7 +107,7 @@ final class ShaderVariantTranslator {
     }
 
     func variant(vertex: ShaderSource, fragment: ShaderSource, combos: [String: Int]) throws -> TranslatedShaderVariant {
-        let key = Self.cacheKey(vertex: vertex, fragment: fragment, combos: combos)
+        let key = Self.cacheKey(vertex: vertex, fragment: fragment, combos: combos, toolchain: toolchainFingerprint)
         lock.lock()
         if let cached = memory[key] { lock.unlock(); return cached }
         lock.unlock()
@@ -100,9 +120,10 @@ final class ShaderVariantTranslator {
         return translated
     }
 
-    static func cacheKey(vertex: ShaderSource, fragment: ShaderSource, combos: [String: Int]) -> String {
+    static func cacheKey(vertex: ShaderSource, fragment: ShaderSource, combos: [String: Int],
+                         toolchain: String = "") -> String {
         var hasher = SHA256()
-        hasher.update(data: Data("\(revision)\u{0}".utf8))
+        hasher.update(data: Data("\(revision)\u{0}\(toolchain)\u{0}".utf8))
         hasher.update(data: Data(vertex.text.utf8))
         hasher.update(data: Data("\u{0}".utf8))
         hasher.update(data: Data(fragment.text.utf8))
