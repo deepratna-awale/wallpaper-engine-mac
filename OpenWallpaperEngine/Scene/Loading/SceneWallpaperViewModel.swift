@@ -863,7 +863,7 @@ class SceneWallpaperViewModel: ObservableObject {
     /// Shared by every scene: translated variants are cached in memory and on disk.
     private static let effectTranslator: ShaderVariantTranslator? = {
         do {
-            return ShaderVariantTranslator(compiler: try ProcessShaderCompiler())
+            return ShaderVariantTranslator(compiler: try ShaderCompilerFactory.makeDefault())
         } catch {
             OWELog.error(.shader, "WE shader toolchain unavailable, scene effects are disabled: \(error)")
             return nil
