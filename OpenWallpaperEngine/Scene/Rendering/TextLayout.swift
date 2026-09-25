@@ -159,6 +159,12 @@ enum SceneTextRasterScale {
         return exp2((log2(pixelsPerUnit) * 4).rounded(.up) / 4)
     }
 
+    /// Text keeps the finest scale it has been rasterised at, so an animated scale re-rasterises
+    /// only while it grows past what it has already reached, not at every step up and down.
+    static func retained(_ pixelsPerUnit: Float, previous: Float?) -> Float {
+        max(pixelsPerUnit, previous ?? 0)
+    }
+
     static func clamped(_ pixelsPerUnit: Float, boxSize: SIMD2<Float>) -> Float {
         let largest = max(boxSize.x, boxSize.y, 1)
         return max(min(pixelsPerUnit, maxTextureDimension / largest), 1 / largest)

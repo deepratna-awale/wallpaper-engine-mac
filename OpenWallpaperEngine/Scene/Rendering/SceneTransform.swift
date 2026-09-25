@@ -107,6 +107,12 @@ struct SceneQuadGeometry: Equatable {
 
     /// Axis-aligned extent, for code that only needs a rough footprint.
     var extent: SIMD2<Float> { SIMD2(simd_length(axisX), simd_length(axisY)) }
+
+    /// The axis-aligned box the (possibly rotated or sheared) quad covers, in scene units.
+    var boundingBox: (min: SIMD2<Float>, max: SIMD2<Float>) {
+        let half = (abs(axisX) + abs(axisY)) / 2
+        return (center - half, center + half)
+    }
 }
 
 /// The scene's parent graph. Every object has a node, including groups that draw nothing,
