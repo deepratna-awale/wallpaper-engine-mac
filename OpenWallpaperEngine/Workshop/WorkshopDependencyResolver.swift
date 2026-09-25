@@ -2,94 +2,120 @@
 //  WorkshopDependencyResolver.swift
 //  Open Wallpaper Engine
 //
-//  Some scene wallpapers reuse effects/materials that live in a *different* Steam Workshop item
-//  (an "asset pack"), referenced by paths like "effects/workshop/1234567/someeffect/effect.json".
-//  This scans a wallpaper's scene package for those references, reports which referenced workshop
-//  IDs aren't installed locally, and links already-installed ones in by symlinking so the existing
-//  PKG/loose-file loaders resolve them without any changes.
+//  Some wallpapers reuse fonts, effects, materials or models that live in a *different* Steam
+//  Workshop item (an "asset pack"), referenced by paths like `effects/workshop/<id>/…`, or name one
+//  in project.json's `dependency`. This finds those ids in a wallpaper (its package entries,
+//  scene.json, materials and every other JSON it ships, and project.json), reports which aren't
+//  installed, and links installed ones in so the loose-file loaders resolve them.
 //
 
 import Foundation
 
 enum WorkshopDependencyResolver {
-    /// One "<category>/workshop/<id>/..." reference found in a scene package.
-    struct Reference: Hashable {
-        let category: String
-        let workshopId: String
-    }
-
-    private static let pathPattern = try! NSRegularExpression(
-        pattern: #"(effects|materials|particles|shaders|models|textures)[\\/]workshop[\\/](\d{5,})[\\/]"#)
-
-    /// All external workshop items this wallpaper's scene package references, excluding itself.
-    static func referencedDependencies(for wallpaper: WEWallpaper) -> Set<Reference> {
-        guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame else { return [] }
-        let ownId = wallpaper.project.workshopid?.rawValue ?? wallpaper.wallpaperDirectory.lastPathComponent
-
-        var references = Set<Reference>()
-        let sceneFile = wallpaper.project.file
-        let pkgURL = wallpaper.wallpaperDirectory.appending(path: (sceneFile as NSString).deletingPathExtension + ".pkg")
-        if let parser = try? PKGParser(url: pkgURL) {
-            for path in parser.fileList {
-                references.formUnion(dependencies(in: path))
-            }
-        } else if let manifest = WallpaperPackageConverter.manifest(in: wallpaper.wallpaperDirectory) {
-            // Converted wallpapers no longer have the archive in place; the manifest lists the
-            // same paths the package did.
-            for path in manifest.extractedFiles {
-                references.formUnion(dependencies(in: path))
-            }
-        }
-        if let projectData = try? Data(contentsOf: wallpaper.wallpaperDirectory.appending(path: "project.json")),
-           let projectText = String(data: projectData, encoding: .utf8) {
-            references.formUnion(dependencies(in: projectText))
-        }
-        return references.filter { $0.workshopId != ownId }
-    }
-
-    /// The subset of referenced workshop IDs that aren't present in the local wallpaper library yet.
-    static func missingWorkshopIds(for wallpaper: WEWallpaper) -> Set<String> {
-        let referenced = Set(referencedDependencies(for: wallpaper).map(\.workshopId))
-        guard !referenced.isEmpty else { return [] }
-        return referenced.filter { !isInstalled($0) }
-    }
-
-    /// Symlinks every already-installed dependency's matching asset folder into this wallpaper's own
-    /// directory (e.g. `<wallpaper>/effects/workshop/<id>` -> `<library>/<id>/effects`), so paths like
-    /// "effects/workshop/<id>/name/effect.json" resolve exactly like a normal loose file. Safe to call
-    /// repeatedly; it does nothing once a link already exists.
-    static func linkInstalledDependencies(for wallpaper: WEWallpaper) {
-        let fm = FileManager.default
-        for reference in referencedDependencies(for: wallpaper) {
-            guard isInstalled(reference.workshopId) else { continue }
-            let categorySource = fm.wallpapersDirectory.appending(path: reference.workshopId).appending(path: reference.category)
-            guard fm.fileExists(atPath: categorySource.path) else { continue }
-
-            let linkParent = wallpaper.wallpaperDirectory.appending(path: reference.category).appending(path: "workshop")
-            let linkPath = linkParent.appending(path: reference.workshopId)
-            guard !fm.fileExists(atPath: linkPath.path) else { continue }
+    /// Every other Workshop item the item in `directory` references.
+    static func referencedWorkshopIds(inItemAt directory: URL) -> Set<String> {
+        var ids = Set<String>()
+        for pkg in WorkshopAssetResolver.packages(in: directory) {
+            let parser: PKGParser
             do {
-                try fm.createDirectory(at: linkParent, withIntermediateDirectories: true)
-                try fm.createSymbolicLink(at: linkPath, withDestinationURL: categorySource)
+                parser = try PKGParser(url: pkg)
             } catch {
-                OWELog.error(.workshop, "Failed to link workshop dependency \(reference.workshopId): \(error)")
+                OWELog.error(.workshop, "Can't scan \(pkg.path) for workshop dependencies: \(error)")
+                continue
+            }
+            for entry in parser.fileList {
+                ids.formUnion(WorkshopAssetResolver.referencedIds(in: entry))
+                guard entry.lowercased().hasSuffix(".json"), let data = parser.extractFile(named: entry) else { continue }
+                ids.formUnion(WorkshopAssetResolver.referencedIds(in: String(decoding: data, as: UTF8.self)))
             }
         }
-    }
-
-    private static func isInstalled(_ workshopId: String) -> Bool {
-        FileManager.default.fileExists(atPath: FileManager.default.wallpapersDirectory
-            .appending(path: workshopId).appending(path: "project.json").path)
-    }
-
-    private static func dependencies(in text: String) -> Set<Reference> {
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        var references = Set<Reference>()
-        for match in pathPattern.matches(in: text, range: range) {
-            guard let categoryRange = Range(match.range(at: 1), in: text),
-                  let idRange = Range(match.range(at: 2), in: text) else { continue }
-            references.insert(Reference(category: String(text[categoryRange]), workshopId: String(text[idRange])))
+        if let manifest = WallpaperPackageConverter.manifest(in: directory) {
+            // Converted wallpapers no longer have the archive; the manifest lists its paths.
+            for path in manifest.extractedFiles { ids.formUnion(WorkshopAssetResolver.referencedIds(in: path)) }
         }
-        return references
+        ids.formUnion(looseReferences(in: directory))
+        ids.formUnion(projectDependencies(inItemAt: directory))
+        ids.remove(directory.lastPathComponent)
+        return ids
+    }
+
+    /// project.json's `dependency`: a single id (string or number) or a list of them.
+    static func projectDependencies(inItemAt directory: URL) -> Set<String> {
+        let url = directory.appending(path: "project.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        let object: Any
+        do {
+            object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
+        } catch {
+            OWELog.error(.workshop, "Can't read \(url.path) for its dependency: \(error)")
+            return []
+        }
+        guard let project = object as? [String: Any], let value = project["dependency"] else { return [] }
+        let values: [Any] = (value as? [Any]) ?? [value]
+        return Set(values.compactMap { item -> String? in
+            let id = (item as? String) ?? (item as? NSNumber)?.stringValue
+            guard let id, !id.isEmpty, id.allSatisfy(\.isNumber) else { return nil }
+            return id
+        })
+    }
+
+    /// References in the item's loose files: folder names (`materials/workshop/<id>`) and the
+    /// contents of its JSON files. Linked dependency folders are not followed.
+    private static func looseReferences(in directory: URL) -> Set<String> {
+        var ids = Set<String>()
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [.skipsHiddenFiles]) else { return ids }
+        let base = directory.standardizedFileURL.path
+        for case let url as URL in enumerator {
+            let relative = String(url.standardizedFileURL.path.dropFirst(base.count))
+            ids.formUnion(WorkshopAssetResolver.referencedIds(in: relative + "/"))
+            if (try? url.resourceValues(forKeys: [.isSymbolicLinkKey]))?.isSymbolicLink == true {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard url.pathExtension.lowercased() == "json" else { continue }
+            do {
+                ids.formUnion(WorkshopAssetResolver.referencedIds(in: String(decoding: try Data(contentsOf: url), as: UTF8.self)))
+            } catch {
+                OWELog.error(.workshop, "Can't read \(url.path) for workshop dependencies: \(error)")
+            }
+        }
+        return ids
+    }
+
+    /// The referenced ids no root has downloaded yet.
+    static func missingWorkshopIds(for wallpaper: WEWallpaper,
+                                   resolver: WorkshopAssetResolver = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())) -> Set<String> {
+        referencedWorkshopIds(inItemAt: wallpaper.wallpaperDirectory).filter { !resolver.isInstalled($0) }
+    }
+
+    /// Links each installed dependency's category folder into the wallpaper
+    /// (`<wallpaper>/effects/workshop/<id>` → `<item>/effects`), so the loose-file loaders find
+    /// `effects/workshop/<id>/…` like any other file. Idempotent.
+    static func linkInstalledDependencies(for wallpaper: WEWallpaper,
+                                          resolver: WorkshopAssetResolver = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())) {
+        let fm = FileManager.default
+        for id in referencedWorkshopIds(inItemAt: wallpaper.wallpaperDirectory) {
+            guard let item = resolver.itemDirectory(for: id) else { continue }
+            let categories: [URL]
+            do {
+                categories = try fm.contentsOfDirectory(at: item, includingPropertiesForKeys: [.isDirectoryKey], options: .skipsHiddenFiles)
+                    .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true }
+            } catch {
+                OWELog.error(.workshop, "Can't list workshop dependency \(item.path): \(error)")
+                continue
+            }
+            for categorySource in categories {
+                let linkParent = wallpaper.wallpaperDirectory.appending(path: categorySource.lastPathComponent).appending(path: "workshop")
+                let linkPath = linkParent.appending(path: id)
+                guard !fm.fileExists(atPath: linkPath.path) else { continue }
+                do {
+                    try fm.createDirectory(at: linkParent, withIntermediateDirectories: true)
+                    try fm.createSymbolicLink(at: linkPath, withDestinationURL: categorySource)
+                } catch {
+                    OWELog.error(.workshop, "Failed to link workshop dependency \(id): \(error)")
+                }
+            }
+        }
     }
 }
