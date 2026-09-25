@@ -63,7 +63,7 @@ final class ShaderVariantCacheTests: XCTestCase {
     func testTranslatedOutputMatchesItsRevision() throws {
         let assets = ShaderVariantTests.weAssets
         let loader = ShaderSourceLoader(roots: [assets])
-        let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil)
+        let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil, failureDirectory: nil)
         var hasher = SHA256()
         var count = 0
         let effects = try FileManager.default.contentsOfDirectory(atPath: assets.appending(path: "effects").path).sorted()

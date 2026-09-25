@@ -217,7 +217,8 @@ final class ShaderVariantTranslator {
     /// (not before, which would shift the line numbers it quotes).
     private func recordFailure(_ source: ShaderSource, text: String, error: Error) {
         guard let failureDirectory else { return }
-        let name = source.path.replacingOccurrences(of: "/", with: "_") + "." + source.stage.rawValue
+        let suffix = "." + source.stage.rawValue
+        let name = source.path.replacingOccurrences(of: "/", with: "_") + (source.path.hasSuffix(suffix) ? "" : suffix)
         let url = failureDirectory.appending(path: name)
         let trailer = "\(error)".split(separator: "\n").map { "// \($0)" }.joined(separator: "\n")
         do {

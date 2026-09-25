@@ -61,8 +61,8 @@ final class InProcessShaderCompilerTests: XCTestCase {
     }
 
     private static func translate(_ job: Job, with compiler: ShaderCompiler) -> Outcome {
-        // No disk cache: every call translates.
-        let translator = ShaderVariantTranslator(compiler: compiler, cacheDirectory: nil)
+        // No disk cache: every call translates. Pairs expected to fail leave no dump.
+        let translator = ShaderVariantTranslator(compiler: compiler, cacheDirectory: nil, failureDirectory: nil)
         do {
             let variant = try translator.variant(vertex: job.vertex, fragment: job.fragment, combos: job.combos)
             return .translated(vertex: variant.vertexMSL, fragment: variant.fragmentMSL, uniforms: variant.uniforms)
