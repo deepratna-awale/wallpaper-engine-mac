@@ -106,6 +106,18 @@ final class ParticleChildrenTests: XCTestCase {
         XCTAssertEqual(reports.count, 1)
     }
 
+    func testUnsupportedLinkFeaturesAreReported() throws {
+        let json = "{\"children\": [{\"name\": \"b.json\", \"flags\": 1}, {\"name\": \"c.json\", \"type\": \"eventburst\"}]}"
+        let parent = try JSONDecoder().decode(WEParticleSystem.self, from: Data(json.utf8))
+        var reports: [String] = []
+        let builder = ParticleFamilyBuilder(
+            load: { $0 == "a.json" ? parent : WEParticleSystem() },
+            build: { _, _, _, _ in ParticleTestSystem().configuration },
+            report: { reports.append($0) })
+        XCTAssertEqual(builder.family("a.json", world: .identity, overrides: SceneParticleOverrides()).count, 2)
+        XCTAssertEqual(reports.count, 2, "control points from the parent, and an unknown type")
+    }
+
     // MARK: - Simulation
 
     func testAStaticChildEmitsFromItsParentsEmitterAndFollowsIt() throws {

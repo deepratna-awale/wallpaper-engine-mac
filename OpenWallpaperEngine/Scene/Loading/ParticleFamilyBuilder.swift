@@ -34,6 +34,9 @@ struct ParticleFamilyBuilder {
             return
         }
         let children = json.children ?? []
+        if link?.instanced == true, json.renderer?.first?.name == "rope" {
+            report("\(path) draws a rope through the particles of all its instances, not one per instance")
+        }
         system.link = link
         system.hasEventChildren = children.contains { Self.kind($0) != .static }
         let index = family.count
@@ -47,6 +50,9 @@ struct ParticleFamilyBuilder {
             guard let kind = Self.kind(child) else {
                 report("particle child \(name) has an unknown type \(child.type ?? ""); skipped")
                 continue
+            }
+            if ((child.flags ?? 0) & 1) != 0 {
+                report("child \(name) takes its control points from \(path)'s particles, which isn't supported; it keeps its own")
             }
             let childLink = Self.link(child, kind: kind, parentIndex: index, parent: link)
             // Bit 1: the child keeps its own colours (WE's "disable color overrides on child particles").
