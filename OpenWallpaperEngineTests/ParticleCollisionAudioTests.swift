@@ -136,7 +136,7 @@ final class ParticleCollisionAudioTests: XCTestCase {
         system.gravity = SIMD2(0, -600)
         system.lifetime = 2...3
         system.turbulence = Turbulence(scale: 0.01, speed: 200...400, timeScale: 0.5, phase: 0, mask: SIMD2(1, 1))
-        system.vortex = ParticleVortex(offset: .zero, innerSpeed: 200, outerSpeed: 50, innerDistance: 0, outerDistance: 300)
+        system.vortex = ParticleVortex(innerSpeed: 200, outerSpeed: 50, innerDistance: 0, outerDistance: 300)
         var configuration = system.configuration
         configuration.collisions = [
             ParticleCollision(shape: .plane(normal: SIMD3(0.1, 1, 0), distance: -150), bounceFactor: 0.7),

@@ -68,7 +68,8 @@ struct ParticleFrameInputs {
         let rawValue: UInt32
         static let spawnOrigin = AbsolutePoints(rawValue: 1 << 0), attractor = AbsolutePoints(rawValue: 1 << 1)
         static let sequenceStart = AbsolutePoints(rawValue: 1 << 2), sequenceEnd = AbsolutePoints(rawValue: 1 << 3)
-        static let remapAnchor = AbsolutePoints(rawValue: 1 << 4)
+        static let remapAnchor = AbsolutePoints(rawValue: 1 << 4), vortex = AbsolutePoints(rawValue: 1 << 5)
+        static let reduction = AbsolutePoints(rawValue: 1 << 6), constraint = AbsolutePoints(rawValue: 1 << 7)
     }
 
     /// How the emitter moved since the last step, for systems whose particles live in its space:
@@ -200,20 +201,25 @@ struct ParticleFrameInputs {
         offsetLinear = space.offsetLinear
         velocityRotation = space.rotation
         gravity = configuration.worldGravity ? configuration.gravity : space.direction(configuration.gravity)
-        vortexOrigin = origin + (configuration.vortex?.offset ?? .zero)
-        reductionOrigin = origin + (configuration.nearControlPointReduction?.offset ?? .zero)
-        constraintOrigin = origin + (configuration.maintainControlPointDistance?.offset ?? .zero)
-        if let controlPoint = configuration.cursorControlPoint, configuration.emitterControlPoint == controlPoint.id {
-            spawnOrigin = cursor + controlPoint.offset
-            absolutePoints.insert(.spawnOrigin)
-        } else {
-            spawnOrigin = origin
-        }
-        if let attractor = configuration.attractor {
-            attractorOrigin = configuration.cursorControlPoint.map { cursor + $0.offset } ?? origin + attractor.offset
-            if configuration.cursorControlPoint != nil { absolutePoints.insert(.attractor) }
-        }
         func locked(_ id: Int) -> Bool { configuration.controlPoints.first { $0.id == id }?.locksToCursor == true }
+        /// Control point `id` plus an emitter-space `offset`; a cursor-locked one stays put in every instance.
+        func point(_ id: Int, offset: SIMD2<Float>, _ absolute: AbsolutePoints) -> SIMD2<Float> {
+            if locked(id) { absolutePoints.insert(absolute) }
+            return Self.controlPointPosition(id, configuration: configuration, space: space, cursor: cursor) + space.offset(offset)
+        }
+        spawnOrigin = configuration.emitterControlPoint.map { point($0, offset: .zero, .spawnOrigin) } ?? origin
+        if let attractor = configuration.attractor {
+            attractorOrigin = point(attractor.controlPoint, offset: attractor.offset, .attractor)
+        }
+        if let vortex = configuration.vortex {
+            vortexOrigin = point(vortex.controlPoint, offset: .zero, .vortex)
+        }
+        if let reduction = configuration.nearControlPointReduction {
+            reductionOrigin = point(reduction.controlPoint, offset: reduction.offset, .reduction)
+        }
+        if let constraint = configuration.maintainControlPointDistance {
+            constraintOrigin = point(constraint.controlPoint, offset: constraint.offset, .constraint)
+        }
         if let span = configuration.sequenceSpan {
             if locked(span.startControlPoint) { absolutePoints.insert(.sequenceStart) }
             if locked(span.endControlPoint) { absolutePoints.insert(.sequenceEnd) }
@@ -241,9 +247,9 @@ struct ParticleFrameInputs {
         inputs.sequenceStart = sequenceStart.map { shift($0, .sequenceStart) }
         inputs.sequenceEnd = sequenceEnd.map { shift($0, .sequenceEnd) }
         inputs.remapAnchor = shift(remapAnchor, .remapAnchor)
-        inputs.vortexOrigin += translation
-        inputs.reductionOrigin += translation
-        inputs.constraintOrigin += translation
+        inputs.vortexOrigin = shift(vortexOrigin, .vortex)
+        inputs.reductionOrigin = shift(reductionOrigin, .reduction)
+        inputs.constraintOrigin = shift(constraintOrigin, .constraint)
         inputs.collisions = collisions.map { $0.moved(by: translation) }
         return inputs
     }

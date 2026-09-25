@@ -753,7 +753,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
             maintainControlPointDistance: nil, controlPoints: [], sequenceSpan: nil, sequenceRing: nil, initialRemap: nil,
             maintainSequenceDistance: false, rendererName: rendererName, trailLength: 1, trailSegments: 4,
             ropeSubdivision: 1, fadeTrailAlpha: false, fadeTrailSize: false, turbulence: nil, attractor: nil,
-            cursorControlPoint: nil, emitterControlPoint: nil, spriteSheet: plan.spriteSheet, animationMode: animationMode,
+            emitterControlPoint: nil, spriteSheet: plan.spriteSheet, animationMode: animationMode,
             sequenceMultiplier: 1, opacityMultiplier: 1, refractive: false, fadeIn: 0, fadeOut: 1,
             fadeInScript: nil, fadeOutScript: nil, blending: plan.blending)
         system.material = plan

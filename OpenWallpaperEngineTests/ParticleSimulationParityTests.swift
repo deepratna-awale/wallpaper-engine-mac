@@ -73,16 +73,16 @@ final class ParticleSimulationParityTests: XCTestCase {
 
     func testControlPointAttractAndCursorControlPoint() throws {
         var system = ParticleTestSystem()
-        system.attractor = Attractor(offset: SIMD2(100, 100), strength: 300, threshold: 400)
-        system.cursorControlPoint = CursorControlPoint(id: 1, offset: SIMD2(10, -10))
+        system.attractor = Attractor(offset: SIMD2(100, 100), strength: 300, threshold: 400, controlPoint: 1)
+        system.controlPoints = [ParticleControlPoint(id: 1, offset: SIMD2(10, -10), locksToCursor: true)]
         system.emitterControlPoint = 1
         try assertParity(system)
     }
 
     func testVortex() throws {
         var system = ParticleTestSystem()
-        system.vortex = ParticleVortex(offset: SIMD2(20, -20), innerSpeed: 400, outerSpeed: 50, innerDistance: 5,
-                                       outerDistance: 300)
+        system.controlPoints = [ParticleControlPoint(id: 2, offset: SIMD2(20, -20), locksToCursor: false)]
+        system.vortex = ParticleVortex(innerSpeed: 400, outerSpeed: 50, innerDistance: 5, outerDistance: 300, controlPoint: 2)
         try assertParity(system)
     }
 

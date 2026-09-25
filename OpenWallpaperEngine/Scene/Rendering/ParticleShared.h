@@ -152,7 +152,7 @@ constant uint lStatic = 1, lFollow = 2, lSpawn = 3, lDeath = 4;
 
 // Absolute points (`ParticleFrameInputs.AbsolutePoints`).
 constant uint aSpawnOrigin = 1u << 0, aAttractor = 1u << 1, aSequenceStart = 1u << 2, aSequenceEnd = 1u << 3;
-constant uint aRemapAnchor = 1u << 4;
+constant uint aRemapAnchor = 1u << 4, aVortex = 1u << 5, aReduction = 1u << 6, aConstraint = 1u << 7;
 
 // Control words (`ParticleGPUSystem.Control`).
 constant uint cCount = 0, cEmit = 1, cTotal = 2, cSerial = 3, cRemainder = 4, cPeriodEmitted = 5, cTrailTotal = 6;
@@ -224,9 +224,9 @@ static FramePoints framePoints(constant ParticleFrame &f, float2 shift) {
     points.sequenceStart = f.sequence.xy + ((absolute & aSequenceStart) ? float2(0) : shift);
     points.sequenceEnd = f.sequence.zw + ((absolute & aSequenceEnd) ? float2(0) : shift);
     points.remapAnchor = f.anchor.xy + ((absolute & aRemapAnchor) ? float2(0) : shift);
-    points.vortex = f.origins.xy + shift;
-    points.reduction = f.origins.zw + shift;
-    points.constraint = f.constraintMotion.xy + shift;
+    points.vortex = f.origins.xy + ((absolute & aVortex) ? float2(0) : shift);
+    points.reduction = f.origins.zw + ((absolute & aReduction) ? float2(0) : shift);
+    points.constraint = f.constraintMotion.xy + ((absolute & aConstraint) ? float2(0) : shift);
     return points;
 }
 

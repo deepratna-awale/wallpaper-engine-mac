@@ -59,7 +59,6 @@ struct SceneMetalParticleSystem {
     let fadeTrailSize: Bool
     let turbulence: Turbulence?
     let attractor: Attractor?
-    let cursorControlPoint: CursorControlPoint?
     let emitterControlPoint: Int?
     let spriteSheet: SpriteSheet?
     let animationMode: String
@@ -148,13 +147,13 @@ struct ParticleColorChange {
     let endValue: SIMD4<Float>
 }
 
-/// `vortex`: `offset` from the emitter (as authored, not turned with it) is the axis.
+/// `vortex` around control point `controlPoint`.
 struct ParticleVortex {
-    let offset: SIMD2<Float>
     let innerSpeed: Float
     let outerSpeed: Float
     let innerDistance: Float
     let outerDistance: Float
+    var controlPoint = 0
 }
 
 struct ParticleBoids {
@@ -177,18 +176,20 @@ struct ParticleRemap {
     let sine: Bool
 }
 
-/// `reducemovementnearcontrolpoint` around the emitter's position plus `offset`.
+/// `reducemovementnearcontrolpoint` around control point `controlPoint` plus `offset`.
 struct ParticleDistanceReduction {
     let offset: SIMD2<Float>
     let innerDistance: Float
     let outerDistance: Float
     let reduction: Float
+    var controlPoint = 0
 }
 
-/// `maintaindistancetocontrolpoint` towards the emitter's position plus `offset`.
+/// `maintaindistancetocontrolpoint` towards control point `controlPoint` plus `offset`.
 struct ParticleDistanceConstraint {
     let offset: SIMD2<Float>
     let strength: Float
+    var controlPoint = 0
 }
 
 /// A control point declared by the particle system. Wallpaper Engine always writes eight of them;
@@ -239,16 +240,12 @@ struct Turbulence {
     let mask: SIMD2<Float>
 }
 
-/// `controlpointattract` towards the emitter's position plus `offset` (as authored).
+/// `controlpointattract` towards control point `controlPoint` plus its `origin` (`offset`, y down).
 struct Attractor {
     let offset: SIMD2<Float>
     let strength: Float
     let threshold: Float
-}
-
-struct CursorControlPoint {
-    let id: Int
-    let offset: SIMD2<Float>
+    var controlPoint = 0
 }
 
 struct SpriteSheet {

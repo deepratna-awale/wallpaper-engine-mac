@@ -1332,13 +1332,6 @@ class SceneWallpaperViewModel: ObservableObject {
         var oscillateSize: ParticleOscillation?
         var oscillateAlpha: ParticleOscillation?
         var oscillatePosition: ParticleOscillation?
-        let cursorControlPoint = particleSystem.controlpoint?.first(where: {
-            $0.locktopointer == true || (($0.flags ?? 0) & 1) != 0
-        }).map { controlPoint in
-            let offset = (controlPoint.offset ?? "0 0 0").parseVector3()
-            return CursorControlPoint(id: controlPoint.id ?? 0,
-                                      offset: SIMD2<Float>(Float(offset.0), -Float(offset.1)))
-        }
         for `operator` in particleSystem.operator ?? [] {
             switch `operator`.name {
             case "movement":
@@ -1379,12 +1372,11 @@ class SceneWallpaperViewModel: ObservableObject {
                 OWELog.error(.scene, "Particle system \(particlePath): collisionmodel needs 3D models, not supported; ignored")
             case "vortex", "vortex_v2":
                 vortexAudio = ParticleAudioResponse(`operator`) ?? vortexAudio
-                let axis = (`operator`.axis ?? "0 1 0").parseVector3()
-                vortex = ParticleVortex(offset: SIMD2<Float>(Float(axis.0), -Float(axis.1)),
-                                         innerSpeed: Float(`operator`.speedinner ?? 0),
+                vortex = ParticleVortex(innerSpeed: Float(`operator`.speedinner ?? 0),
                                          outerSpeed: Float(`operator`.speedouter ?? 0),
                                          innerDistance: Float(`operator`.distanceinner ?? 0),
-                                         outerDistance: Float(`operator`.distanceouter ?? 1000))
+                                         outerDistance: Float(`operator`.distanceouter ?? 1000),
+                                         controlPoint: `operator`.controlpoint ?? 0)
             case "boids":
                 boids = ParticleBoids(alignment: Float(`operator`.alignmentfactor ?? 0),
                                       cohesion: Float(`operator`.cohesionfactor ?? 0),
@@ -1418,10 +1410,12 @@ class SceneWallpaperViewModel: ObservableObject {
                 nearControlPointReduction = ParticleDistanceReduction(offset: .zero,
                                                                        innerDistance: Float(`operator`.distanceinner ?? 0),
                                                                        outerDistance: Float(`operator`.distanceouter ?? 100),
-                                                                       reduction: Float(`operator`.reductioninner ?? 1))
+                                                                       reduction: Float(`operator`.reductioninner ?? 1),
+                                                                       controlPoint: `operator`.controlpoint ?? 0)
             case "maintaindistancetocontrolpoint":
                 maintainControlPointDistance = ParticleDistanceConstraint(offset: .zero,
-                                                                          strength: Float(`operator`.variablestrength ?? 1))
+                                                                          strength: Float(`operator`.variablestrength ?? 1),
+                                                                          controlPoint: `operator`.controlpoint ?? 0)
             case "maintaindistancebetweencontrolpoints":
                 maintainSequenceDistance = true
             case "inheritvaluefromevent":
@@ -1439,13 +1433,12 @@ class SceneWallpaperViewModel: ObservableObject {
                                         phase: Float(`operator`.phasemin ?? 0),
                                         mask: SIMD2<Float>(Float(mask.0), -Float(mask.1)))
             case "controlpointattract":
-                // The operator's own "origin" is a local offset from the emitter, not an absolute scene
-                // position; adding the system's own `origin` was previously shadowed by this `let origin`,
-                // which pinned every attractor to the canvas corner (0,0) instead of the emitter itself.
+                // Its "origin" is an offset from its control point, not a scene position.
                 let attractOffset = `operator`.origin?.vectorValue ?? (0, 0, 0)
                 attractor = Attractor(offset: SIMD2<Float>(Float(attractOffset.0), -Float(attractOffset.1)),
                                       strength: Float(`operator`.scale?.doubleValue ?? 100),
-                                      threshold: Float(`operator`.threshold ?? 1000))
+                                      threshold: Float(`operator`.threshold ?? 1000),
+                                      controlPoint: `operator`.controlpoint ?? 0)
             default: break
             }
         }
@@ -1489,7 +1482,6 @@ class SceneWallpaperViewModel: ObservableObject {
                                         fadeTrailAlpha: particleRenderer?.fadealpha ?? false,
                                         fadeTrailSize: particleRenderer?.fadesize ?? false,
                                         turbulence: turbulence, attractor: attractor,
-                                        cursorControlPoint: cursorControlPoint,
                                         emitterControlPoint: emitter?.controlpoint,
                                         spriteSheet: spriteSheet,
                                         animationMode: particleSystem.animationmode ?? "sequence",

@@ -62,7 +62,6 @@ struct ParticleTestSystem {
     var fadeTrailSize = false
     var turbulence: Turbulence?
     var attractor: Attractor?
-    var cursorControlPoint: CursorControlPoint?
     var emitterControlPoint: Int?
     var spriteSheet: SpriteSheet?
     var animationMode = "sequence"
@@ -88,7 +87,7 @@ struct ParticleTestSystem {
             maintainSequenceDistance: maintainSequenceDistance, rendererName: rendererName, trailLength: trailLength,
             trailSegments: trailSegments, ropeSubdivision: ropeSubdivision, fadeTrailAlpha: fadeTrailAlpha,
             fadeTrailSize: fadeTrailSize, turbulence: turbulence, attractor: attractor,
-            cursorControlPoint: cursorControlPoint, emitterControlPoint: emitterControlPoint, spriteSheet: spriteSheet,
+            emitterControlPoint: emitterControlPoint, spriteSheet: spriteSheet,
             animationMode: animationMode, sequenceMultiplier: 1, opacityMultiplier: 1, refractive: false,
             fadeIn: fadeIn, fadeOut: fadeOut, fadeInScript: nil, fadeOutScript: nil, blending: "translucent")
         system.emitterLinear = emitterLinear
