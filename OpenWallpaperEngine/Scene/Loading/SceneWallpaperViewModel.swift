@@ -1307,12 +1307,12 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         let refractAmount = material.passes?.first?.constants?["ui_editor_properties_refract_amount"]?.value
         let opacityMultiplier = refractAmount.map { max(0.04, min(abs(Float($0)), 1)) } ?? 1
-        return SceneMetalParticleSystem(source: source, origin: origin, emissionRate: max(rate, 0),
+        var system = SceneMetalParticleSystem(source: source, origin: origin, emissionRate: max(rate, 0),
                 emissionRateScript: rateScript,
-                                        maximumParticleCount: min(max(Int((Float(particleSystem.maxcount ?? 1000) * overrides.count).rounded()), 0), 1000),
+                                        maximumParticleCount: max(Int((Float(particleSystem.maxcount ?? 1000) * overrides.count).rounded()), 0),
                                         spawnExtent: spawnExtent, lifetime: lifetime, size: size,
                                         minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity,
-                                        gravity: gravity, drag: drag, dragScript: dragScript, alpha: alpha,
+                                        gravity: emitterSpace.direction(gravity), drag: drag, dragScript: dragScript, alpha: alpha,
                                         minimumColor: minimumColor, maximumColor: maximumColor,
                                         minimumRotation: minimumRotation, maximumRotation: maximumRotation,
                                         minimumAngularVelocity: minimumAngularVelocity, maximumAngularVelocity: maximumAngularVelocity,
@@ -1349,6 +1349,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                         fadeIn: fadeIn, fadeOut: fadeOut,
                                         fadeInScript: fadeInScript, fadeOutScript: fadeOutScript,
                                         blending: material.passes?.first?.blending?.lowercased() ?? "translucent")
+        system.velocityRotation = emitterSpace.rotation
+        return system
     }
 
     private func loadSpriteSheet(named name: String, materialDir: String, wallpaperDir: URL,

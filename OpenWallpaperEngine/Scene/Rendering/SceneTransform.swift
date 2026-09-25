@@ -108,6 +108,17 @@ struct SceneQuadGeometry: Equatable {
     /// Axis-aligned extent, for code that only needs a rough footprint.
     var extent: SIMD2<Float> { SIMD2(simd_length(axisX), simd_length(axisY)) }
 
+    /// Where the quad lies in a y-down texture of the whole scene (the scene snapshot): the UV of
+    /// its top-left corner and the UV steps along its local +x (rightwards) and down its local
+    /// y. Sampling with these per vertex reads exactly the scene under the quad, rotated,
+    /// sheared or partly off-screen, rather than an axis-aligned box stretched over it.
+    func snapshotUV(sceneSize: SIMD2<Float>) -> (origin: SIMD2<Float>, axisX: SIMD2<Float>, axisY: SIMD2<Float>) {
+        let size = simd_max(sceneSize, SIMD2(1, 1))
+        func uv(_ point: SIMD2<Float>) -> SIMD2<Float> { SIMD2(point.x / size.x, 1 - point.y / size.y) }
+        let topLeft = center - axisX / 2 + axisY / 2
+        return (uv(topLeft), SIMD2(axisX.x / size.x, -axisX.y / size.y), SIMD2(-axisY.x / size.x, axisY.y / size.y))
+    }
+
     /// The axis-aligned box the (possibly rotated or sheared) quad covers, in scene units.
     var boundingBox: (min: SIMD2<Float>, max: SIMD2<Float>) {
         let half = (abs(axisX) + abs(axisY)) / 2
@@ -163,5 +174,21 @@ struct SceneTransformHierarchy {
                live: (String) -> SceneLocalTransform? = { _ in nil }) -> SceneAffineTransform {
         guard let own = local ?? live(id) ?? nodes[id]?.local else { return .identity }
         return parentWorld(of: id, live: live) * SceneAffineTransform(own)
+    }
+}
+
+/// How the composite maps scene units onto the drawable for a user placement.
+enum ScenePlacementScale {
+    /// Drawable pixels per scene unit. `.center` shows the scene at one *point* per unit, so a
+    /// Retina drawable (`pixelsPerPoint` 2) doubles it. `.stretch` scales each axis on its own
+    /// and has no single factor; callers handle it separately.
+    static func scale(for placement: WallpaperPlacement, sceneSize: SIMD2<Float>, drawableSize: SIMD2<Float>,
+                      pixelsPerPoint: Float) -> Float {
+        let ratio = drawableSize / simd_max(sceneSize, SIMD2(1, 1))
+        switch placement {
+        case .fill, .zoom, .stretch: return max(ratio.x, ratio.y)
+        case .fit: return min(ratio.x, ratio.y)
+        case .center: return max(pixelsPerPoint, 1)
+        }
     }
 }

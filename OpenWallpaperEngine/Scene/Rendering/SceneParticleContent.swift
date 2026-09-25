@@ -15,7 +15,11 @@ struct SceneMetalParticleSystem {
     let size: ClosedRange<Float>
     let minimumVelocity: SIMD2<Float>
     let maximumVelocity: SIMD2<Float>
+    /// Scene-space gravity: the authored vector turned by the emitter's world rotation.
     let gravity: SIMD2<Float>
+    /// Turns each spawned particle's emitter-local velocity into scene space
+    /// (`SceneParticleEmitterSpace.rotation`).
+    var velocityRotation = matrix_identity_float2x2
     let drag: Float
     let dragScript: String?
     let alpha: ClosedRange<Float>

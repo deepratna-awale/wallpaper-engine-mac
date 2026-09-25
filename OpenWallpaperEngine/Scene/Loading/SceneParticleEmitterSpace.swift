@@ -24,4 +24,17 @@ struct SceneParticleEmitterSpace {
         let flip = SIMD2<Float>(1, -1)
         return (world.linear * (yDown * flip)) * flip
     }
+
+    /// The emitter's world rotation (and any mirroring) without its scale. Velocities and
+    /// gravity are directions in emitter space: a rotated parent turns them, a scaled one doesn't.
+    var rotation: simd_float2x2 {
+        func unit(_ v: SIMD2<Float>, _ fallback: SIMD2<Float>) -> SIMD2<Float> {
+            simd_length(v) > 1e-6 ? simd_normalize(v) : fallback
+        }
+        return simd_float2x2(columns: (unit(world.linear.columns.0, SIMD2(1, 0)),
+                                       unit(world.linear.columns.1, SIMD2(0, 1))))
+    }
+
+    /// An emitter-local direction (y-up, as velocities and gravity are authored) in scene space.
+    func direction(_ yUp: SIMD2<Float>) -> SIMD2<Float> { rotation * yUp }
 }

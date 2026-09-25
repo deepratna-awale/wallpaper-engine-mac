@@ -139,6 +139,12 @@ vertex VertexOut sceneVertex(uint vertexID [[vertex_id]], uint instanceID [[inst
     return out;
 }
 
+/// Plain resample through the vertex stage's UVs, for copying the scene under a layer's quad.
+fragment float4 sceneCopyFragment(VertexOut input [[stage_in]], texture2d<float> texture [[texture(0)]]) {
+    constexpr sampler linearSampler(filter::linear, address::clamp_to_edge);
+    return texture.sample(linearSampler, input.textureCoordinate);
+}
+
 fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> texture [[texture(0)]],
                               constant LayerUniform *layers [[buffer(0)]]) {
     const LayerUniform layer = layers[input.instance];

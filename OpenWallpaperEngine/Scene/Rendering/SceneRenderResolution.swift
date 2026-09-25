@@ -27,19 +27,4 @@ enum SceneRenderResolution {
         let size = (simd_max(sceneSize, SIMD2(1, 1)) * pixelsPerUnit).rounded(.toNearestOrAwayFromZero)
         return SIMD2(Int(size.x), Int(size.y))
     }
-
-    /// The pixels of a y-down target of `targetSize` covered by a y-up scene-unit box, grown to
-    /// whole pixels and clipped to the target; nil when nothing is left.
-    static func pixelRect(of box: (min: SIMD2<Float>, max: SIMD2<Float>), sceneSize: SIMD2<Float>,
-                          targetSize: SIMD2<Int>) -> (origin: SIMD2<Int>, size: SIMD2<Int>)? {
-        let scale = SIMD2<Float>(Float(targetSize.x), Float(targetSize.y)) / simd_max(sceneSize, SIMD2(1, 1))
-        let height = Float(targetSize.y)
-        let left = (box.min.x * scale.x).rounded(.down), right = (box.max.x * scale.x).rounded(.up)
-        let top = (height - box.max.y * scale.y).rounded(.down), bottom = (height - box.min.y * scale.y).rounded(.up)
-        guard left.isFinite, right.isFinite, top.isFinite, bottom.isFinite else { return nil }
-        let x0 = Int(max(left, 0)), y0 = Int(max(top, 0))
-        let x1 = Int(min(right, Float(targetSize.x))), y1 = Int(min(bottom, height))
-        guard x1 > x0, y1 > y0 else { return nil }
-        return (SIMD2(x0, y0), SIMD2(x1 - x0, y1 - y0))
-    }
 }

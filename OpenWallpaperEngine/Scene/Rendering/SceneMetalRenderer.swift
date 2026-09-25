@@ -96,6 +96,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     private let renderPipeline: MTLRenderPipelineState
     private let additiveRenderPipeline: MTLRenderPipelineState
+    /// Unblended resample of a texture through per-vertex UVs (`sceneRegion`).
+    private let copyPipeline: MTLRenderPipelineState
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
@@ -120,6 +122,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Whose user properties this renderer's frames read (see `SceneMetalContent.wallpaperKey`).
     private var wallpaperKey = ""
     private var placement: WallpaperPlacement = .fill
+    /// Drawable pixels per view point (the backing scale), refreshed every frame.
+    private var drawablePixelsPerPoint: Float = 1
+    /// Last frame's normalised pointer, for `g_PointerPositionLast`; nil until the first frame.
+    private var lastPointer: SIMD2<Float>?
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     private var sceneRenderTarget: MTLTexture?
     private var sceneRenderTargetSize = SIMD2<Int>.zero
@@ -142,6 +148,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
               let library = device.makeDefaultLibrary(),
               let vertex = library.makeFunction(name: "sceneVertex"),
               let fragment = library.makeFunction(name: "sceneFragment"),
+              let copyFragment = library.makeFunction(name: "sceneCopyFragment"),
               let decode = library.makeFunction(name: "decodeDXT"),
               let decodePipeline = try? device.makeComputePipelineState(function: decode) else {
             return nil
@@ -170,7 +177,16 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
+        let copyDescriptor = MTLRenderPipelineDescriptor()
+        copyDescriptor.vertexFunction = vertex
+        copyDescriptor.fragmentFunction = copyFragment
+        copyDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+        guard let copyPipeline = try? device.makeRenderPipelineState(descriptor: copyDescriptor) else {
+            return nil
+        }
+
         self.device = device
+        self.copyPipeline = copyPipeline
         self.commandQueue = commandQueue
         self.renderPipeline = renderPipeline
         self.additiveRenderPipeline = additiveRenderPipeline
@@ -206,6 +222,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             textRasterScales.removeAll()
             clock = SceneClock()
             transforms = .empty
+            lastPointer = nil
             return
         }
         contentQueue.async { [weak self] in
@@ -273,10 +290,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func materializeScriptCreatedLayers() {
         let pending = AudioReactiveScriptEngine.shared.drainPendingLayerCreations()
         for request in pending {
-            guard layers.count < 512 else {
-                OWELog.error(.script, "Refusing to create layer \(request.id): layer budget reached")
-                break
-            }
             guard !layers.contains(where: { $0.stateId == request.id }),
                   var clone = layers.first(where: { $0.stateId == request.source }) else { continue }
             clone.stateId = request.id
@@ -325,6 +338,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return
         }
         let realDrawableSize = SIMD2<Float>(Float(drawable.texture.width), Float(drawable.texture.height))
+        drawablePixelsPerPoint = view.bounds.width > 0 ? realDrawableSize.x / Float(view.bounds.width) : 1
         renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize, drawableSize: realDrawableSize)
         guard let sceneTexture = sceneRenderTarget(matching: descriptor),
               let commandBuffer = commandQueue.makeCommandBuffer() else {
@@ -352,10 +366,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.time = sceneTime
         effectFrame.frameTime = clock.delta
         effectFrame.daytime = BuiltinFrameContext.daytime(at: Date())
-        effectFrame.pointer = simd_clamp(cursor / max(sceneSize, SIMD2(1, 1)), SIMD2(0, 0), SIMD2(1, 1))
+        let pointer = simd_clamp(cursor / max(sceneSize, SIMD2(1, 1)), SIMD2(0, 0), SIMD2(1, 1))
+        effectFrame.pointer = pointer
+        effectFrame.pointerLast = lastPointer ?? pointer
+        lastPointer = pointer
+        effectFrame.pointerState = BuiltinFrameContext.pointerState(primaryDown: NSEvent.pressedMouseButtons & 1 != 0)
         effectFrame.screenSize = drawableSize
         effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
         let motion = cameraMotion(cursor: cursor, time: time)
+        effectFrame.parallax = parallaxPosition(pointer: pointer)
         // Text is rasterised first so its effects run on the finished text, like an image layer's.
         var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
         // Only visible layers get an entry; the draw loop skips the rest.
@@ -464,7 +483,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 encoder.endEncoding()
                 let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
                 let input = entry.layer.sceneInput
-                    ? snapshot.flatMap { sceneRegion(of: $0, covering: draw.quad.boundingBox, commandBuffer: commandBuffer) }
+                    ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, commandBuffer: commandBuffer) }
                     : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)).texture
                 dynamicTextures[layerIndex] = input.flatMap {
                     runEffects(entry, draw: draw, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
@@ -550,6 +569,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    /// `g_ParallaxPosition`: `0.5 + (pointer − 0.5)·influence` while camera parallax is on, the
+    /// centre otherwise. The influence is the scene's `cameraparallaxmouseinfluence`, or 1 when
+    /// only the app's parallax toggle enabled it.
+    private func parallaxPosition(pointer: SIMD2<Float>) -> SIMD2<Float> {
+        if camera.parallax { return 0.5 + (pointer - 0.5) * camera.parallaxMouseInfluence }
+        let appToggle = AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
+        return appToggle ? pointer : SIMD2(0.5, 0.5)
     }
 
     /// The scene's own `general.cameraparallax` / `camerashake` (possibly user-bound) or the app's toggles.
@@ -724,7 +752,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func runEffects(_ entry: PreparedLayer, draw: LayerDraw, input: MTLTexture, snapshot: MTLTexture?,
                             frame: BuiltinFrameContext, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         guard let effectGraph, !entry.layer.weEffects.isEmpty else { return nil }
-        let context = EffectGraphRenderer.Context(
+        var context = EffectGraphRenderer.Context(
             frame: frame,
             values: LiveSceneValueContext(time: frame.time, scriptTime: frame.time, layerId: entry.stateId),
             assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
@@ -732,6 +760,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // The scripted/animated values the layer is drawn with this frame, not the authored ones.
             layerColor: SIMD3(draw.color.x, draw.color.y, draw.color.z),
             layerAlpha: draw.opacity)
+        context.assetContentSize = { _, source in source.contentSize }
         return effectGraph.apply(entry.layer.weEffects, to: input, layerID: entry.stateId,
                                  context: context, commandBuffer: commandBuffer)
     }
@@ -748,22 +777,42 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return copy
     }
 
-    /// The part of the scene under a scene-input layer, as that layer's base image: the
-    /// bounding box of its world-space quad (parents, scripts, animation and rotation included).
-    /// Composition and fullscreen layers usually cover the whole scene, which needs no copy.
-    private func sceneRegion(of snapshot: MTLTexture, covering box: (min: SIMD2<Float>, max: SIMD2<Float>),
+    /// The scene under a scene-input layer, as that layer's base image: the snapshot resampled
+    /// through the layer's world-space quad (parents, scripts, animation, rotation and shear
+    /// included), so each texel of the result is the scene pixel it covers on screen. Parts of
+    /// the quad outside the scene clamp to the scene's edge. A quad that is exactly the scene
+    /// (composition and fullscreen layers) uses the snapshot as is.
+    private func sceneRegion(of snapshot: MTLTexture, under quad: SceneQuadGeometry,
                              commandBuffer: MTLCommandBuffer) -> MTLTexture? {
-        guard let rect = SceneRenderResolution.pixelRect(of: box, sceneSize: sceneSize,
-                                                          targetSize: SIMD2(snapshot.width, snapshot.height)) else { return nil }
-        if rect.origin == .zero, rect.size == SIMD2(snapshot.width, snapshot.height) { return snapshot }
-        guard let region = renderTargetPool.texture(width: rect.size.x, height: rect.size.y,
-                                                    pixelFormat: snapshot.pixelFormat, avoiding: snapshot),
-              let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
-        blit.copy(from: snapshot, sourceSlice: 0, sourceLevel: 0,
-                  sourceOrigin: MTLOrigin(x: rect.origin.x, y: rect.origin.y, z: 0),
-                  sourceSize: MTLSize(width: rect.size.x, height: rect.size.y, depth: 1),
-                  to: region, destinationSlice: 0, destinationLevel: 0, destinationOrigin: MTLOrigin(x: 0, y: 0, z: 0))
-        blit.endEncoding()
+        let mapping = quad.snapshotUV(sceneSize: sceneSize)
+        let tolerance: Float = 1e-4
+        if simd_length(mapping.origin) < tolerance, simd_length(mapping.axisX - SIMD2(1, 0)) < tolerance,
+           simd_length(mapping.axisY - SIMD2(0, 1)) < tolerance {
+            return snapshot
+        }
+        let pixels = (quad.extent * renderPixelsPerUnit).rounded(.up)
+        guard pixels.x.isFinite, pixels.y.isFinite, pixels.x >= 1, pixels.y >= 1 else { return nil }
+        let width = min(Int(pixels.x), 16_384), height = min(Int(pixels.y), 16_384)
+        guard let region = renderTargetPool.texture(width: width, height: height,
+                                                    pixelFormat: snapshot.pixelFormat, avoiding: snapshot) else { return nil }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = region
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        // A quad covering the whole region target, its corners reading the snapshot at the layer's corners.
+        var uniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1,
+                                   drawableSize: SIMD2(Float(width), Float(height)), placement: .stretch)
+        uniform.uvOrigin = mapping.origin
+        uniform.uvAxisX = mapping.axisX
+        uniform.uvAxisY = mapping.axisY
+        encoder.setRenderPipelineState(copyPipeline)
+        encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
+        encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
+        encoder.setFragmentTexture(snapshot, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
         return region
     }
 
@@ -793,8 +842,16 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         if let sceneRenderTarget, sceneRenderTargetSize == pixelSize { return sceneRenderTarget }
 
         let pixelFormat = descriptor.colorAttachments[0].texture?.pixelFormat ?? .bgra8Unorm
-        guard let texture = renderTargetPool.texture(width: pixelSize.x, height: pixelSize.y,
-                                                     pixelFormat: pixelFormat) else { return nil }
+        // Owned outright, not pooled: the scene is drawn into for the whole frame, so a pooled
+        // scratch request of the same size (a scene-input region) must never be handed it.
+        let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: pixelSize.x,
+                                                                         height: pixelSize.y, mipmapped: false)
+        textureDescriptor.usage = [.renderTarget, .shaderRead]
+        textureDescriptor.storageMode = .private
+        guard let texture = device.makeTexture(descriptor: textureDescriptor) else {
+            OWELog.error(.scene, "Could not allocate the \(pixelSize.x)×\(pixelSize.y) scene target")
+            return nil
+        }
         sceneRenderTarget = texture
         sceneRenderTargetSize = pixelSize
         return texture
@@ -857,12 +914,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                 effects: SIMD4<Float>(1, 1, 1, 0), blur: 0,
                                 colorEffects: SIMD4<Float>(0, 1, 0, 0.7), transform: SIMD4<Float>(0, 0, 0, 1),
                                 transformScaleY: 1)
-        case .fill, .zoom:
-            scale = max(drawableSize.x / sceneSize.x, drawableSize.y / sceneSize.y)
-        case .fit:
-            scale = min(drawableSize.x / sceneSize.x, drawableSize.y / sceneSize.y)
-        case .center:
-            scale = 1
+        case .fill, .zoom, .fit, .center:
+            scale = ScenePlacementScale.scale(for: placement, sceneSize: sceneSize, drawableSize: drawableSize,
+                                              pixelsPerPoint: drawablePixelsPerPoint)
         }
         let offset = (drawableSize - sceneSize * scale) / 2
         return LayerUniform(position: SIMD2<Float>(position.x * scale + offset.x,
@@ -890,9 +944,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return SIMD2<Float>(drawablePoint.x * sceneSize.x / drawableSize.x,
                                 drawablePoint.y * sceneSize.y / drawableSize.y)
         case .fill, .zoom, .fit, .center:
-            let scale: Float = placement == .fit
-                ? min(drawableSize.x / sceneSize.x, drawableSize.y / sceneSize.y)
-                : placement == .center ? 1 : max(drawableSize.x / sceneSize.x, drawableSize.y / sceneSize.y)
+            let scale = ScenePlacementScale.scale(for: placement, sceneSize: sceneSize, drawableSize: drawableSize,
+                                                  pixelsPerPoint: drawablePixelsPerPoint)
             let offset = (drawableSize - sceneSize * scale) / 2
             return (drawablePoint - offset) / scale
         }
@@ -1184,11 +1237,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             let sequenceEnd = configuration.sequenceSpan.map {
                 controlPointPosition($0.endControlPoint, configuration: configuration, cursor: cursor)
             }
-            // Spread very large authored bursts over multiple frames instead of
-            // blocking the render loop with thousands of allocations at once.
-            let emissionCount = min(min(Int(system.emissionRemainder), 256),
-                                    configuration.maximumParticleCount - system.particles.count)
+            let emissionCount = max(0, min(Int(system.emissionRemainder),
+                                    configuration.maximumParticleCount - system.particles.count))
+            // Spawns a full system could not take are skipped, not queued into a later burst.
             system.emissionRemainder -= Float(emissionCount)
+            if system.particles.count + emissionCount >= configuration.maximumParticleCount {
+                system.emissionRemainder = system.emissionRemainder.truncatingRemainder(dividingBy: 1)
+            }
             for _ in 0..<max(emissionCount, 0) {
                 let angle = Float.random(in: 0...(2 * .pi))
                 let radius = sqrt(Float.random(in: 0...1))
@@ -1221,6 +1276,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 var position = spawnOrigin + spawnOffset + authoredOffset
                 var velocity = SIMD2<Float>(Float.random(in: min(configuration.minimumVelocity.x, configuration.maximumVelocity.x)...max(configuration.minimumVelocity.x, configuration.maximumVelocity.x)),
                                             Float.random(in: min(configuration.minimumVelocity.y, configuration.maximumVelocity.y)...max(configuration.minimumVelocity.y, configuration.maximumVelocity.y)))
+                // Authored in emitter space; a rotated emitter (or parent) turns the launch direction.
+                velocity = configuration.velocityRotation * velocity
                 var sequence: Float = 0
                 if let span = configuration.sequenceSpan, let start = sequenceStart, let end = sequenceEnd {
                     let slot = system.spawnCounter % span.count

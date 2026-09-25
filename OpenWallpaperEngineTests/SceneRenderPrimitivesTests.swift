@@ -59,20 +59,6 @@ final class SceneRenderPrimitivesTests: XCTestCase {
         XCTAssertEqual(box.max.y, 400, accuracy: 0.01)
     }
 
-    func testPixelRectFlipsYScalesAndClips() throws {
-        let scene = SIMD2<Float>(1000, 500)
-        let rect = try XCTUnwrap(SceneRenderResolution.pixelRect(of: (SIMD2(100, 100), SIMD2(300, 200)),
-                                                                sceneSize: scene, targetSize: SIMD2(2000, 1000)))
-        XCTAssertEqual(rect.origin, SIMD2(200, 600))
-        XCTAssertEqual(rect.size, SIMD2(400, 200))
-        let clipped = try XCTUnwrap(SceneRenderResolution.pixelRect(of: (SIMD2(-50, -50), SIMD2(1100, 600)),
-                                                                   sceneSize: scene, targetSize: SIMD2(1000, 500)))
-        XCTAssertEqual(clipped.origin, SIMD2(0, 0))
-        XCTAssertEqual(clipped.size, SIMD2(1000, 500))
-        XCTAssertNil(SceneRenderResolution.pixelRect(of: (SIMD2(2000, 0), SIMD2(2100, 10)),
-                                                     sceneSize: scene, targetSize: SIMD2(1000, 500)))
-    }
-
     // MARK: Text cache
 
     func testLRUEvictsLeastRecentlyUsed() {
