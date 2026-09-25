@@ -16,13 +16,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Use the newest Xcode on the runner
+      - name: Use the oldest supported Xcode
+        # Pinned, not the newest on the image: development uses the newest Xcode, so CI covers the
+        # oldest one the project supports (Xcode 16.4, Swift 6.1). Release builds with it too.
         run: |
-          latest=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
-          sudo xcode-select -s "$latest"
+          sudo xcode-select -s /Applications/Xcode_16.4.app || { echo "::error::Xcode 16.4 not on the runner"; exit 1; }
           xcodebuild -version
 
-      - name: Install shader toolchain
+      - name: Install the command line shader tools
+        # Only for the tests that compare the linked compiler with glslangValidator/spirv-cross;
+        # the app itself compiles shaders in-process and needs nothing from Homebrew.
         run: brew install glslang spirv-cross
 
       - name: Build and test
@@ -33,8 +36,20 @@ jobs:
             -scheme OpenWallpaperEngine \
             -configuration Debug \
             -destination 'platform=macOS' \
+            -derivedDataPath build/DerivedData \
             CODE_SIGNING_ALLOWED=NO \
             | tee xcodebuild.log
+
+      - name: Check for deployment target mismatches
+        # A library built for a newer macOS than the app's deployment target links, and then
+        # fails to load on that older macOS.
+        run: |
+          if grep -E "was built for newer (macOS|macosx) version" xcodebuild.log; then
+            echo "::error::a linked library targets a newer macOS than the app"; exit 1
+          fi
+
+      - name: Check glslang and SPIRV-Cross for symbol clashes
+        run: Scripts/check-toolchain-symbols.sh build/DerivedData
 
       - name: Upload log
         if: failure()
