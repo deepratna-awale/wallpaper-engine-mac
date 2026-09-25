@@ -1,22 +1,25 @@
 'use strict';
 // `engine.registerAudioBuffers(resolution)` (WP5, docs/scenescript-plan.md; lib.sceneScript.d.ts
-// IEngine and AudioBuffers). `__rt.native.audioBuffers[resolution]` is a Float32Array of
-// left | right | average that SceneScriptAudioBuffers.swift refills in place before every frame;
-// the arrays handed out are views into it, so they are live, like WE's.
+// IEngine and AudioBuffers), as scenescript64.dll does it (0x181655170). Each call gets new
+// Float32Arrays over the scene's one native store per resolution and channel
+// (`__rt.native.audioBuffer(resolution, channel)`), which SceneScriptAudioBuffersExtension.swift
+// refills in place before every frame, so the arrays are live.
 (function (global) {
     const rt = global.__rt;
-    const stores = rt.native.audioBuffers;
+    const native = rt.native;
+    const LEFT = 0, RIGHT = 1, AVERAGE = 2;
 
     function registerAudioBuffers(resolution) {
         rt.requireGlobalScope('registerAudioBuffers');
-        if (resolution !== 16 && resolution !== 32 && resolution !== 64) {
+        // The DLL reads a number argument as an int32; without one it uses 16.
+        const bands = typeof resolution === 'number' ? resolution | 0 : 16;
+        if (bands !== 16 && bands !== 32 && bands !== 64) {
             throw new Error('Resolution must be either 16, 32 or 64.');
         }
-        const store = stores[resolution];
         return {
-            left: store.subarray(0, resolution),
-            right: store.subarray(resolution, 2 * resolution),
-            average: store.subarray(2 * resolution, 3 * resolution),
+            left: native.audioBuffer(bands, LEFT),
+            right: native.audioBuffer(bands, RIGHT),
+            average: native.audioBuffer(bands, AVERAGE),
         };
     }
 

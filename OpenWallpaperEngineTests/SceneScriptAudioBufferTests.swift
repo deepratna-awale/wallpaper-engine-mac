@@ -27,7 +27,7 @@ final class SceneScriptAudioBufferTests: XCTestCase {
             let first;
             function init(value) { first = audio.left; return value; }
             function update(value) {
-                shared.same = first === audio.left;
+                shared.same = first === audio.left && first.buffer === audio.left.buffer;
                 shared.seen = [audio.left[3], audio.right[3], audio.average[3], wide.left[63], wide.average[0]];
                 shared.shape = [audio.left.length, audio.right.length, audio.average.length, wide.left.length,
                                 audio.left instanceof Float32Array];
@@ -74,11 +74,48 @@ final class SceneScriptAudioBufferTests: XCTestCase {
         }
     }
 
+    func testRegistrationsShareMemoryButNotBuffers() throws {
+        let audio = SceneScriptAudioBuffersExtension(spectrum: { [unowned self] in self.spectrum })
+        let runtime = try SceneScriptRuntime(host: TestSceneScriptHost(), compiler: TestSceneScriptCompiler(),
+                                             extensions: [audio])
+        runtime.add(SceneScriptInstance(id: "writer", source: """
+            const audio = engine.registerAudioBuffers(16);
+            function update(value) {
+                audio.average[0] = 99;
+                if (typeof audio.left.buffer.transfer === 'function') { shared.moved = audio.left.buffer.transfer(); }
+                return value;
+            }
+            """))
+        runtime.add(SceneScriptInstance(id: "reader", source: """
+            const audio = engine.registerAudioBuffers(16);
+            function update(value) {
+                shared.read = [audio.average[0], audio.left.length, audio.left[1], audio.left.buffer !== audio.right.buffer];
+                return value;
+            }
+            """))
+        runtime.load()
+        spectrum.left16[1] = 0.5
+        runtime.frame(deltaTime: 1.0 / 60)
+        // WE hands every registration the scene's one store (scenescript64.dll 0x181655405), so a
+        // write reaches later scripts until the next refill; a transfer detaches only the writer's.
+        XCTAssertEqual(runtime.context.evaluateScript("shared.read.join(' ')")?.toString(), "99 16 0.5 true")
+        runtime.context.evaluateScript("shared.moved = undefined;")
+        JSGarbageCollect(runtime.context.jsGlobalContextRef)
+        spectrum.left16[1] = 0.25
+        runtime.frame(deltaTime: 1.0 / 60)
+        XCTAssertEqual(runtime.context.evaluateScript("shared.read.join(' ')")?.toString(), "99 16 0.25 true",
+                       "the refill still lands after the writer's buffer was moved and collected")
+    }
+
     func testOnlySixteenThirtyTwoAndSixtyFour() throws {
         let runtime = try makeRuntime("""
             try { engine.registerAudioBuffers(128); } catch (error) { shared.error = error.message; }
+            shared.defaulted = engine.registerAudioBuffers().left.length;
+            shared.truncated = engine.registerAudioBuffers(32.9).left.length;
             """)
         XCTAssertEqual(evaluate("shared.error", in: runtime)?.toString(), "Resolution must be either 16, 32 or 64.")
+        XCTAssertEqual(evaluate("shared.defaulted", in: runtime)?.toInt32(), 16, "no number: the DLL uses 16")
+        XCTAssertEqual(evaluate("shared.truncated", in: runtime)?.toInt32(), 32, "read as an int32")
         XCTAssertTrue(runtime.isEnabled("audio"))
     }
 

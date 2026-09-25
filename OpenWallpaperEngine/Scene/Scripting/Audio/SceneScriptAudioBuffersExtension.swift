@@ -1,61 +1,92 @@
 import Foundation
 import JavaScriptCore
 
-/// WP5 of docs/scenescript-plan.md: `engine.registerAudioBuffers(resolution)`.
+/// WP5 of docs/scenescript-plan.md: `engine.registerAudioBuffers(resolution)`, as scenescript64.dll
+/// does it (`0x181655170`):
 ///
-/// WE keeps one buffer per resolution with `left`, `right` and `average` back to back (the host
-/// method at `wallpaper64.exe` `0x14018e010` hands scenescript64.dll a pointer per resolution; the
-/// DLL's tick copies them at `0x18164f84d`, before timers and `update`). Here each resolution is one
-/// shared `Float32Array` of 3 × resolution floats that this extension refills in place before
-/// every frame, and the arrays a script gets are views into it: live, and the same objects every
-/// frame. The values are WE's spectrum (`AudioSpectrumAnalyzer`, which also feeds the shaders'
-/// `g_AudioSpectrum*`), so a script and a shader see the same numbers.
+/// - The first registration in a scene allocates nine arrays, left/right/average at 16, 32 and 64
+///   bands, owned natively (`0x181655347`–`0x1816553ca`). The DLL's tick copies the host's spectrum
+///   into them before timers and `update` (`0x18164f84d`); here `willRunFrame` does.
+/// - Every call wraps them in new `ArrayBuffer`s with a no-op deleter (`0x1800193c0`): each
+///   registration has its own `Float32Array`s over the same memory. Scripts see each other's writes
+///   until the next refill, as in WE, and detaching one registration's buffer (`transfer()`)
+///   touches neither the others nor the memory, which only this extension frees.
 ///
-/// Confined to the runtime's thread, like the runtime.
+/// The values are WE's spectrum (`AudioSpectrumAnalyzer`, which also feeds the shaders'
+/// `g_AudioSpectrum*`). Confined to the runtime's thread, like the runtime.
 final class SceneScriptAudioBuffersExtension: SceneScriptRuntimeExtension {
     /// `engine.AUDIO_RESOLUTION_16/32/64`; WE has no other ("Resolution must be either 16, 32 or 64.").
     static let resolutions = [16, 32, 64]
+    /// left, right, average.
+    static let channelCount = 3
 
     let scriptResources = ["sceneScriptAudioBuffers"]
 
     private let spectrum: () -> AudioSpectrumSnapshot
-    private var buffers: [Int: SceneScriptSharedBuffer<Float>] = [:]
+    private let count = SceneScriptAudioBuffersExtension.resolutions.reduce(0, +) * SceneScriptAudioBuffersExtension.channelCount
+    private let storage: UnsafeMutablePointer<Float>
 
     /// `spectrum` returns the current frame's arrays; the renderer advances the analyzer once per
     /// frame (`SystemAudioCapture.advanceAudioSpectrumFrame`) and this only reads.
     init(spectrum: @escaping () -> AudioSpectrumSnapshot) {
         self.spectrum = spectrum
+        storage = UnsafeMutablePointer<Float>.allocate(capacity: count)
+        storage.initialize(repeating: 0, count: count)
+    }
+
+    /// No script runs once the runtime that owns this extension is gone, and the typed arrays'
+    /// deallocator does nothing, so freeing here is the only free.
+    deinit {
+        storage.deallocate()
     }
 
     func install(into runtime: SceneScriptRuntime) throws {
-        guard let native = runtime.rt.forProperty("native"), native.isObject,
-              let stores = JSValue(newObjectIn: runtime.context) else {
+        guard let native = runtime.rt.forProperty("native"), native.isObject else {
             throw SceneScriptRuntime.CreationError(description: "runtime.js has no __rt.native")
         }
-        for resolution in Self.resolutions {
-            guard let buffer = SceneScriptSharedBuffer<Float>(count: 3 * resolution, in: runtime.context) else {
-                throw SceneScriptRuntime.CreationError(description: "the \(resolution)-band audio buffer could not be allocated")
-            }
-            buffers[resolution] = buffer
-            stores.setValue(buffer.value, forProperty: String(resolution))
+        let makeArray: @convention(block) (Int, Int) -> JSValue? = { [weak self] resolution, channel in
+            guard let context = JSContext.current() else { return nil }
+            return self?.makeArray(resolution: resolution, channel: channel, in: context)
         }
-        native.setValue(stores, forProperty: "audioBuffers")
+        native.setValue(unsafeBitCast(makeArray, to: AnyObject.self), forProperty: "audioBuffer")
     }
 
     func willRunFrame(_ runtime: SceneScriptRuntime, deltaTime: Double) {
         let snapshot = spectrum()
-        for (resolution, buffer) in buffers {
-            fill(buffer, at: 0, with: snapshot.values(bands: resolution, right: false), count: resolution)
-            fill(buffer, at: resolution, with: snapshot.values(bands: resolution, right: true), count: resolution)
-            fill(buffer, at: 2 * resolution, with: snapshot.averages(bands: resolution), count: resolution)
+        for resolution in Self.resolutions {
+            fill(resolution: resolution, channel: 0, with: snapshot.values(bands: resolution, right: false))
+            fill(resolution: resolution, channel: 1, with: snapshot.values(bands: resolution, right: true))
+            fill(resolution: resolution, channel: 2, with: snapshot.averages(bands: resolution))
         }
     }
 
-    /// Copies `values` into `count` slots from `offset`; a missing or short array leaves zeros.
-    private func fill(_ buffer: SceneScriptSharedBuffer<Float>, at offset: Int, with values: [Float]?, count: Int) {
+    /// Where a resolution's channel starts in `storage`, or nil for a resolution WE doesn't have.
+    private func offset(resolution: Int, channel: Int) -> Int? {
+        guard let index = Self.resolutions.firstIndex(of: resolution), (0..<Self.channelCount).contains(channel) else {
+            return nil
+        }
+        let before = Self.resolutions[..<index].reduce(0, +) * Self.channelCount
+        return before + channel * resolution
+    }
+
+    /// A new `Float32Array` over one channel of `storage`, whose deallocator does nothing.
+    private func makeArray(resolution: Int, channel: Int, in context: JSContext) -> JSValue? {
+        guard let offset = offset(resolution: resolution, channel: channel),
+              let contextRef = context.jsGlobalContextRef else { return nil }
+        let noDeallocation: JSTypedArrayBytesDeallocator = { _, _ in }
+        var exception: JSValueRef?
+        guard let object = JSObjectMakeTypedArrayWithBytesNoCopy(
+            contextRef, kJSTypedArrayTypeFloat32Array, storage + offset, resolution * MemoryLayout<Float>.stride,
+            noDeallocation, nil, &exception), exception == nil else { return nil }
+        return JSValue(jsValueRef: object, in: context)
+    }
+
+    /// Copies `values` into a channel; a missing or short array leaves zeros.
+    private func fill(resolution: Int, channel: Int, with values: [Float]?) {
+        guard let offset = offset(resolution: resolution, channel: channel) else { return }
         let values = values ?? []
-        for index in 0..<count {
-            buffer[offset + index] = index < values.count ? values[index] : 0
+        for index in 0..<resolution {
+            storage[offset + index] = index < values.count ? values[index] : 0
         }
     }
 }
