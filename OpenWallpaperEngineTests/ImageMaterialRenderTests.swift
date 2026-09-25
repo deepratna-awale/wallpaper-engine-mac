@@ -309,6 +309,7 @@ final class ImageMaterialRenderTests: XCTestCase {
     func testPassThroughEffectLeavesTheMaterialDrawUnchanged() throws {
         let assets = ShaderVariantTests.weAssets
         let effects = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache.appending(path: "archives")))
+        defer { effects.pipelineArchive?.flush() } // before tearDown deletes its directory
         let effectBuilder = SceneEffectPlanBuilder(
             translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache),
             readFile: { FileManager.default.contents(atPath: assets.appending(path: $0).path) },

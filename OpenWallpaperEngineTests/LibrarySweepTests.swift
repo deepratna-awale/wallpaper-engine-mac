@@ -30,6 +30,7 @@ final class LibrarySweepTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: cache) } // scratch cleanup
         // Not the user's pipeline archive: tests must not write to the app's caches.
         let renderer = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache.appending(path: "archives")))
+        defer { renderer.pipelineArchive?.flush() } // runs before the cleanup above deletes its directory
         let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache)
         let input = try Self.checkerboard(device: device)
         let loader = MTKTextureLoader(device: device)

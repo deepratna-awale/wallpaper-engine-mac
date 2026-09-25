@@ -224,8 +224,81 @@ final class EffectPipelineArchiveTests: XCTestCase {
             }
             archive.flush()
             XCTAssertEqual(archive.writeFailures, 0, "launch \(launch)")
-            XCTAssertEqual(archive.skippedCount, 0, "launch \(launch)")
             if launch == 1 { XCTAssertGreaterThanOrEqual(archive.hits, split - descriptors.count / 3, "the first launch's pipelines are found") }
+        }
+    }
+
+    // MARK: - Failure and lifetime
+
+    /// A write failing inside Metal can hand back an NSError Metal already freed, which crashes in
+    /// `objc_retain`; so a failure is never retried in the same session, and it doesn't drop
+    /// pipelines from later launches either.
+    func testAFailedWriteIsNotRetried() throws {
+        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 1000)
+        try FileManager.default.removeItem(at: directory) // the move into place fails
+        archive.add(try descriptor(red: 1), key: "a")
+        archive.flush()
+        XCTAssertEqual(archive.writeFailures, 1)
+        archive.add(try descriptor(red: 2), key: "b")
+        archive.flush()
+        XCTAssertEqual(archive.writeFailures, 1, "no second attempt")
+        XCTAssertEqual(archive.writes, 0)
+
+        let next = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 1000)
+        next.add(try descriptor(red: 1), key: "a")
+        next.flush()
+        XCTAssertEqual(next.writes, 1, "the next launch writes the pipeline the failed write had")
+    }
+
+    /// Renderers come and go (wallpaper switches, tests) while their compiles still add pipelines
+    /// and debounced writes fire; every write must still serialize, and the next archive for the
+    /// file must find the pipelines.
+    func testArchivesComingAndGoingWhileWritingStaySerializable() throws {
+        let device: MTLDevice = self.device
+        var hits = 0
+        for round in 0..<8 {
+            let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.01)
+            let descriptors = try (0..<6).map { try descriptor(red: round * 6 + $0) }
+            let reused = round > 0 ? [try descriptor(red: (round - 1) * 6)] : []
+            DispatchQueue.concurrentPerform(iterations: descriptors.count + reused.count) { index in
+                let isReused = index >= descriptors.count
+                let red = isReused ? (round - 1) * 6 : round * 6 + index
+                let descriptor = isReused ? reused[0] : descriptors[index]
+                do {
+                    _ = try EffectGraphRenderer.makePipeline(descriptor, device: device, archive: archive, key: "\(red)")
+                } catch {
+                    XCTFail("\(error)")
+                }
+                Thread.sleep(forTimeInterval: 0.005 * Double(index))
+            }
+            // Odd rounds let the timer's write start first; flush waits for it.
+            if round % 2 == 1 { Thread.sleep(forTimeInterval: 0.02) }
+            archive.flush()
+            XCTAssertEqual(archive.writeFailures, 0, "round \(round)")
+            hits += archive.hits
+        }
+        XCTAssertGreaterThan(hits, 0, "later rounds find earlier rounds' pipelines")
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".tmp") }
+        XCTAssertEqual(leftovers, [])
+    }
+
+    /// Regression: deleting the archive's directory while Metal wrote into it made
+    /// `serialize(to:)` return a freed error, and the test host died with SIGSEGV in `objc_retain`
+    /// under `-[_MTLBinaryArchive airntSerializeToURL:options:error:]` (the tests delete their
+    /// scratch directories; a cache purge does the same to the app). Metal now writes to a
+    /// staging file of its own and the move into the directory fails instead.
+    func testDeletingTheDirectoryWhileAWriteIsInFlightDoesNotCrash() throws {
+        let descriptors = try (0..<12).map { try descriptor(red: $0) }
+        for round in 0..<10 {
+            let folder = directory.appending(path: "round-\(round)")
+            let archive = EffectPipelineArchive(device: device, directory: folder, serializeDelay: 1000)
+            for (index, descriptor) in descriptors.enumerated() { archive.add(descriptor, key: "\(index)") }
+            let writing = DispatchGroup()
+            DispatchQueue.global(qos: .utility).async(group: writing) { archive.flush() }
+            Thread.sleep(forTimeInterval: Double.random(in: 0...0.08))
+            try? FileManager.default.removeItem(at: folder) // may race the write; that is the point
+            writing.wait()
+            XCTAssertEqual(archive.writes + archive.writeFailures, 1, "round \(round)")
         }
     }
 }

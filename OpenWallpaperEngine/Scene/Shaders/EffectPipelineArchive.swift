@@ -7,8 +7,8 @@ import Metal
 /// One file per GPU (name and registry ID), OS build and app build: a binary compiled for one of
 /// those is useless, or unsafe to hand the driver, under another. Files for the same GPU with an
 /// older key are deleted. A file Metal refuses to open is deleted and replaced by an empty
-/// archive. Writes go to a temporary file that is renamed into place, so a crash mid-write
-/// never leaves a truncated archive behind.
+/// archive. Writes go to a staging file that is renamed into place, so a crash mid-write
+/// never leaves a truncated archive behind (see `write`).
 ///
 /// Every write serializes a *fresh* archive holding every pipeline this session used: the ones
 /// it compiled and the ones it found in the file from the last launch (`lookup`, which is only
@@ -18,37 +18,41 @@ import Metal
 /// pipelines added to a new archive in one go always serialize. So the file holds the pipelines
 /// of the last session that compiled something new, which also bounds its size.
 ///
-/// A pipeline Metal still can't serialize is left out and remembered in `<archive>.skip`; it
-/// still renders, just compiled normally.
+/// A failed write is never retried in the same session. When writing the file fails inside
+/// Metal (its destination directory deleted mid-write, disk full), `serialize(to:)` hands back an
+/// `NSError` it has already freed, and retaining that crashes the process (SIGSEGV in
+/// `objc_retain` under `-[_MTLBinaryArchive airntSerializeToURL:options:error:]`). Every failed
+/// attempt is a chance of that crash, so the first failure keeps the file as it is until the next
+/// launch.
 ///
-/// Thread-safe: `lock` owns `recorded`, `recordedKeys`, `written`, `skipped`,
-/// `serializeScheduled` and the counters; `serializeQueue` runs writes one at a time and builds
-/// them outside the lock; `lookup` is immutable.
+/// Thread-safe: `lock` owns `recorded`, `recordedKeys`, `written`, `writesStopped`,
+/// `serializeScheduled` and the counters; `serializeQueue` runs writes one at a
+/// time and builds them outside the lock; `lookup` is immutable.
 final class EffectPipelineArchive {
     /// Bump when what goes into the archive changes (e.g. descriptor fields).
     static let revision = 2
 
     let url: URL
-    private let skipURL: URL
     private let device: MTLDevice
     private let lock = NSLock()
     private let lookup: MTLBinaryArchive?
     /// Pipelines this session used, in first-use order, by key.
     private var recorded: [(key: String, descriptor: MTLRenderPipelineDescriptor)] = []
     private var recordedKeys = Set<String>()
-    /// Whether the file holds every pipeline in `recorded` that isn't skipped.
+    /// Whether the file holds every pipeline in `recorded`.
     private var written = true
-    /// Keys of pipelines that make the archive unserializable.
-    private var skipped: Set<String>
+    /// Set by a failed write: no further writes this session (see the type's comment).
+    private var writesStopped = false
+    private var writeCount = 0
     private var writeFailureCount = 0
     private var hitCount = 0
     private var additionCount = 0
     /// Pipelines served from the archive / added to it, for tests and diagnostics.
     var hits: Int { lock.withLock { hitCount } }
     var additions: Int { lock.withLock { additionCount } }
-    /// Writes that failed even after leaving out unserializable pipelines.
+    /// Archives serialized to the file, and attempts that failed.
+    var writes: Int { lock.withLock { writeCount } }
     var writeFailures: Int { lock.withLock { writeFailureCount } }
-    var skippedCount: Int { lock.withLock { skipped.count } }
     private var serializeScheduled = false
     private let serializeQueue = DispatchQueue(label: "owe.effect-pipeline-archive", qos: .utility)
     /// Writes wait this long after the last addition, so a burst of compiles writes once.
@@ -65,14 +69,12 @@ final class EffectPipelineArchive {
             OWELog.error(.shader, "Could not create the pipeline archive directory \(directory.path): \(error)")
         }
         Self.deleteStale(in: directory, deviceName: Self.deviceName(device), prefix: prefix, keeping: url)
-        skipURL = url.appendingPathExtension("skip")
-        skipped = Self.loadSkipped(skipURL)
         lookup = Self.open(url, device: device)
     }
 
     deinit {
         // Pending pipelines of the last renderer to let go still reach the file.
-        if !written { serialize() }
+        serialize()
     }
 
     /// Archives in use, one per device and directory. Every renderer of a device shares one, so
@@ -116,7 +118,7 @@ final class EffectPipelineArchive {
         guard record(descriptor, key: key) else { return }
         additionCount += 1
         written = false
-        guard !serializeScheduled else { return }
+        guard !serializeScheduled, !writesStopped else { return }
         serializeScheduled = true
         serializeQueue.asyncAfter(deadline: .now() + serializeDelay) { [weak self] in
             self?.serialize()
@@ -136,9 +138,9 @@ final class EffectPipelineArchive {
         serializeQueue.sync { serialize() }
     }
 
-    /// Adds to `recorded`; false when it is known or skipped. Caller holds `lock`.
+    /// Adds to `recorded`; false when it is known. Caller holds `lock`.
     private func record(_ descriptor: MTLRenderPipelineDescriptor, key: String) -> Bool {
-        guard !skipped.contains(key), recordedKeys.insert(key).inserted else { return false }
+        guard recordedKeys.insert(key).inserted else { return false }
         // The copy keeps `lookup` so building the write can take binaries from it.
         let copy = descriptor.copy() as! MTLRenderPipelineDescriptor // copy() of this class returns its own type
         copy.binaryArchives = archives
@@ -149,30 +151,24 @@ final class EffectPipelineArchive {
     private func serialize() {
         let batch: [(key: String, descriptor: MTLRenderPipelineDescriptor)] = lock.withLock {
             serializeScheduled = false
-            return written ? [] : recorded.filter { !skipped.contains($0.key) }
+            return written || writesStopped ? [] : recorded
         }
         guard !batch.isEmpty else { return }
-        var leftOut: [String] = []
-        var success = false
         do {
             try write(try build(batch))
-            success = true
-        } catch {
-            OWELog.error(.shader, "Could not write the effect pipeline archive \(url.path): \(error); "
-                         + "retrying pipeline by pipeline")
-            (success, leftOut) = recover(batch)
-        }
-        lock.withLock {
-            skipped.formUnion(leftOut)
-            if success {
+            lock.withLock {
+                writeCount += 1
                 // Pipelines recorded while this write was built make it stale again.
-                let included = Set(batch.map(\.key))
-                written = recorded.allSatisfy { skipped.contains($0.key) || included.contains($0.key) }
-            } else {
-                writeFailureCount += 1
+                written = recorded.count == batch.count
             }
+        } catch {
+            lock.withLock {
+                writeFailureCount += 1
+                writesStopped = true
+            }
+            OWELog.error(.shader, "Could not write the effect pipeline archive \(url.path): \(error); "
+                         + "keeping the file as it is until the next launch")
         }
-        if !leftOut.isEmpty { saveSkipped() }
     }
 
     /// A new archive with `pipelines`, added in one go.
@@ -184,56 +180,30 @@ final class EffectPipelineArchive {
         return archive
     }
 
-    /// Grows the batch one pipeline at a time, building each attempt afresh, and leaves out
-    /// every pipeline that makes it fail. Returns whether a file was written, and the keys left out.
-    private func recover(_ batch: [(key: String, descriptor: MTLRenderPipelineDescriptor)]) -> (Bool, [String]) {
-        var accepted: [(key: String, descriptor: MTLRenderPipelineDescriptor)] = []
-        var leftOut: [String] = []
-        for pipeline in batch {
-            do {
-                let archive = try build(accepted + [pipeline])
-                try write(archive)
-                accepted.append(pipeline)
-            } catch {
-                OWELog.error(.shader, "Leaving pipeline \(pipeline.key.prefix(24)) out of the binary archive: \(error)")
-                leftOut.append(pipeline.key)
-            }
-        }
-        return (!accepted.isEmpty, leftOut)
-    }
-
-    /// Serializes `archive` to a temporary file and renames it over `url`.
+    /// Serializes `archive` to a staging file in the temporary directory, then moves it over
+    /// `url`. Metal never writes into the archive's own directory: if that directory disappears
+    /// while Metal writes into it (a cache purge, a test deleting its scratch directory),
+    /// `serialize(to:)` returns an already freed error and the process crashes in `objc_retain`.
+    /// A directory gone by the time of the move fails here, in Swift, instead. The staging name
+    /// is unique per write, so two archives for one file never share it.
     private func write(_ archive: MTLBinaryArchive) throws {
+        let staging = FileManager.default.temporaryDirectory
+            .appending(path: "owe-pipeline-archive-\(UUID().uuidString).binarchive")
+        defer { try? FileManager.default.removeItem(at: staging) } // best-effort cleanup; gone after a rename
+        try archive.serialize(to: staging)
+        if rename(staging.path, url.path) == 0 { return }
+        guard errno == EXDEV else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        // Another volume: copy next to `url`, then rename, so the file is never seen half-written.
         let temporary = url.deletingLastPathComponent()
-            .appending(path: ".\(url.lastPathComponent).\(ProcessInfo.processInfo.processIdentifier).tmp")
+            .appending(path: ".\(url.lastPathComponent).\(UUID().uuidString).tmp")
         do {
-            try archive.serialize(to: temporary)
+            try FileManager.default.copyItem(at: staging, to: temporary)
             if rename(temporary.path, url.path) != 0 {
                 throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
             }
         } catch {
             try? FileManager.default.removeItem(at: temporary) // best-effort cleanup of our own temp file
             throw error
-        }
-    }
-
-    private static func loadSkipped(_ url: URL) -> Set<String> {
-        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
-        do {
-            return Set(try JSONDecoder().decode([String].self, from: Data(contentsOf: url)))
-        } catch {
-            OWELog.error(.shader, "Ignoring unreadable \(url.path): \(error)")
-            return []
-        }
-    }
-
-    private func saveSkipped() {
-        let keys = lock.withLock { skipped.sorted() }
-        guard !keys.isEmpty else { return }
-        do {
-            try JSONEncoder().encode(keys).write(to: skipURL, options: .atomic)
-        } catch {
-            OWELog.error(.shader, "Could not write \(skipURL.path): \(error)")
         }
     }
 
@@ -284,8 +254,7 @@ final class EffectPipelineArchive {
         let fileManager = FileManager.default
         // Optional: an unreadable directory just means there is nothing to prune.
         let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
-        for name in names where name.hasPrefix(deviceName) && name != url.lastPathComponent
-            && name != url.lastPathComponent + ".skip" {
+        for name in names where name.hasPrefix(deviceName) && name != url.lastPathComponent {
             let path = directory.appending(path: name)
             if !name.hasPrefix("\(prefix)--") {
                 // Optional: without a date the file is left alone.

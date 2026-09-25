@@ -26,6 +26,8 @@ final class EffectGraphReuseTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        // A pending archive write must not see its directory vanish mid-write.
+        renderer?.pipelineArchive?.flush()
         if let cache { try? FileManager.default.removeItem(at: cache) }
     }
 
