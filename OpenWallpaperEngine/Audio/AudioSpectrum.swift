@@ -1,7 +1,8 @@
-import Accelerate
 import Foundation
 
-/// One frame of WE's `g_AudioSpectrum{16,32,64}{Left,Right}` values, each in 0...1.
+/// One frame of WE's audio spectrum: `g_AudioSpectrum{16,32,64}{Left,Right}` for shaders and the
+/// `left`/`right`/`average` arrays of SceneScript's `registerAudioBuffers`. WE fills one buffer
+/// that both read (`AudioSpectrumSmoothing`). Values are normally 0…1 but can exceed 1.
 struct AudioSpectrumSnapshot: Equatable {
     var left16: [Float]
     var right16: [Float]
@@ -9,6 +10,9 @@ struct AudioSpectrumSnapshot: Equatable {
     var right32: [Float]
     var left64: [Float]
     var right64: [Float]
+    var average16 = [Float](repeating: 0, count: 16)
+    var average32 = [Float](repeating: 0, count: 32)
+    var average64 = [Float](repeating: 0, count: 64)
 
     static let silent = AudioSpectrumSnapshot(
         left16: [Float](repeating: 0, count: 16), right16: [Float](repeating: 0, count: 16),
@@ -24,148 +28,89 @@ struct AudioSpectrumSnapshot: Equatable {
         default: return nil
         }
     }
+
+    /// The `average` array for a band count, or nil for a count WE doesn't define.
+    func averages(bands: Int) -> [Float]? {
+        switch bands {
+        case 16: return average16
+        case 32: return average32
+        case 64: return average64
+        default: return nil
+        }
+    }
 }
 
-/// Turns stereo PCM into WE's audio spectra, following linux-wallpaperengine's
-/// `PulseAudioPlaybackRecorder`:
+/// WE's audio spectrum from stereo PCM: `AudioSpectrumBlockTransform` on the audio thread turns
+/// blocks of samples into raw band values, and `AudioSpectrumSmoothing` turns the latest block into
+/// each rendered frame's arrays. Both follow `wallpaper64.exe` (see their docs).
 ///
-/// - The last 1024 samples of each channel go through a real FFT, no window.
-/// - Band power `p = re² + im²` of the (unnormalised) DFT bin; value `0.35·log10(p)`,
-///   times the tilt `2 − e^((1 − band/(N−1)) − 0.5)`, clamped to at most 1. We also clamp at 0,
-///   because `log10` of a tiny power is negative and WE's values are 0...1.
-/// - Bins (LWE's grouping, which samples single bins rather than summing ranges):
-///   64 bands use bin `2b`; 32 bands use bin `4b + 2`; 16 bands use bin `8b + 6`.
-///   At 48 kHz one bin is 46.875 Hz, so 64-band `b` sits at `b · 93.75 Hz`.
-///   (LWE writes the 32/16 arrays inside the 64-band loop, so the last write per slot wins; that
-///   is where the `+2` / `+6` come from. LWE's tilt for those uses the 64-band index, which we
-///   treat as a bug and replace with the band's own index.)
-/// - Each rendered frame, `advanceFrame()` moves every value toward its target by at most 0.3.
-///
-/// Threading: `ingest` runs on the audio thread and `advanceFrame` on the render thread. `lock`
-/// owns `pending*`, `targets` and `current`; the FFT scratch is audio-thread only.
+/// Threading: `ingest` runs on the audio thread and owns `transform`; `advanceFrame` runs on the
+/// render thread. `lock` owns `latestRaw`, `smoothing`, `current` and `lastAdvance`.
 final class AudioSpectrumAnalyzer {
-    static let fftSize = 1024
-    static let maxStep: Float = 0.3
+    static let rawCount = 2 * AudioSpectrumBlockTransform.bandCount
 
     private let lock = NSLock()
-    private var targets = AudioSpectrumSnapshot.silent
+    private var latestRaw = [Float](repeating: 0, count: AudioSpectrumAnalyzer.rawCount)
+    private var smoothing = AudioSpectrumSmoothing()
     private var current = AudioSpectrumSnapshot.silent
+    private var lastAdvance: TimeInterval?
+    private let uptime: () -> TimeInterval
 
     // Audio-thread only.
-    private var leftHistory = [Float](repeating: 0, count: AudioSpectrumAnalyzer.fftSize)
-    private var rightHistory = [Float](repeating: 0, count: AudioSpectrumAnalyzer.fftSize)
-    private let log2n = vDSP_Length(10)
-    private let fftSetup: FFTSetup?
-    private var real = [Float](repeating: 0, count: AudioSpectrumAnalyzer.fftSize / 2)
-    private var imaginary = [Float](repeating: 0, count: AudioSpectrumAnalyzer.fftSize / 2)
+    private let transform: AudioSpectrumBlockTransform?
 
-    init() {
-        fftSetup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2))
-        if fftSetup == nil { OWELog.error(.audio, "vDSP FFT setup failed; audio spectrum stays silent") }
-    }
-
-    deinit {
-        if let fftSetup { vDSP_destroy_fftsetup(fftSetup) }
+    /// `sampleRate` is the capture stream's; `inputVolume` is WE's `audioinputvolume` × 0.02.
+    init(sampleRate: Double = 48_000, inputVolume: Float = 1,
+         uptime: @escaping () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }) {
+        transform = AudioSpectrumBlockTransform(sampleRate: sampleRate)
+        transform?.inputVolume = inputVolume
+        self.uptime = uptime
+        if transform == nil {
+            OWELog.error(.audio, "Audio spectrum DFT setup failed for \(sampleRate) Hz; the spectrum stays silent")
+        }
     }
 
     /// Adds one buffer of non-interleaved float samples. Pass the same buffer twice for mono.
     func ingest(left: UnsafeBufferPointer<Float>, right: UnsafeBufferPointer<Float>) {
-        Self.append(left, to: &leftHistory)
-        Self.append(right, to: &rightHistory)
-        let left = bandTargets(leftHistory)
-        let right = bandTargets(rightHistory)
+        guard let raw = transform?.append(left: left, right: right) else { return }
         lock.lock()
-        targets = AudioSpectrumSnapshot(left16: left.0, right16: right.0, left32: left.1,
-                                        right32: right.1, left64: left.2, right64: right.2)
+        latestRaw = raw
         lock.unlock()
     }
 
-    /// Drops the targets to silence (the smoothing still eases the values down).
+    /// Capture stopped: WE's processor hands out zeros while it isn't running, which silences the
+    /// next frame.
     func reset() {
         lock.lock()
-        targets = .silent
+        latestRaw = [Float](repeating: 0, count: Self.rawCount)
         lock.unlock()
     }
 
-    /// Advances the smoothing by one rendered frame. Call exactly once per frame.
+    /// Advances by one rendered frame, timed by the monotonic clock. Call exactly once per frame.
     func advanceFrame() -> AudioSpectrumSnapshot {
         lock.lock()
         defer { lock.unlock() }
-        current.left16 = Self.move(current.left16, toward: targets.left16)
-        current.right16 = Self.move(current.right16, toward: targets.right16)
-        current.left32 = Self.move(current.left32, toward: targets.left32)
-        current.right32 = Self.move(current.right32, toward: targets.right32)
-        current.left64 = Self.move(current.left64, toward: targets.left64)
-        current.right64 = Self.move(current.right64, toward: targets.right64)
+        let now = uptime()
+        // The first frame has no predecessor; WE's clamp turns 0 into its minimum step.
+        let deltaTime = lastAdvance.map { now - $0 } ?? 0
+        lastAdvance = now
+        current = smoothing.advance(raw: latestRaw, deltaTime: deltaTime)
         return current
     }
 
-    /// The latest smoothed values, without advancing.
+    /// Advances by one frame of `deltaTime` seconds.
+    func advanceFrame(deltaTime: Double) -> AudioSpectrumSnapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        lastAdvance = uptime()
+        current = smoothing.advance(raw: latestRaw, deltaTime: deltaTime)
+        return current
+    }
+
+    /// The latest frame's arrays, without advancing.
     var snapshot: AudioSpectrumSnapshot {
         lock.lock()
         defer { lock.unlock() }
         return current
-    }
-
-    // MARK: - Private
-
-    private static func append(_ samples: UnsafeBufferPointer<Float>, to history: inout [Float]) {
-        let count = samples.count
-        guard count > 0, let base = samples.baseAddress else { return }
-        if count >= history.count {
-            history.withUnsafeMutableBufferPointer {
-                $0.baseAddress!.update(from: base + (count - $0.count), count: $0.count)
-            }
-        } else {
-            history.removeFirst(count)
-            history.append(contentsOf: samples)
-        }
-    }
-
-    private static func move(_ values: [Float], toward targets: [Float]) -> [Float] {
-        zip(values, targets).map { value, target in
-            value + max(-maxStep, min(maxStep, target - value))
-        }
-    }
-
-    static func tilt(band: Int, count: Int) -> Float {
-        2 - exp((1 - Float(band) / Float(count - 1)) - 0.5)
-    }
-
-    static func value(power: Float, band: Int, count: Int) -> Float {
-        guard power > 0 else { return 0 }
-        return max(0, min(1, 0.35 * log10(power) * tilt(band: band, count: count)))
-    }
-
-    /// Per-bin power of the true DFT (not zrip's doubled output).
-    private func binPowers(_ samples: [Float]) -> [Float] {
-        let half = Self.fftSize / 2
-        guard let fftSetup else { return [Float](repeating: 0, count: half) }
-        var powers = [Float](repeating: 0, count: half)
-        real.withUnsafeMutableBufferPointer { realBuffer in
-            imaginary.withUnsafeMutableBufferPointer { imaginaryBuffer in
-                var split = DSPSplitComplex(realp: realBuffer.baseAddress!, imagp: imaginaryBuffer.baseAddress!)
-                samples.withUnsafeBufferPointer { input in
-                    input.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: half) {
-                        vDSP_ctoz($0, 2, &split, 1, vDSP_Length(half))
-                    }
-                }
-                vDSP_fft_zrip(fftSetup, &split, 1, log2n, FFTDirection(FFT_FORWARD))
-                imaginaryBuffer[0] = 0 // Nyquist lives here; bin 0 is DC only.
-                vDSP_zvmags(&split, 1, &powers, 1, vDSP_Length(half))
-            }
-        }
-        // zrip scales by 2, so power by 4.
-        var quarter: Float = 0.25
-        vDSP_vsmul(powers, 1, &quarter, &powers, 1, vDSP_Length(half))
-        return powers
-    }
-
-    private func bandTargets(_ samples: [Float]) -> ([Float], [Float], [Float]) {
-        let powers = binPowers(samples)
-        let b16 = (0..<16).map { Self.value(power: powers[8 * $0 + 6], band: $0, count: 16) }
-        let b32 = (0..<32).map { Self.value(power: powers[4 * $0 + 2], band: $0, count: 32) }
-        let b64 = (0..<64).map { Self.value(power: powers[2 * $0], band: $0, count: 64) }
-        return (b16, b32, b64)
     }
 }
