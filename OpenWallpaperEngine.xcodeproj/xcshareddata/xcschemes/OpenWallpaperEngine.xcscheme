@@ -16,8 +16,8 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "5EC47E752A2DB2E600120CCC"
                BuildableName = "Open Wallpaper Engine.app"
-               BlueprintName = "Open Wallpaper Engine"
-               ReferencedContainer = "container:Open Wallpaper Engine.xcodeproj">
+               BlueprintName = "OpenWallpaperEngine"
+               ReferencedContainer = "container:OpenWallpaperEngine.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -37,7 +37,7 @@
                BlueprintIdentifier = "5EC47E8B2A2DB2E700120CCC"
                BuildableName = "Open Wallpaper EngineTests.xctest"
                BlueprintName = "Open Wallpaper EngineTests"
-               ReferencedContainer = "container:Open Wallpaper Engine.xcodeproj">
+               ReferencedContainer = "container:OpenWallpaperEngine.xcodeproj">
             </BuildableReference>
          </TestableReference>
          <TestableReference
@@ -48,7 +48,7 @@
                BlueprintIdentifier = "5EC47E952A2DB2E700120CCC"
                BuildableName = "Open Wallpaper EngineUITests.xctest"
                BlueprintName = "Open Wallpaper EngineUITests"
-               ReferencedContainer = "container:Open Wallpaper Engine.xcodeproj">
+               ReferencedContainer = "container:OpenWallpaperEngine.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -69,8 +69,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5EC47E752A2DB2E600120CCC"
             BuildableName = "Open Wallpaper Engine.app"
-            BlueprintName = "Open Wallpaper Engine"
-            ReferencedContainer = "container:Open Wallpaper Engine.xcodeproj">
+            BlueprintName = "OpenWallpaperEngine"
+            ReferencedContainer = "container:OpenWallpaperEngine.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -86,8 +86,8 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "5EC47E752A2DB2E600120CCC"
             BuildableName = "Open Wallpaper Engine.app"
-            BlueprintName = "Open Wallpaper Engine"
-            ReferencedContainer = "container:Open Wallpaper Engine.xcodeproj">
+            BlueprintName = "OpenWallpaperEngine"
+            ReferencedContainer = "container:OpenWallpaperEngine.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

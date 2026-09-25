@@ -4,7 +4,7 @@ Read [`docs/architecture.md`](docs/architecture.md) first. It explains the modul
 
 ## Building
 
-- Open `Open Wallpaper Engine.xcodeproj`, scheme **Open Wallpaper Engine**, macOS 13+.
+- Open `OpenWallpaperEngine.xcodeproj`, scheme **OpenWallpaperEngine**, macOS 13+.
 - **Debug builds sign with *Apple Development*.** macOS ties the Screen Recording grant (needed for audio-reactive features) to the signature, and ad-hoc signing loses it on every rebuild.
   - If you aren't on the project's team, set your own team in *Signing & Capabilities* and don't commit that change.
 - **Shader toolchain:** `brew install glslang spirv-cross` for translating WE shaders.

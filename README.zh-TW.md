@@ -114,7 +114,7 @@ Cmd+點擊選取多個桌布，右鍵選擇批次取消訂閱。
 ```sh
 git clone https://github.com/unayung/wallpaper-engine-mac
 cd wallpaper-engine-mac
-open "Open Wallpaper Engine.xcodeproj"
+open "OpenWallpaperEngine.xcodeproj"
 ```
 
 在 Xcode 中，將簽署憑證更改為您自己的或選擇「Sign to Run Locally」，然後按 `Cmd + R` 建置並執行。

@@ -1,4 +1,4 @@
-# ``Open_Wallpaper_Engine``
+# ``OpenWallpaperEngine``
 
 @Metadata {
     @DisplayName("Open Wallpaper Engine")

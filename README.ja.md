@@ -114,7 +114,7 @@ WebGL ベースの壁紙は `WKWebView` がローカルファイルアクセス�
 ```sh
 git clone https://github.com/unayung/wallpaper-engine-mac
 cd wallpaper-engine-mac
-open "Open Wallpaper Engine.xcodeproj"
+open "OpenWallpaperEngine.xcodeproj"
 ```
 
 Xcode で署名証明書を自分のものに変更するか「Sign to Run Locally」を選択し、`Cmd + R` でビルド・実行します。

@@ -256,7 +256,7 @@ Without it, video and web wallpapers still work, and scene wallpapers render —
 ```sh
 git clone https://github.com/unayung/wallpaper-engine-mac
 cd wallpaper-engine-mac
-open "Open Wallpaper Engine.xcodeproj"
+open "OpenWallpaperEngine.xcodeproj"
 ```
 
 In Xcode, change the signing certificate to your own or select "Sign to Run Locally", then press `Cmd + R` to build and run.
