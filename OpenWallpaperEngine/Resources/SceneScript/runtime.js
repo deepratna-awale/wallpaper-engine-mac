@@ -1,0 +1,438 @@
+'use strict';
+// SceneScript runtime core (docs/scenescript-plan.md §4). Evaluated once per wallpaper instance,
+// after WE's baseclasses.js and before every other runtime file. It owns the script records, the
+// load and frame order, the phase flag, per-callback error isolation and the command ring.
+// Other runtime files plug in through `__rt.addPhaseHandler`, `__rt.addEventHandler` and
+// `__rt.hooks`; they never reorder the steps below. The order and the error semantics follow WE's
+// own binaries (docs/scenescript-plan.md §1.9).
+(function (global) {
+    // Every callback WE calls on a script (lib.sceneScript.d.ts IComponent, plus the two the DLL names).
+    const CALLBACKS = ['init', 'update', 'destroy', 'resizeScreen', 'applyUserProperties',
+        'applyGeneralSettings', 'cursorEnter', 'cursorLeave', 'cursorMove', 'cursorDown', 'cursorUp',
+        'cursorClick', 'mediaStatusChanged', 'mediaPlaybackChanged', 'mediaPropertiesChanged',
+        'mediaThumbnailChanged', 'mediaTimelineChanged', 'animationEvent', 'cursorHitTest'];
+    // Load states, in order; records added later go through the same steps on the next load.
+    const DEFINED = 0, EVALUATED = 1, INJECTED = 2, INITIALIZED = 3, PROPERTIES_APPLIED = 4, READY = 5;
+    const PHASES = ['frameGlobals', 'animations', 'timers', 'deferred'];
+    // Event order within a frame (§1.9 P1): WE handles cursor input, then user property changes,
+    // then media events. Events of the same order keep their arrival order.
+    const EVENT_ORDER = { resize: 0, cursor: 100, userProperties: 200, generalSettings: 210, media: 300 };
+
+    const rt = {
+        CALLBACKS: CALLBACKS,
+        // 'idle' outside script code, 'global' while a module body runs, 'callback' inside a callback.
+        phase: 'idle',
+        // The id of the record whose code is running; read by the native side after the watchdog fires.
+        current: null,
+        // Set once the watchdog stopped script code: like WE, no script code runs again (§1.9 P5).
+        halted: false,
+        EVENT_ORDER: EVENT_ORDER,
+        records: [],
+        byId: new Map(),
+        errors: [],
+        frameIndex: 0,
+        deltaTime: 0,
+        native: {},
+        hooks: {
+            // The `__scope` a module factory receives: `thisLayer`, `thisObject` (object model, WP7).
+            scope: function (record) { return { thisLayer: undefined, thisObject: undefined }; },
+            // The argument `init`/`update` receive (property binding, WP8).
+            argument: function (record) { return record.value; },
+            // Coerces a returned value to the bound field's type; undefined keeps the value (WP8).
+            coerce: function (record, value) { return value; },
+            // Converts user properties for applyUserProperties and engine.userProperties (WP4:
+            // `_Internal.convertUserProperties`).
+            userProperties: function (properties) { return properties; },
+            // Called right after a record's `init` (WP6 sends it the current media state there).
+            initialized: function (record) {},
+        },
+        phaseHandlers: { frameGlobals: [], animations: [], timers: [], deferred: [] },
+        eventHandlers: new Map(),
+        modules: new Map(),
+        ring: null,
+    };
+
+    function describe(error) {
+        if (error !== null && typeof error === 'object') {
+            return {
+                message: String(error.message !== undefined ? error.message : error),
+                name: error.name !== undefined ? String(error.name) : 'Error',
+                line: typeof error.line === 'number' ? error.line : -1,
+                column: typeof error.column === 'number' ? error.column : -1,
+            };
+        }
+        return { message: String(error), name: 'Error', line: -1, column: -1 };
+    }
+
+    rt.reportError = function (record, callback, error) {
+        const info = describe(error);
+        rt.errors.push({ id: record ? record.id : '', callback: callback, name: info.name,
+            message: info.message, line: info.line, column: info.column });
+    };
+
+    rt.drainErrors = function () {
+        const drained = rt.errors;
+        rt.errors = [];
+        return drained;
+    };
+
+    function run(record, label, phase, fn, args, callback) {
+        if (!record.enabled || rt.halted) return undefined;
+        const previousPhase = rt.phase, previousCurrent = rt.current;
+        rt.phase = phase;
+        rt.current = record.id;
+        let result;
+        try {
+            result = fn.apply(undefined, args);
+        } catch (error) {
+            rt.reportError(record, label, error);
+            // WE disables the callback that threw, for that script only (§1.9 P4).
+            if (callback) record.failed[callback] = true;
+            result = undefined;
+        }
+        rt.phase = previousPhase;
+        rt.current = previousCurrent;
+        return result;
+    }
+
+    // Runs `fn` as `record`'s code in `phase` ('global' or 'callback'): for timers and ended
+    // callbacks. An exception is recorded on the error channel and swallowed, so one script never
+    // stops another; like WE, it disables nothing. Returns undefined when it threw.
+    rt.call = function (record, label, phase, fn, args) {
+        return run(record, label, phase, fn, args, null);
+    };
+
+    // Calls the exported callback `name`. One that threw once is never called again for this record.
+    rt.invoke = function (record, name, args) {
+        const exports = record.exports;
+        if (!exports || record.failed[name] === true) return undefined;
+        let fn;
+        try {
+            fn = exports[name];
+        } catch (error) {
+            rt.reportError(record, name, error);
+            return undefined;
+        }
+        if (typeof fn !== 'function') return undefined;
+        return run(record, name, 'callback', fn, args, name);
+    };
+
+    rt.exports = function (record, name) {
+        return record.exports ? record.exports[name] : undefined;
+    };
+
+    rt.apply = function (record, returned) {
+        if (returned === undefined) return;
+        const value = rt.hooks.coerce(record, returned);
+        if (value === undefined) return;
+        record.value = value;
+    };
+
+    // MARK: phase rules (lib.sceneScript.d.ts, scenescript64.dll messages)
+
+    // `what` as WE names it: 'registerAudioBuffers', 'registerAsset', 'requestFeatures'.
+    rt.requireGlobalScope = function (what) {
+        if (rt.phase !== 'global') throw new Error(what + ' can only be called from global scope.');
+    };
+
+    // `what` as WE names it: 'setTimeout', 'setInterval'; clearing uses `timeout cannot be cleared…`.
+    rt.forbidGlobalScope = function (what) {
+        if (rt.phase === 'global') throw new Error(what + ' cannot be called from global scope.');
+    };
+
+    // MARK: modules
+
+    rt.registerModule = function (name, factory) {
+        rt.modules.set(String(name).toLowerCase(), { factory: factory, exports: null, loading: false });
+    };
+
+    rt.require = function (name) {
+        const entry = rt.modules.get(String(name).toLowerCase());
+        if (!entry) throw new Error("Cannot find module '" + name + "'");
+        if (entry.exports) return entry.exports;
+        if (entry.loading) throw new Error("Circular import of module '" + name + "'");
+        entry.loading = true;
+        const scope = { thisLayer: undefined, thisObject: undefined, require: rt.require };
+        try {
+            entry.exports = entry.factory(rt, scope);
+        } finally {
+            entry.loading = false;
+        }
+        return entry.exports;
+    };
+
+    // MARK: records
+
+    // `slot` is the object-table slot of the object the script belongs to, or -1.
+    rt.define = function (id, factory, value, scriptProperties, slot) {
+        if (rt.byId.has(id)) throw new Error('Duplicate script id ' + id);
+        const record = { id: id, factory: factory, exports: null, value: value, enabled: true,
+            state: DEFINED, scriptProperties: scriptProperties, slot: slot, pendingDestroy: false,
+            failed: {} };
+        rt.records.push(record);
+        rt.byId.set(id, record);
+    };
+
+    rt.disable = function (id) {
+        const record = rt.byId.get(id);
+        if (record) record.enabled = false;
+    };
+
+    rt.isEnabled = function (id) {
+        const record = rt.byId.get(id);
+        return record ? record.enabled : false;
+    };
+
+    rt.valueOf = function (id) {
+        const record = rt.byId.get(id);
+        return record ? record.value : undefined;
+    };
+
+    rt.remove = function (id) {
+        const record = rt.byId.get(id);
+        if (record) record.pendingDestroy = true;
+    };
+
+    // MARK: load (plan §4.4)
+
+    function evaluate(record) {
+        const scope = rt.hooks.scope(record);
+        scope.require = rt.require;
+        const exports = rt.call(record, '<global>', 'global', record.factory, [rt, scope]);
+        if (exports === undefined || exports === null) {
+            // The module body threw: WE cannot use a module that failed to evaluate.
+            record.enabled = false;
+            return;
+        }
+        record.exports = exports;
+    }
+
+    function injectScriptProperties(record) {
+        if (record.scriptProperties === null || record.scriptProperties === undefined) return;
+        const declared = rt.exports(record, 'scriptProperties');
+        if (declared === null || typeof declared !== 'object') return;
+        const internal = global._Internal;
+        if (!internal || typeof internal.updateScriptProperties !== 'function') return;
+        const target = { scriptProperties: declared };
+        rt.call(record, '<scriptProperties>', 'idle', internal.updateScriptProperties,
+            [target, record.scriptProperties]);
+    }
+
+    function convertUserProperties(properties) {
+        try {
+            return rt.hooks.userProperties(properties);
+        } catch (error) {
+            rt.reportError(null, 'userProperties', error);
+            return properties;
+        }
+    }
+
+    // Module bodies, script properties, `init` (each followed by `hooks.initialized`), then
+    // `applyUserProperties(all)` and `applyGeneralSettings`, each step over every record in order
+    // (§1.9 P8). Each record advances through the states once, so records added after a load go
+    // through the same steps on the next one.
+    rt.load = function (userProperties, generalSettings) {
+        if (rt.halted) return rt.errors.length;
+        const records = rt.records;
+        const converted = convertUserProperties(userProperties);
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.enabled && record.state === DEFINED) { evaluate(record); record.state = EVALUATED; }
+        }
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.enabled && record.state === EVALUATED) { injectScriptProperties(record); record.state = INJECTED; }
+        }
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.enabled && record.state === INJECTED) {
+                rt.apply(record, rt.invoke(record, 'init', [rt.hooks.argument(record)]));
+                record.state = INITIALIZED;
+                try {
+                    rt.hooks.initialized(record);
+                } catch (error) {
+                    rt.reportError(null, 'initialized', error);
+                }
+            }
+        }
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.enabled && record.state === INITIALIZED) {
+                rt.invoke(record, 'applyUserProperties', [converted]);
+                record.state = PROPERTIES_APPLIED;
+            }
+        }
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.enabled && record.state === PROPERTIES_APPLIED) {
+                rt.invoke(record, 'applyGeneralSettings', [generalSettings]);
+                record.state = READY;
+            }
+        }
+        return rt.errors.length;
+    };
+
+    // MARK: frame (plan §4.4)
+
+    rt.addPhaseHandler = function (phase, handler) {
+        if (PHASES.indexOf(phase) < 0) throw new Error('Unknown runtime phase ' + phase);
+        rt.phaseHandlers[phase].push(handler);
+    };
+
+    // `order` is one of `EVENT_ORDER` (cursor, userProperties, media, …): events are handled by
+    // order first, then by arrival.
+    rt.addEventHandler = function (kind, order, handler) {
+        if (rt.eventHandlers.has(kind)) throw new Error('Duplicate event handler for ' + kind);
+        if (typeof order !== 'number') throw new Error('Event handler ' + kind + ' needs an order');
+        rt.eventHandlers.set(kind, { order: order, handler: handler });
+    };
+
+    // Runtime code (not script code): a failure here is reported without a script id.
+    function runPhase(phase, dt) {
+        const handlers = rt.phaseHandlers[phase];
+        for (let i = 0; i < handlers.length; i++) {
+            try {
+                handlers[i](dt);
+            } catch (error) {
+                rt.reportError(null, phase, error);
+            }
+        }
+    }
+
+    rt.broadcast = function (name, args) {
+        const records = rt.records;
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.enabled && record.state === READY) rt.invoke(record, name, args);
+        }
+    };
+
+    rt.addEventHandler('userProperties', EVENT_ORDER.userProperties, function (event) {
+        rt.broadcast('applyUserProperties', [convertUserProperties(event.payload)]);
+    });
+    rt.addEventHandler('generalSettings', EVENT_ORDER.generalSettings, function (event) {
+        rt.broadcast('applyGeneralSettings', [event.payload]);
+    });
+    // Where WE handles a resolution change within the frame is not known; first is a best guess.
+    rt.addEventHandler('resize', EVENT_ORDER.resize, function (event) {
+        const size = event.payload;
+        const value = typeof global.Vec2 === 'function' ? new global.Vec2(size.x, size.y) : { x: size.x, y: size.y };
+        rt.broadcast('resizeScreen', [value]);
+    });
+
+    function dispatch(events) {
+        const queued = [];
+        for (let i = 0; i < events.length; i++) {
+            const entry = rt.eventHandlers.get(events[i].kind);
+            if (!entry) {
+                rt.reportError(null, 'event', new Error('No handler for event ' + events[i].kind));
+                continue;
+            }
+            queued.push({ order: entry.order, index: i, handler: entry.handler, event: events[i] });
+        }
+        queued.sort(function (a, b) { return a.order - b.order || a.index - b.index; });
+        for (let i = 0; i < queued.length; i++) {
+            try {
+                queued[i].handler(queued[i].event);
+            } catch (error) {
+                rt.reportError(null, 'event ' + queued[i].event.kind, error);
+            }
+        }
+    }
+
+    function destroyPending() {
+        const records = rt.records;
+        let removed = false;
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (!record.pendingDestroy) continue;
+            if (record.state === READY) rt.invoke(record, 'destroy', []);
+            rt.byId.delete(record.id);
+            removed = true;
+        }
+        if (removed) rt.records = records.filter(function (record) { return !record.pendingDestroy; });
+    }
+
+    // WE's frame (§1.9 P1): input and property events, media events, timeline animations and
+    // `animationEvent`, then the engine tick (audio buffers, timers), then every `update`.
+    rt.frame = function (dt, events) {
+        if (rt.halted) return rt.errors.length;
+        rt.frameIndex += 1;
+        rt.deltaTime = dt;
+        runPhase('frameGlobals', dt);
+        if (events.length > 0) dispatch(events);
+        runPhase('animations', dt);
+        runPhase('timers', dt);
+        const records = rt.records;
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (record.enabled && record.state === READY && !record.pendingDestroy) {
+                rt.apply(record, rt.invoke(record, 'update', [rt.hooks.argument(record)]));
+            }
+        }
+        runPhase('deferred', dt);
+        destroyPending();
+        return rt.errors.length;
+    };
+
+    rt.teardown = function () {
+        const records = rt.records;
+        for (let i = 0; i < records.length && !rt.halted; i++) {
+            const record = records[i];
+            if (record.state === READY) rt.invoke(record, 'destroy', []);
+        }
+        rt.records = [];
+        rt.byId.clear();
+        return rt.errors.length;
+    };
+
+    // Called by the native side after the watchdog terminated script code: stops all script code
+    // for good, like WE's engine-wide flag, and returns the id that was running.
+    rt.halt = function () {
+        const id = rt.current;
+        rt.halted = true;
+        rt.current = null;
+        rt.phase = 'idle';
+        return id;
+    };
+
+    // MARK: command ring (SceneScriptCommandRing.swift owns the memory and the layout)
+
+    rt.attachRing = function (header, records, args, recordStride) {
+        rt.ring = { header: header, records: records, args: args, stride: recordStride, strings: [] };
+    };
+
+    // Appends one command. `numbers` is an array of numbers (or undefined), `strings` of strings.
+    rt.push = function (opcode, target, numbers, strings) {
+        const ring = rt.ring;
+        const header = ring.header;
+        const count = header[0], argCount = header[1];
+        const numberCount = numbers ? numbers.length : 0;
+        if ((count + 1) * ring.stride > ring.records.length || argCount + numberCount > ring.args.length) {
+            header[2] = 1;
+            return false;
+        }
+        const base = count * ring.stride;
+        ring.records[base] = opcode;
+        ring.records[base + 1] = target;
+        ring.records[base + 2] = argCount;
+        ring.records[base + 3] = numberCount;
+        ring.records[base + 4] = strings ? ring.strings.length : 0;
+        ring.records[base + 5] = strings ? strings.length : 0;
+        for (let i = 0; i < numberCount; i++) ring.args[argCount + i] = numbers[i];
+        if (strings) for (let i = 0; i < strings.length; i++) ring.strings.push(String(strings[i]));
+        header[0] = count + 1;
+        header[1] = argCount + numberCount;
+        return true;
+    };
+
+    rt.resetRing = function () {
+        rt.ring.header[0] = 0;
+        rt.ring.header[1] = 0;
+        rt.ring.header[2] = 0;
+        rt.ring.strings = [];
+    };
+
+    if (global.shared === undefined) global.shared = {};
+    Object.defineProperty(global, '__rt', { value: rt, enumerable: false, writable: false, configurable: false });
+})(this);
