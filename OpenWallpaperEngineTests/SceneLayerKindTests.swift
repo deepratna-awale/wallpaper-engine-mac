@@ -1,0 +1,86 @@
+import XCTest
+@testable import OpenWallpaperEngine
+
+/// Loader checks for layer kinds that need more than an image: solid layers, text with effects,
+/// and the scene.json draw order across layers and particle systems.
+final class SceneLayerKindTests: XCTestCase {
+    private func content(_ fixture: String) throws -> SceneMetalContent {
+        let directory = Fixtures.url("Scenes/\(fixture)")
+        let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/\(fixture)/project.json"))
+        let wallpaper = WEWallpaper(using: project, where: directory)
+        addTeardownBlock {
+            for prefix in ["SceneUserProperties.", "SceneUserPropertiesExplicit.", "SceneAdditionalControlsVersion."] {
+                UserDefaults.standard.removeObject(forKey: prefix + directory.path)
+            }
+        }
+        return try XCTUnwrap(SceneWallpaperViewModel(wallpaper: wallpaper).metalContent())
+    }
+
+    /// The colour of the generated solid texture, read back through a known RGBA8 context.
+    private func solidColor(_ layer: SceneMetalLayer) throws -> SIMD4<Float> {
+        guard case let .image(image) = layer.source else {
+            XCTFail("solid layer \(layer.id) has no generated image")
+            return .zero
+        }
+        let cgImage = try XCTUnwrap(image.cgImage(forProposedRect: nil, context: nil, hints: nil))
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let context = try XCTUnwrap(CGContext(data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                              space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        return SIMD4<Float>(pixel.map { Float($0) / 255 })
+    }
+
+    /// D7: text is no longer lifted above later layers, and particles sit between layers by object index.
+    func testLayersAndParticlesKeepSceneOrder() throws {
+        let content = try content("ordering")
+        XCTAssertEqual(content.layers.map(\.id), ["10", "20", "40"], "layers must keep scene.json order")
+        XCTAssertEqual(content.layers.map(\.order), [0, 1, 3])
+        XCTAssertEqual(content.particleSystems.map(\.order), [2])
+        let shade = try XCTUnwrap(content.layers.last)
+        XCTAssertEqual(shade.opacity, 0.5)
+        XCTAssertEqual(shade.size, SIMD2(1920, 1080))
+    }
+
+    func testTextLayersKeepTheirAuthoredEffects() throws {
+        do {
+            _ = try ProcessShaderCompiler()
+        } catch {
+            throw XCTSkip("WE shader toolchain unavailable: \(error)")
+        }
+        let text = try XCTUnwrap(try content("ordering").layers.first { $0.id == "10" })
+        XCTAssertNotNil(text.text)
+        XCTAssertEqual(text.weEffects.count, 1, "B2: text layers must run their effects")
+    }
+
+    func testSolidLayersRenderTheirColourAtTheirSize() throws {
+        let layers = Dictionary(uniqueKeysWithValues: try content("solid").layers.map { ($0.id, $0) })
+        XCTAssertEqual(Set(layers.keys), ["1", "2", "3"])
+
+        // 3352730400 'Album Border': no color (white), alpha 0.33, 100x100 scaled by 56.
+        let border = try XCTUnwrap(layers["1"])
+        XCTAssertEqual(border.size, SIMD2(100, 100))
+        XCTAssertEqual(border.scale, SIMD2(56, 56))
+        XCTAssertEqual(border.opacity, 0.33, accuracy: 0.0001)
+        let white = try solidColor(border)
+        XCTAssertEqual(white.x, 1, accuracy: 0.01)
+        XCTAssertEqual(white.y, 1, accuracy: 0.01)
+        XCTAssertEqual(white.z, 1, accuracy: 0.01)
+        XCTAssertEqual(white.w, 1, accuracy: 0.01)
+
+        // A zero size falls back to the scene; the colour is baked into the texture, not doubled on the quad.
+        let tinted = try XCTUnwrap(layers["2"])
+        XCTAssertEqual(tinted.size, SIMD2(1920, 1080))
+        XCTAssertEqual(tinted.color, SIMD4(repeating: 1))
+        let red = try solidColor(tinted)
+        XCTAssertEqual(red.x, 0.8, accuracy: 0.01)
+        XCTAssertEqual(red.y, 0.2, accuracy: 0.01)
+        XCTAssertEqual(red.z, 0.2, accuracy: 0.01)
+
+        let unsized = try XCTUnwrap(layers["3"])
+        XCTAssertEqual(unsized.size, SIMD2(1920, 1080))
+        let green = try solidColor(unsized)
+        XCTAssertEqual(green.x, 0, accuracy: 0.01)
+        XCTAssertEqual(green.y, 1, accuracy: 0.01)
+    }
+}

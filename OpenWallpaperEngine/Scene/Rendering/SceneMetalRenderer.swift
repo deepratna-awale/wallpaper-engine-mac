@@ -309,12 +309,19 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.pointer = simd_clamp(cursor / max(sceneSize, SIMD2(1, 1)), SIMD2(0, 0), SIMD2(1, 1))
         effectFrame.screenSize = drawableSize
         effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
+        // Text is rasterised first so its effects run on the finished text, like an image layer's.
+        var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
         for (layerIndex, entry) in layers.enumerated() {
             guard AudioReactiveScriptEngine.shared.layerBoolean(entry.stateId, property: "visible", fallback: true) else { continue }
+            if entry.layer.text != nil {
+                let baseSize = layerBaseSize(entry, time: time)
+                textFrames[layerIndex] = (layerTextFrame(entry, baseSize: baseSize, time: time), baseSize)
+            }
             // Layers that read the scene run inside the scene pass, once what's beneath them is drawn.
             if entry.layer.readsScene { continue }
             if !entry.layer.weEffects.isEmpty {
-                dynamicTextures[layerIndex] = runEffects(entry, input: textureFrame(for: entry, time: time).texture,
+                let input = textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)
+                dynamicTextures[layerIndex] = runEffects(entry, input: input.texture,
                                                          snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
                 continue
             }
@@ -336,7 +343,74 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             ? SIMD2<Float>(sin(time * 47.3) * 0.004 + sin(time * 71.9) * 0.002,
                            cos(time * 53.1) * 0.004 + cos(time * 83.7) * 0.002) * sceneSize
             : .zero
+        updateParticles(deltaTime: frameDelta, cursor: cursor)
+        lastFrameTime = CACurrentMediaTime()
+        // One instanced draw per system rather than one per particle (or per rope segment, which
+        // multiplies out to thousands on trail renderers).
+        particleInstances.removeAll(keepingCapacity: true)
+        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int)] = []
+        // Systems are drawn in scene.json order, between the layers around them.
+        let orderedSystems = particleSystems.enumerated()
+            .sorted { ($0.element.configuration.order, $0.offset) < ($1.element.configuration.order, $1.offset) }
+            .map(\.element)
+        for system in orderedSystems {
+            let base = particleInstances.count
+            if system.configuration.rendererName == "rope" {
+                appendRope(system, drawableSize: drawableSize)
+            } else {
+                for particle in system.particles {
+                    if system.configuration.rendererName == "ropetrail" {
+                        appendRopeTrail(particle, system: system, drawableSize: drawableSize)
+                    } else if system.configuration.rendererName.contains("trail") {
+                        appendParticleTrail(particle, system: system, drawableSize: drawableSize)
+                    } else {
+                        var uniform = layerUniform(position: particle.position,
+                                                   size: SIMD2<Float>(repeating: particle.size),
+                                                   opacity: particleOpacity(particle, in: system),
+                                                   drawableSize: drawableSize)
+                        uniform.particleShape = 1
+                        uniform.rotation = particle.rotation
+                        uniform.color = particle.color
+                        let uv = spriteSheetUV(for: particle, configuration: system.configuration)
+                        uniform.uvOrigin = uv.origin
+                        uniform.uvAxisX = SIMD2<Float>(uv.size.x, 0)
+                        uniform.uvAxisY = SIMD2<Float>(0, uv.size.y)
+                        particleInstances.append(uniform)
+                    }
+                }
+            }
+            particleBatches.append((system, base, particleInstances.count - base))
+        }
+        let particleBuffer = particleInstanceBuffer(for: particleInstances.count)
+        if let particleBuffer {
+            particleInstances.withUnsafeBytes { source in
+                particleBuffer.contents().copyMemory(from: source.baseAddress!, byteCount: source.count)
+            }
+        }
+        var nextParticleBatch = 0
+        /// One instanced draw per system, for every system authored before `order`.
+        func drawParticleBatches(before order: Int) {
+            guard let particleBuffer else { return }
+            var drew = false
+            while nextParticleBatch < particleBatches.count,
+                  particleBatches[nextParticleBatch].system.configuration.order < order {
+                let batch = particleBatches[nextParticleBatch]
+                nextParticleBatch += 1
+                guard batch.count > 0 else { continue }
+                // Layer draws rebind index 0 with setVertexBytes, so bind the instances per draw.
+                encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
+                encoder.setFragmentBuffer(particleBuffer, offset: 0, index: 0)
+                encoder.setRenderPipelineState(batch.system.configuration.blending == "additive"
+                                               ? additiveRenderPipeline : renderPipeline)
+                encoder.setFragmentTexture(batch.system.texture, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                       instanceCount: batch.count, baseInstance: batch.base)
+                drew = true
+            }
+            if drew { encoder.setRenderPipelineState(renderPipeline) }
+        }
         for (layerIndex, entry) in layers.enumerated() {
+            drawParticleBatches(before: entry.layer.order)
             if entry.layer.readsScene {
                 // Metal can't sample the attachment it's drawing into: pause the scene pass, copy
                 // what's drawn so far (`_rt_FullFrameBuffer`), run this layer's effects on it, resume.
@@ -345,7 +419,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
                 let input = entry.layer.sceneInput
                     ? snapshot.flatMap { sceneRegion(of: $0, under: entry.layer, commandBuffer: commandBuffer) }
-                    : textureFrame(for: entry, time: time).texture
+                    : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)).texture
                 dynamicTextures[layerIndex] = input.flatMap {
                     runEffects(entry, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
                 }
@@ -372,12 +446,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "origin",
                     fallback: vector2(timelineVector3(entry.layer.positionAnimation, at: time,
                         fallback: SIMD3<Float>(entry.layer.position.x, entry.layer.position.y, 0))))
-            let baseSize = entry.layer.sizeScript.flatMap {
-                AudioReactiveScriptEngine.shared.evaluateVector2($0, fallback: entry.layer.size, layerId: entry.stateId)
-            }
-                ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "size",
-                    fallback: vector2(timelineVector3(entry.layer.sizeAnimation, at: time,
-                        fallback: SIMD3<Float>(entry.layer.size.x, entry.layer.size.y, 0))))
+            let baseSize = textFrames[layerIndex]?.baseSize ?? layerBaseSize(entry, time: time)
             let scale = entry.layer.scaleScript.flatMap { script -> SIMD2<Float>? in
                 AudioReactiveScriptEngine.shared.evaluateVector3(script,
                     fallback: SIMD3<Float>(entry.layer.scale.x, entry.layer.scale.y, 1),
@@ -458,27 +527,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             uniform.transform = SIMD4<Float>(materialEffects.transformAngle, materialEffects.transformOffset.x,
                                              materialEffects.transformOffset.y, materialEffects.transformScale.x)
             uniform.transformScaleY = materialEffects.transformScale.y
-            let textureFrame: RenderTextureFrame
-            if let text = entry.layer.text {
-                let value: String
-                if let clock = text.clock {
-                    value = clockValue(clock)
-                } else if let scripted = AudioReactiveScriptEngine.shared.layerString(entry.stateId, property: "text") {
-                    // Scripts assign layer.text directly for score counters, now-playing labels, etc.
-                    value = scripted
-                } else {
-                    value = text.script.map {
-                        AudioReactiveScriptEngine.shared.evaluateString($0, fallback: text.value,
-                                                                          layerId: entry.stateId, time: Double(time))
-                    } ?? text.value
-                }
-                // Rasterised at the unscaled box so layout (padding, wrapping, point size) is
-                // computed once; the quad then scales the finished block uniformly.
-                textureFrame = makeTextFrame(text, value: value, size: baseSize, layerID: entry.layer.id)
-                    ?? self.textureFrame(for: entry, time: time)
-            } else {
-                textureFrame = self.textureFrame(for: entry, time: time)
-            }
+            let textureFrame = textFrames[layerIndex]?.frame
+                ?? (entry.layer.text != nil
+                    ? layerTextFrame(entry, baseSize: baseSize, time: time)
+                    : self.textureFrame(for: entry, time: time))
             uniform.uvOrigin = textureFrame.uvOrigin
             uniform.uvAxisX = textureFrame.uvAxisX
             uniform.uvAxisY = textureFrame.uvAxisY
@@ -487,54 +539,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(dynamicTextures[layerIndex] ?? textureFrame.texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        updateParticles(deltaTime: frameDelta, cursor: cursor)
-        lastFrameTime = CACurrentMediaTime()
-        // One instanced draw per system rather than one per particle (or per rope segment, which
-        // multiplies out to thousands on trail renderers).
-        particleInstances.removeAll(keepingCapacity: true)
-        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int)] = []
-        for system in particleSystems {
-            let base = particleInstances.count
-            if system.configuration.rendererName == "rope" {
-                appendRope(system, drawableSize: drawableSize)
-            } else {
-                for particle in system.particles {
-                    if system.configuration.rendererName == "ropetrail" {
-                        appendRopeTrail(particle, system: system, drawableSize: drawableSize)
-                    } else if system.configuration.rendererName.contains("trail") {
-                        appendParticleTrail(particle, system: system, drawableSize: drawableSize)
-                    } else {
-                        var uniform = layerUniform(position: particle.position,
-                                                   size: SIMD2<Float>(repeating: particle.size),
-                                                   opacity: particleOpacity(particle, in: system),
-                                                   drawableSize: drawableSize)
-                        uniform.particleShape = 1
-                        uniform.rotation = particle.rotation
-                        uniform.color = particle.color
-                        let uv = spriteSheetUV(for: particle, configuration: system.configuration)
-                        uniform.uvOrigin = uv.origin
-                        uniform.uvAxisX = SIMD2<Float>(uv.size.x, 0)
-                        uniform.uvAxisY = SIMD2<Float>(0, uv.size.y)
-                        particleInstances.append(uniform)
-                    }
-                }
-            }
-            particleBatches.append((system, base, particleInstances.count - base))
-        }
-        if let buffer = particleInstanceBuffer(for: particleInstances.count) {
-            particleInstances.withUnsafeBytes { source in
-                buffer.contents().copyMemory(from: source.baseAddress!, byteCount: source.count)
-            }
-            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-            encoder.setFragmentBuffer(buffer, offset: 0, index: 0)
-            for batch in particleBatches where batch.count > 0 {
-                encoder.setRenderPipelineState(batch.system.configuration.blending == "additive"
-                                               ? additiveRenderPipeline : renderPipeline)
-                encoder.setFragmentTexture(batch.system.texture, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                       instanceCount: batch.count, baseInstance: batch.base)
-            }
-        }
+        drawParticleBatches(before: .max)
         encoder.endEncoding()
 
         // Composite the scene-resolution render target onto the real drawable, applying placement exactly once.
@@ -564,6 +569,36 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+    }
+
+    /// The layer's unscaled size this frame: script, then script-set state, then timeline, then authored.
+    private func layerBaseSize(_ entry: PreparedLayer, time: Float) -> SIMD2<Float> {
+        entry.layer.sizeScript.flatMap {
+            AudioReactiveScriptEngine.shared.evaluateVector2($0, fallback: entry.layer.size, layerId: entry.stateId)
+        }
+            ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "size",
+                fallback: vector2(timelineVector3(entry.layer.sizeAnimation, at: time,
+                    fallback: SIMD3<Float>(entry.layer.size.x, entry.layer.size.y, 0))))
+    }
+
+    /// A text layer's current string, rasterised (through the text cache) at the unscaled box so
+    /// layout (padding, wrapping, point size) is computed once; the quad scales the finished block.
+    private func layerTextFrame(_ entry: PreparedLayer, baseSize: SIMD2<Float>, time: Float) -> RenderTextureFrame {
+        guard let text = entry.layer.text else { return textureFrame(for: entry, time: time) }
+        let value: String
+        if let clock = text.clock {
+            value = clockValue(clock)
+        } else if let scripted = AudioReactiveScriptEngine.shared.layerString(entry.stateId, property: "text") {
+            // Scripts assign layer.text directly for score counters, now-playing labels, etc.
+            value = scripted
+        } else {
+            value = text.script.map {
+                AudioReactiveScriptEngine.shared.evaluateString($0, fallback: text.value,
+                                                                  layerId: entry.stateId, time: Double(time))
+            } ?? text.value
+        }
+        return makeTextFrame(text, value: value, size: baseSize, layerID: entry.layer.id)
+            ?? textureFrame(for: entry, time: time)
     }
 
     private func runEffects(_ entry: PreparedLayer, input: MTLTexture, snapshot: MTLTexture?,

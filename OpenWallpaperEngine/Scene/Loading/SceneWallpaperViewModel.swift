@@ -406,25 +406,25 @@ class SceneWallpaperViewModel: ObservableObject {
         for (index, object) in scene.objects.enumerated() {
             objectsByID[object.id ?? index] = object
         }
-        let layers: [SceneMetalLayer] = scene.objects.compactMap { object in
+        // WE draws objects in scene.json order; both lists carry that index so the renderer can interleave them.
+        let layers: [SceneMetalLayer] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
             if object.textValue != nil,
                     AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(object.id ?? -1)_enabled") == "false" {
                 return nil
             }
-            let layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
-                ?? buildMetalTextLayer(object, sceneSize: sceneSize, objectsByID: objectsByID)
+            var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
+                ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
+            layer?.order = index
             return layer
-        }.sorted { first, second in
-            // Text is authored early in several Workshop scenes but is intended
-            // to sit over the later background/album layers.
-            (first.text != nil ? 1 : 0) < (second.text != nil ? 1 : 0)
         }
-        let particleSystems: [SceneMetalParticleSystem] = scene.objects.compactMap { object in
+        let particleSystems: [SceneMetalParticleSystem] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
-            return buildMetalParticleSystem(object, wallpaperDir: wallpaperDir,
-                                            sceneSize: sceneSize, objectsByID: objectsByID)
+            var system = buildMetalParticleSystem(object, wallpaperDir: wallpaperDir,
+                                                  sceneSize: sceneSize, objectsByID: objectsByID)
+            system?.order = index
+            return system
         }
         if !layers.isEmpty || !particleSystems.isEmpty {
             let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
@@ -596,8 +596,14 @@ class SceneWallpaperViewModel: ObservableObject {
         guard let imagePath = object.image,
               let model: WEModel = loadJSON(path: imagePath, wallpaperDir: wallpaperDir),
               let materialPath = model.material,
-              let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir),
-              let textureName = material.passes?.first?.textures?.first,
+              let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir) else {
+            return nil
+        }
+        if model.solidlayer == true {
+            return buildSolidLayer(object, material: material, wallpaperDir: wallpaperDir,
+                                   sceneSize: sceneSize, objectsByID: objectsByID)
+        }
+        guard let textureName = material.passes?.first?.textures?.first,
               let source = loadMetalTexture(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir) else {
             return nil
         }
@@ -651,7 +657,52 @@ class SceneWallpaperViewModel: ObservableObject {
         return layer
     }
 
-    private func buildMetalTextLayer(_ object: WESceneObject, sceneSize: SIMD2<Float>,
+    /// `models/util/solidlayer*.json`: WE's `flat` shader fills the quad with the object's `color`.
+    /// The colour is baked into a generated texture so authored effects see the coloured image, as
+    /// they do in WE; `alpha` stays on the layer and is applied when the quad is drawn.
+    private func buildSolidLayer(_ object: WESceneObject, material: WEMaterial, wallpaperDir: URL,
+                                 sceneSize: SIMD2<Float>, objectsByID: [Int: WESceneObject]) -> SceneMetalLayer {
+        let authoredSize = object.size.map { value -> SIMD2<Float> in
+            let parsed = value.parseVector2()
+            return SIMD2<Float>(Float(parsed.0), Float(parsed.1))
+        }
+        let size = authoredSize.flatMap { $0.x > 0 && $0.y > 0 ? $0 : nil } ?? sceneSize
+        let color = object.color?.parseVector3() ?? (1, 1, 1)
+        let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
+        let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
+        var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
+                       source: .image(Self.solidImage(red: color.0, green: color.1, blue: color.2)),
+                       position: effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID),
+                       size: size,
+                       scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
+                       scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
+                       opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript,
+                       opacityAnimation: object.alphaAnimation,
+                       brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
+                       color: SIMD4<Float>(repeating: 1), colorScript: object.colorScript,
+                       text: nil,
+                       parallaxDepth: SIMD3<Float>(Float(parallaxValue.0), Float(parallaxValue.1), Float(parallaxValue.2)),
+                       perspective: object.perspective ?? false,
+                       positionScript: object.originScript, positionScriptProperties: object.originScriptProperties,
+                       positionAnimation: object.originAnimation,
+                       sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
+                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
+                       rotationAnimation: object.anglesAnimation, effects: materialEffects(material.passes?.first))
+        layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
+        return layer
+    }
+
+    /// A 1x1 opaque image of one colour; the quad stretches it to the layer's size.
+    static func solidImage(red: Double, green: Double, blue: Double) -> NSImage {
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.lockFocus()
+        NSColor(srgbRed: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
+        image.unlockFocus()
+        return image
+    }
+
+    private func buildMetalTextLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
                                      objectsByID: [Int: WESceneObject]) -> SceneMetalLayer? {
         guard let text = object.textValue, let sizeString = object.size else { return nil }
         let sizeValue = sizeString.parseVector2()
@@ -671,7 +722,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                          maxRows: object.limitrows == true ? object.maxrows : nil,
                                          useEllipsis: object.limituseellipsis ?? false,
                                          clock: clock)
-        return SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
+        var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                                source: .image(renderText(textConfig, size: CGSize(width: sizeValue.0, height: sizeValue.1))),
                                position: position, size: SIMD2<Float>(Float(sizeValue.0), Float(sizeValue.1)),
                                scale: SIMD2<Float>(Float(textScale.0), Float(textScale.1)), scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
@@ -686,6 +737,9 @@ class SceneWallpaperViewModel: ObservableObject {
                                effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                                              exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                                              transformAngle: 0, transformOffset: .zero, transformScale: SIMD2<Float>(repeating: 1), scripts: [:]))
+        // WE runs a text object's effects on its rasterised text; the renderer rasterises before effects run.
+        layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
+        return layer
     }
 
     private func clockConfiguration(for object: WESceneObject) -> SceneClock? {
