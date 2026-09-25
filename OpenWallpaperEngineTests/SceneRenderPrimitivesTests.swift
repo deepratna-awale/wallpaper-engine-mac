@@ -28,6 +28,30 @@ final class SceneRenderPrimitivesTests: XCTestCase {
         XCTAssertEqual(clock.delta, 0)
     }
 
+    /// Risk #17: speeds and wall times a frame can see. Time never runs backwards or turns NaN,
+    /// and a long gap (sleep) advances it by one clamped frame.
+    func testClockSurvivesDegenerateSpeedsAndWallTimes() {
+        var clock = SceneClock()
+        clock.advance(to: 10, speed: 1)
+        for (step, speed) in [0, -1, Double.nan, Double.infinity, -Double.infinity].enumerated() {
+            let before = clock.time
+            clock.advance(to: 10 + 0.1 * Double(step + 1), speed: speed)
+            XCTAssertTrue(clock.time.isFinite && clock.delta.isFinite, "speed \(speed)")
+            XCTAssertGreaterThanOrEqual(clock.delta, 0, "speed \(speed)")
+            XCTAssertGreaterThanOrEqual(clock.time, before, "speed \(speed)")
+        }
+        let beforeRewind = clock.time
+        clock.advance(to: 5, speed: 1) // the wall clock went backwards
+        XCTAssertEqual(clock.delta, 0)
+        XCTAssertEqual(clock.time, beforeRewind)
+        clock.advance(to: 5 + 3600, speed: 1) // an hour asleep
+        XCTAssertEqual(clock.delta, SceneClock.maximumFrameDelta, accuracy: 1e-12)
+        clock.advance(to: .nan, speed: 1)
+        XCTAssertTrue(clock.time.isFinite, "a NaN wall time does not poison the clock")
+        clock.advance(to: 5 + 3600.1, speed: 1)
+        XCTAssertTrue(clock.time.isFinite)
+    }
+
     // MARK: Retina target
 
     func testTargetFollowsDrawableDensity() {

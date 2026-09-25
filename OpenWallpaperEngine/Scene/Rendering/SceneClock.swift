@@ -17,6 +17,8 @@ struct SceneClock {
     /// Advances to `wallTime` (e.g. `CACurrentMediaTime()`) at `speed`. The first call only
     /// anchors the clock.
     mutating func advance(to wallTime: Double, speed: Double) {
+        // A wall time that isn't a number would poison the clock for good; the frame stands still.
+        guard wallTime.isFinite else { delta = 0; return }
         defer { lastWallTime = wallTime }
         guard let lastWallTime else { delta = 0; return }
         let realDelta = min(max(wallTime - lastWallTime, 0), Self.maximumFrameDelta)
