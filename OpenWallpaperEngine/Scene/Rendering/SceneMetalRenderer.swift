@@ -141,6 +141,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// however many children read it.
     private var frameLocals: [String: SceneLocalTransform] = [:]
     private var layerIndexByStateId: [String: Int] = [:]
+    /// The most recently committed frame, so state a removal frees can wait for it.
+    private var lastCommandBuffer: MTLCommandBuffer?
+    /// Removed clones' state ids, freed once `after` completes.
+    private var pendingEffectReleases: [(ids: [String], after: MTLCommandBuffer?)] = []
 
     init?(view: MTKView) {
         guard let device = MTLCreateSystemDefaultDevice(),
@@ -223,6 +227,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             clock = SceneClock()
             transforms = .empty
             lastPointer = nil
+            pendingEffectReleases.removeAll()
+            lastCommandBuffer = nil
             return
         }
         contentQueue.async { [weak self] in
@@ -311,8 +317,24 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // scene unable to restore it without a full reload.
         let removals = Set(AudioReactiveScriptEngine.shared.drainPendingLayerRemovals())
         if !removals.isEmpty {
+            let removed = layers.filter { removals.contains($0.stateId) && $0.stateId != $0.layer.id }.map(\.stateId)
             layers.removeAll { removals.contains($0.stateId) && $0.stateId != $0.layer.id }
             for id in removals { textRasterScales.removeValue(forKey: id) }
+            // The last frame that drew these clones may still be on the GPU; free their effect
+            // targets once it has finished (`releaseFinishedEffectState`).
+            if !removed.isEmpty { pendingEffectReleases.append((removed, lastCommandBuffer)) }
+        }
+    }
+
+    /// Frees the effect state of removed clones whose last frame the GPU has finished. A clone
+    /// re-created under the same id meanwhile keeps its (new) state.
+    private func releaseFinishedEffectState() {
+        guard !pendingEffectReleases.isEmpty else { return }
+        let live = Set(layers.map(\.stateId))
+        pendingEffectReleases.removeAll { pending in
+            if let buffer = pending.after, buffer.status != .completed, buffer.status != .error { return false }
+            for id in pending.ids where !live.contains(id) { effectGraph?.releaseLayer(id) }
+            return true
         }
     }
 
@@ -359,6 +381,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let cursor = sceneCursor(in: view, drawableSize: realDrawableSize)
         AudioReactiveScriptEngine.shared.updateSceneCursor(cursor)
         materializeScriptCreatedLayers()
+        releaseFinishedEffectState()
         beginTransformFrame()
         var dynamicTextures: [Int: MTLTexture] = [:]
         // Advanced once per frame: every advance smooths the spectrum one step further.
@@ -545,6 +568,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard let compositeEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
             commandBuffer.present(drawable)
             commandBuffer.commit()
+            lastCommandBuffer = commandBuffer
             return
         }
         compositeEncoder.setRenderPipelineState(renderPipeline)
@@ -569,6 +593,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
+        lastCommandBuffer = commandBuffer
     }
 
     /// `g_ParallaxPosition`: `0.5 + (pointer − 0.5)·influence` while camera parallax is on, the
