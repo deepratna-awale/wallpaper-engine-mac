@@ -725,10 +725,13 @@ struct SceneInspectorView: View {
             .onChange(of: selectedID) { _, _ in loadSelectedTextures() }
     }
 
+    /// Both side columns (the object list and the movement controls) share one width.
+    private static let sidebarWidth: CGFloat = 300
+
     private var inspectorSplitView: some View {
         HSplitView {
             sidebarColumn
-                .frame(minWidth: 280, idealWidth: 360, maxWidth: 480)
+                .frame(width: Self.sidebarWidth)
             detailColumn
                 .frame(minWidth: 500, maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -1115,7 +1118,7 @@ struct SceneInspectorView: View {
             Spacer()
         }
         .padding(14)
-        .frame(width: 260)
+        .frame(width: Self.sidebarWidth)
         .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(Color(nsColor: .controlBackgroundColor))
     }
