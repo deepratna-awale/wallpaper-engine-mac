@@ -16,13 +16,19 @@ enum ShaderPrelude {
         for (name, value) in combos.sorted(by: { $0.key < $1.key }) {
             lines.append("#define \(name) \(value)")
         }
-        let defined = definedNames(in: source)
+        let definitions = definedNames(in: source)
+        let defined = definitions.macros.union(definitions.functions)
         lines.append(contentsOf: common.filter { line in
             macroName(line).map { !defined.contains($0) } ?? true
         })
         // A function named like a Metal built-in GLSL lacks (e.g. `log10`) becomes ambiguous
         // in MSL; rename the shader's own definition and every call to it.
-        for name in metalOnlyBuiltins where definesFunction(name, in: source) {
+        for name in metalOnlyBuiltins where definitions.functions.contains(name) && !definitions.macros.contains(name) {
+            lines.append("#define \(name) we_\(name)")
+        }
+        // C++ keywords are valid GLSL names but not MSL ones (`vec2 or;`). Only names the shader
+        // declares itself are renamed, never an interface name, which binds by name.
+        for name in cppReservedWords.subtracting(definitions.macros).sorted() where declaresLocal(name, in: source) {
             lines.append("#define \(name) we_\(name)")
         }
         switch stage {
@@ -32,13 +38,15 @@ enum ShaderPrelude {
             lines.append(contentsOf: ["#define varying in", "#define gl_FragColor out_FragColor",
                                       "out vec4 out_FragColor;"])
         }
-        lines.append(conversionFunctions)
+        lines.append(helperFunctions)
         if !defined.contains("texSample2D") {
             lines.append(sampleFunctions)
-            // Implicit-LOD sampling with a bias exists only in fragment shaders.
-            if stage == .fragment { lines.append(fragmentSampleFunctions) }
+            // A bias only exists where derivatives do.
+            if stage == .fragment {
+                lines.append("vec4 texSample2D(sampler2D s, vec2 uv, float bias) { return texture(s, uv, bias); }")
+            }
         }
-        lines.append(helperFunctions)
+        lines.append(conversionFunctions)
         // After every helper, so their own `mix` calls stay the built-in.
         if !defined.contains("mix") { lines.append("#define mix(a, b, t) weMix(a, b, t)") }
         lines.append(endMarker)
@@ -100,19 +108,39 @@ enum ShaderPrelude {
     /// Built-in in the Metal standard library but not in GLSL, so a shader may define its own.
     static let metalOnlyBuiltins = ["log10", "fmod", "rsqrt", "saturate", "fract2", "powr", "select", "median3"]
 
-    static func definesFunction(_ name: String, in source: String) -> Bool {
-        source.range(of: #"\b\w+\s+"# + name + #"\s*\([^;{]*\)\s*\{"#, options: .regularExpression) != nil
+    /// C++ keywords (MSL is C++) that GLSL doesn't reserve. `not` is left out: it's a GLSL built-in.
+    static let cppReservedWords: Set<String> = [
+        "and", "or", "xor", "bitand", "bitor", "compl", "and_eq", "or_eq", "xor_eq", "not_eq",
+        "template", "namespace", "this", "new", "delete", "operator", "class", "typename", "private",
+        "public", "protected", "friend", "virtual", "register", "auto", "explicit", "mutable", "using",
+        "typedef", "union", "enum", "extern", "static", "goto", "try", "catch", "throw", "sizeof",
+        "alignas", "alignof", "decltype", "constexpr", "nullptr", "static_assert", "thread_local",
+        "noexcept", "char", "short", "long", "signed", "unsigned", "wchar_t", "typeid", "export",
+        "concept", "requires", "device", "constant", "thread", "threadgroup", "kernel", "vertex", "fragment",
+    ]
+
+    private static let interfacePattern = try! NSRegularExpression(
+        pattern: #"(?m)^[ \t]*(?:uniform|varying|attribute|in|out)\b[^;]*;"#)
+
+    /// Whether the shader declares `name` itself (a variable or function after a type), and not
+    /// as a uniform, varying or attribute.
+    static func declaresLocal(_ name: String, in source: String) -> Bool {
+        guard source.range(of: #"\b\w+\s+"# + name + #"\s*[=;,()\[]"#, options: .regularExpression) != nil else { return false }
+        let declarations = interfacePattern.matches(in: source, range: NSRange(source.startIndex..., in: source))
+        return !declarations.contains { match in
+            (source as NSString).substring(with: match.range)
+                .range(of: #"\b"# + name + #"\s*[;\[]"#, options: .regularExpression) != nil
+        }
     }
 
-    /// Names the shader `#define`s or defines as a function.
-    static func definedNames(in source: String) -> Set<String> {
-        var names = Set<String>()
+    /// Names the shader `#define`s, and names it defines as functions.
+    static func definedNames(in source: String) -> (macros: Set<String>, functions: Set<String>) {
+        var macros = Set<String>(), functions = Set<String>()
         for match in definitionPattern.matches(in: source, range: NSRange(source.startIndex..., in: source)) {
-            for index in 1...2 {
-                if let range = Range(match.range(at: index), in: source) { names.insert(String(source[range])) }
-            }
+            if let range = Range(match.range(at: 1), in: source) { macros.insert(String(source[range])) }
+            if let range = Range(match.range(at: 2), in: source) { functions.insert(String(source[range])) }
         }
-        return names
+        return (macros, functions)
     }
 
     /// HLSL accepts scalar/vector mixes that GLSL overload resolution rejects. Declaring any
@@ -139,9 +167,6 @@ enum ShaderPrelude {
 
     /// WE's sampling functions. HLSL truncates a wider coordinate to the sampler's two, so a
     /// `vec3`/`vec4` coordinate samples with its `xy`.
-    private static let fragmentSampleFunctions =
-        "vec4 texSample2D(sampler2D s, vec2 uv, float bias) { return texture(s, uv, bias); }"
-
     private static let sampleFunctions = """
     vec4 texSample2D(sampler2D s, vec2 uv) { return texture(s, uv); }
     vec4 texSample2D(sampler2D s, vec3 uv) { return texture(s, uv.xy); }
@@ -235,11 +260,16 @@ extension ShaderPrelude {
     static let endMarker = "void weEndOfPrelude() {}"
 
     static func applyImplicitConversions(to text: String) -> String {
-        let prelude = text.range(of: endMarker).map { String(text[..<$0.upperBound]) } ?? ""
+        // The preprocessor may respace the marker's tokens.
+        let prelude = text.range(of: #"void\s+weEndOfPrelude\s*\(\s*\)\s*\{\s*\}"#, options: .regularExpression)
+            .map { String(text[..<$0.upperBound]) } ?? ""
         var code = Array(text.dropFirst(prelude.count).utf16)
         code = packedArrayIndices(code)
         code = integerSubscripts(code)
         code = modulo(code)
+        code = vectorOperandSizes(code)
+        code = compoundAssignments(code)
+        code = returnCasts(code)
         code = declarationCasts(code)
         return prelude + String(decoding: code, as: UTF16.self)
     }
@@ -319,8 +349,8 @@ extension ShaderPrelude {
                 search = percent + 1
                 continue
             }
-            let left = Array(result[start..<percent])
-            let right = Array(result[(percent + 1)..<end])
+            let left = Array(result[start..<percent]).trimmingSpaces()
+            let right = Array(result[(percent + 1)..<end]).trimmingSpaces()
             result.replaceSubrange(start..<end, with: Array("weMod(".utf16) + left + Array(", ".utf16) + right + Array(")".utf16))
             search = start
         }
@@ -330,24 +360,7 @@ extension ShaderPrelude {
     /// Start of the left operand of a multiplicative operator at `index`: postfix expressions
     /// joined by `*` and `/`, which bind as tightly and associate to the left.
     private static func operandStart(_ code: [UInt16], before index: Int) -> Int? {
-        func postfixStart(endingAt end: Int) -> Int? {
-            var position = end
-            var start: Int?
-            while position >= 0 {
-                let character = code[position]
-                if isClosing(character) && character != ascii("}") {
-                    guard let open = opening(code, from: position) else { return nil }
-                    start = open
-                    position = open - 1
-                } else if isIdentifier(character) || character == ascii(".") {
-                    start = position
-                    position -= 1
-                } else {
-                    break
-                }
-            }
-            return start
-        }
+        func postfixStart(endingAt end: Int) -> Int? { ShaderPrelude.postfixStart(code, endingAt: end) }
         var position = index - 1
         while position >= 0, isSpace(code[position]) { position -= 1 }
         guard position >= 0, var start = postfixStart(endingAt: position) else { return nil }
@@ -437,6 +450,167 @@ extension ShaderPrelude {
         return insert(edits, into: code)
     }
 
+    /// End (exclusive) of an expression starting at `start`: the first `,`/`;` outside brackets.
+    private static func expressionEnd(_ code: [UInt16], from start: Int) -> Int? {
+        var nesting = 0
+        var position = start
+        while position < code.count {
+            let character = code[position]
+            if isOpening(character) { nesting += 1 }
+            if isClosing(character) { nesting -= 1 }
+            if nesting < 0 { return nil }
+            if nesting == 0, character == ascii(",") || character == ascii(";") { return position }
+            position += 1
+        }
+        return nil
+    }
+
+    private static let functionPattern = try! NSRegularExpression(
+        pattern: #"(?m)^[ \t]*(float|int|uint|vec[234])\s+\w+\s*\([^;{}]*\)\s*\{"#)
+    private static let returnPattern = try! NSRegularExpression(pattern: #"\breturn\b"#)
+
+    /// `return e;` in a function returning `T` → `return weCast_T(e);`.
+    private static func returnCasts(_ code: [UInt16]) -> [UInt16] {
+        let text = String(decoding: code, as: UTF16.self) as NSString
+        var edits: [(Int, String)] = []
+        for function in functionPattern.matches(in: text as String, range: NSRange(location: 0, length: text.length)) {
+            let type = text.substring(with: function.range(at: 1))
+            let open = function.range.location + function.range.length - 1
+            guard let close = closing(code, from: open) else { continue }
+            let body = NSRange(location: open, length: close - open)
+            for statement in returnPattern.matches(in: text as String, range: body) {
+                var start = statement.range.location + statement.range.length
+                while start < close, isSpace(code[start]) { start += 1 }
+                guard start < close, code[start] != ascii(";"), let end = expressionEnd(code, from: start),
+                      code[end] == ascii(";") else { continue }
+                edits.append((start, (isSpace(code[start - 1]) ? "" : " ") + "weCast_\(type)("))
+                edits.append((end, ")"))
+            }
+        }
+        return insert(edits, into: code)
+    }
+
+    private static let typedNamePattern = try! NSRegularExpression(pattern: #"\b(float|int|uint|vec[234]|bool|ivec[234]|uvec[234]|bvec[234]|mat[234])\s+(\w+)\s*[=;,)\[]"#)
+    private static let compoundPattern = try! NSRegularExpression(pattern: #"(?<![\w.\]])(\w+)\s*([-+*/])=(?!=)"#)
+
+    /// `x op= e` → `x = weCast_T(x op e)` for a local of float/int type `T` (HLSL converts the
+    /// result, e.g. `int *= float`); for a float or float vector `x op= weCast_T(e)` (splat, truncate, bool).
+    /// Only names declared with a single type in the shader are touched.
+    /// Name → type for every name the shader declares with one type only.
+    private static func declaredTypes(_ text: NSString) -> [String: String] {
+        var types: [String: String] = [:]
+        var ambiguous = Set<String>()
+        for match in typedNamePattern.matches(in: text as String, range: NSRange(location: 0, length: text.length)) {
+            let type = text.substring(with: match.range(at: 1)), name = text.substring(with: match.range(at: 2))
+            if let known = types[name], known != type { ambiguous.insert(name) }
+            types[name] = type
+        }
+        return types.filter { !ambiguous.contains($0.key) }
+    }
+
+    private static func compoundAssignments(_ code: [UInt16]) -> [UInt16] {
+        let text = String(decoding: code, as: UTF16.self) as NSString
+        let whole = NSRange(location: 0, length: text.length)
+        let types = declaredTypes(text)
+        var edits: [(Int, String)] = []
+        var removed: [Int] = []
+        for match in compoundPattern.matches(in: text as String, range: whole) {
+            let name = text.substring(with: match.range(at: 1))
+            guard let type = types[name],
+                  ["float", "int", "uint", "vec2", "vec3", "vec4"].contains(type) else { continue }
+            var start = match.range.location + match.range.length
+            while start < code.count, isSpace(code[start]) { start += 1 }
+            guard let end = expressionEnd(code, from: start), code[end] == ascii(";") else { continue }
+            if type.hasPrefix("vec") || type == "float" {
+                edits.append((start, "weCast_\(type)("))
+                edits.append((end, ")"))
+            } else {
+                // `x op= e` → `x = weCast_T(x op (e))`: the two operator characters are replaced.
+                let operatorStart = match.range.location + match.range.length - 2
+                removed += [operatorStart, operatorStart + 1]
+                edits.append((operatorStart, "="))
+                edits.append((start, "weCast_\(type)(\(name) \(text.substring(with: match.range(at: 2))) ("))
+                edits.append((end, "))"))
+            }
+        }
+        return insert(edits, into: code, removing: Set(removed))
+    }
+
+    /// Components of a vector operand when evident without a type checker: a declared name, a
+    /// swizzle, or a `vecN(...)` constructor, optionally parenthesised. nil when unknown.
+    private static func operandSize(_ operand: [UInt16], types: [String: String]) -> Int? {
+        var text = String(decoding: operand, as: UTF16.self).trimmingCharacters(in: .whitespaces)
+        while text.hasPrefix("("), let close = closing(Array(text.utf16), from: 0), close == text.utf16.count - 1 {
+            text = String(text.dropFirst().dropLast()).trimmingCharacters(in: .whitespaces)
+        }
+        if let swizzle = text.range(of: #"\.[xyzwrgba]{1,4}$"#, options: .regularExpression) {
+            return text.distance(from: swizzle.lowerBound, to: swizzle.upperBound) - 1
+        }
+        if text.range(of: #"^\w+$"#, options: .regularExpression) != nil {
+            return types[text].flatMap { $0.hasPrefix("vec") ? dimension($0) : nil }
+        }
+        if let match = text.range(of: #"^vec[234]\("#, options: .regularExpression),
+           let close = closing(Array(text.utf16), from: text.utf16.count - text[match.upperBound...].utf16.count - 1),
+           close == text.utf16.count - 1 {
+            return Int(String(text[text.index(text.startIndex, offsetBy: 3)]))
+        }
+        return nil
+    }
+
+    /// `a op b` with vectors of different sizes: HLSL truncates the wider one (`vec4 * vec2` is a
+    /// `vec2`). Only operands whose size is evident are touched, and only when they are the
+    /// operator's whole operands (not one factor of a product).
+    private static func vectorOperandSizes(_ code: [UInt16]) -> [UInt16] {
+        let types = declaredTypes(String(decoding: code, as: UTF16.self) as NSString)
+        let operators: Set<UInt16> = [ascii("+"), ascii("-"), ascii("*"), ascii("/")]
+        let multiplicative: Set<UInt16> = [ascii("*"), ascii("/")]
+        var edits: [(Int, String)] = []
+        for index in code.indices where operators.contains(code[index]) {
+            guard index > 0, index + 1 < code.count, code[index + 1] != ascii("="), code[index + 1] != code[index],
+                  code[index - 1] != code[index] else { continue }
+            var leftEnd = index - 1
+            while leftEnd >= 0, isSpace(code[leftEnd]) { leftEnd -= 1 }
+            guard leftEnd >= 0, isIdentifier(code[leftEnd]) || code[leftEnd] == ascii(")") || code[leftEnd] == ascii("]"),
+                  let leftStart = postfixStart(code, endingAt: leftEnd),
+                  let rightEnd = operandEnd(code, after: index) else { continue }
+            var before = leftStart - 1
+            while before >= 0, isSpace(code[before]) { before -= 1 }
+            var after = rightEnd
+            while after < code.count, isSpace(code[after]) { after += 1 }
+            // The left operand of `+`/`*` must not be the last factor of a longer product, nor the
+            // right operand of `+`/`-` the first factor of one.
+            if before >= 0, multiplicative.contains(code[before]) { continue }
+            if !multiplicative.contains(code[index]), after < code.count, multiplicative.contains(code[after]) { continue }
+            let left = Array(code[leftStart...leftEnd])
+            let right = Array(code[(index + 1)..<rightEnd])
+            guard let leftSize = operandSize(left, types: types), let rightSize = operandSize(right, types: types),
+                  leftSize > 1, rightSize > 1, leftSize != rightSize else { continue }
+            let smaller = swizzle(min(leftSize, rightSize))
+            edits.append((leftSize > rightSize ? leftEnd + 1 : rightEnd, ".\(smaller)"))
+        }
+        return insert(edits, into: code)
+    }
+
+    /// Start of the postfix expression (name, call, index, member chain) ending at `end`.
+    private static func postfixStart(_ code: [UInt16], endingAt end: Int) -> Int? {
+        var position = end
+        var start: Int?
+        while position >= 0 {
+            let character = code[position]
+            if isClosing(character) && character != ascii("}") {
+                guard let open = opening(code, from: position) else { return nil }
+                start = open
+                position = open - 1
+            } else if isIdentifier(character) || character == ascii(".") {
+                start = position
+                position -= 1
+            } else {
+                break
+            }
+        }
+        return start
+    }
+
     // MARK: Scanning
 
     private static func ascii(_ character: Character) -> UInt16 { UInt16(character.asciiValue!) }
@@ -476,12 +650,25 @@ extension ShaderPrelude {
     }
 
     /// Applies insertions; at equal offsets, later edits land first so earlier ones end up outside.
-    private static func insert(_ edits: [(Int, String)], into code: [UInt16]) -> [UInt16] {
-        var result = code
-        let ordered = edits.enumerated().sorted { ($0.element.0, $0.offset) > ($1.element.0, $1.offset) }
-        for (_, edit) in ordered {
-            result.insert(contentsOf: Array(edit.1.utf16), at: edit.0)
+    /// Insertions before the given offsets (in edit order at equal offsets), and removal of the
+    /// characters at `removing`.
+    private static func insert(_ edits: [(Int, String)], into code: [UInt16], removing: Set<Int> = []) -> [UInt16] {
+        var byOffset: [Int: [UInt16]] = [:]
+        for (offset, text) in edits { byOffset[offset, default: []] += Array(text.utf16) }
+        var result: [UInt16] = []
+        result.reserveCapacity(code.count + edits.count * 12)
+        for index in 0...code.count {
+            if let text = byOffset[index] { result += text }
+            if index < code.count, !removing.contains(index) { result.append(code[index]) }
         }
         return result
+    }
+}
+
+private extension Array where Element == UInt16 {
+    func trimmingSpaces() -> [UInt16] {
+        let isSpace: (UInt16) -> Bool = { $0 == 32 || $0 == 9 || $0 == 10 || $0 == 13 }
+        guard let first = firstIndex(where: { !isSpace($0) }), let last = lastIndex(where: { !isSpace($0) }) else { return [] }
+        return Array(self[first...last])
     }
 }

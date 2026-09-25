@@ -159,14 +159,23 @@ struct ShaderSourceLoader {
         var depth = 0
         var offset = 0
         var insertion = 0
+        // Braces open at the start of the line, so a multi-line `struct` is passed whole.
+        var braces = 0
+        var pending = false
         for line in lines {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("#if") { depth += 1 }
             if trimmed.hasPrefix("#endif") { depth = max(0, depth - 1) }
             let lineEnd = offset + line.utf16.count + 1
             if trimmed.range(of: #"\bvoid\s+main\s*\("#, options: .regularExpression) != nil { break }
-            if depth == 0, trimmed.range(of: #"^(attribute|varying|uniform|struct)\s"#, options: .regularExpression) != nil {
+            if depth == 0, braces == 0,
+               trimmed.range(of: #"^(attribute|varying|uniform|struct)\s"#, options: .regularExpression) != nil {
+                pending = true
+            }
+            braces += line.filter { $0 == "{" }.count - line.filter { $0 == "}" }.count
+            if pending, braces <= 0 {
                 insertion = lineEnd
+                pending = false
             }
             offset = lineEnd
         }
