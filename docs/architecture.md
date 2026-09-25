@@ -64,6 +64,7 @@ These are folders in the app target today. The scene engine (`Scene/`, `Audio/`,
 ### `Library/`, `Workshop/`, `Settings/`, `UI/`, `App/`
 
 - **`Library/`:** app-shell features. It holds the wallpaper library model and the import paths (`WEProject`, `WallpaperDirectory`, zip/pkg import).
+  - Installed lists what WE lists (`InstalledLibrary`): items whose project.json `type` is scene, video, web or application. Asset items (`"category": "Asset"`, no `type`) and items downloaded only as another wallpaper's dependency (`WorkshopDependencyIndex`, a hidden file in the library folder) stay on disk, where `WorkshopAssetResolver` finds them, but aren't listed. Downloading such an item yourself makes it yours and lists it.
 - **`Workshop/`:** steamcmd and the Workshop API. Steam secrets live in the keychain (`Core/Keychain`, `SteamCredentials`): the Web API key and the steamcmd account name. The password and Steam Guard code are piped to steamcmd on stdin and never stored; steamcmd keeps its own login token. The API key goes in the `x-webapi-key` header, never a URL.
 - **`Settings/`:** settings pages.
 - **`UI/`:** the main window and shared components.

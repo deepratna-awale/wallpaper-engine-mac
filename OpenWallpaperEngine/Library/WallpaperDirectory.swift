@@ -38,6 +38,12 @@ enum WallpaperStorage {
                 guard !fileManager.fileExists(atPath: destination.path) else { continue }
                 try fileManager.moveItem(at: item, to: destination)
             }
+            // Hidden, so the loop above skips it; it lists which of the moved items are dependencies.
+            let dependencyIndex = sourceDirectory.appending(path: WorkshopDependencyIndex.fileName)
+            let movedIndex = destinationDirectory.appending(path: WorkshopDependencyIndex.fileName)
+            if fileManager.fileExists(atPath: dependencyIndex.path), !fileManager.fileExists(atPath: movedIndex.path) {
+                try fileManager.moveItem(at: dependencyIndex, to: movedIndex)
+            }
         }
         UserDefaults.standard.set(destinationDirectory.path, forKey: customPathKey)
         return moveExisting ? (sourceDirectory, destinationDirectory) : nil

@@ -536,7 +536,7 @@ private struct MissingWorkshopDependenciesBanner: View {
                     } else {
                         Button("Download All") {
                             for workshopId in missingIds {
-                                steamCmd.downloadWorkshopItem(workshopId: workshopId)
+                                steamCmd.downloadWorkshopItem(workshopId: workshopId, asDependency: true)
                             }
                         }
                         .frame(maxWidth: .infinity)

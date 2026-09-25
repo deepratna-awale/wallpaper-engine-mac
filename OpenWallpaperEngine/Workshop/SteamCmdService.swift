@@ -37,8 +37,11 @@ class SteamCmdService: ObservableObject {
     private let previewQueue = DispatchQueue(label: "steamcmd.preview.download")
     private let downloadQueue = DispatchQueue(label: "steamcmd.workshop.download")
     private var requestedPreviewId: String?
+    /// Which library items came in only as another wallpaper's dependency.
+    let dependencyIndex: WorkshopDependencyIndex
 
-    init() {
+    init(dependencyIndex: WorkshopDependencyIndex = WorkshopDependencyIndex()) {
+        self.dependencyIndex = dependencyIndex
         detectSteamCmd()
         attemptCachedLogin()
     }
@@ -288,8 +291,11 @@ class SteamCmdService: ObservableObject {
 
     /// Download a workshop item by its ID. `onCompleted` fires on the main thread with the wallpaper's
     /// destination directory on success, or `nil` if the download was skipped or failed.
+    /// `asDependency` marks a download a wallpaper needs rather than one the user asked for; such an
+    /// item stays out of the Installed list until the user downloads it themselves.
     func downloadWorkshopItem(
         workshopId: String,
+        asDependency: Bool = false,
         title: String? = nil,
         previewURL: URL? = nil,
         creatorId: String? = nil,
@@ -435,7 +441,8 @@ class SteamCmdService: ObservableObject {
                 let fm = FileManager.default
                 if fm.fileExists(atPath: sourcePath.path) {
                     let dest = fm.wallpapersDirectory.appending(path: workshopId)
-                    if !fm.fileExists(atPath: dest.path) {
+                    let copiedIntoLibrary = !fm.fileExists(atPath: dest.path)
+                    if copiedIntoLibrary {
                         do {
                             try fm.copyItem(at: sourcePath, to: dest)
                             DispatchQueue.global(qos: .utility).async {
@@ -446,6 +453,11 @@ class SteamCmdService: ObservableObject {
                             onCompleted?(nil)
                             return
                         }
+                    }
+                    if asDependency {
+                        self.dependencyIndex.recordDependencyDownload(workshopId, copiedIntoLibrary: copiedIntoLibrary)
+                    } else {
+                        self.dependencyIndex.recordUserDownload(workshopId)
                     }
                     self.downloadProgress[workshopId] = .completed
                     DownloadedWallpaperIndex.shared.insert(workshopId)

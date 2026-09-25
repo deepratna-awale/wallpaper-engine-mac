@@ -104,7 +104,7 @@ final class WorkshopDependencyService: ObservableObject {
             return
         }
         states[id] = .downloading
-        steamCmd.downloadWorkshopItem(workshopId: id) { [weak self] destination in
+        steamCmd.downloadWorkshopItem(workshopId: id, asDependency: true) { [weak self] destination in
             Task { @MainActor [weak self] in
                 self?.finishDownload(id, destination: destination)
             }
@@ -118,6 +118,8 @@ final class WorkshopDependencyService: ObservableObject {
             return
         }
         states[id] = .installed
+        // Installed now, so it isn't missing again unless it is removed as an unused dependency.
+        requested.remove(id)
         ensureDependencies(ofItemAt: destination)
         for (wallpaper, ids) in pending where ids.contains(id) {
             let remaining = ids.subtracting([id])

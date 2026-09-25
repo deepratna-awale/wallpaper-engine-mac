@@ -158,8 +158,10 @@ class WorkshopViewModel: ObservableObject {
         items
     }
 
+    /// In the library as the user's own item. A dependency-only copy doesn't count, so the user can
+    /// still download it to make it theirs.
     func isDownloaded(_ item: WorkshopItem) -> Bool {
-        DownloadedWallpaperIndex.shared.contains(item.id)
+        DownloadedWallpaperIndex.shared.contains(item.id) && !steamCmd.dependencyIndex.contains(item.id)
     }
 
     /// Key namespace for Workshop items (as opposed to local wallpapers) in `FavoritesStore`.
