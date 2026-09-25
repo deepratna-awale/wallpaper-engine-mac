@@ -31,6 +31,10 @@ struct SceneEffectPassPlan {
     let target: String?
     let textures: [Int: SceneEffectTextureInput]
     let constants: ShaderConstantResolver.ResolvedConstants
+
+    var readsSceneSnapshot: Bool {
+        textures.values.contains { if case .sceneSnapshot = $0 { return true } else { return false } }
+    }
 }
 
 /// One WE effect on one layer, ready for the effect graph executor.

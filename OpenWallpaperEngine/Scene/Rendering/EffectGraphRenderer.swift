@@ -24,12 +24,27 @@ final class EffectGraphRenderer {
     private var pendingPipelines = Set<String>()
     private var failedPipelines = Set<String>()
 
-    /// Per layer: ping-pong pair and effect FBOs, reused across frames.
-    private var targets: [String: MTLTexture] = [:]
-    /// Per layer and pass: uniform bytes with the static values already written.
-    private var programs: [String: UniformProgram] = [:]
-    /// Per layer: last output of a chain that doesn't change over time, and what produced it.
-    private var staticOutputs: [String: (input: ObjectIdentifier, output: MTLTexture)] = [:]
+    /// Per layer: targets, uniform programs and readiness, resolved once and reused every frame
+    /// so the steady state does no string building or dictionary work per pass.
+    private var layers: [String: LayerState] = [:]
+
+    private final class LayerState {
+        let width: Int
+        let height: Int
+        var formats: [[MTLPixelFormat?]] = []
+        var ready = false
+        var pingA: MTLTexture?
+        var pingB: MTLTexture?
+        var fbos: [[String: MTLTexture]] = []
+        var programs: [[UniformProgram?]] = []
+        /// Last output of a chain that doesn't change over time, and the input that produced it.
+        var staticOutput: (input: ObjectIdentifier, output: MTLTexture)?
+
+        init(width: Int, height: Int) {
+            self.width = width
+            self.height = height
+        }
+    }
 
     /// Counters for tests and diagnostics.
     private(set) var passesEncoded = 0
@@ -68,9 +83,7 @@ final class EffectGraphRenderer {
 
     /// Drops per-layer state, e.g. when the scene changes. Compiled pipelines are kept.
     func releaseTargets() {
-        targets.removeAll()
-        programs.removeAll()
-        staticOutputs.removeAll()
+        layers.removeAll()
     }
 
     struct Context {
@@ -90,27 +103,43 @@ final class EffectGraphRenderer {
                context: Context, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         let width = input.width
         let height = input.height
-        guard let formats = readyFormats(effects, width: width, height: height) else { return nil }
+        let state: LayerState
+        if let existing = layers[layerID], existing.width == width, existing.height == height {
+            state = existing
+        } else {
+            state = LayerState(width: width, height: height)
+            layers[layerID] = state
+        }
+        if !state.ready {
+            guard let formats = readyFormats(effects) else { return nil }
+            state.formats = formats
+            state.pingA = makeTarget(width: width, height: height, format: .rgba8Unorm)
+            state.pingB = makeTarget(width: width, height: height, format: .rgba8Unorm)
+            state.fbos = effects.map { effect in
+                Dictionary(effect.fbos.compactMap { fbo -> (String, MTLTexture)? in
+                    let size = Self.fboSize(fbo, width: width, height: height)
+                    return makeTarget(width: size.x, height: size.y, format: Self.pixelFormat(fbo.format)).map { (fbo.name, $0) }
+                }, uniquingKeysWith: { a, _ in a })
+            }
+            state.programs = effects.map { effect in
+                effect.passes.map { pass in pass.variant.map { UniformProgram(layout: $0.uniforms, constants: pass.constants) } }
+            }
+            state.ready = true
+        }
 
         let inputID = ObjectIdentifier(input)
-        if let cached = staticOutputs[layerID], cached.input == inputID {
+        if let cached = state.staticOutput, cached.input == inputID {
             layersReused += 1
             return cached.output
         }
+        guard let pingA = state.pingA, let pingB = state.pingB else { return nil }
 
-        guard let pingA = target("\(layerID)|A", width: width, height: height, format: .rgba8Unorm),
-              let pingB = target("\(layerID)|B", width: width, height: height, format: .rgba8Unorm) else { return nil }
         var current = input
         var didRender = false
         var isStatic = true
         for (effectIndex, effect) in effects.enumerated() {
             let previous = current
-            var fbos: [String: MTLTexture] = [:]
-            for fbo in effect.fbos {
-                let size = Self.fboSize(fbo, width: width, height: height)
-                fbos[fbo.name] = target("\(layerID)|\(effectIndex)|\(fbo.name)", width: size.x, height: size.y,
-                                        format: Self.pixelFormat(fbo.format))
-            }
+            var fbos = state.fbos[effectIndex]
             for (passIndex, pass) in effect.passes.enumerated() {
                 switch pass.command {
                 case .copy(let source, let destination):
@@ -124,7 +153,9 @@ final class EffectGraphRenderer {
                     fbos[first] = fbos[second]
                     fbos[second] = a
                 case .render:
-                    guard let variant = pass.variant else { continue }
+                    guard let variant = pass.variant, let program = state.programs[effectIndex][passIndex],
+                          let format = state.formats[effectIndex][passIndex],
+                          let pipeline = readyPipeline(pass, format: format) else { continue }
                     let output: MTLTexture
                     if let name = pass.target {
                         guard let fbo = fbos[name] else { continue }
@@ -132,12 +163,7 @@ final class EffectGraphRenderer {
                     } else {
                         output = current === pingA ? pingB : pingA
                     }
-                    let format = formats["\(effectIndex)|\(passIndex)"] ?? output.pixelFormat
-                    guard let pipeline = readyPipeline(pass, format: format) else { continue }
-                    let program = self.program("\(layerID)|\(effectIndex)|\(passIndex)", pass: pass, variant: variant)
-                    isStatic = isStatic && program.isStatic && !pass.textures.values.contains {
-                        if case .sceneSnapshot = $0 { return true } else { return false }
-                    }
+                    isStatic = isStatic && program.isStatic && !pass.readsSceneSnapshot
                     encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
                            current: current, previous: previous, fbos: fbos, context: context,
                            commandBuffer: commandBuffer)
@@ -149,27 +175,27 @@ final class EffectGraphRenderer {
         guard didRender else { return nil }
         // A chain with no time, audio, pointer or live-bound input produces the same image
         // every frame; skip it until the input changes (bandwidth is the main per-frame cost).
-        if isStatic {
-            staticOutputs[layerID] = (inputID, current)
-        } else {
-            staticOutputs[layerID] = nil
-        }
+        state.staticOutput = isStatic ? (inputID, current) : nil
         return current
     }
 
     // MARK: - Pipelines
 
-    /// Target format of every render pass, or nil while any pipeline is still compiling.
-    /// Compiles are started here; a pipeline that failed to build just skips its pass.
-    private func readyFormats(_ effects: [SceneEffectPlan], width: Int, height: Int) -> [String: MTLPixelFormat]? {
-        var formats: [String: MTLPixelFormat] = [:]
+    /// Target format of every render pass (per effect, per pass), or nil while any pipeline is
+    /// still compiling. Compiles are started here; a pipeline that failed just skips its pass.
+    private func readyFormats(_ effects: [SceneEffectPlan]) -> [[MTLPixelFormat?]]? {
+        var formats: [[MTLPixelFormat?]] = []
         var ready = true
-        for (effectIndex, effect) in effects.enumerated() {
+        for effect in effects {
             let fboFormats = Dictionary(effect.fbos.map { ($0.name, Self.pixelFormat($0.format)) }, uniquingKeysWith: { a, _ in a })
-            for (passIndex, pass) in effect.passes.enumerated() {
-                guard case .render = pass.command, let variant = pass.variant else { continue }
+            var effectFormats: [MTLPixelFormat?] = []
+            for pass in effect.passes {
+                guard case .render = pass.command, let variant = pass.variant else {
+                    effectFormats.append(nil)
+                    continue
+                }
                 let format = pass.target.flatMap { fboFormats[$0] } ?? .rgba8Unorm
-                formats["\(effectIndex)|\(passIndex)"] = format
+                effectFormats.append(format)
                 let key = Self.pipelineKey(pass, format: format)
                 let state: (ready: Bool, failed: Bool, pending: Bool) = pipelineLock.withLock {
                     (pipelines[key] != nil, failedPipelines.contains(key), pendingPipelines.contains(key))
@@ -178,6 +204,7 @@ final class EffectGraphRenderer {
                 ready = false
                 if !state.pending { compile(pass, variant: variant, format: format, key: key) }
             }
+            formats.append(effectFormats)
         }
         return ready ? formats : nil
     }
@@ -233,7 +260,7 @@ final class EffectGraphRenderer {
     /// Blocks until every pipeline these effects need has compiled or failed (tests, prewarming).
     func waitUntilReady(_ effects: [SceneEffectPlan], width: Int, height: Int, timeout: TimeInterval = 60) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while readyFormats(effects, width: width, height: height) == nil {
+        while readyFormats(effects) == nil {
             if Date() > deadline { return false }
             Thread.sleep(forTimeInterval: 0.005)
         }
@@ -304,13 +331,6 @@ final class EffectGraphRenderer {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
     }
 
-    private func program(_ key: String, pass: SceneEffectPassPlan, variant: TranslatedShaderVariant) -> UniformProgram {
-        if let existing = programs[key] { return existing }
-        let program = UniformProgram(layout: variant.uniforms, constants: pass.constants)
-        programs[key] = program
-        return program
-    }
-
     /// Position and texcoord come from the quad; any other attribute a shader reads is zero.
     static func vertexDescriptor(for function: MTLFunction) -> MTLVertexDescriptor {
         let descriptor = MTLVertexDescriptor()
@@ -346,16 +366,12 @@ final class EffectGraphRenderer {
 
     // MARK: - Targets
 
-    private func target(_ key: String, width: Int, height: Int, format: MTLPixelFormat) -> MTLTexture? {
-        if let existing = targets[key], existing.width == width, existing.height == height,
-           existing.pixelFormat == format { return existing }
+    private func makeTarget(width: Int, height: Int, format: MTLPixelFormat) -> MTLTexture? {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: max(width, 1),
                                                                   height: max(height, 1), mipmapped: false)
         descriptor.usage = [.renderTarget, .shaderRead]
         descriptor.storageMode = .private
-        let texture = device.makeTexture(descriptor: descriptor)
-        targets[key] = texture
-        return texture
+        return device.makeTexture(descriptor: descriptor)
     }
 
     /// `scale` divides the layer size; `fit` bounds the larger side.
@@ -400,7 +416,11 @@ final class UniformProgram {
     let isStatic: Bool
     let needsTextureInfo: Bool
     private let dynamic: [(member: UniformMember, constant: ShaderConstantResolver.DynamicConstant)]
-    private let builtins: [UniformMember]
+    /// Built-ins that only depend on the pass's targets and textures: written when those change.
+    private let passBuiltins: [UniformMember]
+    /// Built-ins that change every frame (time, pointer, audio).
+    private let frameBuiltins: [UniformMember]
+    private var passSignature: [Float] = []
 
     /// Built-ins whose value changes from frame to frame.
     static let timeVarying: Set<String> = ["g_Time", "g_Frametime", "g_Daytime", "g_DayTime", "g_PointerPosition",
@@ -422,11 +442,13 @@ final class UniformProgram {
             }
         }
         self.dynamic = dynamic
-        self.builtins = builtins
-        needsTextureInfo = builtins.contains { $0.name.hasPrefix("g_Texture") }
-        isStatic = dynamic.isEmpty && !builtins.contains {
-            Self.timeVarying.contains($0.name) || $0.name.hasPrefix("g_AudioSpectrum")
+        let varies = { (member: UniformMember) in
+            Self.timeVarying.contains(member.name) || member.name.hasPrefix("g_AudioSpectrum")
         }
+        frameBuiltins = builtins.filter(varies)
+        passBuiltins = builtins.filter { !varies($0) }
+        needsTextureInfo = builtins.contains { $0.name.hasPrefix("g_Texture") }
+        isStatic = dynamic.isEmpty && frameBuiltins.isEmpty
     }
 
     func update(frame: BuiltinFrameContext, pass: BuiltinPassContext, values: SceneValueContext) {
@@ -435,7 +457,22 @@ final class UniformProgram {
                                                      count: constant.count, isInt: constant.isInt)
             UniformWriter.write(value.components, member: member, into: &bytes)
         }
-        for member in builtins {
+        write(frameBuiltins, frame: frame, pass: pass)
+        // Name lookups are string work; do them only when the targets actually change.
+        var signature: [Float] = [frame.screenSize.x, frame.screenSize.y, pass.targetSize.x, pass.targetSize.y, pass.alpha,
+                                  pass.color.x, pass.color.y, pass.color.z]
+        for slot in pass.textures.keys.sorted() {
+            let info = pass.textures[slot]!
+            signature += [Float(slot), info.allocatedSize.x, info.allocatedSize.y]
+        }
+        if signature != passSignature {
+            passSignature = signature
+            write(passBuiltins, frame: frame, pass: pass)
+        }
+    }
+
+    private func write(_ members: [UniformMember], frame: BuiltinFrameContext, pass: BuiltinPassContext) {
+        for member in members {
             if let components = BuiltinUniforms.value(named: member.name, frame: frame, pass: pass,
                                                       arrayCount: member.count > 1 ? member.count : nil) {
                 UniformWriter.write(components, member: member, into: &bytes)
