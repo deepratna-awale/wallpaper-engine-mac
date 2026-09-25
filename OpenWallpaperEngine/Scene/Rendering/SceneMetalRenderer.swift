@@ -61,6 +61,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
+    /// This frame's scene snapshot target (`sceneSnapshot`), leased on first use, and which part
+    /// of it matches the scene drawn so far.
+    private var sceneCopy: MTLTexture?
+    private(set) var snapshotTracker = SceneSnapshotTracker()
     /// Runs authored effects through Wallpaper Engine's own shaders.
     private lazy var effectGraph = EffectGraphRenderer(device: device)
     /// Draws particle systems through their WE material.
@@ -573,8 +577,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             if drew { encoder.setRenderPipelineState(renderPipeline) }
             return true
         }
+        sceneCopy = nil
+        snapshotTracker.reset()
+        let targetSize = SIMD2(sceneTexture.width, sceneTexture.height)
         for (layerIndex, entry) in layers.enumerated() {
+            let batchesBefore = nextParticleBatch
             guard drawParticleBatches(before: entry.layer.order) else { return }
+            // Particles cover no rect we track: the snapshot no longer matches anywhere.
+            if nextParticleBatch != batchesBefore { snapshotTracker.sceneDrawn(in: nil) }
             // Hidden layers (script `visible = false`) draw nothing, their raw texture included.
             guard let draw = draws[layerIndex] else { continue }
             var layerSnapshot: MTLTexture?
@@ -582,7 +592,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 // Metal can't sample the attachment it's drawing into: pause the scene pass, copy
                 // what's drawn so far (`_rt_FullFrameBuffer`), run this layer's effects on it, resume.
                 encoder.endEncoding()
-                let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer)
+                // A material or scene input reads the scene under its own quad; an effect anywhere.
+                let needed = entry.layer.effectsReadScene ? nil
+                    : SceneSnapshotTracker.pixelRect(of: draw.quad, sceneSize: sceneSize, targetSize: targetSize)
+                        ?? SceneSnapshotTracker.Rect.empty
+                let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer, needing: needed)
                 layerSnapshot = snapshot
                 let input = entry.layer.sceneInput
                     ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, commandBuffer: commandBuffer) }
@@ -629,6 +643,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             uniform.uvOrigin = textureFrame.uvOrigin
             uniform.uvAxisX = textureFrame.uvAxisX
             uniform.uvAxisY = textureFrame.uvAxisY
+            // Drawn below, natively or through its material.
+            if let drawn = SceneSnapshotTracker.pixelRect(of: draw.quad, sceneSize: sceneSize, targetSize: targetSize) {
+                snapshotTracker.sceneDrawn(in: drawn)
+            }
             if let plan = entry.layer.imageMaterial, let imageMaterials, imageMaterials.draw(plan, ImageMaterialRenderer.Draw(
                    layerID: entry.stateId, quad: draw.quad, sceneSize: sceneSize,
                    color: SIMD3(draw.color.x, draw.color.y, draw.color.z), alpha: draw.opacity, brightness: draw.brightness,
@@ -879,14 +897,28 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return encoder
     }
 
-    /// A copy of the scene drawn so far. Several scene-reading layers in one frame may share the
-    /// pooled texture: the GPU runs the command buffer in order, so each layer's effects read its
-    /// snapshot before the next layer's copy overwrites it.
-    private func sceneSnapshot(of scene: MTLTexture, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
-        guard let copy = renderTargetPool.texture(width: scene.width, height: scene.height,
-                                                  pixelFormat: scene.pixelFormat, avoiding: scene),
-              let blit = commandBuffer.makeBlitCommandEncoder() else { return nil }
-        blit.copy(from: scene, to: copy)
+    /// The scene drawn so far (`_rt_FullFrameBuffer`), current within `rect` (all of it when nil).
+    /// Every scene-reading draw of a frame shares one full-size target, and only what changed is
+    /// copied (`SceneSnapshotTracker`): the GPU runs the command buffer in order, so each draw
+    /// reads its snapshot before the next copy overwrites any of it.
+    private func sceneSnapshot(of scene: MTLTexture, commandBuffer: MTLCommandBuffer,
+                               needing rect: SceneSnapshotTracker.Rect? = nil) -> MTLTexture? {
+        if sceneCopy == nil {
+            sceneCopy = renderTargetPool.texture(width: scene.width, height: scene.height,
+                                                 pixelFormat: scene.pixelFormat, avoiding: scene)
+            snapshotTracker.reset()
+        }
+        guard let copy = sceneCopy else { return nil }
+        let whole = SceneSnapshotTracker.Rect(x: 0, y: 0, width: scene.width, height: scene.height)
+        guard let region = snapshotTracker.copy(for: rect ?? whole) else { return copy }
+        guard let blit = commandBuffer.makeBlitCommandEncoder() else {
+            snapshotTracker.reset()
+            return nil
+        }
+        let origin = MTLOrigin(x: region.x, y: region.y, z: 0)
+        blit.copy(from: scene, sourceSlice: 0, sourceLevel: 0, sourceOrigin: origin,
+                  sourceSize: MTLSize(width: region.width, height: region.height, depth: 1),
+                  to: copy, destinationSlice: 0, destinationLevel: 0, destinationOrigin: origin)
         blit.endEncoding()
         return copy
     }

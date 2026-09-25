@@ -89,8 +89,12 @@ struct SceneMetalLayer {
 
     /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
     var readsScene: Bool {
-        sceneInput || imageMaterial?.readsSceneSnapshot == true
-            || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) }
+        sceneInput || imageMaterial?.readsSceneSnapshot == true || effectsReadScene
+    }
+
+    /// An effect pass reads the scene: it may sample any of it, not just what is under the layer.
+    var effectsReadScene: Bool {
+        weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) }
     }
 }
 
