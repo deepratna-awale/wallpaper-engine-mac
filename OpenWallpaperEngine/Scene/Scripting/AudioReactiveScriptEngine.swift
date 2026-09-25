@@ -246,7 +246,6 @@ final class AudioReactiveScriptEngine {
     private var frameLayerStates: [String: [String: Any]]?
 
     private init() {
-        _ = BrowserMediaIntegration.shared
         let capture = SystemAudioCapture()
         audioCapture = capture
         propertyService = SceneUserPropertyService(audioLevel: { capture.audioLevel })
@@ -605,7 +604,6 @@ final class AudioReactiveScriptEngine {
         let currentLevel = audioLevel
         let currentSpectrum = audioSpectrum
         let visualization = audioVisualizationSnapshot()
-        let browser = BrowserMediaIntegration.shared.snapshot()
         let audioBlock: @convention(block) (Double, Double) -> Double = { low, high in
             let minimum = max(0, min(63, Int(low)))
             let maximum = max(minimum, min(63, Int(high)))
@@ -664,11 +662,6 @@ final class AudioReactiveScriptEngine {
                 "level": visualization.level, "spectrum": visualization.spectrum,
                 "waveform": visualization.waveform, "bass": visualization.bass,
                 "mid": visualization.mid, "treble": visualization.treble
-            ],
-            "media": [
-                "title": browser.title, "artist": "", "album": "",
-                "url": browser.url,
-                "duration": 0, "elapsed": 0, "isPlaying": !browser.title.isEmpty
             ]
         ], forKeyedSubscript: "engine" as NSString)
         context?.evaluateScript("""
