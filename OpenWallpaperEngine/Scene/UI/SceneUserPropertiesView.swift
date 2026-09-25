@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Wallpaper Engine authors often put a localization key in a property's `text` field rather than
 /// a label. The translations live inside Wallpaper Engine's compiled binaries, so the key is turned
@@ -29,6 +30,18 @@ private struct SceneUserProperty: Identifiable {
     let options: [(title: String, value: String)]
     let minimum: Double
     let maximum: Double
+    /// project.json `condition`; nil when always shown.
+    var condition: UserPropertyCondition? = nil
+    /// Raw (possibly HTML) label, kept for `text`/untyped notice rows.
+    var rawText: String = ""
+    var fraction: Bool = true
+    var step: Double? = nil
+    var precision: Int? = nil
+    var editable: Bool = false
+
+    var sliderFormat: UserPropertySliderFormat {
+        UserPropertySliderFormat(minimum: minimum, maximum: maximum, fraction: fraction, step: step, precision: precision)
+    }
 }
 
 private struct SceneTextControl: Identifiable {
@@ -46,9 +59,11 @@ private final class SceneUserPropertiesModel: ObservableObject {
     private let storageKey: String
     private let explicitKey: String
     private var pendingSave: DispatchWorkItem?
+    private let wallpaperPath: String
 
     init(wallpaper: WEWallpaper) {
-        storageKey = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
+        wallpaperPath = wallpaper.wallpaperDirectory.path
+        storageKey = WebWallpaperPropertyBridge.storageKey(for: wallpaper.wallpaperDirectory)
         explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
         load(wallpaper)
     }
@@ -58,7 +73,10 @@ private final class SceneUserPropertiesModel: ObservableObject {
     }
 
     func set(_ value: String, forID id: String) {
+        guard values[id] != value else { return }
         values[id] = value
+        NotificationCenter.default.post(name: .wallpaperUserPropertyChanged, object: wallpaperPath,
+                                        userInfo: ["key": id, "value": value])
         AudioReactiveScriptEngine.shared.setUserProperties(values)
         pendingSave?.cancel()
         let snapshot = values
@@ -80,7 +98,10 @@ private final class SceneUserPropertiesModel: ObservableObject {
           let rawProperties = ((root["general"] as? [String: Any])?["properties"] as? [String: [String: Any]]) ?? [:]
                 authoredPropertyIDs = Set(rawProperties.keys)
         properties = rawProperties.compactMap { (key: String, raw: [String: Any]) -> SceneUserProperty? in
-            guard let title = raw["text"] as? String, let type = raw["type"] as? String else { return nil }
+            // Untyped entries are notice/header rows in WE ("text" type).
+            let type = (raw["type"] as? String)?.lowercased() ?? "text"
+            let rawText = raw["text"] as? String ?? ""
+            let plainTitle = UserPropertyHTML.containsMarkup(rawText) ? UserPropertyHTML.plainText(rawText) : rawText
             let options = (raw["options"] as? [[String: Any]] ?? []).compactMap { option -> (String, String)? in
                 guard let label = option["label"] as? String, let optionValue = option["value"] else { return nil }
                 return (sceneUserPropertyTitle(label), sceneUserPropertyString(optionValue))
@@ -88,11 +109,18 @@ private final class SceneUserPropertiesModel: ObservableObject {
             let defaultValue = raw["value"].map(sceneUserPropertyString)
                 ?? (type == "combo" ? options.first?.1 : nil)
                 ?? (type == "bool" ? "false" : "")
-            return SceneUserProperty(id: key, title: sceneUserPropertyTitle(title), type: type,
-                                     order: (raw["order"] as? NSNumber)?.intValue ?? Int.max,
-                                     defaultValue: defaultValue, options: options,
-                                     minimum: (raw["min"] as? NSNumber)?.doubleValue ?? 0,
-                                     maximum: (raw["max"] as? NSNumber)?.doubleValue ?? 1)
+            var property = SceneUserProperty(id: key, title: sceneUserPropertyTitle(plainTitle), type: type,
+                                             order: (raw["order"] as? NSNumber)?.intValue ?? Int.max,
+                                             defaultValue: defaultValue, options: options,
+                                             minimum: (raw["min"] as? NSNumber)?.doubleValue ?? 0,
+                                             maximum: (raw["max"] as? NSNumber)?.doubleValue ?? 1)
+            property.condition = (raw["condition"] as? String).flatMap(UserPropertyCondition.init)
+            property.rawText = rawText
+            property.fraction = (raw["fraction"] as? NSNumber)?.boolValue ?? true
+            property.step = (raw["step"] as? NSNumber)?.doubleValue
+            property.precision = (raw["precision"] as? NSNumber)?.intValue
+            property.editable = (raw["editable"] as? NSNumber)?.boolValue ?? false
+            return property
         }
         .sorted { ($0.order, $0.id) < ($1.order, $1.id) }
         let wallpaperType = wallpaper.project.type.lowercased()
@@ -245,7 +273,9 @@ struct SceneUserPropertiesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            let wallpaperProperties = model.properties.filter { model.authoredPropertyIDs.contains($0.id) }
+            let wallpaperProperties = model.properties.filter {
+                model.authoredPropertyIDs.contains($0.id) && ($0.condition?.evaluate(model.values) ?? true)
+            }
             if !wallpaperProperties.isEmpty {
                 CollapsibleSection(title: "Wallpaper Settings") {
                     VStack(alignment: .leading, spacing: 8) {
@@ -371,9 +401,10 @@ struct SceneUserPropertiesView: View {
                 }
             case "slider":
                 let usesDegrees = property.id.hasSuffix("_direction")
+                let format = property.sliderFormat
                 let rawValue = Binding<Double>(
                     get: { Double(model.values[property.id] ?? property.defaultValue) ?? property.minimum },
-                    set: { model.set(String($0), for: property) }
+                    set: { model.set(format.storedString($0), for: property) }
                 )
                 let value = Binding<Double>(
                     get: { usesDegrees ? rawValue.wrappedValue * 180 / .pi : rawValue.wrappedValue },
@@ -387,7 +418,7 @@ struct SceneUserPropertiesView: View {
                                        defaultValue: usesDegrees
                                            ? (Double(property.defaultValue) ?? property.minimum) * 180 / .pi
                                            : Double(property.defaultValue) ?? property.minimum,
-                                       fractionDigits: 3, fieldWidth: 76)
+                                       fractionDigits: usesDegrees ? 3 : format.fractionDigits, fieldWidth: 76)
                     musicSyncControls(for: property, usesDegrees: usesDegrees)
                 }
             case "bool":
@@ -398,11 +429,29 @@ struct SceneUserPropertiesView: View {
                 }
                     .toggleStyle(.checkbox)
             case "combo":
-                Picker(selection: Binding(get: { model.values[property.id] ?? property.defaultValue },
-                                          set: { model.set($0, for: property) })) {
-                    ForEach(property.options, id: \.value) { option in Text(option.title).tag(option.value) }
-                } label: {
-                    parameterLabel(property.title, help: parameterHelp(property))
+                let selection = Binding(get: { model.values[property.id] ?? property.defaultValue },
+                                        set: { model.set($0, for: property) })
+                if property.editable {
+                    // Editable combos accept a free value; the menu offers the authored options.
+                    VStack(alignment: .leading, spacing: 4) {
+                        parameterLabel(property.title, help: parameterHelp(property))
+                        HStack(spacing: 4) {
+                            TextField("", text: selection)
+                            Menu {
+                                ForEach(property.options, id: \.value) { option in
+                                    Button(option.title) { selection.wrappedValue = option.value }
+                                }
+                            } label: { EmptyView() }
+                            .menuStyle(.borderlessButton)
+                            .fixedSize()
+                        }
+                    }
+                } else {
+                    Picker(selection: selection) {
+                        ForEach(property.options, id: \.value) { option in Text(option.title).tag(option.value) }
+                    } label: {
+                        parameterLabel(property.title, help: parameterHelp(property))
+                    }
                 }
             case "textinput":
                 HStack {
@@ -418,9 +467,57 @@ struct SceneUserPropertiesView: View {
                     parameterLabel(property.title, help: parameterHelp(property))
                 }
                 .anchorsColorPanel()
+            case "file", "directory", "texture":
+                pathPicker(property)
+            case "usershortcut":
+                VStack(alignment: .leading, spacing: 2) {
+                    Button(property.title.isEmpty ? "Shortcut" : property.title) {}
+                        .disabled(true)
+                    Text("Custom shortcuts are not supported yet.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             default:
-                EmptyView()
+                // "text" and untyped rows: author notices, headers and dividers.
+                noticeRow(property)
             }
+    }
+
+    @ViewBuilder
+    private func noticeRow(_ property: SceneUserProperty) -> some View {
+        let text = property.rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty {
+            Spacer().frame(height: 4)
+        } else {
+            Text(UserPropertyHTML.attributed(sceneUserPropertyTitle(text)))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func pathPicker(_ property: SceneUserProperty) -> some View {
+        let current = model.values[property.id] ?? property.defaultValue
+        return VStack(alignment: .leading, spacing: 4) {
+            parameterLabel(property.title, help: parameterHelp(property))
+            HStack(spacing: 6) {
+                Text(current.isEmpty ? "None" : (current as NSString).lastPathComponent)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(current.isEmpty ? .secondary : .primary)
+                    .help(current)
+                Spacer()
+                Button("Choose…") {
+                    if let path = UserPropertyPathPanel.choose(type: property.type) {
+                        model.set(path, for: property)
+                    }
+                }
+                if !current.isEmpty {
+                    Button("Clear") { model.set("", for: property) }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -498,5 +595,19 @@ struct SceneUserPropertiesView: View {
     private func colorString(_ color: Color) -> String {
         let nsColor = NSColor(color).usingColorSpace(.deviceRGB) ?? .white
         return "\(nsColor.redComponent) \(nsColor.greenComponent) \(nsColor.blueComponent)"
+    }
+}
+/// Open panel for `file`, `directory` and `texture` properties; returns the chosen path.
+enum UserPropertyPathPanel {
+    @MainActor
+    static func choose(type: String) -> String? {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = type == "directory"
+        panel.canChooseFiles = type != "directory"
+        if type == "texture" {
+            panel.allowedContentTypes = [.image]
+        }
+        return panel.runModal() == .OK ? panel.url?.path : nil
     }
 }
