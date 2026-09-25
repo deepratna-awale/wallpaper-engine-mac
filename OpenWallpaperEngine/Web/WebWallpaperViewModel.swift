@@ -20,6 +20,15 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
     }
     
     weak var webView: WKWebView?
+    /// Serves wallpapers that WE patches (`assets/zcompat/web`) with the patches applied.
+    let schemeHandler = WebWallpaperSchemeHandler()
+
+    /// WE's compatibility patches for the current wallpaper, if it has any.
+    var compatPatches: WebCompatPatches? {
+        let id = SceneWallpaperViewModel.workshopId(of: currentWallpaper)
+        return WebCompatPatches(workshopId: id, assetsDirectory: WallpaperEngineAssets.directory)
+            ?? WebCompatPatches(workshopId: id, assetsDirectory: WallpaperEngineAssets.bundled)
+    }
     private var audioTimer: Timer?
     private var propertyObserver: NSObjectProtocol?
 

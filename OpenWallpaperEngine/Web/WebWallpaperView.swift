@@ -26,6 +26,7 @@ struct WebWallpaperView: NSViewRepresentable {
         configuration.allowsAirPlayForMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
         viewModel.installBridge(on: configuration.userContentController)
+        configuration.setURLSchemeHandler(viewModel.schemeHandler, forURLScheme: WebWallpaperSchemeHandler.scheme)
 
         let nsView = WKWebView(frame: .zero, configuration: configuration)
         nsView.navigationDelegate = viewModel
@@ -43,6 +44,12 @@ struct WebWallpaperView: NSViewRepresentable {
            html.contains("youtube.com") || html.contains("vimeo.com") {
             // Load as HTML string with https origin so YouTube/Vimeo embeds work
             webView.loadHTMLString(html, baseURL: URL(string: "https://localhost"))
+        } else if let patches = viewModel.compatPatches,
+                  let url = WebWallpaperSchemeHandler.url(forRelativePath: viewModel.currentWallpaper.project.file) {
+            OWELog.info(.web, "Serving \(viewModel.currentWallpaper.project.title) with WE's compatibility patches")
+            viewModel.schemeHandler.directory = viewModel.readAccessURL
+            viewModel.schemeHandler.patches = patches
+            webView.load(URLRequest(url: url))
         } else {
             webView.loadFileURL(fileUrl, allowingReadAccessTo: viewModel.readAccessURL)
         }
