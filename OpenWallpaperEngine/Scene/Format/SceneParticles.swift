@@ -12,6 +12,31 @@ struct WEParticleSystem: Codable {
     var animationmode: String?
     @WEFlexibleDouble var sequencemultiplier: Double?
     var controlpoint: [WEParticleControlPoint]?
+    /// Child systems (`WEParticleChild`): static ones placed on this system, event ones spawned
+    /// for its particles.
+    var children: [WEParticleChild]?
+
+    /// `flags` bit 0: particles ignore the system's transform once spawned (`worldspace`).
+    var isWorldSpace: Bool { ((flags ?? 0) & 1) != 0 }
+}
+
+/// An entry of a particle system's `children`.
+struct WEParticleChild: Codable {
+    /// Path of the child's particle json.
+    var name: String?
+    /// `static` (the default), `eventfollow`, `eventspawn` or `eventdeath`.
+    var type: String?
+    var origin: WEFlexValue?
+    var scale: WEFlexValue?
+    var angles: WEFlexValue?
+    /// Chance an event creates an instance of the child (default 1).
+    @WEFlexibleDouble var probability: Double?
+    /// Event children: how many instances of the child may exist at once (default 10).
+    @WEFlexibleInt var maxcount: Int?
+    /// Bit 0: the child's control points from `controlpointstartindex` on are this system's particles.
+    @WEFlexibleInt var flags: Int?
+    @WEFlexibleInt var controlpointstartindex: Int?
+    @WEFlexibleInt var id: Int?
 }
 
 struct WEParticleEmitter: Codable {
@@ -19,12 +44,17 @@ struct WEParticleEmitter: Codable {
     var name: String?
     @WEFlexibleDouble var rate: Double?
     var origin: String?
-    var directions: String?
     var distancemax: WEFlexValue?
     var distancemin: WEFlexValue?
     @WEFlexibleDouble var speedmax: Double?
     @WEFlexibleDouble var speedmin: Double?
     @WEFlexibleInt var controlpoint: Int?
+    /// Particles emitted at once when the emitter starts.
+    @WEFlexibleInt var instantaneous: Int?
+    /// Per-axis scale of the spawn shape ("1 1 0" by default).
+    var directions: WEFlexValue?
+    /// Per-axis sign the spawn offset is forced to (0 keeps both).
+    var sign: WEFlexValue?
 }
 
 struct WEParticleControlPoint: Codable {
@@ -108,6 +138,8 @@ struct WEParticleOperator: Codable {
     var outputrangemax: WEFlexValue?
     @WEFlexibleInt var controlpoint0: Int?
     @WEFlexibleInt var controlpoint1: Int?
+    /// `movement`: bit 0 applies gravity in world space rather than the system's.
+    @WEFlexibleInt var flags: Int?
 }
 
 struct WEParticleRenderer: Codable {
