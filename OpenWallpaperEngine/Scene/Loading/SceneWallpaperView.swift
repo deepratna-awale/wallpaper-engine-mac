@@ -67,6 +67,14 @@ struct SceneWallpaperView: NSViewRepresentable {
                 context.coordinator.metalRevision = revision
             }
         }
+        context.coordinator.dependencyObserver = NotificationCenter.default.addObserver(
+            forName: .workshopDependenciesDidInstall, object: nil, queue: .main
+        ) { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] notification in
+            guard let coordinator, let sceneViewModel,
+                  let directory = notification.userInfo?["wallpaperDirectory"] as? URL,
+                  directory == sceneViewModel.currentWallpaper.wallpaperDirectory.standardizedFileURL else { return }
+            coordinator.scheduleSceneUpdate(.reloadScene, for: sceneViewModel)
+        }
         context.coordinator.sceneMusicObserver = NotificationCenter.default.addObserver(
             forName: .sceneMusicSettingsDidChange, object: nil, queue: .main
         ) { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] notification in
@@ -139,6 +147,7 @@ struct SceneWallpaperView: NSViewRepresentable {
         var propertyObserver: NSObjectProtocol?
         var assetsObserver: NSObjectProtocol?
         var sceneMusicObserver: NSObjectProtocol?
+        var dependencyObserver: NSObjectProtocol?
         var videoMusicSyncObserver: NSObjectProtocol?
         var audio: SceneAudioPlayback?
 
@@ -177,6 +186,9 @@ struct SceneWallpaperView: NSViewRepresentable {
             }
             if let assetsObserver {
                 NotificationCenter.default.removeObserver(assetsObserver)
+            }
+            if let dependencyObserver {
+                NotificationCenter.default.removeObserver(dependencyObserver)
             }
             if let sceneMusicObserver {
                 NotificationCenter.default.removeObserver(sceneMusicObserver)
