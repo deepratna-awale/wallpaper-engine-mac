@@ -19,7 +19,7 @@ final class EffectGraphTests: XCTestCase {
         let translator = ShaderVariantTranslator(compiler: try ProcessShaderCompiler(), cacheDirectory: cache)
         let root = ShaderVariantTests.weAssets
         builder = SceneEffectPlanBuilder(
-            roots: [root], translator: translator,
+            translator: translator,
             readFile: { FileManager.default.contents(atPath: root.appending(path: $0).path) },
             loadTexture: { name, materialPath in
                 let effectDirectory = materialPath.split(separator: "/").prefix(2).joined(separator: "/")

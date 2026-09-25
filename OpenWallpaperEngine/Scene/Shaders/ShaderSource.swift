@@ -62,7 +62,21 @@ enum ShaderSourceError: Error, CustomStringConvertible {
 /// Finds and prepares shader sources. Roots are searched in order, so a wallpaper's own copy of a
 /// shader wins over the Wallpaper Engine install (library copies of built-ins can be older).
 struct ShaderSourceLoader {
-    let roots: [URL]
+    /// Reads a path relative to an asset root; the first root that has it wins.
+    let readFile: (String) -> Data?
+
+    init(readFile: @escaping (String) -> Data?) {
+        self.readFile = readFile
+    }
+
+    init(roots: [URL]) {
+        self.init(readFile: { path in
+            for root in roots {
+                if let data = FileManager.default.contents(atPath: root.appending(path: path).path) { return data }
+            }
+            return nil
+        })
+    }
 
     func load(_ path: String, stage: ShaderStage) throws -> ShaderSource {
         let file = path.hasSuffix(".\(stage.rawValue)") ? path : "\(path).\(stage.rawValue)"
@@ -75,13 +89,10 @@ struct ShaderSourceLoader {
     }
 
     private func read(candidates: [String], label: String) throws -> String {
-        for root in roots {
-            for candidate in candidates {
-                let url = root.appending(path: candidate)
-                guard let data = FileManager.default.contents(atPath: url.path) else { continue }
-                guard let text = String(data: data, encoding: .utf8) else { throw ShaderSourceError.unreadable(url.path) }
-                return text
-            }
+        for candidate in candidates {
+            guard let data = readFile(candidate) else { continue }
+            guard let text = String(data: data, encoding: .utf8) else { throw ShaderSourceError.unreadable(candidate) }
+            return text
         }
         throw ShaderSourceError.notFound(label)
     }

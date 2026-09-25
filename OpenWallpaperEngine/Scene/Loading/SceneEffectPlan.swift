@@ -60,10 +60,9 @@ enum SceneEffectPlanError: Error, CustomStringConvertible {
 /// Resolves a scene object's effect into a `SceneEffectPlan`: loads effect.json and its materials,
 /// resolves combos, textures and constants per pass, and translates each shader variant.
 struct SceneEffectPlanBuilder {
-    /// Wallpaper directory first, then the WE assets: a wallpaper's own copy of a file wins.
-    let roots: [URL]
     let translator: ShaderVariantTranslator
-    /// Reads a file relative to the wallpaper (disk or package) or the WE assets.
+    /// Reads a file relative to the wallpaper (disk or package), falling back to the WE assets:
+    /// a wallpaper's own copy of a file wins. Shaders are read through it too.
     let readFile: (String) -> Data?
     /// Loads a texture by WE name (`util/noise`, `masks/foo`) relative to a material path.
     let loadTexture: (_ name: String, _ materialPath: String) -> SceneMetalTextureSource?
@@ -109,8 +108,8 @@ struct SceneEffectPlanBuilder {
 
     fileprivate func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
                                instance: WEObjectEffectPass?, fbos: [EffectFBO],
-                               shaderRoots: [URL], effectDirectory: String = "") throws -> SceneEffectPassPlan? {
-        let loader = ShaderSourceLoader(roots: shaderRoots)
+                               shaderReader: @escaping (String) -> Data?, effectDirectory: String = "") throws -> SceneEffectPassPlan? {
+        let loader = ShaderSourceLoader(readFile: shaderReader)
         let vertex = try loader.load(materialPass.shader, stage: .vertex)
         let fragment = try loader.load(materialPass.shader, stage: .fragment)
 
@@ -213,10 +212,11 @@ private struct Scoped {
 
     func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
                    instance: WEObjectEffectPass?, fbos: [EffectFBO]) throws -> SceneEffectPassPlan? {
-        let roots = builder.roots.flatMap { root in
-            directory.isEmpty ? [root] : [root.appending(path: directory, directoryHint: .isDirectory), root]
-        }
+        let read = builder.readFile
+        let scopes = candidates
         return try builder.buildPass(pass, materialPass: materialPass, materialPath: materialPath,
-                                     instance: instance, fbos: fbos, shaderRoots: roots, effectDirectory: directory)
+                                     instance: instance, fbos: fbos,
+                                     shaderReader: { path in scopes(path).lazy.compactMap(read).first },
+                                     effectDirectory: directory)
     }
 }

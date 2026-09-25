@@ -961,9 +961,8 @@ class SceneWallpaperViewModel: ObservableObject {
     private func buildEffectPlans(_ effects: [WEObjectEffect], objectID: Int,
                                   wallpaperDir: URL) -> (plans: [SceneEffectPlan], handled: Set<Int>) {
         guard !effects.isEmpty, let translator = Self.effectTranslator else { return ([], []) }
-        let roots = [wallpaperDir] + (WallpaperEngineAssets.directory.map { [$0] } ?? [])
         let builder = SceneEffectPlanBuilder(
-            roots: roots, translator: translator,
+            translator: translator,
             readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
             loadTexture: { [weak self] name, materialPath in
                 self?.loadMetalTexture(named: name, materialDir: materialPath, wallpaperDir: wallpaperDir)
