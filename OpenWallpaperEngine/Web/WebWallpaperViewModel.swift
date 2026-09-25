@@ -19,15 +19,80 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         currentWallpaper.wallpaperDirectory
     }
     
+    weak var webView: WKWebView?
+    private var audioTimer: Timer?
+    private var propertyObserver: NSObjectProtocol?
+
     init(wallpaper: WEWallpaper) {
         self.currentWallpaper = wallpaper
         super.init()
+        propertyObserver = NotificationCenter.default.addObserver(
+            forName: .wallpaperUserPropertyChanged, object: nil, queue: .main
+        ) { [weak self] notification in
+            self?.propertyChanged(notification)
+        }
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemWillSleep(_:)), name: NSWorkspace.screensDidSleepNotification, object: nil)
         NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(systemDidWake(_:)), name: NSWorkspace.didWakeNotification, object: nil)
     }
     
     deinit {
         NotificationCenter.default.removeObserver(self)
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
+        if let propertyObserver { NotificationCenter.default.removeObserver(propertyObserver) }
+        audioTimer?.invalidate()
+    }
+
+    // MARK: Wallpaper Engine web API
+
+    func installBridge(on controller: WKUserContentController) {
+        controller.addUserScript(WKUserScript(source: WebWallpaperPropertyBridge.bootstrapScript,
+                                              injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        controller.add(WeakScriptMessageHandler(self), name: WebWallpaperPropertyBridge.audioMessageName)
+    }
+
+    private var declaredProperties: [String: WebWallpaperPropertyBridge.Property] {
+        WebWallpaperPropertyBridge.declaredProperties(wallpaperDirectory: currentWallpaper.wallpaperDirectory)
+    }
+
+    /// Sends every declared property, as WE does once the page has loaded.
+    private func applyAllProperties(to webView: WKWebView) {
+        let properties = declaredProperties
+        let stored = UserDefaults.standard.dictionary(
+            forKey: WebWallpaperPropertyBridge.storageKey(for: currentWallpaper.wallpaperDirectory)) as? [String: String] ?? [:]
+        let values = WebWallpaperPropertyBridge.currentValues(properties: properties, stored: stored)
+        if let script = WebWallpaperPropertyBridge.applyUserPropertiesScript(
+            WebWallpaperPropertyBridge.payload(properties: properties, values: values)) {
+            webView.evaluateJavaScript(script, completionHandler: nil)
+        }
+        webView.evaluateJavaScript(WebWallpaperPropertyBridge.applyGeneralPropertiesScript(fps: 30), completionHandler: nil)
+    }
+
+    private func propertyChanged(_ notification: Notification) {
+        guard let path = notification.object as? String, path == currentWallpaper.wallpaperDirectory.path,
+              let key = notification.userInfo?["key"] as? String,
+              let value = notification.userInfo?["value"] as? String,
+              let webView else { return }
+        let payload = WebWallpaperPropertyBridge.payload(properties: declaredProperties, values: [key: value])
+        if let script = WebWallpaperPropertyBridge.applyUserPropertiesScript(payload) {
+            webView.evaluateJavaScript(script, completionHandler: nil)
+        }
+    }
+
+    fileprivate func audioListenerRegistered() {
+        guard audioTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            guard let self, let webView = self.webView else { return }
+            let snapshot = AudioReactiveScriptEngine.shared.audioSpectrumSnapshot
+            let samples = WebWallpaperPropertyBridge.audioArray(left: snapshot.left64, right: snapshot.right64)
+            webView.evaluateJavaScript(WebWallpaperPropertyBridge.audioDeliveryScript(samples), completionHandler: nil)
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        audioTimer = timer
+    }
+
+    func stopAudio() {
+        audioTimer?.invalidate()
+        audioTimer = nil
     }
     
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
@@ -38,6 +103,7 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         let javascriptStyle = "var css = '*{-webkit-touch-callout:none;-webkit-user-select:none}'; var head = document.head || document.getElementsByTagName('head')[0]; var style = document.createElement('style'); style.type = 'text/css'; style.appendChild(document.createTextNode(css)); head.appendChild(style);"
         webView.evaluateJavaScript(javascriptStyle, completionHandler: nil)
+        applyAllProperties(to: webView)
         
         if AppDelegate.shared.globalSettingsViewModel.settings.adjustMenuBarTint {
             webView.takeSnapshot(with: nil) { [weak self] nsImage, error in
@@ -65,5 +131,19 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         // Handle waking up
         OWELog.info(.web, "System woke up from sleep")
         // Update your SwiftUI state here if needed
+    }
+}
+
+/// Breaks the WKUserContentController → handler retain cycle.
+private final class WeakScriptMessageHandler: NSObject, WKScriptMessageHandler {
+    private weak var owner: WebWallpaperViewModel?
+
+    init(_ owner: WebWallpaperViewModel) {
+        self.owner = owner
+    }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard message.name == WebWallpaperPropertyBridge.audioMessageName else { return }
+        owner?.audioListenerRegistered()
     }
 }

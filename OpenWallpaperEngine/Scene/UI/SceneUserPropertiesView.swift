@@ -59,9 +59,11 @@ private final class SceneUserPropertiesModel: ObservableObject {
     private let storageKey: String
     private let explicitKey: String
     private var pendingSave: DispatchWorkItem?
+    private let wallpaperPath: String
 
     init(wallpaper: WEWallpaper) {
-        storageKey = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
+        wallpaperPath = wallpaper.wallpaperDirectory.path
+        storageKey = WebWallpaperPropertyBridge.storageKey(for: wallpaper.wallpaperDirectory)
         explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
         load(wallpaper)
     }
@@ -73,6 +75,8 @@ private final class SceneUserPropertiesModel: ObservableObject {
     func set(_ value: String, forID id: String) {
         guard values[id] != value else { return }
         values[id] = value
+        NotificationCenter.default.post(name: .wallpaperUserPropertyChanged, object: wallpaperPath,
+                                        userInfo: ["key": id, "value": value])
         AudioReactiveScriptEngine.shared.setUserProperties(values)
         pendingSave?.cancel()
         let snapshot = values

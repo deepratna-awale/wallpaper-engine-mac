@@ -25,9 +25,11 @@ struct WebWallpaperView: NSViewRepresentable {
         Self.enableFileAccess(on: configuration)
         configuration.allowsAirPlayForMediaPlayback = true
         configuration.mediaTypesRequiringUserActionForPlayback = []
+        viewModel.installBridge(on: configuration.userContentController)
 
         let nsView = WKWebView(frame: .zero, configuration: configuration)
         nsView.navigationDelegate = viewModel
+        viewModel.webView = nsView
         Self.loadWallpaper(nsView, viewModel: viewModel)
         return nsView
     }
@@ -70,6 +72,7 @@ struct WebWallpaperView: NSViewRepresentable {
 
         if selectedWallpaper.wallpaperDirectory.appending(path: selectedWallpaper.project.file) != currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file) {
             viewModel.currentWallpaper = selectedWallpaper
+            viewModel.stopAudio()
             Self.loadWallpaper(nsView, viewModel: viewModel)
         }
         applyPlacement(wallpaperViewModel.wallpaperPlacement, to: nsView)
