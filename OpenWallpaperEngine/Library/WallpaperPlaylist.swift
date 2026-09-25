@@ -34,6 +34,28 @@ struct WallpaperPlaylist: Codable, Identifiable, Equatable {
         self.changeWhenVideoEnds = changeWhenVideoEnds
     }
 
+    /// The item auto-advance moves to after `current`, passing over any `isSkipped` item. Nil
+    /// when the end is reached without `repeats`, or when every item is skipped.
+    func nextIndex(after current: Int, shuffle: Bool, repeats: Bool, isSkipped: (Int) -> Bool,
+                   random: (Range<Int>) -> Int = { Int.random(in: $0) }) -> Int? {
+        guard !items.isEmpty else { return nil }
+        if shuffle {
+            let playable = items.indices.filter { !isSkipped($0) }
+            guard !playable.isEmpty else { return nil }
+            return playable[random(0..<playable.count)]
+        }
+        var index = current
+        for _ in 0..<items.count {
+            index += 1
+            if index >= items.count {
+                guard repeats else { return nil }
+                index = 0
+            }
+            if !isSkipped(index) { return index }
+        }
+        return nil
+    }
+
     private enum CodingKeys: String, CodingKey { case id, name, items, duration, changeWhenVideoEnds }
 
     init(from decoder: Decoder) throws {

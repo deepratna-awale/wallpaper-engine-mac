@@ -12,7 +12,7 @@ import Combine
 ///   a clean quit. If it is still there at launch, those wallpapers are not restored, the
 ///   playlist stays paused, and a notice offers to retry them.
 /// - A wallpaper behind two unclean exits in a row is flagged: the library marks it and applying
-///   it asks first.
+///   it asks first; playlist auto-advance skips it.
 /// - `RenderWatchdog` unloads the showing wallpapers when the app stays badly degraded.
 ///
 /// This is independent of any sentinel the shader compiler keeps for its own work.
@@ -58,6 +58,7 @@ final class SafeRestart: ObservableObject {
 
         viewModel.renderWatchdog = watchdog
         viewModel.confirmApply = { [weak self] wallpaper in self?.confirmApplying(wallpaper) ?? true }
+        viewModel.isFlaggedBySafeRestart = { [weak self] wallpaper in self?.ledger.isFlagged(wallpaper) ?? false }
         sessionCancellable = viewModel.$wallpapers
             .combineLatest(viewModel.$enabledScreens)
             .sink { [weak self] wallpapers, enabledScreens in

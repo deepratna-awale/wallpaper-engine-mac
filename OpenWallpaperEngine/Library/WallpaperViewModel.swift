@@ -104,6 +104,8 @@ class WallpaperViewModel: ObservableObject {
     }
     /// Asked before a wallpaper is applied; returning false cancels it. Set by `SafeRestart`.
     var confirmApply: ((WEWallpaper) -> Bool)?
+    /// Set by `SafeRestart`: whether a wallpaper is flagged, so auto-advance can pass it over.
+    var isFlaggedBySafeRestart: ((WEWallpaper) -> Bool)?
     /// Receives wallpaper frame times. Set by `SafeRestart`.
     var renderWatchdog: RenderWatchdog?
     private var playlistIndex = 0
@@ -333,7 +335,7 @@ class WallpaperViewModel: ObservableObject {
           guard let playlist = activePlaylist, playlist.changeWhenVideoEnds,
               playlist.items.indices.contains(playlistIndex),
               playlist.items[playlistIndex].wallpaper.wallpaperDirectory == wallpaper.wallpaperDirectory else { return }
-          nextPlaylistWallpaper()
+          advancePlaylistAutomatically()
         }
 
     func importVideoWallpaper(from url: URL) {
@@ -506,16 +508,33 @@ class WallpaperViewModel: ObservableObject {
     }
 
     func nextPlaylistWallpaper() {
+        advancePlaylist(skippingFlagged: false)
+    }
+
+    /// Timer and video-end advances. Nobody is there to confirm a wallpaper safe restart
+    /// flagged, so those are passed over instead of asking.
+    private func advancePlaylistAutomatically() {
+        advancePlaylist(skippingFlagged: true)
+    }
+
+    private func advancePlaylist(skippingFlagged: Bool) {
         guard let playlist = activePlaylist, !playlist.items.isEmpty else { return }
-        if playlistShuffle {
-            playlistIndex = Int.random(in: 0..<playlist.items.count)
-        } else {
-            playlistIndex += 1
-            if playlistIndex >= playlist.items.count {
-                guard playlistRepeats else { playlistEnabled = false; return }
-                playlistIndex = 0
-            }
+        let isFlagged = isFlaggedBySafeRestart
+        let next = playlist.nextIndex(after: playlistIndex, shuffle: playlistShuffle, repeats: playlistRepeats) { index in
+            let wallpaper = playlist.items[index].wallpaper
+            guard skippingFlagged, isFlagged?(wallpaper) == true else { return false }
+            OWELog.info(.app, "Playlist skips \"\(wallpaper.project.title)\": flagged by safe restart")
+            return true
         }
+        guard let next else {
+            if playlistRepeats {
+                OWELog.info(.app, "Playlist \"\(playlist.name)\" has nothing left to show: every item is flagged by safe restart")
+            } else {
+                playlistEnabled = false
+            }
+            return
+        }
+        playlistIndex = next
         setWallpaper(playlist.items[playlistIndex].wallpaper, for: selectedScreenIds)
         restartPlaylistTimer()
     }
@@ -535,7 +554,7 @@ class WallpaperViewModel: ObservableObject {
           let type = item.wallpaper.project.type.lowercased()
           if playlist.changeWhenVideoEnds && (type == "video" || type == "remote-video") { return }
           playlistTimer = Timer.scheduledTimer(withTimeInterval: playlist.duration, repeats: false) { [weak self] _ in
-            self?.nextPlaylistWallpaper()
+            self?.advancePlaylistAutomatically()
         }
     }
 
