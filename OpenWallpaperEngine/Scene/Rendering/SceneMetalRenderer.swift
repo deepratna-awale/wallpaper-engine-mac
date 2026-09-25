@@ -309,6 +309,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let frameStart = CACurrentMediaTime()
         let frameSignpost = OWESignpost.begin(OWESignpost.render, "frame")
         AudioReactiveScriptEngine.shared.beginFrame(wallpaper: wallpaperKey)
+        renderTargetPool.endFrame()
         defer {
             AudioReactiveScriptEngine.shared.endFrame()
             frameSignpost.end()
