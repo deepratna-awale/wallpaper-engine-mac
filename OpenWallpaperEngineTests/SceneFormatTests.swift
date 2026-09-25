@@ -22,11 +22,37 @@ final class SceneFormatTests: XCTestCase {
 
     func testOneMalformedEffectDoesNotDropItsSiblings() throws {
         let compose = try loadScene().objects[2]
-        // Known gap (progress snapshot B7): effects decode all-or-nothing under try?, so the entry
-        // without a `file` drops the valid tint effect too. Remove the expectation once decoding is
-        // element-wise.
-        XCTExpectFailure("B7: [WEObjectEffect] decodes all-or-nothing")
         XCTAssertEqual(compose.effects?.count, 1)
+        XCTAssertEqual(compose.effects?.first?.file, "effects/tint/effect.json")
+    }
+
+    func testMultiPassInstanceKeepsEveryPass() throws {
+        struct Objects: Decodable { let objects: [WESceneObject] }
+        let failures = DecodeFailureLog()
+        let scene = try decodeTolerant(Objects.self, from: Fixtures.data("Scenes/multipass/scene.json"),
+                                       failures: failures)
+        XCTAssertEqual(failures.messages, [])
+        let effect = try XCTUnwrap(scene.objects.first?.effects?.first)
+        XCTAssertEqual(effect.id, 10)
+        XCTAssertEqual(effect.visible, true)
+        XCTAssertEqual(effect.visibleUserProperty, "showblur")
+        let passes = try XCTUnwrap(effect.passes)
+        XCTAssertEqual(passes.count, 3)
+
+        XCTAssertEqual(passes[0].combos, ["KERNEL": 2])
+        XCTAssertEqual(passes[0].textures, [nil, "masks/blur_mask"])
+        XCTAssertEqual(passes[0].constants["scale"], .string("2 2"))
+        XCTAssertEqual(passes[0].constants["strength"],
+                       .object(.init(value: .number(0.25), userName: "blurstrength")))
+        XCTAssertEqual(passes[0].constantshadervalues?["strength"]?.number, 0.25)
+
+        XCTAssertEqual(passes[1].combos, ["VERTICAL": 1])
+        XCTAssertEqual(passes[1].constants["scale"], .number(3))
+        XCTAssertEqual(passes[1].usertextures,
+                       .array([.null, .object(["name": .string("$mediaThumbnail"), "type": .string("system")])]))
+
+        XCTAssertNil(passes[2].combos)
+        XCTAssertEqual(passes[2].constants, [:])
     }
 
     func testUserPropertyStringsMatchWallpaperEngineForms() {
