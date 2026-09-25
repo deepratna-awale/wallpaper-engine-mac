@@ -343,7 +343,74 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             ? SIMD2<Float>(sin(time * 47.3) * 0.004 + sin(time * 71.9) * 0.002,
                            cos(time * 53.1) * 0.004 + cos(time * 83.7) * 0.002) * sceneSize
             : .zero
+        updateParticles(deltaTime: frameDelta, cursor: cursor)
+        lastFrameTime = CACurrentMediaTime()
+        // One instanced draw per system rather than one per particle (or per rope segment, which
+        // multiplies out to thousands on trail renderers).
+        particleInstances.removeAll(keepingCapacity: true)
+        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int)] = []
+        // Systems are drawn in scene.json order, between the layers around them.
+        let orderedSystems = particleSystems.enumerated()
+            .sorted { ($0.element.configuration.order, $0.offset) < ($1.element.configuration.order, $1.offset) }
+            .map(\.element)
+        for system in orderedSystems {
+            let base = particleInstances.count
+            if system.configuration.rendererName == "rope" {
+                appendRope(system, drawableSize: drawableSize)
+            } else {
+                for particle in system.particles {
+                    if system.configuration.rendererName == "ropetrail" {
+                        appendRopeTrail(particle, system: system, drawableSize: drawableSize)
+                    } else if system.configuration.rendererName.contains("trail") {
+                        appendParticleTrail(particle, system: system, drawableSize: drawableSize)
+                    } else {
+                        var uniform = layerUniform(position: particle.position,
+                                                   size: SIMD2<Float>(repeating: particle.size),
+                                                   opacity: particleOpacity(particle, in: system),
+                                                   drawableSize: drawableSize)
+                        uniform.particleShape = 1
+                        uniform.rotation = particle.rotation
+                        uniform.color = particle.color
+                        let uv = spriteSheetUV(for: particle, configuration: system.configuration)
+                        uniform.uvOrigin = uv.origin
+                        uniform.uvAxisX = SIMD2<Float>(uv.size.x, 0)
+                        uniform.uvAxisY = SIMD2<Float>(0, uv.size.y)
+                        particleInstances.append(uniform)
+                    }
+                }
+            }
+            particleBatches.append((system, base, particleInstances.count - base))
+        }
+        let particleBuffer = particleInstanceBuffer(for: particleInstances.count)
+        if let particleBuffer {
+            particleInstances.withUnsafeBytes { source in
+                particleBuffer.contents().copyMemory(from: source.baseAddress!, byteCount: source.count)
+            }
+        }
+        var nextParticleBatch = 0
+        /// One instanced draw per system, for every system authored before `order`.
+        func drawParticleBatches(before order: Int) {
+            guard let particleBuffer else { return }
+            var drew = false
+            while nextParticleBatch < particleBatches.count,
+                  particleBatches[nextParticleBatch].system.configuration.order < order {
+                let batch = particleBatches[nextParticleBatch]
+                nextParticleBatch += 1
+                guard batch.count > 0 else { continue }
+                // Layer draws rebind index 0 with setVertexBytes, so bind the instances per draw.
+                encoder.setVertexBuffer(particleBuffer, offset: 0, index: 0)
+                encoder.setFragmentBuffer(particleBuffer, offset: 0, index: 0)
+                encoder.setRenderPipelineState(batch.system.configuration.blending == "additive"
+                                               ? additiveRenderPipeline : renderPipeline)
+                encoder.setFragmentTexture(batch.system.texture, index: 0)
+                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
+                                       instanceCount: batch.count, baseInstance: batch.base)
+                drew = true
+            }
+            if drew { encoder.setRenderPipelineState(renderPipeline) }
+        }
         for (layerIndex, entry) in layers.enumerated() {
+            drawParticleBatches(before: entry.layer.order)
             if entry.layer.readsScene {
                 // Metal can't sample the attachment it's drawing into: pause the scene pass, copy
                 // what's drawn so far (`_rt_FullFrameBuffer`), run this layer's effects on it, resume.
@@ -472,54 +539,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             encoder.setFragmentTexture(dynamicTextures[layerIndex] ?? textureFrame.texture, index: 0)
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         }
-        updateParticles(deltaTime: frameDelta, cursor: cursor)
-        lastFrameTime = CACurrentMediaTime()
-        // One instanced draw per system rather than one per particle (or per rope segment, which
-        // multiplies out to thousands on trail renderers).
-        particleInstances.removeAll(keepingCapacity: true)
-        var particleBatches: [(system: ParticleSystemRuntime, base: Int, count: Int)] = []
-        for system in particleSystems {
-            let base = particleInstances.count
-            if system.configuration.rendererName == "rope" {
-                appendRope(system, drawableSize: drawableSize)
-            } else {
-                for particle in system.particles {
-                    if system.configuration.rendererName == "ropetrail" {
-                        appendRopeTrail(particle, system: system, drawableSize: drawableSize)
-                    } else if system.configuration.rendererName.contains("trail") {
-                        appendParticleTrail(particle, system: system, drawableSize: drawableSize)
-                    } else {
-                        var uniform = layerUniform(position: particle.position,
-                                                   size: SIMD2<Float>(repeating: particle.size),
-                                                   opacity: particleOpacity(particle, in: system),
-                                                   drawableSize: drawableSize)
-                        uniform.particleShape = 1
-                        uniform.rotation = particle.rotation
-                        uniform.color = particle.color
-                        let uv = spriteSheetUV(for: particle, configuration: system.configuration)
-                        uniform.uvOrigin = uv.origin
-                        uniform.uvAxisX = SIMD2<Float>(uv.size.x, 0)
-                        uniform.uvAxisY = SIMD2<Float>(0, uv.size.y)
-                        particleInstances.append(uniform)
-                    }
-                }
-            }
-            particleBatches.append((system, base, particleInstances.count - base))
-        }
-        if let buffer = particleInstanceBuffer(for: particleInstances.count) {
-            particleInstances.withUnsafeBytes { source in
-                buffer.contents().copyMemory(from: source.baseAddress!, byteCount: source.count)
-            }
-            encoder.setVertexBuffer(buffer, offset: 0, index: 0)
-            encoder.setFragmentBuffer(buffer, offset: 0, index: 0)
-            for batch in particleBatches where batch.count > 0 {
-                encoder.setRenderPipelineState(batch.system.configuration.blending == "additive"
-                                               ? additiveRenderPipeline : renderPipeline)
-                encoder.setFragmentTexture(batch.system.texture, index: 0)
-                encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4,
-                                       instanceCount: batch.count, baseInstance: batch.base)
-            }
-        }
+        drawParticleBatches(before: .max)
         encoder.endEncoding()
 
         // Composite the scene-resolution render target onto the real drawable, applying placement exactly once.

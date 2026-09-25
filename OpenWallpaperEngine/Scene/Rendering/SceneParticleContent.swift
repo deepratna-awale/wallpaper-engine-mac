@@ -4,6 +4,8 @@ import CryptoKit
 
 struct SceneMetalParticleSystem {
     let source: SceneMetalTextureSource
+    /// Index of the object in scene.json; systems draw between layers in that order.
+    var order = 0
     let origin: SIMD2<Float>
     let emissionRate: Float
     let emissionRateScript: String?

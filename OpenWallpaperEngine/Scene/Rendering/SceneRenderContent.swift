@@ -45,6 +45,8 @@ struct SceneMetalLayer {
     /// Composition, fullscreen and project layers: the base image is the scene rendered so far
     /// under the layer (`_rt_FullFrameBuffer`), not a texture.
     var sceneInput = false
+    /// Index of the object in scene.json: layers and particle systems draw in that order.
+    var order = 0
 
     /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
     var readsScene: Bool { sceneInput || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) } }

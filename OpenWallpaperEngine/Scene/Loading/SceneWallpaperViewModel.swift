@@ -406,25 +406,25 @@ class SceneWallpaperViewModel: ObservableObject {
         for (index, object) in scene.objects.enumerated() {
             objectsByID[object.id ?? index] = object
         }
-        let layers: [SceneMetalLayer] = scene.objects.compactMap { object in
+        // WE draws objects in scene.json order; both lists carry that index so the renderer can interleave them.
+        let layers: [SceneMetalLayer] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
             if object.textValue != nil,
                     AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(object.id ?? -1)_enabled") == "false" {
                 return nil
             }
-            let layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
+            var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
+            layer?.order = index
             return layer
-        }.sorted { first, second in
-            // Text is authored early in several Workshop scenes but is intended
-            // to sit over the later background/album layers.
-            (first.text != nil ? 1 : 0) < (second.text != nil ? 1 : 0)
         }
-        let particleSystems: [SceneMetalParticleSystem] = scene.objects.compactMap { object in
+        let particleSystems: [SceneMetalParticleSystem] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
-            return buildMetalParticleSystem(object, wallpaperDir: wallpaperDir,
-                                            sceneSize: sceneSize, objectsByID: objectsByID)
+            var system = buildMetalParticleSystem(object, wallpaperDir: wallpaperDir,
+                                                  sceneSize: sceneSize, objectsByID: objectsByID)
+            system?.order = index
+            return system
         }
         if !layers.isEmpty || !particleSystems.isEmpty {
             let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,

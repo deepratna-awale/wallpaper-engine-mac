@@ -31,6 +31,17 @@ final class SceneLayerKindTests: XCTestCase {
         return SIMD4<Float>(pixel.map { Float($0) / 255 })
     }
 
+    /// D7: text is no longer lifted above later layers, and particles sit between layers by object index.
+    func testLayersAndParticlesKeepSceneOrder() throws {
+        let content = try content("ordering")
+        XCTAssertEqual(content.layers.map(\.id), ["10", "20", "40"], "layers must keep scene.json order")
+        XCTAssertEqual(content.layers.map(\.order), [0, 1, 3])
+        XCTAssertEqual(content.particleSystems.map(\.order), [2])
+        let shade = try XCTUnwrap(content.layers.last)
+        XCTAssertEqual(shade.opacity, 0.5)
+        XCTAssertEqual(shade.size, SIMD2(1920, 1080))
+    }
+
     func testTextLayersKeepTheirAuthoredEffects() throws {
         do {
             _ = try ProcessShaderCompiler()
