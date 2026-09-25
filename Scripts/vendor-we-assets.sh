@@ -10,7 +10,8 @@
 #
 # Kept: effect manifests, materials and their GLSL shaders (translated to Metal at runtime,
 # per option set), the shared shaders/headers in `shaders/`, textures, models, particles and the
-# SceneScript runtime. Editor preview art and Direct3D (HLSL) shaders are left out.
+# SceneScript runtime, and the built-in fonts text layers name as "fonts/<file>" together with
+# their licence files. Editor preview art and Direct3D (HLSL) shaders are left out.
 
 set -euo pipefail
 
@@ -37,7 +38,7 @@ rsync -a --prune-empty-dirs \
 rsync -a --prune-empty-dirs --exclude 'HLSL/' --exclude 'editor/' --exclude '.DS_Store' \
     "$ASSETS/shaders/" "$DEST/shaders/"
 
-for dir in materials models particles scripts; do
+for dir in fonts materials models particles scripts; do
     [[ -d "$ASSETS/$dir" ]] || continue
     rsync -a --exclude '.DS_Store' "$ASSETS/$dir/" "$DEST/$dir/"
 done
