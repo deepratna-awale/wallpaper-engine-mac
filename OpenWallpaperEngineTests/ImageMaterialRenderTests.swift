@@ -303,6 +303,73 @@ final class ImageMaterialRenderTests: XCTestCase {
         XCTAssertEqual(built, 1)
     }
 
+    /// Risk I2: a layer's effects run on its image in texture space and the material draws their
+    /// output, so a pass-through effect changes nothing: no transform, alpha or brightness applied
+    /// twice, and no flip, for a rotated, scaled, half-transparent layer.
+    func testPassThroughEffectLeavesTheMaterialDrawUnchanged() throws {
+        let assets = ShaderVariantTests.weAssets
+        let effects = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache.appending(path: "archives")))
+        let effectBuilder = SceneEffectPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache),
+            readFile: { FileManager.default.contents(atPath: assets.appending(path: $0).path) },
+            loadTexture: { _, _ in nil })
+        let effect = try JSONDecoder().decode(WEObjectEffect.self, from: Data(
+            #"{"file":"effects/tint/effect.json","passes":[{"constantshadervalues":{"color":"1 0 0","alpha":0}}]}"#.utf8))
+        let effectPlan = try effectBuilder.build(effect)
+        let texture = try Self.checkerTexture(device: device)
+        XCTAssertTrue(effects.waitUntilReady([effectPlan], width: texture.width, height: texture.height))
+        let commands = try XCTUnwrap(queue.makeCommandBuffer())
+        let context = EffectGraphRenderer.Context(frame: BuiltinFrameContext(), values: EffectGraphTests.FixedValues(),
+                                                  assetTexture: { _, _ in nil }, sceneSnapshot: nil,
+                                                  layerColor: SIMD3(0.9, 0.8, 1), layerAlpha: 0.5)
+        let output = try XCTUnwrap(effects.apply([effectPlan], to: texture, layerID: "layer", context: context,
+                                                 commandBuffer: commands))
+        commands.commit()
+        commands.waitUntilCompleted()
+
+        let plan = try XCTUnwrap(try builder.build(materialPath: "materials/image4.json", colorBlendMode: nil))
+        var layer = Layer(size: SIMD2(120, 80), rotation: .pi / 4, color: SIMD3(0.9, 0.8, 1), alpha: 0.5, brightness: 1.2)
+        layer.center = SIMD2(250, 120)
+        let plain = try render { encoder, format in
+            XCTAssertTrue(self.drawMaterial(plan, layer, texture: texture, snapshot: nil, encoder: encoder, format: format))
+        }
+        let viaEffect = try render { encoder, format in
+            XCTAssertTrue(self.drawMaterial(plan, layer, texture: output, snapshot: nil, encoder: encoder, format: format))
+        }
+        var differing = 0
+        for index in stride(from: 0, to: plain.count, by: 4) {
+            let delta = (0..<4).map { abs(Int(plain[index + $0]) - Int(viaEffect[index + $0])) }.max() ?? 0
+            if delta > 2 { differing += 1 }
+        }
+        XCTAssertEqual(differing, 0, "\(differing) pixels differ with a pass-through effect")
+    }
+
+    /// Risk I16: a material whose shader can't be found fails loudly at load (the loader logs it
+    /// once and draws the layer natively) instead of planning a blank layer.
+    func testMissingShaderFailsLoudly() {
+        XCTAssertThrowsError(try builder.build(materialPath: "materials/missingshader.json", colorBlendMode: nil))
+    }
+
+    /// Risk I23: depth and cull state in a material (including WE's own `culling` spelling) never
+    /// makes an invalid pipeline for the depth-less scene pass, and a mirrored layer stays visible.
+    func testDepthAndCullStateKeepMirroredLayersVisible() throws {
+        let plan = try XCTUnwrap(try builder.build(materialPath: "materials/depthcull.json", colorBlendMode: nil))
+        let texture = try Self.solidTexture(device: device, color: [255, 0, 0, 255])
+        for mirror in [SIMD2<Float>(-1, 1), SIMD2(1, -1), SIMD2(-1, -1)] {
+            let pixels = try render { encoder, format in
+                XCTAssertTrue(self.renderer.waitUntilReady(plan, pixelFormat: format), "pipeline for \(mirror)")
+                let quad = SceneQuadGeometry(center: SIMD2(200, 128), axisX: SIMD2(160 * mirror.x, 0),
+                                             axisY: SIMD2(0, 96 * mirror.y))
+                XCTAssertTrue(self.renderer.draw(plan, ImageMaterialRenderer.Draw(
+                    layerID: "mirrored", quad: quad, sceneSize: Self.sceneSize, color: SIMD3(1, 1, 1), alpha: 1, brightness: 1,
+                    texture: texture, contentSize: nil, uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1),
+                    sceneSnapshot: nil, frame: BuiltinFrameContext(), values: EffectGraphTests.FixedValues(),
+                    assetTexture: { _, _ in nil }), pixelFormat: format, encoder: encoder))
+            }
+            XCTAssertEqual(Self.pixel(pixels, x: 100, y: 64).red, 1, accuracy: 2 / 255, "mirrored \(mirror) is drawn")
+        }
+    }
+
     /// Risk #14: script clones share their source's plan but each has its own uniform state,
     /// and removing them frees it all.
     func testRemovedClonesFreeTheirUniformState() throws {
