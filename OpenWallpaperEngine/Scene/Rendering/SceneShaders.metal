@@ -197,5 +197,7 @@ fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> tex
         brightAccum /= 9.0;
         color.rgb += brightAccum * layer.effects.w * layer.bloomTint.rgb;
     }
-    return color * layer.opacity * layer.color;
+    // Straight alpha, as WE's translucent and additive blends expect: opacity scales alpha only,
+    // and the blend applies it to the colour once.
+    return float4(color.rgb * layer.color.rgb, color.a * layer.opacity * layer.color.a);
 }

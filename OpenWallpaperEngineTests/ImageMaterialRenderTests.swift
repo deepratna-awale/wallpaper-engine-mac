@@ -125,6 +125,13 @@ final class ImageMaterialRenderTests: XCTestCase {
         XCTAssertEqual(center.green, 0.5 * Self.background.y, accuracy: 2 / 255)
     }
 
+    /// Risk I1: layers that still draw natively (text, fallbacks) blend like WE too: a
+    /// half-transparent layer matches its material draw instead of coming out darker.
+    func testNativeDrawAppliesLayerAlphaOnce() throws {
+        try assertMatchesNative("image4", Layer(rotation: 0.3, alpha: 0.5))
+        try assertMatchesNative("additive", Layer(rotation: 0.3, alpha: 0.5), additive: true)
+    }
+
     func testLegacyGenericImage2TakesAlphaFromTheMaterialAndTheLayer() throws {
         let plan = try XCTUnwrap(try builder.build(materialPath: "materials/image2legacy.json", colorBlendMode: nil))
         let texture = try Self.solidTexture(device: device, color: [0, 0, 255, 255])
