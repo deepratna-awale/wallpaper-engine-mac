@@ -191,6 +191,27 @@ final class ShaderVariantCacheTests: XCTestCase {
         }
     }
 
+    /// The source a compiler step rejected lands in the failure directory (CLAUDE.md's
+    /// `/tmp/owe-failed-shaders`), with the error after it so its line numbers still match.
+    func testRejectedSourceIsWrittenForInspection() throws {
+        let failures = temporaryDirectory("failed-shaders")
+        let translator = ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil,
+                                                 failureDirectory: failures)
+        let vertex = ShaderSource(stage: .vertex, path: "effects/x/ok", text: "void main() { gl_Position = vec4(0.0); }",
+                                  combos: [], uniforms: [])
+        let fragment = ShaderSource(stage: .fragment, path: "effects/x/bad", text: "void main() { nope(); }",
+                                    combos: [], uniforms: [])
+        XCTAssertThrowsError(try translator.variant(vertex: vertex, fragment: fragment, combos: [:]))
+        let names = try FileManager.default.contentsOfDirectory(atPath: failures.path)
+        XCTAssertEqual(names, ["effects_x_bad.frag"])
+        let text = try String(contentsOf: failures.appending(path: "effects_x_bad.frag"), encoding: .utf8)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        let source = try XCTUnwrap(lines.firstIndex { $0.contains("nope()") })
+        let error = try XCTUnwrap(lines.lastIndex { $0.hasPrefix("// ") && $0.contains("nope") })
+        XCTAssertLessThan(source, error, "the error follows the source")
+        XCTAssertEqual(ShaderVariantTranslator.defaultFailureDirectory.path, "/tmp/owe-failed-shaders")
+    }
+
     /// Malformed WE sources (truncated, garbled) fail with an error; none may abort the app.
     func testGarbledSourcesFailWithoutCrashing() throws {
         let assets = ShaderVariantTests.weAssets

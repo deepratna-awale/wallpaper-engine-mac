@@ -60,12 +60,19 @@ final class ShaderVariantTranslator {
     let generationDirectory: URL?
     /// The compiler's backend, versions and options (`ShaderCompiler.cacheFingerprint`).
     let toolchainFingerprint: String
+    /// Where the source a compiler step rejected is written, one file per shader and stage: the
+    /// compiler's line numbers refer to it, not to the WE file. nil writes nothing.
+    let failureDirectory: URL?
     private let lock = NSLock()
     private var memory: [String: TranslatedShaderVariant] = [:]
 
-    init(compiler: ShaderCompiler, cacheDirectory: URL? = ShaderVariantTranslator.defaultCacheDirectory) {
+    static let defaultFailureDirectory = URL(fileURLWithPath: "/tmp/owe-failed-shaders", isDirectory: true)
+
+    init(compiler: ShaderCompiler, cacheDirectory: URL? = ShaderVariantTranslator.defaultCacheDirectory,
+         failureDirectory: URL? = ShaderVariantTranslator.defaultFailureDirectory) {
         self.compiler = compiler
         self.cacheDirectory = cacheDirectory
+        self.failureDirectory = failureDirectory
         toolchainFingerprint = compiler.cacheFingerprint
         let generation = Self.generation(toolchain: toolchainFingerprint)
         generationDirectory = cacheDirectory?.appending(path: generation, directoryHint: .isDirectory)
@@ -183,18 +190,42 @@ final class ShaderVariantTranslator {
     private func translate(vertex: ShaderSource, fragment: ShaderSource,
                            combos: [String: Int]) throws -> TranslatedShaderVariant {
         let label = "\(vertex.path) + \(fragment.path)"
+        // The input of the step running now, kept for `recordFailure`.
+        var step: (source: ShaderSource, text: String)?
         do {
-            let vertexText = try compiler.preprocess(ShaderPrelude.text(for: .vertex, combos: combos, analysis: vertex.preludeAnalysis) + vertex.text, stage: .vertex)
-            let fragmentText = try compiler.preprocess(ShaderPrelude.text(for: .fragment, combos: combos, analysis: fragment.preludeAnalysis) + fragment.text, stage: .fragment)
+            step = (vertex, ShaderPrelude.text(for: .vertex, combos: combos, analysis: vertex.preludeAnalysis) + vertex.text)
+            let vertexText = try compiler.preprocess(step!.text, stage: .vertex)
+            step = (fragment, ShaderPrelude.text(for: .fragment, combos: combos, analysis: fragment.preludeAnalysis) + fragment.text)
+            let fragmentText = try compiler.preprocess(step!.text, stage: .fragment)
             let pair = ShaderPairRewriter.rewrite(vertex: ShaderPrelude.fixupAfterPreprocess(vertexText),
                                                   fragment: ShaderPrelude.fixupAfterPreprocess(fragmentText))
+            step = (vertex, pair.vertex)
             let vertexOut = try compiler.compileToMSL(pair.vertex, stage: .vertex)
+            step = (fragment, pair.fragment)
             let fragmentOut = try compiler.compileToMSL(pair.fragment, stage: .fragment)
+            step = nil
             let layout = try Self.uniformLayout(from: fragmentOut.reflection) ?? Self.uniformLayout(from: vertexOut.reflection)
             return TranslatedShaderVariant(vertexMSL: vertexOut.msl, fragmentMSL: fragmentOut.msl, uniforms: layout,
                                            textureSlots: pair.textureSlots, attributes: pair.attributes, combos: combos)
         } catch {
+            if let step { recordFailure(step.source, text: step.text, error: error) }
             throw ShaderVariantError.translation(label, underlying: error)
+        }
+    }
+
+    /// Writes the text a compiler step rejected to `failureDirectory`, with the error after it
+    /// (not before, which would shift the line numbers it quotes).
+    private func recordFailure(_ source: ShaderSource, text: String, error: Error) {
+        guard let failureDirectory else { return }
+        let name = source.path.replacingOccurrences(of: "/", with: "_") + "." + source.stage.rawValue
+        let url = failureDirectory.appending(path: name)
+        let trailer = "\(error)".split(separator: "\n").map { "// \($0)" }.joined(separator: "\n")
+        do {
+            try FileManager.default.createDirectory(at: failureDirectory, withIntermediateDirectories: true)
+            try (text + (text.hasSuffix("\n") ? "" : "\n") + trailer + "\n").write(to: url, atomically: true, encoding: .utf8)
+            OWELog.error(.shader, "Shader \(source.path) failed to translate; its source is at \(url.path)")
+        } catch {
+            OWELog.error(.shader, "Could not write the failed shader \(url.path): \(error)")
         }
     }
 
