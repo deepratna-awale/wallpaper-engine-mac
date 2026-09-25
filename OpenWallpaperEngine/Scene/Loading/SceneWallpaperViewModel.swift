@@ -796,7 +796,30 @@ class SceneWallpaperViewModel: ObservableObject {
         layer.alignment = SceneAlignment.text(horizontal: object.horizontalalign, vertical: object.verticalalign)
         // WE runs a text object's effects on its rasterised text; the renderer rasterises before effects run.
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
+        // Drawn through WE's `font` material, which reads its texture as coverage: effects' output
+        // isn't that, and `font` has no blend-mode combo, so those layers keep the native draw.
+        if layer.weEffects.isEmpty, (object.colorBlendMode ?? 0) == 0 {
+            layer.imageMaterial = buildTextMaterial(object, wallpaperDir: wallpaperDir)
+        }
         return layer
+    }
+
+    /// A text object's `font` material (`materials/fonts/basefont.json`), whose `g_Texture0` is the
+    /// renderer's rasterised text. WE's MSDF atlas (`msdf`, outline, drop shadow) isn't generated:
+    /// CoreText's coverage stands in for it, as for plain fonts. nil (logged) keeps the native draw.
+    private func buildTextMaterial(_ object: WESceneObject, wallpaperDir: URL) -> ImageMaterialPlan? {
+        guard let translator = Self.effectTranslator else { return nil }
+        let builder = ImageMaterialPlanBuilder(
+            translator: translator,
+            readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
+            loadTexture: { _, _ in nil })
+        let materialPath = "materials/fonts/basefont.json"
+        do {
+            return try builder.buildText(materialPath: materialPath)
+        } catch {
+            OWELog.error(.scene, "Text layer \(object.id ?? -1) draws natively, material \(materialPath): \(error)")
+            return nil
+        }
     }
 
     /// Standalone "shape" objects (e.g. a DIRECTDRAW light-shaft quad) have no image/particle of their own;

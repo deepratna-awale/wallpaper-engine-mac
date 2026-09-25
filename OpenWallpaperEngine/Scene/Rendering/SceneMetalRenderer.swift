@@ -47,6 +47,8 @@ private struct RenderTextureFrame {
     let uvOrigin: SIMD2<Float>
     let uvAxisX: SIMD2<Float>
     let uvAxisY: SIMD2<Float>
+    /// Text only: the glyphs' coverage, which WE's `font` material samples; nil for colour glyphs.
+    var coverage: MTLTexture? = nil
 }
 
 final class SceneMetalRenderer: NSObject, MTKViewDelegate {
@@ -629,7 +631,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             var uniform = layerUniform(position: draw.quad.center, size: draw.quad.extent,
                                        opacity: draw.opacity, drawableSize: drawableSize, placement: .stretch)
             setQuadAxes(&uniform, quad: draw.quad)
-            uniform.color = draw.color
+            // Text is rasterised white; its user colour tints it when drawn, like its authored one.
+            let textTint = entry.layer.text == nil ? SIMD3<Float>(repeating: 1) : self.textTint(layerID: entry.layer.id)
+            uniform.color = draw.color * SIMD4(textTint, 1)
             let materialEffects = entry.layer.effects
             let brightness = materialEffects.scripts["brightness"].map {
                 AudioReactiveScriptEngine.shared.evaluate($0, fallback: materialEffects.brightness, layerId: entry.stateId, time: sceneTime)
@@ -664,10 +668,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             if let drawn = SceneSnapshotTracker.pixelRect(of: draw.quad, sceneSize: sceneSize, targetSize: targetSize) {
                 snapshotTracker.sceneDrawn(in: drawn)
             }
-            if let plan = entry.layer.imageMaterial, let imageMaterials, imageMaterials.draw(plan, ImageMaterialRenderer.Draw(
+            // A text layer's `font` material reads the glyphs' coverage; colour glyphs have none.
+            let materialTexture = entry.layer.text == nil ? dynamicTextures[layerIndex] ?? textureFrame.texture
+                : textureFrame.coverage
+            if let plan = entry.layer.imageMaterial, let imageMaterials, let materialTexture, imageMaterials.draw(plan, ImageMaterialRenderer.Draw(
                    layerID: entry.stateId, quad: draw.quad, sceneSize: sceneSize,
-                   color: SIMD3(draw.color.x, draw.color.y, draw.color.z), alpha: draw.opacity, brightness: draw.brightness,
-                   texture: dynamicTextures[layerIndex] ?? textureFrame.texture, contentSize: entry.layer.source.contentSize,
+                   color: SIMD3(draw.color.x, draw.color.y, draw.color.z) * textTint, alpha: draw.opacity, brightness: draw.brightness,
+                   texture: materialTexture, contentSize: entry.layer.source.contentSize,
                    uvOrigin: textureFrame.uvOrigin, uvAxisX: textureFrame.uvAxisX, uvAxisY: textureFrame.uvAxisY,
                    sceneSnapshot: layerSnapshot, frame: effectFrame,
                    values: LiveSceneValueContext(time: sceneTime, scriptTime: sceneTime, layerId: entry.stateId),
@@ -1005,6 +1012,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return texture
     }
 
+    /// The user's colour for a text layer (`_owe_text_<id>_color`), white when unset.
+    private func textTint(layerID: String) -> SIMD3<Float> {
+        guard let value = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_color") else {
+            return SIMD3(repeating: 1)
+        }
+        let rgb = value.parseVector3()
+        return SIMD3(Float(rgb.0), Float(rgb.1), Float(rgb.2))
+    }
+
     /// `layerID` is the authored layer (its user text settings); `stateKey` is this instance's
     /// state id, which differs for script clones so they don't share cached text.
     private func makeTextFrame(_ text: SceneMetalText, value: String, boxSize: SIMD2<Float>, pixelsPerUnit: Float,
@@ -1017,7 +1033,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let rasterScale = SceneTextRasterScale.retained(SceneTextRasterScale.quantized(pixelsPerUnit),
                                                         previous: textRasterScales[stateKey])
         textRasterScales[stateKey] = rasterScale
-        let cacheKey = "\(stateKey)|\(value)|\(boxSize.x)|\(boxSize.y)|\(fontName)|\(sizeValue)|\(bold)|\(italic)|\(colorValue)|\(rasterScale)"
+        let cacheKey = "\(stateKey)|\(value)|\(boxSize.x)|\(boxSize.y)|\(fontName)|\(sizeValue)|\(bold)|\(italic)|\(rasterScale)"
         if let cached = textFrameCache.value(for: cacheKey) { return cached }
 
         let requestedFont = fontName.isEmpty ? (text.font ?? "System") : fontName
@@ -1030,17 +1046,25 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let layout = SceneTextLayout(text: value, font: font, authoredSize: boxSize, padding: text.padding,
                                      horizontalAlignment: text.horizontalAlignment, verticalAlignment: text.verticalAlignment,
                                      maxWidth: text.maxWidth, maxRows: text.maxRows, useEllipsis: text.useEllipsis)
-        // Authored colour, alpha and brightness are applied when the quad is drawn, as for images.
-        let rgb = colorValue.parseVector3()
-        let color = NSColor(srgbRed: CGFloat(rgb.0), green: CGFloat(rgb.1), blue: CGFloat(rgb.2), alpha: 1)
+        // A white coverage mask, as WE's `font` shader samples its glyphs: colour (authored and
+        // the user's), alpha and brightness are applied when the quad is drawn.
+        let color = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
         let pixels = SceneTextRasterScale.clamped(rasterScale, boxSize: layout.boxSize)
         guard let image = layout.rasterize(font: font, color: color, pixelsPerUnit: CGFloat(pixels)),
               let texture = try? SceneTextureUpload.texture(from: image, loader: textureLoader, device: device) else {
             OWELog.error(.scene, "Text layer \(layerID): could not rasterise \(layout.boxSize) at \(pixels) px/unit")
             return nil
         }
+        let coverage: MTLTexture?
+        do {
+            coverage = try SceneTextureUpload.coverageTexture(from: image, device: device)
+        } catch {
+            OWELog.error(.scene, "Text layer \(layerID): no coverage texture, drawn natively: \(error)")
+            coverage = nil
+        }
         let entry = (RenderTextureFrame(texture: texture, duration: .greatestFiniteMagnitude,
-                                        uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1)), layout.boxSize)
+                                        uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1), coverage: coverage),
+                     layout.boxSize)
         // Strings change every second for clocks; the LRU keeps the live ones and drops the rest.
         textFrameCache.insert(entry, for: cacheKey)
         return entry

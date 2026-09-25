@@ -119,7 +119,8 @@ final class ImageMaterialRenderer {
 
         var textureInfo: [(slot: Int, texture: MTLTexture, sampler: MTLSamplerState, contentSize: SIMD2<Float>?)] = []
         for slot in variant.textureSlots {
-            guard let input = plan.pass.textures[slot] else { return false }
+            // The plan binds every slot the variant reads; one it leaves out is declared but unused.
+            guard let input = plan.pass.textures[slot] else { continue }
             let sampler = plan.clampedSlots.contains(slot) ? clampSampler : repeatSampler
             switch input {
             case .current, .previous:

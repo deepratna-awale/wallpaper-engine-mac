@@ -22,5 +22,8 @@ final class RenderCheckTests: XCTestCase {
             XCTAssertTrue(ids.contains("3"), "composition layer missing; layers: \(ids)")
         }
         XCTAssertTrue(ids.contains("2"), "solid layer missing; layers: \(ids)")
+        // Risk I18: text without effects draws through WE's `font` material.
+        let text = try XCTUnwrap(content.layers.first { $0.id == "1" })
+        XCTAssertEqual(text.imageMaterial?.materialPath, "materials/fonts/basefont.json")
     }
 }

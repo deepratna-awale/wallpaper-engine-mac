@@ -414,6 +414,40 @@ final class ImageMaterialRenderTests: XCTestCase {
         XCTAssertEqual(renderer.uniformArena.chunksCreated, 1, "one chunk serves every frame")
     }
 
+    /// Risk I18: text drawn through WE's `font` material (`basefont.json`) tints its coverage with
+    /// `g_Color4` once: red text at alpha 0.5 over white is (1, 0.5, 0.5) inside the glyphs, an edge
+    /// at half coverage is lighter, not darker, and both match the native draw of the same text.
+    func testTextFontMaterialTintsItsCoverageOnce() throws {
+        let plan = try XCTUnwrap(try builder.buildText(materialPath: "materials/fonts/basefont.json"))
+        XCTAssertEqual(plan.pass.textures.count, 1)
+        guard case .current? = plan.pass.textures[0] else { return XCTFail("g_Texture0 is not the text") }
+        // Left half full coverage, right half half coverage.
+        let size = 16
+        let coverage = (0..<size * size).map { UInt8($0 % size < size / 2 ? 255 : 128) }
+        let mask = try Self.coverageTexture(device: device, size: size, coverage: coverage)
+        let straight = try Self.texture(device: device, size: size, pixels: coverage.flatMap { [255, 255, 255, $0] })
+        let layer = Layer(size: SIMD2(160, 96), rotation: 0, color: SIMD3(1, 0, 0), alpha: 0.5)
+        let white = SIMD4<Float>(1, 1, 1, 1)
+        let viaMaterial = try render(background: white) { encoder, format in
+            XCTAssertTrue(self.drawMaterial(plan, layer, texture: mask, snapshot: nil, encoder: encoder, format: format))
+        }
+        let native = try render(background: white) { encoder, format in
+            try self.drawNative(layer, texture: straight, additive: false, encoder: encoder, format: format)
+        }
+        // The layer covers x 60...140 of the 256-wide target (scene 512 wide), y 40...88.
+        let inside = Self.pixel(viaMaterial, x: 80, y: 64), edge = Self.pixel(viaMaterial, x: 120, y: 64)
+        XCTAssertEqual(inside.red, 1, accuracy: 2 / 255)
+        XCTAssertEqual(inside.green, 0.5, accuracy: 2 / 255)
+        XCTAssertEqual(inside.blue, 0.5, accuracy: 2 / 255)
+        XCTAssertEqual(edge.green, 0.75, accuracy: 3 / 255, "half coverage at half alpha")
+        for (x, y) in [(80, 64), (120, 64), (30, 64)] {
+            let a = Self.pixel(viaMaterial, x: x, y: y), b = Self.pixel(native, x: x, y: y)
+            XCTAssertEqual(a.red, b.red, accuracy: 3 / 255, "(\(x), \(y))")
+            XCTAssertEqual(a.green, b.green, accuracy: 3 / 255, "(\(x), \(y))")
+            XCTAssertEqual(a.blue, b.blue, accuracy: 3 / 255, "(\(x), \(y))")
+        }
+    }
+
     // MARK: - Helpers
 
     struct Layer {
@@ -569,6 +603,14 @@ final class ImageMaterialRenderTests: XCTestCase {
             }
         }
         return try texture(device: device, size: size, pixels: pixels)
+    }
+
+    static func coverageTexture(device: MTLDevice, size: Int, coverage: [UInt8]) throws -> MTLTexture {
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .r8Unorm, width: size, height: size, mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        texture.replace(region: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0, withBytes: coverage, bytesPerRow: size)
+        return texture
     }
 
     static func solidTexture(device: MTLDevice, color: [UInt8]) throws -> MTLTexture {

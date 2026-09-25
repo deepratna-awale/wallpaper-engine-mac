@@ -68,6 +68,18 @@ struct ImageMaterialPlanBuilder {
     /// `colorBlendMode` is the object's WE blend mode (`BLENDMODE` combo), when authored; `clampUVs`
     /// is the object's `clampuvs`.
     func build(materialPath: String, colorBlendMode: Int?, clampUVs: Bool? = nil) throws -> ImageMaterialPlan? {
+        try build(materialPath: materialPath, colorBlendMode: colorBlendMode, clampUVs: clampUVs, listsItsImage: true)
+    }
+
+    /// A text object's font material (`materials/fonts/basefont*.json`, WE's `font` shader). It
+    /// lists no texture: `g_Texture0` is the rasterised text, a coverage mask the shader tints with
+    /// `g_Color4` (the text's colour, brightness and alpha). Clamped, since it is exactly the text.
+    func buildText(materialPath: String) throws -> ImageMaterialPlan? {
+        try build(materialPath: materialPath, colorBlendMode: nil, clampUVs: true, listsItsImage: false)
+    }
+
+    private func build(materialPath: String, colorBlendMode: Int?, clampUVs: Bool?,
+                       listsItsImage: Bool) throws -> ImageMaterialPlan? {
         guard let data = readFile(materialPath) else { throw ImageMaterialPlanError.missing(materialPath) }
         let material: MaterialDocument
         do {
@@ -76,7 +88,8 @@ struct ImageMaterialPlanBuilder {
             throw ImageMaterialPlanError.invalid(materialPath, error)
         }
         guard let materialPass = material.passes.first else { throw ImageMaterialPlanError.missing("\(materialPath) passes") }
-        guard let image = materialPass.textures.first ?? nil, !image.hasPrefix("_rt_") else {
+        let image = materialPass.textures.first ?? nil
+        if listsItsImage, image == nil || image!.hasPrefix("_rt_") {
             // Such a layer keeps its own draw, which has no scene blend: say so rather than drop it quietly.
             if let colorBlendMode, colorBlendMode != 0 {
                 throw ImageMaterialPlanError.unsupported("colorBlendMode \(colorBlendMode) on \(materialPass.shader), which draws no image")
@@ -102,7 +115,13 @@ struct ImageMaterialPlanBuilder {
         }
 
         let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)
-        let sampled = Set(variant.textureSlots)
+        var sampled = Set(variant.textureSlots)
+        if !listsItsImage {
+            // `font` declares COLORFONT's colour atlas (`g_Texture1`) in every variant; one that
+            // doesn't read it (SPIRV-Cross emits only the textures a stage uses) needs nothing there.
+            let msl = variant.vertexMSL + variant.fragmentMSL
+            sampled = sampled.filter { $0 == 0 || msl.contains("[[texture(\($0))]]") }
+        }
         guard sampled.contains(0) else { return nil }
         inputs = inputs.filter { sampled.contains($0.key) }
         for sampler in vertex.samplers + fragment.samplers {
@@ -136,7 +155,7 @@ struct ImageMaterialPlanBuilder {
                                        variant: variant, blending: materialPass.blending ?? "normal", target: nil,
                                        textures: inputs, constants: constants)
         var clampedSlots = Set<Int>()
-        if clampUVs == true || textureClamps(image, materialPath: materialPath) { clampedSlots.insert(0) }
+        if clampUVs == true || image.map({ textureClamps($0, materialPath: materialPath) }) ?? true { clampedSlots.insert(0) }
         for (slot, input) in inputs {
             switch input {
             case .sceneSnapshot: clampedSlots.insert(slot)

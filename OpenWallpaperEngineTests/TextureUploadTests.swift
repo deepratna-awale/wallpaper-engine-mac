@@ -115,4 +115,27 @@ final class TextureUploadTests: XCTestCase {
         }
         XCTAssertGreaterThan(edges, 10, "the glyphs have antialiased edges")
     }
+
+    /// Risk I18: WE's `font` shader samples a one-channel coverage atlas; white text gives exactly
+    /// its alpha, and colour glyphs (which a mask would lose) give none.
+    func testWhiteTextGivesItsCoverage() throws {
+        let font = NSFont.systemFont(ofSize: 40)
+        let layout = SceneTextLayout(text: "Ol", font: font, authoredSize: SIMD2(0, 0), padding: SIMD2(4, 4),
+                                     horizontalAlignment: nil, verticalAlignment: nil, maxWidth: nil, maxRows: nil,
+                                     useEllipsis: false)
+        let raster = try XCTUnwrap(layout.rasterize(font: font, color: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+                                                    pixelsPerUnit: 1))
+        let coverage = try XCTUnwrap(try SceneTextureUpload.whiteCoverage(raster))
+        let straight = try texels(raster)
+        XCTAssertEqual(coverage.count, raster.width * raster.height)
+        XCTAssertTrue(coverage.contains { $0 > 0 && $0 < 255 }, "antialiased edges keep partial coverage")
+        for index in coverage.indices { XCTAssertEqual(Int(coverage[index]), Int(straight[index * 4 + 3]), accuracy: 1) }
+
+        let emoji = SceneTextLayout(text: "\u{1F600}", font: font, authoredSize: SIMD2(0, 0), padding: SIMD2(4, 4),
+                                    horizontalAlignment: nil, verticalAlignment: nil, maxWidth: nil, maxRows: nil,
+                                    useEllipsis: false)
+        let colourful = try XCTUnwrap(emoji.rasterize(font: font, color: NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1),
+                                                      pixelsPerUnit: 1))
+        XCTAssertNil(try SceneTextureUpload.whiteCoverage(colourful))
+    }
 }
