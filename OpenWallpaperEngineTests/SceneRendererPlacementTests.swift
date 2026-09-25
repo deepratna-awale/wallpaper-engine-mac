@@ -1,5 +1,6 @@
 import XCTest
 import simd
+import MetalKit
 @testable import OpenWallpaperEngine
 
 /// Scene-input sampling, placement scale, .tex content size and emitter-space directions.
@@ -139,5 +140,61 @@ final class SceneRendererPlacementTests: XCTestCase {
         let expected = simd_normalize(hierarchy.world(of: "2").linear * SIMD2(0, 1)) * 100
         XCTAssertEqual(velocity.x, expected.x, accuracy: 1e-3)
         XCTAssertEqual(velocity.y, expected.y, accuracy: 1e-3)
+    }
+
+    /// A layer wider than the scene (sized so camera parallax never shows its edges) is drawn
+    /// centred where its origin puts it, as WE draws it; it isn't pinned against a scene edge.
+    func testOversizedLayerStaysWhereItsOriginPutsIt() throws {
+        let size = 64
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: size, height: size), device: device)
+        view.colorPixelFormat = .bgra8Unorm
+        view.framebufferOnly = false
+        view.autoResizeDrawable = false
+        view.drawableSize = CGSize(width: size, height: size)
+        let renderer = try XCTUnwrap(SceneMetalRenderer(view: view))
+        view.isPaused = true
+        renderer.setPlacement(.stretch)
+        let scene = Float(size)
+        // Twice the scene's width: red left half, green right half; the seam is at its origin.
+        var layer = SceneMetalLayer(
+            id: "wide", name: "wide", source: .image(try Self.halves()), position: SIMD2(scene / 2, scene / 2),
+            size: SIMD2(scene * 2, scene), scale: SIMD2(1, 1), scaleScript: nil, scaleAnimation: nil, opacity: 1,
+            opacityScript: nil, opacityAnimation: nil, brightness: 1, brightnessScript: nil, color: SIMD4(repeating: 1),
+            colorScript: nil, text: nil, parallaxDepth: .zero, perspective: false, positionScript: nil,
+            positionScriptProperties: [:], positionAnimation: nil, sizeScript: nil, sizeAnimation: nil, rotation: 0,
+            rotationScript: nil, rotationAnimation: nil,
+            effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0, exposure: 0,
+                                          gamma: 1, hue: 0, bloomThreshold: 0.7, transformAngle: 0, transformOffset: .zero,
+                                          transformScale: SIMD2(1, 1), scripts: [:]))
+        layer.order = 0
+        renderer.setContent(SceneMetalContent(
+            size: SIMD2(scene, scene), layers: [layer], particleSystems: [], sceneScript: nil,
+            bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3(repeating: 1))))
+        var pixels = [UInt8](repeating: 0, count: size * size * 4)
+        let deadline = Date().addingTimeInterval(10)
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            renderer.draw(in: view)
+            renderer.lastCommandBuffer?.waitUntilCompleted()
+            view.currentDrawable?.texture.getBytes(&pixels, bytesPerRow: size * 4,
+                                                   from: MTLRegionMake2D(0, 0, size, size), mipmapLevel: 0)
+        } while Date() < deadline && pixels.allSatisfy { $0 == 0 }
+        func bgra(_ x: Int) -> [UInt8] { Array(pixels[((size / 2) * size + x) * 4..<((size / 2) * size + x) * 4 + 4]) }
+        XCTAssertGreaterThan(bgra(size / 4)[2], 200, "red left of the origin: \(bgra(size / 4))")
+        XCTAssertLessThan(bgra(size / 4)[1], 50, "\(bgra(size / 4))")
+        XCTAssertGreaterThan(bgra(size * 3 / 4)[1], 200, "green right of it: \(bgra(size * 3 / 4))")
+        XCTAssertLessThan(bgra(size * 3 / 4)[2], 50, "\(bgra(size * 3 / 4))")
+    }
+
+    /// A 4×1 image: two red texels, then two green.
+    private static func halves() throws -> NSImage {
+        let bytes: [UInt8] = [255, 0, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255]
+        let provider = try XCTUnwrap(CGDataProvider(data: Data(bytes) as CFData))
+        let image = try XCTUnwrap(CGImage(width: 4, height: 1, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 16,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue).union(.byteOrder32Big),
+                                          provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent))
+        return NSImage(cgImage: image, size: NSSize(width: 4, height: 1))
     }
 }

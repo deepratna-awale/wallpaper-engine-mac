@@ -787,12 +787,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         local.angle += entry.layer.musicSync.map { $0.tiltAmount * Float(musicSyncLevel) * .pi / 180 } ?? 0
         let quad = SceneQuadGeometry(world: parentWorld(entry, time: time) * SceneAffineTransform(local),
                                      size: baseSize, alignment: entry.layer.alignment)
-        let extent = quad.extent
+        // WE draws a layer where its transform and the camera put it; an oversized layer (sized
+        // to hide its edges while it moves) isn't pinned inside the scene.
         let center = quad.center + parallaxOffset + motion.shakeOffset
-        let safeCenter = SIMD2<Float>(
-            safeParallaxPosition(center.x, baseSize: extent.x, sceneExtent: sceneSize.x),
-            safeParallaxPosition(center.y, baseSize: extent.y, sceneExtent: sceneSize.y)
-        )
         let brightness = entry.layer.brightnessScript.map {
             AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.brightness, layerId: entry.stateId, time: Double(time))
         } ?? base.brightness
@@ -802,7 +799,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 layerId: entry.stateId, time: Double(time))
         }.map { SIMD4<Float>($0.x, $0.y, $0.z, 1) } ?? base.color
         return LayerDraw(opacity: opacity, color: color, brightness: brightness,
-                         quad: SceneQuadGeometry(center: safeCenter, axisX: quad.axisX, axisY: quad.axisY),
+                         quad: SceneQuadGeometry(center: center, axisX: quad.axisX, axisY: quad.axisY),
                          musicSyncLevel: musicSyncLevel)
     }
 
@@ -983,13 +980,6 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard let texture = makeTextureFrames(from: source)?.first?.texture else { return nil }
         effectAssetTextures[key] = texture
         return texture
-    }
-
-    private func safeParallaxPosition(_ position: Float, baseSize: Float, sceneExtent: Float) -> Float {
-        guard baseSize >= sceneExtent else { return position }
-        let minimum = baseSize / 2
-        let maximum = sceneExtent - baseSize / 2
-        return min(max(position, minimum), maximum)
     }
 
 
