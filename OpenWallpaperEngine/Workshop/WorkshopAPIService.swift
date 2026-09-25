@@ -93,7 +93,7 @@ final class SteamPlayerStore {
     }
 }
 
-struct SteamPlayer: Codable {
+struct SteamPlayer: Codable, Equatable {
     let steamId: String
     let personaName: String
     let avatarURL: URL?
@@ -139,9 +139,20 @@ enum WorkshopSortOrder: Int, CaseIterable, Identifiable {
 
 class WorkshopAPIService {
     static let wallpaperEngineAppId = 431960
+    /// Steam reads the Web API key from this header, which keeps it out of request URLs.
+    static let apiKeyHeader = "x-webapi-key"
+    private static let queryFilesURL = URL(string: "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/")!
 
-    /// Search workshop items using the public Steam API.
-    /// GetPublishedFileDetails doesn't require an API key for basic queries.
+    private let apiKey: KeychainSecret
+    private let session: URLSession
+
+    init(apiKey: KeychainSecret = SteamCredentials.webAPIKey(), session: URLSession = .shared) {
+        self.apiKey = apiKey
+        self.session = session
+    }
+
+    /// Browse and search need a Steam Web API key (IPublishedFileService/QueryFiles).
+    /// GetPublishedFileDetails doesn't.
     func searchItems(
         query: String = "",
         tags: [String] = [],
@@ -149,9 +160,8 @@ class WorkshopAPIService {
         page: Int = 1,
         perPage: Int = 20
     ) async throws -> [WorkshopItem] {
-        // Use ISteamRemoteStorage/GetPublishedFileDetails for specific IDs
-        // Use the public search endpoint for browsing
-        var components = URLComponents(string: "https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/")!
+        guard let key = apiKey.load() else { throw WorkshopAPIError.noAPIKey }
+        var components = URLComponents(url: Self.queryFilesURL, resolvingAgainstBaseURL: false)!
 
         let hasSearchText = !query.isEmpty
         var queryItems: [URLQueryItem] = [
@@ -175,32 +185,13 @@ class WorkshopAPIService {
             queryItems.append(URLQueryItem(name: "requiredtags[\(index)]", value: tag))
         }
 
-        let apiKey = Self.loadAPIKey()
-        guard !apiKey.isEmpty else {
-            throw WorkshopAPIError.noAPIKey
-        }
-        queryItems.append(URLQueryItem(name: "key", value: apiKey))
-
         components.queryItems = queryItems
 
         guard let url = components.url else {
             throw WorkshopAPIError.invalidURL
         }
 
-        let (data, response) = try await URLSession.shared.data(from: url)
-
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw WorkshopAPIError.requestFailed
-        }
-
-        if httpResponse.statusCode == 403 {
-            throw WorkshopAPIError.invalidAPIKey
-        }
-
-        guard httpResponse.statusCode == 200 else {
-            throw WorkshopAPIError.httpError(httpResponse.statusCode)
-        }
-
+        let data = try await sendKeyed(url, key: key)
         let items = try parseQueryResponse(data)
         items.forEach { WorkshopMetadataStore.shared.save($0) }
         return items
@@ -225,11 +216,8 @@ class WorkshopAPIService {
         request.httpBody = bodyParts.joined(separator: "&").data(using: .utf8)
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw WorkshopAPIError.requestFailed
-        }
+        let (data, httpResponse) = try await send(request)
+        guard httpResponse.statusCode == 200 else { throw WorkshopAPIError.requestFailed }
 
         let items = try parseFileDetailsResponse(data)
         items.forEach { WorkshopMetadataStore.shared.save($0) }
@@ -243,8 +231,8 @@ class WorkshopAPIService {
             URLQueryItem(name: "numperpage", value: "30")
         ]
         guard let url = components.url else { throw WorkshopAPIError.invalidURL }
-        let (data, response) = try await URLSession.shared.data(from: url)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+        let (data, httpResponse) = try await send(URLRequest(url: url))
+        guard httpResponse.statusCode == 200,
               let html = String(data: data, encoding: .utf8) else {
             throw WorkshopAPIError.requestFailed
         }
@@ -260,43 +248,81 @@ class WorkshopAPIService {
         return try await getItemDetails(workshopIds: ids)
     }
 
+    /// The author's persona name and avatar, cached in `SteamPlayerStore`. Uses
+    /// `GetPlayerSummaries` with a key, else the keyless community profile XML.
     func getPlayerSummary(steamId: String) async throws -> SteamPlayer? {
-        let apiKey = Self.loadAPIKey()
-        guard !apiKey.isEmpty else { throw WorkshopAPIError.noAPIKey }
+        guard steamId.allSatisfy(\.isNumber) else { throw WorkshopAPIError.invalidURL }
+        let player: SteamPlayer?
+        if let key = apiKey.load() {
+            var components = URLComponents(string: "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/")!
+            components.queryItems = [URLQueryItem(name: "steamids", value: steamId)]
+            guard let url = components.url else { throw WorkshopAPIError.invalidURL }
+            let data = try await sendKeyed(url, key: key)
 
-        var components = URLComponents(string: "https://api.steampowered.com/ISteamUser/GetPlayerSummaries/v2/")!
-        components.queryItems = [
-            URLQueryItem(name: "key", value: apiKey),
-            URLQueryItem(name: "steamids", value: steamId)
-        ]
-        guard let url = components.url else { throw WorkshopAPIError.invalidURL }
-
-        let (data, response) = try await URLSession.shared.data(from: url)
-        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-            throw WorkshopAPIError.requestFailed
+            struct PlayerResponse: Decodable {
+                struct Response: Decodable { let players: [SteamPlayer] }
+                let response: Response
+            }
+            player = try JSONDecoder().decode(PlayerResponse.self, from: data).response.players.first
+        } else {
+            player = try await getCommunityProfile(steamId: steamId)
         }
-
-        struct PlayerResponse: Decodable {
-            struct Response: Decodable { let players: [SteamPlayer] }
-            let response: Response
-        }
-        let player = try JSONDecoder().decode(PlayerResponse.self, from: data).response.players.first
         if let player {
             SteamPlayerStore.shared.save(player)
         }
         return player
     }
 
-    // MARK: - API Key
-
-    private static let apiKeyDefault = "SteamWebAPIKey"
-
-    static func loadAPIKey() -> String {
-        UserDefaults.standard.string(forKey: apiKeyDefault) ?? ""
+    private func getCommunityProfile(steamId: String) async throws -> SteamPlayer? {
+        guard let url = URL(string: "https://steamcommunity.com/profiles/\(steamId)?xml=1") else {
+            throw WorkshopAPIError.invalidURL
+        }
+        let (data, response) = try await send(URLRequest(url: url))
+        guard response.statusCode == 200 else { throw WorkshopAPIError.httpError(response.statusCode) }
+        return SteamProfileXMLParser.player(from: data, steamId: steamId)
     }
 
-    static func saveAPIKey(_ key: String) {
-        UserDefaults.standard.set(key, forKey: apiKeyDefault)
+    /// Checks `key` with the cheapest call that needs it: one QueryFiles result.
+    func validate(apiKey key: String) async throws {
+        var components = URLComponents(url: Self.queryFilesURL, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "appid", value: "\(Self.wallpaperEngineAppId)"),
+            URLQueryItem(name: "numperpage", value: "1"),
+        ]
+        guard let url = components.url else { throw WorkshopAPIError.invalidURL }
+        _ = try await sendKeyed(url, key: key)
+    }
+
+    // MARK: - Requests
+
+    /// A GET with the Web API key in the `x-webapi-key` header, never in the URL.
+    private func sendKeyed(_ url: URL, key: String) async throws -> Data {
+        var request = URLRequest(url: url)
+        request.setValue(key, forHTTPHeaderField: Self.apiKeyHeader)
+        let (data, response) = try await send(request, secrets: [key])
+        switch response.statusCode {
+        case 200: return data
+        case 401, 403: throw WorkshopAPIError.invalidAPIKey
+        default: throw WorkshopAPIError.httpError(response.statusCode)
+        }
+    }
+
+    /// Transport errors are logged once, redacted, and surfaced as `requestFailed`.
+    private func send(_ request: URLRequest, secrets: [String] = []) async throws -> (Data, HTTPURLResponse) {
+        let endpoint = request.url.map { "\($0.host ?? "")\($0.path)" } ?? "<no url>"
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw WorkshopAPIError.requestFailed }
+            if http.statusCode != 200 {
+                OWELog.error(.workshop, "Steam request \(endpoint) returned HTTP \(http.statusCode)")
+            }
+            return (data, http)
+        } catch let error as WorkshopAPIError {
+            throw error
+        } catch {
+            OWELog.error(.workshop, SteamSecretRedactor.redact("Steam request \(endpoint) failed: \(error)", secrets: secrets))
+            throw WorkshopAPIError.requestFailed
+        }
     }
 
     // MARK: - Response Parsing

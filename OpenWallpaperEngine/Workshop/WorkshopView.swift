@@ -184,7 +184,7 @@ private struct SteamLoginView: View {
                 Text("You'll also need a Steam Web API key to browse the Workshop.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                APIKeyInputView {}
+                SteamWebAPIKeyView()
             }
         }
         .padding(40)
@@ -196,6 +196,7 @@ private struct SteamLoginView: View {
 private struct WorkshopBrowserView: View {
     @ObservedObject var viewModel: WorkshopViewModel
     @ObservedObject var contentViewModel: ContentViewModel
+    @State private var hasAPIKey = true
 
     var body: some View {
         HStack(spacing: 0) {
@@ -207,6 +208,7 @@ private struct WorkshopBrowserView: View {
                 .padding(.leading, contentViewModel.isFilterReveal ? 10 : 0)
         }
         .animation(.spring(), value: contentViewModel.isFilterReveal)
+        .onAppear { hasAPIKey = SteamCredentials.webAPIKey().load() != nil }
         .confirmationDialog(
             "Download Selected Wallpapers",
             isPresented: $viewModel.isBatchDownloadConfirming
@@ -218,6 +220,12 @@ private struct WorkshopBrowserView: View {
         } message: {
             Text("Download \(viewModel.selectedItemIds.count) selected wallpapers to your library?")
         }
+    }
+
+    private func searchWithNewKey() {
+        hasAPIKey = true
+        viewModel.currentPage = 1
+        Task { await viewModel.search() }
     }
 
     private var workshopContent: some View {
@@ -315,9 +323,7 @@ private struct WorkshopBrowserView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
 
-                    APIKeyInputView {
-                        Task { await viewModel.search() }
-                    }
+                    SteamWebAPIKeyView(onSaved: searchWithNewKey)
                 }
                 Spacer()
             } else if viewModel.items.isEmpty {
@@ -333,14 +339,12 @@ private struct WorkshopBrowserView: View {
                         .font(.callout)
                         .foregroundStyle(.tertiary)
 
-                    if WorkshopAPIService.loadAPIKey().isEmpty {
+                    if !hasAPIKey {
                         Divider().frame(width: 300).padding(.vertical, 4)
                         Text("A Steam Web API key is required to browse.")
                             .font(.callout)
                             .foregroundStyle(.secondary)
-                        APIKeyInputView {
-                            Task { await viewModel.search() }
-                        }
+                        SteamWebAPIKeyView(onSaved: searchWithNewKey)
                     }
                 }
                 Spacer()
@@ -639,41 +643,5 @@ private struct WorkshopItemMenu: View {
             Label(viewModel.isFavorite(item) ? "Remove from Favorites" : "Add to Favorites",
                   systemImage: viewModel.isFavorite(item) ? "heart.slash" : "heart.fill")
         }
-    }
-}
-
-// MARK: - API Key Input
-
-private struct APIKeyInputView: View {
-    @State private var apiKey = WorkshopAPIService.loadAPIKey()
-    var onSave: () -> Void
-
-    var body: some View {
-        VStack(spacing: 8) {
-            HStack {
-                TextField("Steam Web API Key", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 300)
-                    .onSubmit { save() }
-
-                Button("Save & Search") { save() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(apiKey.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            HStack(spacing: 4) {
-                Text("Get a free key at")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                Link("steamcommunity.com/dev/apikey", destination: URL(string: "https://steamcommunity.com/dev/apikey")!)
-                    .font(.caption)
-            }
-        }
-    }
-
-    private func save() {
-        let trimmed = apiKey.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty else { return }
-        WorkshopAPIService.saveAPIKey(trimmed)
-        onSave()
     }
 }

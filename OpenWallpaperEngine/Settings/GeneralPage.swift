@@ -124,6 +124,14 @@ struct GeneralPage: SettingsPage {
             } footer: {
                 Text("Wallpapers are unpacked into plain files when imported. The original package is kept until the wallpaper has rendered from those files, reported no conversion warnings, and no other wallpaper depends on it.")
             }
+            // MARK: Steam Workshop
+            Section {
+                SteamWebAPIKeyView()
+            } header: {
+                Label("Steam Web API Key", systemImage: "key")
+            } footer: {
+                Text("Needed to browse and search the Workshop. It is stored in your keychain and checked with Steam before saving. Without it, author names come from public Steam profiles.")
+            }
             // MARK: macOS
             Section {
                 Toggle("Adjust Menu Bar Color", isOn: $viewModel.settings.adjustMenuBarTint)
