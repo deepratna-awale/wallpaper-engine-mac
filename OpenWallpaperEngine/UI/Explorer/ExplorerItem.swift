@@ -11,6 +11,7 @@ struct ExplorerItem: SubviewOfContentView {
     
     @ObservedObject var viewModel: ContentViewModel
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
+    @ObservedObject var safeRestart = AppDelegate.shared.safeRestart
     
     @AppStorage("TestAnimates") var animates = false
     
@@ -66,6 +67,15 @@ struct ExplorerItem: SubviewOfContentView {
                 .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
                     .padding(4)
                 .help("Select wallpaper")
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if safeRestart.flaggedKeys.contains(SafeRestartLedger.key(for: wallpaper)) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.yellow)
+                    .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
+                    .padding(4)
+                    .help("Open Wallpaper Engine didn't quit cleanly twice in a row while this wallpaper was showing")
             }
         }
         .border(Color.accentColor, width: viewModel.imageScaleIndex == index ? 1.0 : 0)
