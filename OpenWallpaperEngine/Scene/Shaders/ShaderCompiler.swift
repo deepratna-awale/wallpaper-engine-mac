@@ -51,8 +51,10 @@ struct ProcessShaderCompiler: ShaderCompiler {
             try source.write(to: input, atomically: false, encoding: .utf8)
             _ = try run(glslang, ["-G", "-S", stage.rawValue, "-o", spirv.path, input.path], step: "glslang")
             // The input file must come first: SPIRV-Cross options consume the argument after them.
-            // Vertex stages map GL clip-space z (-w...w) to Metal's (0...w).
-            let clip = stage == .vertex ? ["--fixup-clipspace"] : []
+            // Vertex stages map GL clip-space z (-w...w) to Metal's (0...w), and flip y so a pass
+            // samples and writes rows exactly like GL: WE's texture-coordinate conventions (v = 0 is
+            // the first row of every texture and render target) then hold unchanged.
+            let clip = stage == .vertex ? ["--fixup-clipspace", "--flip-vert-y"] : []
             let msl = try run(spirvCross, [spirv.path, "--msl", "--msl-version", "20300", "--msl-decoration-binding"] + clip,
                               step: "spirv-cross")
             let reflection = try run(spirvCross, [spirv.path, "--reflect"], step: "reflect")

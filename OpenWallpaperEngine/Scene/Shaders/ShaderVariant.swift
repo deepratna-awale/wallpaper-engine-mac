@@ -51,7 +51,7 @@ enum ShaderVariantError: Error, CustomStringConvertible {
 /// hundreds of thousands possible, so nothing is precompiled.
 final class ShaderVariantTranslator {
     /// Bump whenever translated output for the same input can change.
-    static let revision = 1
+    static let revision = 2
 
     let compiler: ShaderCompiler
     let cacheDirectory: URL?
