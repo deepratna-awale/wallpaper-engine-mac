@@ -31,12 +31,12 @@ final class BuiltinUniformTests: XCTestCase {
     func testPointerParallaxAndScreen() {
         frame.pointer = SIMD2(0.25, 0.75)
         frame.pointerLast = SIMD2(0.2, 0.7)
-        frame.pointerState = 1
+        frame.pointerState = BuiltinFrameContext.pointerState(primaryDown: true)
         frame.parallax = SIMD2(0.4, 0.6)
         frame.screenSize = SIMD2(1920, 1080)
         XCTAssertEqual(value("g_PointerPosition"), [0.25, 0.75])
         XCTAssertEqual(value("g_PointerPositionLast"), [0.2, 0.7])
-        XCTAssertEqual(value("g_PointerState"), [1])
+        XCTAssertEqual(value("g_PointerState"), [1, 0, 1, 0])
         XCTAssertEqual(value("g_ParallaxPosition"), [0.4, 0.6])
         XCTAssertEqual(value("g_Screen"), [1920, 1080, 1920 / Float(1080)])
     }

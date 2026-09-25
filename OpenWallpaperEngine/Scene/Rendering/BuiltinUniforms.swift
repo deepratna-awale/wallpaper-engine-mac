@@ -11,7 +11,10 @@ struct BuiltinFrameContext {
     /// 0...1, y = 0 at the bottom. The caller maps it into the layer's UV space.
     var pointer: SIMD2<Float> = SIMD2(0.5, 0.5)
     var pointerLast: SIMD2<Float> = SIMD2(0.5, 0.5)
-    var pointerState: Float = 0
+    /// `g_PointerState`, a `vec4` in WE's shaders. WE's shipped effects (cursorripple,
+    /// fluidsimulation) read only `.z`, as the press strength of the primary button; build it
+    /// with `BuiltinFrameContext.pointerState(primaryDown:)`.
+    var pointerState: SIMD4<Float> = .zero
     /// `0.5 + (mouse − 0.5)·influence`, computed by the caller.
     var parallax: SIMD2<Float> = SIMD2(0.5, 0.5)
     var screenSize: SIMD2<Float> = SIMD2(1920, 1080)
@@ -22,6 +25,13 @@ struct BuiltinFrameContext {
     var viewRight: SIMD3<Float> = SIMD3(1, 0, 0)
     var viewForward: SIMD3<Float> = SIMD3(0, 0, -1)
     var audio: AudioSpectrumSnapshot = .silent
+
+    /// `g_PointerState` for the current button state. `.x` mirrors `.z` so a shader that
+    /// declares the uniform as a scalar `float` still sees the press.
+    static func pointerState(primaryDown: Bool) -> SIMD4<Float> {
+        let down: Float = primaryDown ? 1 : 0
+        return SIMD4(down, 0, down, 0)
+    }
 
     static func daytime(at date: Date, calendar: Calendar = .current) -> Float {
         let parts = calendar.dateComponents([.hour, .minute], from: date)
@@ -109,7 +119,7 @@ enum BuiltinUniforms {
         case "g_Frametime": return [Float(frame.frameTime)]
         case "g_PointerPosition": return flat(frame.pointer)
         case "g_PointerPositionLast": return flat(frame.pointerLast)
-        case "g_PointerState": return [frame.pointerState]
+        case "g_PointerState": return flat(frame.pointerState)
         case "g_ParallaxPosition": return flat(frame.parallax)
         case "g_TexelSize": return flat(1 / size)
         case "g_TexelSizeHalf": return flat(0.5 / size)
