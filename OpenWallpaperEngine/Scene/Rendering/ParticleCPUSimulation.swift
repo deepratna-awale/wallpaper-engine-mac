@@ -149,7 +149,7 @@ enum ParticleCPUSimulation {
                     follow(&system.particles[index], motion: motion, scale: scale, angle: angle)
                 }
             }
-            let emitted = emissionCount(liveCount: system.particles.count, maximum: configuration.maximumParticleCount,
+            let emitted = emissionCount(liveCount: system.particles.count, maximum: inputs.maximum,
                                         rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
                                         remainder: &system.emissionRemainder, burst: inputs.burst)
             for _ in 0..<emitted {
@@ -222,14 +222,18 @@ enum ParticleCPUSimulation {
         let offsetMaximum = inputs.offsetLinear * configuration.positionOffsetMaximum
         let authoredOffset = SIMD2(random(offsetMinimum.x, offsetMaximum.x, .offsetX),
                                    random(offsetMinimum.y, offsetMaximum.y, .offsetY))
-        var size = random(configuration.size.lowerBound, configuration.size.upperBound, .size)
-        var alpha = random(configuration.alpha.lowerBound, configuration.alpha.upperBound, .alpha)
-        let color = SIMD4<Float>(random(configuration.minimumColor.x, configuration.maximumColor.x, .red),
-                                 random(configuration.minimumColor.y, configuration.maximumColor.y, .green),
-                                 random(configuration.minimumColor.z, configuration.maximumColor.z, .blue), 1)
+        // Instance overrides scale the authored ranges (`ParticleFrameInputs.spawnScale`).
+        let scale = inputs.spawnScale
+        var size = random(configuration.size.lowerBound * scale.x, configuration.size.upperBound * scale.x, .size)
+        var alpha = random(configuration.alpha.lowerBound * scale.y, configuration.alpha.upperBound * scale.y, .alpha)
+        let colorMinimum = configuration.minimumColor * SIMD4(inputs.colorScale, 1)
+        let colorMaximum = configuration.maximumColor * SIMD4(inputs.colorScale, 1)
+        let color = SIMD4<Float>(random(colorMinimum.x, colorMaximum.x, .red), random(colorMinimum.y, colorMaximum.y, .green),
+                                 random(colorMinimum.z, colorMaximum.z, .blue), 1)
         var position = inputs.spawnOrigin + spawnOffset + authoredOffset
-        var velocity = SIMD2(random(configuration.minimumVelocity.x, configuration.maximumVelocity.x, .velocityX),
-                             random(configuration.minimumVelocity.y, configuration.maximumVelocity.y, .velocityY))
+        let velocityMinimum = configuration.minimumVelocity * scale.w, velocityMaximum = configuration.maximumVelocity * scale.w
+        var velocity = SIMD2(random(velocityMinimum.x, velocityMaximum.x, .velocityX),
+                             random(velocityMinimum.y, velocityMaximum.y, .velocityY))
         // Authored in emitter space; a rotated emitter (or parent) turns the launch direction.
         velocity = inputs.velocityRotation * velocity
         // The emitter's own speed pushes particles out from its centre.
@@ -273,7 +277,7 @@ enum ParticleCPUSimulation {
         }
         return Particle(
             position: position, velocity: velocity, age: 0,
-            lifetime: random(configuration.lifetime.lowerBound, configuration.lifetime.upperBound, .lifetime),
+            lifetime: random(configuration.lifetime.lowerBound * scale.z, configuration.lifetime.upperBound * scale.z, .lifetime),
             size: size, baseSize: size, alpha: alpha, baseAlpha: alpha,
             rotation: random(configuration.minimumRotation, configuration.maximumRotation, .rotation),
             angularVelocity: random(configuration.minimumAngularVelocity, configuration.maximumAngularVelocity, .angularVelocity),

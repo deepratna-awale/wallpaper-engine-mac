@@ -157,7 +157,7 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
                 instances[slot] = instance;
             }
         }
-        const int maximum = int(p.counts.x);
+        const int maximum = int(f.extra.y);
         for (uint slot = 0; slot < slots; ++slot) {
             ParticleInstanceState instance = instances[slot];
             instance.state.w = emitted;

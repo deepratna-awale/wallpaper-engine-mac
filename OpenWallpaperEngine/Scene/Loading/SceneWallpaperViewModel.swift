@@ -1134,13 +1134,14 @@ class SceneWallpaperViewModel: ObservableObject {
         let emitter = particleSystem.emitter?.first
         let emitterSpace = SceneParticleEmitterSpace(world: world)
         let origin = emitterSpace.origin
-        let rate = Float(emitter?.rate ?? 100) * overrides.rate
+        // Instance overrides scale these authored values every frame (`ParticleFrameInputs`).
+        let rate = Float(emitter?.rate ?? 100)
         let rateScript = overrides.rateScript ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)
         let directions = emitter?.directions?.vectorValue ?? (1, 1, 0)
         let spawnExtent = SIMD2<Float>(Float(distance.0 * directions.0), Float(distance.1 * directions.1))
         var lifetime: ClosedRange<Float> = 1...1
-        var size: ClosedRange<Float> = overrides.size * 20...overrides.size * 20
+        var size: ClosedRange<Float> = 20...20
         var minimumVelocity = SIMD2<Float>.zero
         var maximumVelocity = SIMD2<Float>.zero
         var alpha: ClosedRange<Float> = 1...1
@@ -1185,9 +1186,8 @@ class SceneWallpaperViewModel: ObservableObject {
                 let lifetimeMax = Float(initializer.max?.doubleValue ?? 1)
                 lifetime = min(lifetimeMin, lifetimeMax)...max(lifetimeMin, lifetimeMax)
             case "sizerandom":
-                let multiplier = overrides.size
-                let sizeMin = Float(initializer.min?.doubleValue ?? 20) * multiplier
-                let sizeMax = Float(initializer.max?.doubleValue ?? 20) * multiplier
+                let sizeMin = Float(initializer.min?.doubleValue ?? 20)
+                let sizeMax = Float(initializer.max?.doubleValue ?? 20)
                 size = min(sizeMin, sizeMax)...max(sizeMin, sizeMax)
             case "velocityrandom":
                 let minimum = initializer.min?.vectorValue ?? (0, 0, 0)
@@ -1255,15 +1255,6 @@ class SceneWallpaperViewModel: ObservableObject {
             default: break
             }
         }
-        // Negative multipliers would invert the ranges; WE treats them as 0.
-        let lifetimeScale = max(overrides.lifetime, 0), alphaScale = max(overrides.alpha, 0)
-        lifetime = lifetime.lowerBound * lifetimeScale...lifetime.upperBound * lifetimeScale
-        alpha = alpha.lowerBound * alphaScale...alpha.upperBound * alphaScale
-        minimumVelocity *= overrides.speed
-        maximumVelocity *= overrides.speed
-        let colorOverride = SIMD4<Float>(overrides.tint * overrides.brightness, 1)
-        minimumColor *= colorOverride
-        maximumColor *= colorOverride
         var gravity = SIMD2<Float>.zero
         var worldGravity = false
         var drag: Float = 0
@@ -1405,7 +1396,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let opacityMultiplier = refractAmount.map { max(0.04, min(abs(Float($0)), 1)) } ?? 1
         var system = SceneMetalParticleSystem(source: source, origin: origin, emissionRate: max(rate, 0),
                 emissionRateScript: rateScript,
-                                        maximumParticleCount: max(Int((Float(particleSystem.maxcount ?? 1000) * overrides.count).rounded()), 0),
+                                        maximumParticleCount: max(particleSystem.maxcount ?? 1000, 0),
                                         spawnExtent: spawnExtent, lifetime: lifetime, size: size,
                                         minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity,
                                         gravity: gravity, drag: drag, dragScript: dragScript, alpha: alpha,
@@ -1449,6 +1440,12 @@ class SceneWallpaperViewModel: ObservableObject {
         system.emitterLinear = world.linear
         system.worldSpace = particleSystem.isWorldSpace
         system.worldGravity = worldGravity
+        system.overrides = overrides
+        // Bound to user properties: resolved again every frame, so a change shows at once.
+        if let instanceOverride = object.instanceoverride,
+           instanceOverride.values.values.contains(where: { $0.userBindingSource != nil }) {
+            system.liveOverrides = instanceOverride
+        }
         system.inheritOnSpawn = inheritOnSpawn
         system.inheritEachStep = inheritEachStep
         if let emitter {

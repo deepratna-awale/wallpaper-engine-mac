@@ -21,7 +21,11 @@ final class ParticleGPUSystem {
     let control: MTLBuffer
     let historyLimit: Int
     let tracksHistory: Bool
-    let maximumCount: Int
+    /// The most particles the system may hold: `ParticleFrameInputs.maximum`, times the instances
+    /// of an instanced system. Instance overrides can change it every frame.
+    private(set) var maximumCount = 0
+    /// An instanced system's instances; 1 otherwise.
+    private let slots: Int
     /// An instanced system's instances (`ParticleGPUInstance`), zeroed at creation.
     let instances: MTLBuffer?
     /// Scratch for an event child, sized for its parent's particles: event flags, their prefix
@@ -66,15 +70,14 @@ final class ParticleGPUSystem {
         tracksHistory = configuration.rendererName == "ropetrail"
         if configuration.isInstanced {
             let slots = max(configuration.link?.maximumInstances ?? 0, 0)
-            // Every instance may hold the system's maximum.
-            maximumCount = max(configuration.maximumParticleCount, 0) * slots
+            self.slots = slots
             guard let instances = device.makeBuffer(length: max(slots, 1) * MemoryLayout<ParticleGPUInstance>.stride,
                                                     options: .storageModeShared) else { return nil }
             memset(instances.contents(), 0, instances.length)
             instances.label = "Particle instances"
             self.instances = instances
         } else {
-            maximumCount = max(configuration.maximumParticleCount, 0)
+            slots = 1
             instances = nil
         }
         parameters.label = "Particle parameters"
@@ -91,6 +94,8 @@ final class ParticleGPUSystem {
     /// Updates the bound for this step and grows the state buffers to hold it, copying the live
     /// particles with `blit` (made on demand). False when a buffer can't be allocated.
     func reserve(for inputs: ParticleFrameInputs, blit: () -> MTLBlitCommandEncoder?) -> Bool {
+        // Every instance may hold the system's maximum.
+        maximumCount = max(inputs.maximum, 0) * slots
         if inputs.clears {
             upperBound = 0
         } else {

@@ -55,14 +55,11 @@ struct ParticleFamilyBuilder {
                 report("child \(name) takes its control points from \(path)'s particles, which isn't supported; it keeps its own")
             }
             let childLink = Self.link(child, kind: kind, parentIndex: index, parent: link)
-            // Bit 1: the child keeps its own colours (WE's "disable color overrides on child particles").
-            var childOverrides = overrides
-            if ((child.flags ?? 0) & 2) != 0 {
-                childOverrides.tint = SIMD3(repeating: 1)
-                childOverrides.brightness = 1
-            }
-            append(name, link: childLink, world: childLink.emitter(parent: world), overrides: childOverrides,
+            let before = family.count
+            append(name, link: childLink, world: childLink.emitter(parent: world), overrides: overrides,
                    ancestors: ancestors + [path], into: &family)
+            // Bit 1: the child keeps its own colours (WE's "disable color overrides on child particles").
+            if ((child.flags ?? 0) & 2) != 0, family.count > before { family[before].keepsOwnColors = true }
         }
     }
 

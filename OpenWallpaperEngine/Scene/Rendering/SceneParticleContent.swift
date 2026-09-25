@@ -93,6 +93,14 @@ struct SceneMetalParticleSystem {
     var emitterSign = SIMD2<Float>.zero
     /// Set for a child system: how it hangs off its parent.
     var link: ParticleChildLink? = nil
+    /// The object's `instanceoverride` as resolved at load. Emission rate, maximum, size, alpha,
+    /// lifetime, speed and colour above are authored; these scale them every frame.
+    var overrides = SceneParticleOverrides()
+    /// The `instanceoverride` again when a field is bound to a user property: resolved every
+    /// frame instead of `overrides`.
+    var liveOverrides: WEInstanceOverride? = nil
+    /// A child that keeps its own colours (link flag 2): the overrides' tint and brightness skip it.
+    var keepsOwnColors = false
     /// The system has event children, which read its spawns and deaths.
     var hasEventChildren = false
     /// What an instanced system's particles take from their event's parent particle

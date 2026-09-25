@@ -10,6 +10,13 @@ struct ParticleFrameInputs {
     /// Steps taken, this one included; seeds per-frame random draws.
     var frameIndex: UInt32 = 0
     var emissionRate: Float = 0
+    /// The most particles the system (each instance, when instanced) may hold: the authored
+    /// maximum times the `count` override.
+    var maximum = 0
+    /// The instance overrides spawned particles take: size, alpha, lifetime and speed factors.
+    var spawnScale = SIMD4<Float>(repeating: 1)
+    /// The overrides' tint times brightness, on spawned particles' colour.
+    var colorScale = SIMD3<Float>(repeating: 1)
     var drag: Float = 0
     var fadeIn: Float = 0
     var fadeOut: Float = 1
@@ -69,7 +76,7 @@ struct ParticleFrameInputs {
     /// Advances `system`'s clock and evaluates this step's inputs. `emitter` is the emitter's
     /// world transform this frame; nil keeps the authored one.
     static func advance(_ system: ParticleSystemRuntime, deltaTime: Float, cursor: SIMD2<Float>,
-                        emitter: SceneAffineTransform? = nil) -> ParticleFrameInputs {
+                        emitter: SceneAffineTransform? = nil, values: SceneValueContext? = nil) -> ParticleFrameInputs {
         let configuration = system.configuration
         system.elapsedTime += deltaTime
         system.frameIndex &+= 1
@@ -80,9 +87,11 @@ struct ParticleFrameInputs {
         let world = emitter ?? childEmitter(system) ?? configuration.authoredWorld
         inputs.motion = motion(of: system, to: world)
         let time = Double(system.elapsedTime)
+        inputs.applyOverrides(configuration, values: values ?? LiveSceneValueContext(time: time, scriptTime: time))
+        let rate = configuration.emissionRate * inputs.overrideRate
         inputs.emissionRate = configuration.emissionRateScript.map {
-            AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.emissionRate, time: time)
-        } ?? configuration.emissionRate
+            AudioReactiveScriptEngine.shared.evaluate($0, fallback: rate, time: time)
+        } ?? rate
         // An instanced system bursts per instance instead (`ParticleCPUSimulation.updateInstances`).
         inputs.burst = system.frameIndex == 1 && !configuration.isInstanced ? max(configuration.instantaneous, 0) : 0
         // Without a rate a system only shows its burst, if it has one.
@@ -106,6 +115,19 @@ struct ParticleFrameInputs {
         inputs.fadeOut = system.fadeOut
         inputs.place(configuration, in: SceneParticleEmitterSpace(world: world), cursor: cursor)
         return inputs
+    }
+
+    /// The instance overrides' rate factor (`applyOverrides`).
+    private var overrideRate: Float = 1
+
+    /// The system's instance overrides this frame: resolved again when bound to user properties.
+    private mutating func applyOverrides(_ configuration: SceneMetalParticleSystem, values: SceneValueContext) {
+        let overrides = configuration.liveOverrides.map { SceneParticleOverrides($0, in: values) } ?? configuration.overrides
+        overrideRate = overrides.rate
+        maximum = max(Int((Float(configuration.maximumParticleCount) * overrides.count).rounded()), 0)
+        // Negative multipliers would invert the ranges; WE treats them as 0.
+        spawnScale = SIMD4(overrides.size, max(overrides.alpha, 0), max(overrides.lifetime, 0), overrides.speed)
+        colorScale = configuration.keepsOwnColors ? SIMD3(repeating: 1) : overrides.tint * overrides.brightness
     }
 
     /// A child's emitter this frame: from its parent's, which stepped first.

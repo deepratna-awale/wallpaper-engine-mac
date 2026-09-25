@@ -24,7 +24,7 @@ kernel void particleBegin(device uint *control [[buffer(0)]],
         *remainder = 0;
     } else {
         float carry = *remainder + max(f.time.z, 0.0f) * f.time.x;
-        const int maximum = int(p.counts.x);
+        const int maximum = int(f.extra.y);
         const int available = max(maximum - int(count), 0);
         const int burst = min(int(f.fade.w), available);
         // Clamped before the conversion, which is undefined past int's range; the maximum caps it anyway.
@@ -66,14 +66,19 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     const float2 offsetMinimum = offsetLinear * p.offsetRange.xy, offsetMaximum = offsetLinear * p.offsetRange.zw;
     const float2 authoredOffset = float2(randomValue(offsetMinimum.x, offsetMaximum.x, seed, serial, sOffsetX),
                                          randomValue(offsetMinimum.y, offsetMaximum.y, seed, serial, sOffsetY));
-    float size = randomValue(p.lifetimeSize.z, p.lifetimeSize.w, seed, serial, sSize);
-    float alpha = randomValue(p.alphaRotation.x, p.alphaRotation.y, seed, serial, sAlpha);
-    const float4 color = float4(randomValue(p.colorMinimum.x, p.colorMaximum.x, seed, serial, sRed),
-                                randomValue(p.colorMinimum.y, p.colorMaximum.y, seed, serial, sGreen),
-                                randomValue(p.colorMinimum.z, p.colorMaximum.z, seed, serial, sBlue), 1);
+    // Instance overrides scale the authored ranges (`ParticleFrameInputs.spawnScale`).
+    const float4 scale = f.spawnScale;
+    float size = randomValue(p.lifetimeSize.z * scale.x, p.lifetimeSize.w * scale.x, seed, serial, sSize);
+    float alpha = randomValue(p.alphaRotation.x * scale.y, p.alphaRotation.y * scale.y, seed, serial, sAlpha);
+    const float4 colorMinimum = p.colorMinimum * float4(f.colorScale.xyz, 1);
+    const float4 colorMaximum = p.colorMaximum * float4(f.colorScale.xyz, 1);
+    const float4 color = float4(randomValue(colorMinimum.x, colorMaximum.x, seed, serial, sRed),
+                                randomValue(colorMinimum.y, colorMaximum.y, seed, serial, sGreen),
+                                randomValue(colorMinimum.z, colorMaximum.z, seed, serial, sBlue), 1);
     float2 position = points.spawnOrigin + spawnOffset + authoredOffset;
-    float2 velocity = float2(randomValue(p.velocityRange.x, p.velocityRange.z, seed, serial, sVelocityX),
-                             randomValue(p.velocityRange.y, p.velocityRange.w, seed, serial, sVelocityY));
+    const float4 velocityRange = p.velocityRange * scale.w;
+    float2 velocity = float2(randomValue(velocityRange.x, velocityRange.z, seed, serial, sVelocityX),
+                             randomValue(velocityRange.y, velocityRange.w, seed, serial, sVelocityY));
     velocity = float2x2(f.velocityRotation.xy, f.velocityRotation.zw) * velocity;
     const float2 outward = length(spawnOffset) > 1e-6f ? normalize(spawnOffset) : float2(0);
     velocity += outward * randomValue(p.emitterShape.x, p.emitterShape.y, seed, serial, sEmitterSpeed);
@@ -114,7 +119,8 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     const uint frames = max(uint(p.spriteSheet.x), 1u);
     ParticleState particle;
     particle.positionVelocity = float4(position, velocity);
-    particle.life = float4(0, randomValue(p.lifetimeSize.x, p.lifetimeSize.y, seed, serial, sLifetime), size, size);
+    particle.life = float4(0, randomValue(p.lifetimeSize.x * scale.z, p.lifetimeSize.y * scale.z, seed, serial, sLifetime),
+                           size, size);
     particle.alphaRotation = float4(alpha, alpha, randomValue(p.alphaRotation.z, p.alphaRotation.w, seed, serial, sRotation),
                                     randomValue(p.angularSpawn.x, p.angularSpawn.y, seed, serial, sAngularVelocity));
     particle.color = color;

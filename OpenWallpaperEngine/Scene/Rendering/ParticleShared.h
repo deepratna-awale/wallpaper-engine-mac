@@ -84,7 +84,9 @@ struct ParticleFrame {
     float4 constraintMotion; // constraint origin xy, motion translation xy
     float4 motionLinear;     // motion column 0 xy, column 1 xy
     float4 motionExtras;     // motion size scale, turn, has motion
-    uint4 extra;             // points that stay put in every instance (`ParticleFrameInputs.AbsolutePoints`)
+    uint4 extra;             // points that stay put in every instance (`ParticleFrameInputs.AbsolutePoints`), maximum
+    float4 spawnScale;       // instance overrides: size, alpha, lifetime, speed
+    float4 colorScale;       // instance overrides: tint times brightness
 };
 
 // `ParticleSpriteInstance` and `ParticleRopeSegmentInstance` (ParticleInstanceLayout.swift).

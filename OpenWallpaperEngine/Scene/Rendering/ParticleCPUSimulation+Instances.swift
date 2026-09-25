@@ -71,7 +71,7 @@ extension ParticleCPUSimulation {
         }
         for index in system.instances.indices where system.instances[index].active && system.instances[index].emitting {
             var instance = system.instances[index]
-            instance.spawnCount = emissionCount(liveCount: instance.live, maximum: configuration.maximumParticleCount,
+            instance.spawnCount = emissionCount(liveCount: instance.live, maximum: inputs.maximum,
                                                 rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
                                                 remainder: &instance.remainder,
                                                 burst: instance.fresh ? configuration.instantaneous : 0)

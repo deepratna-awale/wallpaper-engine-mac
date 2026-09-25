@@ -98,8 +98,12 @@ struct ParticleGPUFrame {
     var motionLinear: SIMD4<Float>
     /// Motion size scale, turn, has motion.
     var motionExtras: SIMD4<Float>
-    /// `ParticleFrameInputs.absolutePoints`.
+    /// `ParticleFrameInputs.absolutePoints`, maximum.
     var extra: SIMD4<UInt32>
+    /// `ParticleFrameInputs.spawnScale`.
+    var spawnScale: SIMD4<Float>
+    /// `ParticleFrameInputs.colorScale`.
+    var colorScale: SIMD4<Float>
 
     static let noRenderVar = UInt32.max
 
@@ -124,7 +128,9 @@ struct ParticleGPUFrame {
                                  motion.translation.x, motion.translation.y)
         motionLinear = Self.columns(motion.linear)
         motionExtras = SIMD4(inputs.motionScale, inputs.motionAngle, inputs.motion == nil ? 0 : 1, 0)
-        extra = SIMD4(inputs.absolutePoints.rawValue, 0, 0, 0)
+        extra = SIMD4(inputs.absolutePoints.rawValue, UInt32(clamping: inputs.maximum), 0, 0)
+        spawnScale = inputs.spawnScale
+        colorScale = SIMD4(inputs.colorScale, 1)
     }
 
     static func columns(_ matrix: simd_float2x2) -> SIMD4<Float> {
