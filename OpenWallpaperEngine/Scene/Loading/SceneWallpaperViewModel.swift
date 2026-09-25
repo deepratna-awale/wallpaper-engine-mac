@@ -725,14 +725,24 @@ class SceneWallpaperViewModel: ObservableObject {
         return layer
     }
 
-    /// A 1x1 opaque image of one colour; the quad stretches it to the layer's size.
+    /// A 1x1 opaque image of one colour; the quad stretches it to the layer's size. Its texel is
+    /// the colour's value as authored, like WE's `util/white` tinted by `g_Color4`. Drawing it with
+    /// AppKit would convert it to the display's colour space (e.g. Display P3) and shift it.
     static func solidImage(red: Double, green: Double, blue: Double) -> NSImage {
-        let image = NSImage(size: NSSize(width: 1, height: 1))
-        image.lockFocus()
-        NSColor(srgbRed: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: 1).setFill()
-        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
-        image.unlockFocus()
-        return image
+        pixelImage([red, green, blue, 1])
+    }
+
+    /// A 1x1 image holding `rgba` (0...1 each) as straight-alpha bytes, without colour management.
+    static func pixelImage(_ rgba: [Double]) -> NSImage {
+        let bytes = rgba.map { UInt8((min(max($0.isFinite ? $0 : 0, 0), 1) * 255).rounded()) }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let image = CGImage(width: 1, height: 1, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 4,
+                                  space: CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.last.rawValue).union(.byteOrder32Big),
+                                  provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
+            preconditionFailure("a 1x1 RGBA8 image is always representable")
+        }
+        return NSImage(cgImage: image, size: NSSize(width: 1, height: 1))
     }
 
     /// Text is laid out and rasterised by the renderer every frame (its string can change); the
@@ -813,12 +823,7 @@ class SceneWallpaperViewModel: ObservableObject {
     /// A fully transparent 1x1 placeholder texture for procedural shape layers (e.g. light shafts) that
     /// have no authored image of their own; only the effect's computed alpha should ever become visible.
     private var transparentPlaceholderImage: NSImage {
-        let image = NSImage(size: NSSize(width: 1, height: 1))
-        image.lockFocus()
-        NSColor.white.withAlphaComponent(0).setFill()
-        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
-        image.unlockFocus()
-        return image
+        Self.pixelImage([1, 1, 1, 0])
     }
 
     private func registerFont(_ path: String?) -> String? {

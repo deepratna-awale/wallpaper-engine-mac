@@ -977,7 +977,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let color = NSColor(srgbRed: CGFloat(rgb.0), green: CGFloat(rgb.1), blue: CGFloat(rgb.2), alpha: 1)
         let pixels = SceneTextRasterScale.clamped(rasterScale, boxSize: layout.boxSize)
         guard let image = layout.rasterize(font: font, color: color, pixelsPerUnit: CGFloat(pixels)),
-              let texture = try? textureLoader.newTexture(cgImage: image, options: [MTKTextureLoader.Option.SRGB: false]) else {
+              let texture = try? SceneTextureUpload.texture(from: image, loader: textureLoader, device: device) else {
             OWELog.error(.scene, "Text layer \(layerID): could not rasterise \(layout.boxSize) at \(pixels) px/unit")
             return nil
         }
@@ -1046,7 +1046,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         switch source {
         case let .image(image):
             guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-            guard let texture = try? textureLoader.newTexture(cgImage: cgImage, options: [MTKTextureLoader.Option.SRGB: false]) else { return nil }
+            let texture: MTLTexture
+            do {
+                texture = try SceneTextureUpload.texture(from: cgImage, loader: textureLoader, device: device)
+            } catch {
+                OWELog.error(.scene, "Could not upload a \(cgImage.width)×\(cgImage.height) image: \(error)")
+                return nil
+            }
             return [RenderTextureFrame(texture: texture, duration: .greatestFiniteMagnitude,
                                        uvOrigin: .zero, uvAxisX: SIMD2<Float>(1, 0), uvAxisY: SIMD2<Float>(0, 1))]
         case let .dxt(source):
@@ -1062,7 +1068,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         case let .animated(animation):
             let textures = animation.images.compactMap { image -> MTLTexture? in
                 guard let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-                return try? textureLoader.newTexture(cgImage: cgImage, options: [MTKTextureLoader.Option.SRGB: false])
+                do {
+                    return try SceneTextureUpload.texture(from: cgImage, loader: textureLoader, device: device)
+                } catch {
+                    OWELog.error(.scene, "Could not upload a \(cgImage.width)×\(cgImage.height) animation frame: \(error)")
+                    return nil
+                }
             }
             guard textures.count == animation.images.count else { return nil }
             return animation.frames.compactMap { frame in
