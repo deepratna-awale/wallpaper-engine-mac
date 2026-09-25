@@ -166,6 +166,13 @@ enum ShaderCompilerFactory {
         if crashGuard.allowsInProcess(fingerprint: InProcessShaderCompiler.libraryFingerprint) {
             return InProcessShaderCompiler(crashGuard: crashGuard)
         }
-        return try ProcessShaderCompiler()
+        do {
+            return try ProcessShaderCompiler()
+        } catch {
+            // Without the command line tools the linked libraries are the only compiler; safe
+            // restart still keeps a wallpaper that crashes them from coming back on its own.
+            OWELog.error(.shader, "glslang/spirv-cross not installed; compiling in-process despite earlier crashes")
+            return InProcessShaderCompiler(crashGuard: crashGuard)
+        }
     }
 }

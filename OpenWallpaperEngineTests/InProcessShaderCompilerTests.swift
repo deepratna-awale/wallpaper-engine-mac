@@ -153,14 +153,26 @@ final class InProcessShaderCompilerTests: XCTestCase {
         return directory
     }
 
-    func testCrashGuardDisablesAfterADeadProcessLeftAMarker() throws {
+    func testCrashGuardDisablesAfterRepeatedDeathsMidCompile() throws {
         let directory = try guardDirectory()
         // A pid that can't be running: begin() without end() is what a crash mid-compile leaves.
+        InProcessCompileCrashGuard(directory: directory, pid: Int32.max).begin()
+        XCTAssertTrue(InProcessCompileCrashGuard(directory: directory).allowsInProcess(fingerprint: "libs-1"),
+                      "one death (a force quit looks the same) is not enough")
+        XCTAssertTrue(InProcessCompileCrashGuard(directory: directory).allowsInProcess(fingerprint: "libs-1"),
+                      "a launch without a death doesn't count")
         InProcessCompileCrashGuard(directory: directory, pid: Int32.max).begin()
         let guardNow = InProcessCompileCrashGuard(directory: directory)
         XCTAssertFalse(guardNow.allowsInProcess(fingerprint: "libs-1"))
         XCTAssertFalse(guardNow.allowsInProcess(fingerprint: "libs-1"), "stays disabled for the same libraries")
         XCTAssertTrue(guardNow.allowsInProcess(fingerprint: "libs-2"), "new libraries get another try")
+    }
+
+    func testCrashGuardReadsTheOldDisabledFormat() throws {
+        let directory = try guardDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("libs-1".utf8).write(to: directory.appending(path: "disabled"))
+        XCTAssertFalse(InProcessCompileCrashGuard(directory: directory).allowsInProcess(fingerprint: "libs-1"))
     }
 
     func testCrashGuardIgnoresLiveProcessesAndCleansUp() throws {

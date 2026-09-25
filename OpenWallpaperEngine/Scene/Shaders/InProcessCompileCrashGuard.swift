@@ -5,8 +5,13 @@ import Foundation
 /// A glslang abort used to kill only a `glslangValidator` process; in-process it kills the app,
 /// and the same wallpaper would crash it again on every launch. While a compile runs, a
 /// `pending-<pid>` file exists in `directory`. A pending file whose process is gone on the next
-/// launch means that process died mid-compile, so in-process compiling is disabled for that
-/// library build (the process compiler takes over) until the linked libraries change.
+/// launch means that process died mid-compile. After `disableThreshold` such deaths,
+/// in-process compiling is disabled for that library build (the process compiler takes over,
+/// when it is installed) until the linked libraries change.
+///
+/// Separate from the app's safe-restart ledger (`SafeRestartLedger`), which reacts to the same
+/// crash per wallpaper (not restoring it); this one reacts per shader library build. Neither
+/// reads or writes the other's files.
 ///
 /// Thread-safe: `lock` owns `depth`.
 final class InProcessCompileCrashGuard {
@@ -48,26 +53,67 @@ final class InProcessCompileCrashGuard {
         }
     }
 
-    /// Checks for markers left by dead processes and records a crash against `fingerprint`.
+    /// Deaths mid-compile with the same libraries that turn in-process compiling off. One is not
+    /// enough: a force quit, logout or power loss during a compile leaves the same marker as a
+    /// crash. They are not forgiven by clean runs, because safe restart keeps a crashing wallpaper
+    /// from loading on the next launch, so its crashes are rarely consecutive.
+    static let disableThreshold = 2
+
+    /// What `disabled` records: the libraries and how many deaths mid-compile they have had.
+    private struct Record: Codable {
+        var fingerprint: String
+        var deaths: Int
+    }
+
+    /// Checks for markers left by dead processes and records a death against `fingerprint`.
     /// Returns whether in-process compiling may be used with these libraries.
     func allowsInProcess(fingerprint: String) -> Bool {
         let fileManager = FileManager.default
+        var record = loadRecord()
+        if record?.fingerprint != fingerprint { record = Record(fingerprint: fingerprint, deaths: 0) }
         // Optional: no directory yet means nothing ever crashed here.
         let names = (try? fileManager.contentsOfDirectory(atPath: directory.path)) ?? []
+        var died = false
         for name in names where name.hasPrefix("pending-") {
             guard let owner = Int32(name.dropFirst("pending-".count)), !Self.isAlive(owner) else { continue }
-            OWELog.error(.shader, "A previous run (pid \(owner)) died while compiling a shader in-process; "
-                         + "using the glslang/spirv-cross processes until the shader libraries change")
+            died = true
             do {
-                try Data(fingerprint.utf8).write(to: disabledURL, options: .atomic)
                 try fileManager.removeItem(at: directory.appending(path: name))
             } catch {
-                OWELog.error(.shader, "Could not record the in-process shader compiler crash: \(error)")
+                OWELog.error(.shader, "Could not remove the stale shader compile marker \(name): \(error)")
             }
         }
-        // Optional: a missing file means in-process compiling was never disabled.
-        guard let disabled = try? Data(contentsOf: disabledURL) else { return true }
-        return String(decoding: disabled, as: UTF8.self) != fingerprint
+        if died {
+            record!.deaths += 1
+            OWELog.error(.shader, "A previous run died while compiling a shader in-process "
+                         + "(\(record!.deaths) with these libraries)")
+            save(record!)
+        }
+        let allowed = record!.deaths < Self.disableThreshold
+        if !allowed {
+            OWELog.error(.shader, "In-process shader compiling is off until the shader libraries change")
+        }
+        return allowed
+    }
+
+    private func loadRecord() -> Record? {
+        // Optional: a missing file means nothing died mid-compile.
+        guard let data = try? Data(contentsOf: disabledURL) else { return nil }
+        do {
+            return try JSONDecoder().decode(Record.self, from: data)
+        } catch {
+            // The previous format held only the fingerprint of disabled libraries.
+            return Record(fingerprint: String(decoding: data, as: UTF8.self), deaths: Self.disableThreshold)
+        }
+    }
+
+    private func save(_ record: Record) {
+        do {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONEncoder().encode(record).write(to: disabledURL, options: .atomic)
+        } catch {
+            OWELog.error(.shader, "Could not record the in-process shader compiler state: \(error)")
+        }
     }
 
     private static func isAlive(_ pid: Int32) -> Bool {
