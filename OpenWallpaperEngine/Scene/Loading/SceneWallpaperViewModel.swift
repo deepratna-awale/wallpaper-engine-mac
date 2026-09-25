@@ -596,8 +596,14 @@ class SceneWallpaperViewModel: ObservableObject {
         guard let imagePath = object.image,
               let model: WEModel = loadJSON(path: imagePath, wallpaperDir: wallpaperDir),
               let materialPath = model.material,
-              let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir),
-              let textureName = material.passes?.first?.textures?.first,
+              let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir) else {
+            return nil
+        }
+        if model.solidlayer == true {
+            return buildSolidLayer(object, material: material, wallpaperDir: wallpaperDir,
+                                   sceneSize: sceneSize, objectsByID: objectsByID)
+        }
+        guard let textureName = material.passes?.first?.textures?.first,
               let source = loadMetalTexture(named: textureName, materialDir: materialPath, wallpaperDir: wallpaperDir) else {
             return nil
         }
@@ -649,6 +655,51 @@ class SceneWallpaperViewModel: ObservableObject {
         // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
         if sceneInput, effectPlans.plans.isEmpty { return nil }
         return layer
+    }
+
+    /// `models/util/solidlayer*.json`: WE's `flat` shader fills the quad with the object's `color`.
+    /// The colour is baked into a generated texture so authored effects see the coloured image, as
+    /// they do in WE; `alpha` stays on the layer and is applied when the quad is drawn.
+    private func buildSolidLayer(_ object: WESceneObject, material: WEMaterial, wallpaperDir: URL,
+                                 sceneSize: SIMD2<Float>, objectsByID: [Int: WESceneObject]) -> SceneMetalLayer {
+        let authoredSize = object.size.map { value -> SIMD2<Float> in
+            let parsed = value.parseVector2()
+            return SIMD2<Float>(Float(parsed.0), Float(parsed.1))
+        }
+        let size = authoredSize.flatMap { $0.x > 0 && $0.y > 0 ? $0 : nil } ?? sceneSize
+        let color = object.color?.parseVector3() ?? (1, 1, 1)
+        let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
+        let parallaxValue = object.parallaxDepth?.parseVector3() ?? (0, 0, 0)
+        var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
+                       source: .image(Self.solidImage(red: color.0, green: color.1, blue: color.2)),
+                       position: effectiveOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID),
+                       size: size,
+                       scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
+                       scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
+                       opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript,
+                       opacityAnimation: object.alphaAnimation,
+                       brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
+                       color: SIMD4<Float>(repeating: 1), colorScript: object.colorScript,
+                       text: nil,
+                       parallaxDepth: SIMD3<Float>(Float(parallaxValue.0), Float(parallaxValue.1), Float(parallaxValue.2)),
+                       perspective: object.perspective ?? false,
+                       positionScript: object.originScript, positionScriptProperties: object.originScriptProperties,
+                       positionAnimation: object.originAnimation,
+                       sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
+                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
+                       rotationAnimation: object.anglesAnimation, effects: materialEffects(material.passes?.first))
+        layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
+        return layer
+    }
+
+    /// A 1x1 opaque image of one colour; the quad stretches it to the layer's size.
+    static func solidImage(red: Double, green: Double, blue: Double) -> NSImage {
+        let image = NSImage(size: NSSize(width: 1, height: 1))
+        image.lockFocus()
+        NSColor(srgbRed: CGFloat(red), green: CGFloat(green), blue: CGFloat(blue), alpha: 1).setFill()
+        NSRect(x: 0, y: 0, width: 1, height: 1).fill()
+        image.unlockFocus()
+        return image
     }
 
     private func buildMetalTextLayer(_ object: WESceneObject, sceneSize: SIMD2<Float>,

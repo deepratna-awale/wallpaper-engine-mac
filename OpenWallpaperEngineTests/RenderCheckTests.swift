@@ -20,7 +20,6 @@ final class RenderCheckTests: XCTestCase {
         // Kept, but it samples _rt_FullFrameBuffer, which is still a transparent placeholder (B1);
         // a pixel check belongs to the Phase 3 compositing work.
         XCTAssertTrue(ids.contains("3"), "composition layer missing; layers: \(ids)")
-        XCTExpectFailure("B1: solid layers (no texture) are dropped")
         XCTAssertTrue(ids.contains("2"), "solid layer missing; layers: \(ids)")
     }
 }
