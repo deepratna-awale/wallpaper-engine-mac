@@ -90,7 +90,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var importOpenPanel: NSOpenPanel!
     
     var eventHandler: Any?
-    private var didShowAudioPermissionPrompt = false
     
     static var shared = AppDelegate()
     
@@ -215,33 +214,30 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         self.contentViewModel.isFilterReveal.toggle()
     }
 
+    /// Posted at most once per launch by `AudioCapturePermissionGate`, and never after
+    /// "Don't Ask Again".
     @objc func audioCapturePermissionMissing() {
-        guard !didShowAudioPermissionPrompt else { return }
-        guard !UserDefaults.standard.bool(forKey: "SuppressAudioPermissionPrompt") else { return }
-        didShowAudioPermissionPrompt = true
         let alert = NSAlert()
         alert.messageText = "Audio Visualizers Need Permission"
         alert.informativeText = """
         Open Wallpaper Engine needs Screen & System Audio Recording permission to read system audio \
-        for audio bars and other audio-reactive wallpapers.
-
-        Locally built copies are signed ad-hoc, so macOS treats every rebuild as a new app and \
-        clears this permission. Remove the old entry in Privacy & Security before re-adding it.
+        for audio bars and other audio-reactive wallpapers. Audio capture starts on its own once \
+        the permission is granted.
         """
-        alert.addButton(withTitle: "Open Privacy Settings")
+        alert.addButton(withTitle: "Grant Access")
         alert.addButton(withTitle: "Open Permissions Page")
         alert.addButton(withTitle: "Later")
         alert.addButton(withTitle: "Don't Ask Again")
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            PermissionHelper.openScreenRecordingSettings()
+            PermissionHelper.grantScreenRecordingAccess()
         case .alertSecondButtonReturn:
             globalSettingsViewModel.selection = 3
             openSettingsWindow()
         case .alertThirdButtonReturn:
             break
         default:
-            UserDefaults.standard.set(true, forKey: "SuppressAudioPermissionPrompt")
+            GlobalSettingsViewModel.isAudioPermissionAlertDismissed = true
         }
     }
 
