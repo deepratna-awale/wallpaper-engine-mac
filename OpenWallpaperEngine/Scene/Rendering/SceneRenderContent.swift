@@ -52,6 +52,8 @@ struct SceneMetalLayer {
     var alignment: String? = nil
     /// `fullscreen` models cover the scene whatever their parent is.
     var fillsScene = false
+    /// User-bound transform/colour values, re-resolved each frame.
+    var bindings = SceneLayerBindings()
 
     /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
     var readsScene: Bool { sceneInput || weEffects.contains { $0.passes.contains(where: \.readsSceneSnapshot) } }
@@ -117,4 +119,7 @@ struct SceneMetalContent {
     let bloom: SceneBloomSettings
     /// Every object's parent and authored transform; layer positions are relative to their parent.
     var transforms: SceneTransformHierarchy = .empty
+    var camera = SceneCameraEffects()
+    /// The wallpaper instance's key in the script engine's user-property store (its directory path).
+    var wallpaperKey = ""
 }

@@ -646,7 +646,7 @@ private final class SceneInspectorModel: ObservableObject {
     }
 
     private func persist(_ values: [String: String]) {
-        AudioReactiveScriptEngine.shared.setUserProperties(values)
+        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: directory.path, replacing: false)
         pendingSave?.cancel()
         let explicitKey = storageKey.replacingOccurrences(of: "SceneUserProperties.",
                                                            with: "SceneUserPropertiesExplicit.")

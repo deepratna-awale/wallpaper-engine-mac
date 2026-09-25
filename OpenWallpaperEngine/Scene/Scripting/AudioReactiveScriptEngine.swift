@@ -230,8 +230,17 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     private var spectrum = [Double](repeating: 0, count: 64)
     private var waveform = [Double](repeating: 0, count: 64)
     private var stream: SCStream?
-    private var globalValues: [String: Double] = [:]
-    private var userPropertyStrings: [String: String] = [:]
+    /// Per-wallpaper user properties (guarded by `levelLock`). `userPropertyStrings` and
+    /// `globalValues` are views of the active wallpaper's entry.
+    private var propertyStores = SceneUserPropertyStores()
+    private var globalValues: [String: Double] {
+        get { propertyStores.active.numbers }
+        set { propertyStores.active.numbers = newValue }
+    }
+    private var userPropertyStrings: [String: String] {
+        get { propertyStores.active.strings }
+        set { propertyStores.active.strings = newValue }
+    }
     private var layerStates: [String: [String: Any]] = [:]
     private var layerAliases: [String: String] = [:]
     private var scriptContexts: [String: JSContext] = [:]
@@ -247,6 +256,7 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
     private var sceneFrame: Int = 0
     private var userPropertiesRevision = 0
     private var scriptPropertyCacheRevision = -1
+    private var scriptPropertyCacheKey = ""
     private var cachedModulatedGlobals: [String: Double] = [:]
     private var cachedUserProperties: [String: Any] = [:]
     private var cachedMusicSyncedKeys: [String] = []
@@ -372,14 +382,22 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         scriptLock.unlock()
     }
 
+    /// Merges `values` into the properties of the wallpaper most recently configured with
+    /// `setUserProperties(_:wallpaper:replacing:)`.
     func setUserProperties(_ values: [String: String]) {
         levelLock.lock()
-        var changedKeys: [String] = []
-        for (key, value) in values {
-            if userPropertyStrings[key] != value { changedKeys.append(key) }
-            userPropertyStrings[key] = value
-            globalValues[key] = Double(value) ?? (value.lowercased() == "true" ? 1 : 0)
-        }
+        let key = propertyStores.lastConfiguredKey
+        levelLock.unlock()
+        setUserProperties(values, wallpaper: key, replacing: false)
+    }
+
+    /// Sets the user properties of one wallpaper instance (keyed by its directory path). With
+    /// `replacing`, properties missing from `values` are dropped, so nothing from a previous
+    /// configuration of that wallpaper lingers.
+    func setUserProperties(_ values: [String: String], wallpaper: String, replacing: Bool) {
+        levelLock.lock()
+        let changedKeys = propertyStores.set(values, for: wallpaper, replacing: replacing)
+        if frameSnapshot == nil { propertyStores.activeKey = wallpaper }
         userPropertiesRevision &+= 1
         levelLock.unlock()
         propertyNotificationWorkItem?.cancel()
@@ -426,9 +444,12 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         return userPropertiesRevision
     }
 
-    func beginFrame() {
+    /// Starts a frame of `wallpaper` (its directory path): reads until `endFrame` see that
+    /// wallpaper's user properties.
+    func beginFrame(wallpaper: String) {
         OWEFrameMetrics.countLockAcquisition()
         levelLock.lock()
+        propertyStores.activeKey = wallpaper
         frameSnapshot = FrameSnapshot(globalValues: globalValues,
                                       userPropertyStrings: userPropertyStrings,
                                       layerStates: layerStates,
@@ -518,6 +539,20 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         return userPropertyStrings[key]
     }
 
+    /// One wallpaper instance's property, independent of which wallpaper is being rendered.
+    func userPropertyString(_ key: String, wallpaper: String) -> String? {
+        levelLock.lock()
+        defer { levelLock.unlock() }
+        return propertyStores.entry(for: wallpaper).strings[key]
+    }
+
+    /// Every user property of one wallpaper instance.
+    func userProperties(wallpaper: String) -> [String: String] {
+        levelLock.lock()
+        defer { levelLock.unlock() }
+        return propertyStores.entry(for: wallpaper).strings
+    }
+
     func audioVisualizationSnapshot() -> AudioVisualizationSnapshot {
         levelLock.lock()
         defer { levelLock.unlock() }
@@ -529,11 +564,8 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
                                           bass: bandAverage(0..<8), mid: bandAverage(8..<32), treble: bandAverage(32..<64))
     }
 
-    func resolveLayerVisibility(_ objects: [WESceneObject], initial: [String: Bool]) -> [String: Bool] {
-        levelLock.lock()
-        let propertyStrings = userPropertyStrings
-        levelLock.unlock()
-        return Self.resolveLayerVisibility(objects, initial: initial, userProperties: propertyStrings)
+    func resolveLayerVisibility(_ objects: [WESceneObject], initial: [String: Bool], wallpaper: String) -> [String: Bool] {
+        Self.resolveLayerVisibility(objects, initial: initial, userProperties: userProperties(wallpaper: wallpaper))
     }
 
     static func resolveLayerVisibility(_ objects: [WESceneObject], initial: [String: Bool],
@@ -805,8 +837,9 @@ final class AudioReactiveScriptEngine: NSObject, SCStreamOutput, SCStreamDelegat
         let snapshotLevel = level
         // Converting every user property on each evaluation dominated script cost; rebuild only
         // when properties actually change, then patch the (usually empty) music-synced subset.
-        if propertyRevision != scriptPropertyCacheRevision {
+        if propertyRevision != scriptPropertyCacheRevision || propertyStores.activeKey != scriptPropertyCacheKey {
             scriptPropertyCacheRevision = propertyRevision
+            scriptPropertyCacheKey = propertyStores.activeKey
             cachedModulatedGlobals = globalValues
             cachedMusicSyncedKeys = globalValues.keys.filter {
                 userPropertyStrings["\($0)_musicSync"] == "true"

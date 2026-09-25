@@ -96,6 +96,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var particleSystems: [ParticleSystemRuntime] = []
     private var lastFrameTime = CACurrentMediaTime()
     private var sceneScript: String?
+    private var camera = SceneCameraEffects()
+    /// Whose user properties this renderer's frames read (see `SceneMetalContent.wallpaperKey`).
+    private var wallpaperKey = ""
     private var placement: WallpaperPlacement = .fill
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     private var sceneRenderTarget: MTLTexture?
@@ -198,6 +201,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.particleSystems = preparedParticleSystems
                 self.sceneScript = content.sceneScript
                 self.transforms = content.transforms
+                self.wallpaperKey = content.wallpaperKey
+                self.camera = content.camera
                 self.textFrameCache.removeAll(keepingCapacity: true)
                 var scriptLayers: [String: [String: Any]] = [:]
                 var layerAliases: [String: String] = [:]
@@ -275,7 +280,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         let frameStart = CACurrentMediaTime()
         let frameSignpost = OWESignpost.begin(OWESignpost.render, "frame")
-        AudioReactiveScriptEngine.shared.beginFrame()
+        AudioReactiveScriptEngine.shared.beginFrame(wallpaper: wallpaperKey)
         defer {
             AudioReactiveScriptEngine.shared.endFrame()
             frameSignpost.end()
@@ -348,10 +353,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard var encoder = commandBuffer.makeRenderCommandEncoder(descriptor: sceneRenderPass) else { return }
         encoder.setRenderPipelineState(renderPipeline)
 
-        let parallaxEnabled = AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
+        // The scene's own `general.cameraparallax` / `camerashake` (possibly user-bound) or the app's toggles.
+        let parallaxEnabled = camera.parallax
+            || AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
         let parallaxAmount = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
+            * (camera.parallax ? camera.parallaxAmount * camera.parallaxMouseInfluence : 1)
         // Two decorrelated frequencies so the shake reads as a jitter rather than a circle.
-        let cameraShakeOffset: SIMD2<Float> = AudioReactiveScriptEngine.shared.cameraShakeEnabled
+        let cameraShakeOffset: SIMD2<Float> = AudioReactiveScriptEngine.shared.cameraShakeEnabled || camera.shake
             ? SIMD2<Float>(sin(time * 47.3) * 0.004 + sin(time * 71.9) * 0.002,
                            cos(time * 53.1) * 0.004 + cos(time * 83.7) * 0.002) * sceneSize
             : .zero
@@ -445,9 +453,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 // Until its effects are ready the layer has nothing of its own to draw.
                 if entry.layer.sceneInput, dynamicTextures[layerIndex] == nil { continue }
             }
+            // User-bound values give the base that scripts and animations start from.
+            let base = baseValues(entry, time: time)
             let opacity = entry.layer.opacityScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: entry.layer.opacity, layerId: entry.stateId)
-            } ?? timelineValue(entry.layer.opacityAnimation, at: time, fallback: AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "alpha", fallback: entry.layer.opacity))
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.opacity, layerId: entry.stateId)
+            } ?? timelineValue(entry.layer.opacityAnimation, at: time, fallback: AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "alpha", fallback: base.opacity))
             var local = evaluatedLocal(entry, time: time)
             let baseSize = textFrames[layerIndex]?.baseSize ?? layerBaseSize(entry, time: time)
             let hasAuthoredDepth = simd_length(entry.layer.parallaxDepth) > 0
@@ -480,13 +490,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 uniform.opacity *= AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
             }
             let objectBrightness = entry.layer.brightnessScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: entry.layer.brightness, layerId: entry.stateId)
-            } ?? entry.layer.brightness
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: base.brightness, layerId: entry.stateId)
+            } ?? base.brightness
             let objectColor = entry.layer.colorScript.flatMap {
                 AudioReactiveScriptEngine.shared.evaluateVector3($0,
-                    fallback: SIMD3<Float>(entry.layer.color.x, entry.layer.color.y, entry.layer.color.z),
+                    fallback: SIMD3<Float>(base.color.x, base.color.y, base.color.z),
                     layerId: entry.stateId)
-            }.map { SIMD4<Float>($0.x, $0.y, $0.z, 1) } ?? entry.layer.color
+            }.map { SIMD4<Float>($0.x, $0.y, $0.z, 1) } ?? base.color
             uniform.color = objectColor
             let materialEffects = entry.layer.effects
             let brightness = materialEffects.scripts["brightness"].map {
@@ -595,34 +605,43 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// A layer's own origin, scale and `angles.z` this frame: script, then script-set state, then
     /// timeline, then authored. Evaluated once per frame per layer.
+    /// User-bound values give the base that scripts and animations start from.
+    private func baseValues(_ entry: PreparedLayer, time: Float) -> SceneLayerBaseValues {
+        entry.layer.bindings.isEmpty
+            ? SceneLayerBaseValues(entry.layer)
+            : entry.layer.bindings.baseValues(for: entry.layer,
+                                              in: LiveSceneValueContext(time: Double(time), layerId: entry.stateId))
+    }
+
     private func evaluatedLocal(_ entry: PreparedLayer, time: Float) -> SceneLocalTransform {
         if let cached = frameLocals[entry.stateId] { return cached }
+        let base = baseValues(entry, time: time)
         // origin is a Vec3 in Wallpaper Engine; scripts read and write value.z, so evaluating
         // it as a Vec2 hands them an object with no z and silently corrupts the result.
         let position = entry.layer.positionScript.flatMap { script -> SIMD2<Float>? in
             AudioReactiveScriptEngine.shared.evaluateVector3(script,
-                fallback: SIMD3<Float>(entry.layer.position.x, entry.layer.position.y, 0),
+                fallback: SIMD3<Float>(base.position.x, base.position.y, 0),
                 layerId: entry.stateId).map { SIMD2<Float>($0.x, $0.y) }
         }
             ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "origin",
                 fallback: vector2(timelineVector3(entry.layer.positionAnimation, at: time,
-                    fallback: SIMD3<Float>(entry.layer.position.x, entry.layer.position.y, 0))))
+                    fallback: SIMD3<Float>(base.position.x, base.position.y, 0))))
         let scale = entry.layer.scaleScript.flatMap { script -> SIMD2<Float>? in
             AudioReactiveScriptEngine.shared.evaluateVector3(script,
-                fallback: SIMD3<Float>(entry.layer.scale.x, entry.layer.scale.y, 1),
+                fallback: SIMD3<Float>(base.scale.x, base.scale.y, 1),
                 layerId: entry.stateId).map { SIMD2<Float>($0.x, $0.y) }
         } ?? AudioReactiveScriptEngine.shared.layerVector2(entry.stateId, property: "scale",
             fallback: vector2(timelineVector3(entry.layer.scaleAnimation, at: time,
-                fallback: SIMD3<Float>(entry.layer.scale.x, entry.layer.scale.y, 1))))
+                fallback: SIMD3<Float>(base.scale.x, base.scale.y, 1))))
         // `angles` is a Vec3 in Wallpaper Engine; scripts mutate value.x/y/z, so it has to be
         // evaluated as a vector even though only the Z rotation is used here.
         let rotation = entry.layer.rotationScript.flatMap {
             AudioReactiveScriptEngine.shared.evaluateVector3($0,
-                fallback: SIMD3<Float>(0, 0, entry.layer.rotation),
+                fallback: SIMD3<Float>(0, 0, base.rotation),
                 layerId: entry.stateId)?.z
         } ?? AudioReactiveScriptEngine.shared.layerValue(entry.stateId, property: "angles.z",
             fallback: timelineVector3(entry.layer.rotationAnimation, at: time,
-                fallback: SIMD3<Float>(0, 0, entry.layer.rotation)).z)
+                fallback: SIMD3<Float>(0, 0, base.rotation)).z)
         let local = SceneLocalTransform(origin: position, scale: scale, angle: rotation)
         frameLocals[entry.stateId] = local
         return local

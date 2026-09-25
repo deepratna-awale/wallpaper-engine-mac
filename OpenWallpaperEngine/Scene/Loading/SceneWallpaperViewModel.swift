@@ -327,20 +327,28 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func prepareSceneUserPropertyDefaults(for wallpaper: WEWallpaper, scene: WEScene) {
-        guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame,
-              let data = try? Data(contentsOf: wallpaper.wallpaperDirectory.appending(path: "project.json")),
-              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let general = root["general"] as? [String: Any],
-              let properties = general["properties"] as? [String: [String: Any]] else {
-            return
-        }
+        guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame else { return }
         let key = "SceneUserProperties.\(wallpaper.wallpaperDirectory.path)"
         let explicitKey = "SceneUserPropertiesExplicit.\(wallpaper.wallpaperDirectory.path)"
         let defaults = UserDefaults.standard
-        var values = defaults.bool(forKey: explicitKey)
+        let stored = defaults.bool(forKey: explicitKey)
             ? defaults.dictionary(forKey: key) as? [String: String] ?? [:]
             : [:]
-        for (name, property) in properties where values[name] == nil {
+        let values = Self.userPropertyValues(stored: stored,
+                                             declared: Self.declaredUserProperties(in: wallpaper.wallpaperDirectory),
+                                             scene: scene)
+        defaults.set(values, forKey: key)
+        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaper.wallpaperDirectory.path,
+                                                           replacing: true)
+    }
+
+    /// The wallpaper's property values: what the user stored, else project.json's defaults (the
+    /// first option for a combo without one). Nothing else is invented: WE shows exactly what the
+    /// properties say, even when that selects no variant of a conditional layer.
+    static func userPropertyValues(stored: [String: String], declared: [String: [String: Any]],
+                                   scene: WEScene) -> [String: String] {
+        var values = stored
+        for (name, property) in declared where values[name] == nil {
             if let value = property["value"] {
                 values[name] = sceneUserPropertyString(value)
             } else if property["type"] as? String == "combo",
@@ -353,25 +361,26 @@ class SceneWallpaperViewModel: ObservableObject {
             if values[prefix + "font"] == nil, let font = object.font {
                 values[prefix + "font"] = font
             }
-            if values[prefix + "size"] == nil, let pointSize = object.pointsize {
+            // A user-bound point size follows its property; a seeded override would pin it.
+            if values[prefix + "size"] == nil, object.values[.pointsize]?.userPropertyName == nil,
+               let pointSize = object.pointsize {
                 values[prefix + "size"] = String(pointSize)
             }
         }
-        let conditionalImages = scene.objects.filter { $0.image != nil && $0.visibleUserProperty != nil }
-        let hasSelectedVariant = conditionalImages.contains { object in
-            guard let property = object.visibleUserProperty, let selectedValue = values[property] else { return false }
-            if let condition = object.visibleCondition {
-                return normalizeVariant(condition) == normalizeVariant(selectedValue)
-            }
-            return selectedValue.caseInsensitiveCompare("true") == .orderedSame || selectedValue == "1"
+        return values
+    }
+
+    /// `general.properties` of project.json; empty when the wallpaper declares none.
+    private static func declaredUserProperties(in directory: URL) -> [String: [String: Any]] {
+        let url = directory.appending(path: "project.json")
+        do {
+            let root = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any]
+            let general = root?["general"] as? [String: Any]
+            return general?["properties"] as? [String: [String: Any]] ?? [:]
+        } catch {
+            OWELog.error(.scene, "Can't read user properties from \(url.path): \(error)")
+            return [:]
         }
-        if !conditionalImages.isEmpty, !hasSelectedVariant,
-           let fallback = conditionalImages.first(where: { $0.visible == true }) ?? conditionalImages.first,
-           let property = fallback.visibleUserProperty {
-            values[property] = fallback.visibleCondition ?? "true"
-        }
-        defaults.set(values, forKey: key)
-        AudioReactiveScriptEngine.shared.setUserProperties(values)
     }
 
     private func loadPreviewImage(wallpaperDir: URL) -> NSImage? {
@@ -398,7 +407,11 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         let signpost = OWESignpost.begin(OWESignpost.scene, "metalContent")
         defer { signpost.end() }
-        guard let scene = loadedScene, let wallpaperDir = loadedWallpaperDirectory else { return nil }
+        guard let authoredScene = loadedScene, let wallpaperDir = loadedWallpaperDirectory else { return nil }
+        // Content is built from what the user properties say; a property change rebuilds it.
+        let valueContext = userValueContext
+        var scene = authoredScene
+        scene.objects = authoredScene.objects.map { $0.resolvingUserBindings(in: valueContext) }
         let sceneSize = metalSceneSize(for: scene)
         let sceneScript = loadSceneScript(scene.script, wallpaperDir: wallpaperDir)
         let visibility = resolvedVisibility(for: scene)
@@ -410,13 +423,14 @@ class SceneWallpaperViewModel: ObservableObject {
         let layers: [SceneMetalLayer] = scene.objects.enumerated().compactMap { index, object in
             guard visibility[String(object.id ?? -1)] ?? false else { return nil }
             if object.textValue != nil,
-                    AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(object.id ?? -1)_enabled") == "false" {
+                    userProperty("_owe_text_\(object.id ?? -1)_enabled") == "false" {
                 return nil
             }
             var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
                 ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, objectsByID: objectsByID)
             layer?.order = index
+            layer?.bindings = SceneLayerBindings(object: object, builtWith: valueContext)
             return layer
         }
         let particleSystems: [SceneMetalParticleSystem] = scene.objects.enumerated().compactMap { index, object in
@@ -433,7 +447,9 @@ class SceneWallpaperViewModel: ObservableObject {
             }
             let content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
                                             sceneScript: sceneScript, bloom: bloomSettings(for: scene.general),
-                                            transforms: transforms)
+                                            transforms: transforms,
+                                            camera: SceneCameraEffects(scene.general, in: valueContext),
+                                            wallpaperKey: propertyStoreKey)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -541,17 +557,21 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func bloomSettings(for general: WESceneGeneral) -> SceneBloomSettings {
-        let tint = (general.bloomtint ?? "1 1 1").parseVector3()
-        return SceneBloomSettings(enabled: general.bloom ?? false,
-                                  strength: Float(general.bloomstrength ?? 1),
-                                  threshold: Float(general.bloomthreshold ?? 0.7),
-                                  tint: SIMD3<Float>(Float(tint.0), Float(tint.1), Float(tint.2)))
+        SceneBloomSettings(general, in: userValueContext)
+    }
+
+    /// Resolves user-bound values against this wallpaper's properties.
+    private var userValueContext: LiveSceneValueContext {
+        LiveSceneValueContext(time: 0, wallpaper: propertyStoreKey)
     }
 
     private func metalSceneSize(for scene: WEScene) -> SIMD2<Float> {
         if let projection = scene.general.orthogonalprojection {
             return SIMD2<Float>(Float(projection.width), Float(projection.height))
         }
+        // `orthogonalprojection: null` is a perspective scene: objects are in world units, so their
+        // bounds say nothing about the canvas. Render at WE's default canvas.
+        if scene.general.usesPerspectiveProjection { return SIMD2<Float>(1920, 1080) }
         let imageBounds = scene.objects.compactMap { object -> SIMD2<Float>? in
             guard let origin = object.origin?.parseVector3(), let size = object.size?.parseVector2() else { return nil }
             return SIMD2<Float>(Float(origin.0 + size.0 / 2), Float(origin.1 + size.1 / 2))
@@ -864,8 +884,9 @@ class SceneWallpaperViewModel: ObservableObject {
             })
         var plans: [SceneEffectPlan] = []
         var handled = Set<Int>()
+        let storeKey = propertyStoreKey
         for (index, effect) in effects.enumerated() {
-            let enabled = AudioReactiveScriptEngine.shared.userPropertyString(
+            let enabled = userProperty(
                 sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: index)) != "false"
             guard isEffectVisible(effect), enabled else {
                 handled.insert(index)
@@ -874,7 +895,8 @@ class SceneWallpaperViewModel: ObservableObject {
             do {
                 plans.append(try builder.build(effect, overrides: { key in
                     AudioReactiveScriptEngine.shared.userPropertyString(
-                        sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key))
+                        sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key),
+                        wallpaper: storeKey)
                 }))
                 handled.insert(index)
             } catch {
@@ -889,19 +911,29 @@ class SceneWallpaperViewModel: ObservableObject {
 
 
 
+    /// Key of this wallpaper instance's user properties in the script engine's store.
+    var propertyStoreKey: String {
+        (loadedWallpaperDirectory ?? currentWallpaper.wallpaperDirectory).path
+    }
+
+    /// This wallpaper's current value of a user property.
+    func userProperty(_ name: String) -> String? {
+        AudioReactiveScriptEngine.shared.userPropertyString(name, wallpaper: propertyStoreKey)
+    }
+
     private func isObjectVisible(_ object: WESceneObject) -> Bool {
         let objectID = object.id ?? -1
         let overrideKey = sceneObjectVisibilityKey(objectID: objectID)
-        if let override = AudioReactiveScriptEngine.shared.userPropertyString(overrideKey) {
+        if let override = userProperty(overrideKey) {
             return override != "false"
         }
         if object.textValue != nil {
-            if AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(objectID)_enabled") == "false" {
+            if userProperty("_owe_text_\(objectID)_enabled") == "false" {
                 return false
             }
         }
         if let property = object.visibleUserProperty {
-            guard let selectedValue = AudioReactiveScriptEngine.shared.userPropertyString(property) else {
+            guard let selectedValue = userProperty(property) else {
                 return object.visible != false
             }
             if let condition = object.visibleCondition {
@@ -920,7 +952,8 @@ class SceneWallpaperViewModel: ObservableObject {
             objectsByID[id] = object
             visibility[String(id)] = isObjectVisible(object)
         }
-        visibility = AudioReactiveScriptEngine.shared.resolveLayerVisibility(scene.objects, initial: visibility)
+        visibility = AudioReactiveScriptEngine.shared.resolveLayerVisibility(scene.objects, initial: visibility,
+                                                                             wallpaper: propertyStoreKey)
 
         func isVisibleWithParents(_ object: WESceneObject, visited: Set<Int> = []) -> Bool {
             let id = object.id ?? -1
@@ -936,7 +969,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func isEffectVisible(_ effect: WEObjectEffect) -> Bool {
         if let property = effect.visibleUserProperty {
-            guard let selectedValue = AudioReactiveScriptEngine.shared.userPropertyString(property) else { return false }
+            guard let selectedValue = userProperty(property) else { return false }
             if let condition = effect.visibleCondition {
                 return normalizeVariant(condition) == normalizeVariant(selectedValue)
             }
@@ -1027,14 +1060,15 @@ class SceneWallpaperViewModel: ObservableObject {
         let isSnowParticle = object.name?.localizedCaseInsensitiveContains("snow") == true
         let objectScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let origin = worldOrigin(for: object, sceneSize: sceneSize, objectsByID: objectsByID)
-        let rate = Float((emitter?.rate ?? 100) * (object.instanceoverride?.rate?.value ?? 1))
-        let rateScript = object.instanceoverride?.rate?.script ?? emitter?.$rate.script
+        let overrides = SceneParticleOverrides(object.instanceoverride, in: userValueContext)
+        let rate = Float(emitter?.rate ?? 100) * overrides.rate
+        let rateScript = overrides.rateScript ?? emitter?.$rate.script
         let distance = emitter?.distancemax?.vectorValue ?? (0, 0, 0)
         let presetScale = particlePath.localizedCaseInsensitiveContains("4k") ? sceneSize.y / 2160 : 1
         let spawnExtent = SIMD2<Float>(abs(Float(distance.0 * objectScale.0)) * presetScale,
                            abs(Float(distance.1 * objectScale.1)) * presetScale)
         var lifetime: ClosedRange<Float> = 1...1
-        var size: ClosedRange<Float> = Float(object.instanceoverride?.size ?? 1) * 20...Float(object.instanceoverride?.size ?? 1) * 20
+        var size: ClosedRange<Float> = overrides.size * 20...overrides.size * 20
         var minimumVelocity = SIMD2<Float>.zero
         var maximumVelocity = SIMD2<Float>.zero
         var alpha: ClosedRange<Float> = 1...1
@@ -1068,7 +1102,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 let lifetimeMax = Float(initializer.max?.doubleValue ?? 1)
                 lifetime = min(lifetimeMin, lifetimeMax)...max(lifetimeMin, lifetimeMax)
             case "sizerandom":
-                let multiplier = Float(object.instanceoverride?.size ?? 1)
+                let multiplier = overrides.size
                 let sizeMin = Float(initializer.min?.doubleValue ?? 20) * multiplier
                 let sizeMax = Float(initializer.max?.doubleValue ?? 20) * multiplier
                 size = min(sizeMin, sizeMax)...max(sizeMin, sizeMax)
@@ -1142,6 +1176,15 @@ class SceneWallpaperViewModel: ObservableObject {
             minimumColor = SIMD4<Float>(1, 1, 1, 1)
             maximumColor = SIMD4<Float>(1, 1, 1, 1)
         }
+        // Negative multipliers would invert the ranges; WE treats them as 0.
+        let lifetimeScale = max(overrides.lifetime, 0), alphaScale = max(overrides.alpha, 0)
+        lifetime = lifetime.lowerBound * lifetimeScale...lifetime.upperBound * lifetimeScale
+        alpha = alpha.lowerBound * alphaScale...alpha.upperBound * alphaScale
+        minimumVelocity *= overrides.speed
+        maximumVelocity *= overrides.speed
+        let colorOverride = SIMD4<Float>(overrides.tint * overrides.brightness, 1)
+        minimumColor *= colorOverride
+        maximumColor *= colorOverride
         var gravity = SIMD2<Float>.zero
         var drag: Float = 0
         var fadeIn: Float = 0
@@ -1270,7 +1313,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let opacityMultiplier = refractAmount.map { max(0.04, min(abs(Float($0)), 1)) } ?? 1
         return SceneMetalParticleSystem(source: source, origin: origin, emissionRate: max(rate, 0),
                 emissionRateScript: rateScript,
-                                        maximumParticleCount: min(particleSystem.maxcount ?? 1000, 1000),
+                                        maximumParticleCount: min(max(Int((Float(particleSystem.maxcount ?? 1000) * overrides.count).rounded()), 0), 1000),
                                         spawnExtent: spawnExtent, lifetime: lifetime, size: size,
                                         minimumVelocity: minimumVelocity, maximumVelocity: maximumVelocity,
                                         gravity: gravity, drag: drag, dragScript: dragScript, alpha: alpha,
