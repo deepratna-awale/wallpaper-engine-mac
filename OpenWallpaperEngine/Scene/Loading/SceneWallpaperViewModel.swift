@@ -552,9 +552,11 @@ class SceneWallpaperViewModel: ObservableObject {
             content.volumetrics = volumetricsPlan(content.lighting.lights, camera: content.lighting.camera,
                                                   wallpaperDir: wallpaperDir)
             content.engineCombos = sceneEngineCombos
-            content.bloomChain = engineChain("WE's bloom", wallpaperDir: wallpaperDir, SceneBloomChain.build)
+            // An HDR content blooms through the HDR chain only (its `combine_srgb` when bloom is off).
             if sceneEngineCombos.hdr {
                 content.hdrChain = engineChain("WE's HDR bloom", wallpaperDir: wallpaperDir, SceneHDRChain.build)
+            } else {
+                content.bloomChain = engineChain("WE's bloom", wallpaperDir: wallpaperDir, SceneBloomChain.build)
             }
             cachedContent = content
             cachedContentRevision = metalRevision

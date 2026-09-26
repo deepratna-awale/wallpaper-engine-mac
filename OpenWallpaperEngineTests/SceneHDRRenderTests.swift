@@ -28,7 +28,7 @@ final class SceneHDRRenderTests: XCTestCase {
             let content = try content(quality)
             XCTAssertEqual(content.engineCombos.hdr, hdr, "\(quality)")
             XCTAssertEqual(content.hdrChain != nil, hdr, "\(quality): the HDR chain is planned only in HDR")
-            XCTAssertNotNil(content.bloomChain, "\(quality): the LDR chain is planned for every scene")
+            XCTAssertEqual(content.bloomChain != nil, !hdr, "\(quality): the LDR chain is planned only outside HDR")
         }
     }
 
@@ -82,6 +82,20 @@ final class SceneHDRRenderTests: XCTestCase {
         let record = try XCTUnwrap(renderer.postProcess.lastHDR, "WE's HDR chain didn't run")
         XCTAssertEqual(record.constants.strength, 0, "the timeline's strength, not the authored 2")
         XCTAssertLessThanOrEqual(pixels.rgb(Self.bright.outside).x, 1, "nothing blooms")
+    }
+
+    /// LF7: the HDR combine's output (and the last frame's records) don't outlive the HDR content:
+    /// the same renderer given the LDR content holds none of them.
+    func testTheHDROutputGoesWithTheHDRContent() throws {
+        let (_, renderer) = try render(.ultra)
+        defer { renderer.releaseContent() }
+        XCTAssertTrue(renderer.postProcess.holdsHDROutput)
+        renderer.setContent(try content(.enabled))
+        let deadline = Date().addingTimeInterval(30)
+        while renderer.postProcess.drawsHDR, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+        XCTAssertFalse(renderer.postProcess.drawsHDR)
+        XCTAssertFalse(renderer.postProcess.holdsHDROutput)
+        XCTAssertNil(renderer.postProcess.lastHDR)
     }
 
     /// "displayhdr" without an HDR output draws as "ultra" (WE's fallback, 0x1401109be).

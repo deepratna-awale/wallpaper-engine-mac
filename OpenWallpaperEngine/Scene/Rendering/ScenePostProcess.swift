@@ -114,7 +114,14 @@ final class ScenePostProcess {
         bloomChain = content.bloomChain
         hdrChain = content.hdrChain
         drawsHDR = content.engineCombos.hdr
+        // The last frame's textures (a full-size float frame and combine at worst) go with it.
+        encodedView = nil
+        lastBloom = nil
+        lastHDR = nil
     }
+
+    /// Whether the HDR combine's output view is held (tests: it mustn't outlive HDR content).
+    var holdsHDROutput: Bool { encodedView != nil }
 
     /// Encodes everything from the scene target to the drawable. The caller presents and commits.
     func encode(_ frame: Frame) {
@@ -147,6 +154,7 @@ final class ScenePostProcess {
     private func bloomed(_ frame: Frame) -> MTLTexture? {
         lastBloom = nil
         lastHDR = nil
+        encodedView = nil
         guard let effects = frame.effects else { return nil }
         guard Self.runsBloom(frame.bloom, settings: frame.settings), let bloomChain else {
             hold(nil, in: effects)
