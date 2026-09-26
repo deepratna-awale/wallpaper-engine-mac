@@ -36,6 +36,8 @@ struct WESceneObject: Decodable {
     /// Dynamic screen anchor: none, center, top, topright, …
     var anchor: String?
     var blockalign: Bool?
+    /// `outline`, `blur`, `dropshadow` and their values (`msdf` too).
+    var textEffects = WETextEffectFields()
 
     // Image objects
     var image: String?       // path to model JSON
@@ -139,6 +141,8 @@ struct WESceneObject: Decodable {
         limituseellipsis = try? c.decodeIfPresent(Bool.self, forKey: .limituseellipsis)
         anchor = try? c.decodeIfPresent(String.self, forKey: .anchor)
         blockalign = try? c.decodeIfPresent(Bool.self, forKey: .blockalign)
+        // Optional: each field is read on its own, and an object without them has none.
+        textEffects = (try? WETextEffectFields(from: decoder)) ?? WETextEffectFields()
 
         // Fields that may be simple values or {"script":..,"value":..} objects
         let scriptedOrigin = try? c.decode(WEScriptedProperty.self, forKey: .origin)

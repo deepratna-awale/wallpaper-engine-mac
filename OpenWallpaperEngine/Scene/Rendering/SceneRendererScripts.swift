@@ -165,7 +165,7 @@ final class SceneRendererScripts {
             horizontalAlignment: object.strings[.horizontalalign] ?? text.horizontalAlignment,
             verticalAlignment: object.strings[.verticalalign] ?? text.verticalAlignment,
             padding: text.padding, maxWidth: text.maxWidth, maxRows: text.maxRows, useEllipsis: text.useEllipsis,
-            anchor: text.anchor, blockAlign: text.blockAlign)
+            anchor: text.anchor, blockAlign: text.blockAlign, effects: text.effects)
         let pointSize = object.scalar(.pointsize).flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
         return (scripted, object.strings[.text] ?? text.value, pointSize)
     }

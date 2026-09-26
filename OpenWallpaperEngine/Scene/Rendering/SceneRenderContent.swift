@@ -120,6 +120,8 @@ struct SceneMetalText {
     /// anchor resolves to the authored position.
     let anchor: String?
     let blockAlign: Bool
+    /// `outline`, `blur` and `dropshadow` (`SceneTextEffects`); nil for plain text.
+    var effects: SceneTextEffects? = nil
 }
 
 struct SceneMaterialEffects {

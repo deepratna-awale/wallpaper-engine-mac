@@ -1053,8 +1053,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                        opacity: draw.opacity, drawableSize: drawableSize, placement: .stretch)
             setQuadAxes(&uniform, quad: draw.quad)
             // Text is rasterised white; its user colour tints it when drawn, like its authored one.
+            // Text with font effects has its colours in its raster (`textFill`).
             let textTint = entry.layer.text == nil ? SIMD3<Float>(repeating: 1) : self.textTint(layerID: entry.layer.id)
-            uniform.color = draw.color * SIMD4(textTint, 1)
+            uniform.color = entry.layer.text?.effects == nil ? draw.color * SIMD4(textTint, 1)
+                : SIMD4(1, 1, 1, draw.color.w)
             let materialEffects = entry.layer.effects
             uniform.effects = SIMD4<Float>(materialEffects.brightness * draw.brightness, materialEffects.contrast,
                                            materialEffects.saturation
@@ -1370,8 +1372,18 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard let authored = entry.layer.text else { return (textureFrame(for: entry), boxSize) }
         let scripted = scripts.text(authored, of: entry.layer.id)
         return makeTextFrame(scripted.text, value: scripted.value, pointSize: scripted.pointSize, boxSize: boxSize,
-                             pixelsPerUnit: pixelsPerUnit, layerID: entry.layer.id)
+                             pixelsPerUnit: pixelsPerUnit, layerID: entry.layer.id,
+                             fill: authored.effects == nil ? SIMD3(repeating: 1) : textFill(entry))
             ?? (textureFrame(for: entry), boxSize)
+    }
+
+    /// A text layer's colour this frame (a script's, else its timeline's, else authored, with the
+    /// user's text colour), which text with font effects rasterises with (`SceneTextEffects`).
+    private func textFill(_ entry: PreparedLayer) -> SIMD3<Float> {
+        let base = baseValues(entry).color
+        let color = scripts.object(entry.layer.id)?.vector3(.color) ?? timelines.object(entry.layer.id)?.color
+            ?? SIMD3(base.x, base.y, base.z)
+        return color * textTint(layerID: entry.layer.id)
     }
 
     // MARK: - Transforms
@@ -1491,8 +1503,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             values: timelines.values,
             assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
             sceneSnapshot: snapshot,
-            // The scripted/animated values the layer is drawn with this frame, not the authored ones.
-            layerColor: SIMD3(draw.color.x, draw.color.y, draw.color.z),
+            // The scripted/animated values the layer is drawn with this frame, not the authored ones
+            // (in the raster already for text with font effects).
+            layerColor: entry.layer.text?.effects == nil ? SIMD3(draw.color.x, draw.color.y, draw.color.z) : SIMD3(repeating: 1),
             layerAlpha: draw.opacity)
         context.mipMappedFrameBuffer = mipMappedTarget
         // WE's layer buffers are frame-buffer class: RGBA16F in HDR.
@@ -1780,7 +1793,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// `layerID` keys the user's text settings and the text cache. `pointSize` is a script's
     /// `pointsize`, which wins over the app's size setting.
     private func makeTextFrame(_ text: SceneMetalText, value: String, pointSize: Float?, boxSize: SIMD2<Float>,
-                               pixelsPerUnit: Float, layerID: String) -> (frame: RenderTextureFrame, baseSize: SIMD2<Float>)? {
+                               pixelsPerUnit: Float, layerID: String,
+                               fill: SIMD3<Float>) -> (frame: RenderTextureFrame, baseSize: SIMD2<Float>)? {
         let stateKey = layerID
         let fontName = WallpaperServices.shared.userPropertyString("_owe_text_\(layerID)_font") ?? ""
         let sizeValue = pointSize
@@ -1792,6 +1806,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         textRasterScales[stateKey] = rasterScale
         let cacheKey = "\(stateKey)|\(value)|\(boxSize.x)|\(boxSize.y)|\(fontName)|\(sizeValue)|\(bold)|\(italic)|\(rasterScale)"
             + "|\(text.horizontalAlignment ?? "")|\(text.verticalAlignment ?? "")"
+            + (text.effects == nil ? "" : "|\(fill)")
         if let cached = textFrameCache.value(for: cacheKey) { return cached }
 
         let requestedFont = fontName.isEmpty ? (text.font ?? "System") : fontName
@@ -1809,13 +1824,16 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let color = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
         let pixels = SceneTextRasterScale.clamped(rasterScale, boxSize: layout.boxSize)
         guard let image = layout.rasterize(font: font, color: color, pixelsPerUnit: CGFloat(pixels)),
-              let texture = try? SceneTextureUpload.texture(from: image, loader: textureLoader, device: device) else {
+              let texture = text.effects.map({ effectText(image, effects: $0, pointSize: sizeValue, pixelsPerUnit: pixels,
+                                                          fill: fill) })
+                ?? (try? SceneTextureUpload.texture(from: image, loader: textureLoader, device: device)) else {
             OWELog.error(.scene, "Text layer \(layerID): could not rasterise \(layout.boxSize) at \(pixels) px/unit")
             return nil
         }
-        let coverage: MTLTexture?
+        var coverage: MTLTexture?
         do {
-            coverage = try SceneTextureUpload.coverageTexture(from: image, device: device)
+            // Text with font effects has no coverage mask: it draws its coloured raster.
+            if text.effects == nil { coverage = try SceneTextureUpload.coverageTexture(from: image, device: device) }
         } catch {
             OWELog.error(.scene, "Text layer \(layerID): no coverage texture, drawn natively: \(error)")
             coverage = nil
@@ -1826,6 +1844,30 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // Strings change every second for clocks; the LRU keeps the live ones and drops the rest.
         textFrameCache.insert(entry, for: cacheKey)
         return entry
+    }
+
+    /// The glyphs of `image` (a white raster) with their font effects, as straight-alpha RGBA in
+    /// `fill`'s colour; nil (the caller logs) when it can't be read or uploaded.
+    private func effectText(_ image: CGImage, effects: SceneTextEffects, pointSize: Float, pixelsPerUnit: Float,
+                            fill: SIMD3<Float>) -> MTLTexture? {
+        let coverage: [UInt8]
+        do {
+            guard let white = try SceneTextureUpload.whiteCoverage(image) else { return nil }
+            coverage = white
+        } catch {
+            return nil
+        }
+        let rgba = effects.render(coverage: coverage, width: image.width, height: image.height,
+                                  pixelsPerUnit: pixelsPerUnit, pointSize: pointSize, fill: fill)
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: image.width,
+                                                                  height: image.height, mipmapped: false)
+        descriptor.usage = [.shaderRead]
+        guard let texture = device.makeTexture(descriptor: descriptor) else { return nil }
+        rgba.withUnsafeBytes { raw in
+            texture.replace(region: MTLRegionMake2D(0, 0, image.width, image.height), mipmapLevel: 0,
+                            withBytes: raw.baseAddress!, bytesPerRow: image.width * 4)
+        }
+        return texture
     }
 
     /// Maps a scene-unit position and size onto `drawableSize` pixels. Scene draws use

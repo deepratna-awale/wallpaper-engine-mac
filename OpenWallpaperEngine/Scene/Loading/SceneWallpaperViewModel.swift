@@ -933,7 +933,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                             ? Float(object.maxwidth ?? WETextDefaults.maxWidth) : nil,
                                          maxRows: object.limitrows == true ? object.maxrows ?? WETextDefaults.maxRows : nil,
                                          useEllipsis: object.limituseellipsis ?? false,
-                                         anchor: object.anchor, blockAlign: object.blockalign ?? false)
+                                         anchor: object.anchor, blockAlign: object.blockalign ?? false,
+                                         effects: object.textEffects.effects)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                                source: .image(transparentPlaceholderImage),
                                position: localOrigin(for: object, sceneSize: sceneSize),
@@ -949,7 +950,8 @@ class SceneWallpaperViewModel: ObservableObject {
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         // Drawn through WE's `font` material, which reads its texture as coverage: effects' output
         // isn't that, and `font` has no blend-mode combo, so those layers keep the native draw.
-        if layer.weEffects.isEmpty, (object.colorBlendMode ?? 0) == 0 {
+        // Text with font effects draws its coloured raster (`SceneTextEffects`), not coverage.
+        if layer.weEffects.isEmpty, (object.colorBlendMode ?? 0) == 0, textConfig.effects == nil {
             layer.imageMaterial = buildTextMaterial(object, wallpaperDir: wallpaperDir)
         }
         return layer
