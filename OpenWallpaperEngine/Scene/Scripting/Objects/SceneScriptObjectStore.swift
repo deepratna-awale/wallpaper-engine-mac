@@ -77,6 +77,9 @@ final class SceneScriptObjectStore {
     private(set) var animationReferences: [Int: SceneScriptAnimationReference] = [:]
     /// What each placed animation was described as (its fps, length and property), by animation slot.
     private(set) var animationDescriptions: [Int: SceneScriptAnimationDescription] = [:]
+    /// Each placed material constant's scene.json key, by its offset in the pool, so a write can
+    /// name it without a string in the command ring (`materialSetConstant`).
+    private(set) var constantNames: [Int: String] = [:]
 
     init?(capacity: Capacity, in context: JSContext) {
         guard let table = SceneScriptObjectTable(capacity: capacity.objects, in: context),
@@ -183,7 +186,10 @@ final class SceneScriptObjectStore {
             animationReferences[$0] = nil
             animationDescriptions[$0] = nil
         }
-        for range in allocation.constants { freeConstants[range.count, default: []].append(range.offset) }
+        for range in allocation.constants {
+            freeConstants[range.count, default: []].append(range.offset)
+            constantNames[range.offset] = nil
+        }
     }
 
     private func place(_ effect: SceneScriptObjectDescription.Effect, index: Int, slot: Int,
@@ -201,6 +207,7 @@ final class SceneScriptObjectStore {
                 let count = min(4, max(1, constant.value.count))
                 guard let offset = takeConstants(count) else { return nil }
                 allocation.constants.append(PoolRange(offset: offset, count: count))
+                constantNames[offset] = constant.name
                 var value = constant.value
                 while value.count < count { value.append(0) }
                 constants.write(Array(value.prefix(count)), slot: offset, offset: 0)

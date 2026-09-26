@@ -15,6 +15,9 @@ extension SceneScriptCommandRing.Opcode {
     static let materialSetProperty = Self(rawValue: 410)
     /// target slot; numbers [effect]; strings [name].
     static let materialExecuteFunction = Self(rawValue: 411)
+    /// `materialSetProperty` for a constant the material declares: target slot; numbers [effect,
+    /// material or -1, the constant's pool offset, components…]; no strings (the store names it).
+    static let materialSetConstant = Self(rawValue: 412)
     /// target slot.
     static let soundPlay = Self(rawValue: 420)
     static let soundPause = Self(rawValue: 421)
@@ -37,6 +40,7 @@ extension SceneScriptCommandRing.Opcode {
     static let objectModelOpcodes: [String: Self] = [
         "create": .objectCreate, "destroy": .objectDestroy, "sort": .objectSort, "setString": .objectSetString,
         "setMaterialProperty": .materialSetProperty, "executeMaterialFunction": .materialExecuteFunction,
+        "setMaterialConstant": .materialSetConstant,
         "soundPlay": .soundPlay, "soundPause": .soundPause, "soundStop": .soundStop,
         "particlesPlay": .particlesPlay, "particlesPause": .particlesPause, "particlesStop": .particlesStop,
         "particlesEmit": .particlesEmit, "animationPlay": .animationPlay, "animationPause": .animationPause,

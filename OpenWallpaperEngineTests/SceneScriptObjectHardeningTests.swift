@@ -22,7 +22,8 @@ final class SceneScriptObjectHardeningTests: XCTestCase {
             """)
         let OP = SceneScriptCommandRing.Opcode.self
         // Scripts can push any opcode with any numbers through the ring (S28).
-        for opcode in [OP.objectSort, .materialSetProperty, .materialExecuteFunction, .particlesEmit, .animationSetFrame] {
+        for opcode in [OP.objectSort, .materialSetProperty, .materialSetConstant, .materialExecuteFunction, .particlesEmit,
+                       .animationSetFrame] {
             for bad in ["NaN", "Infinity", "-Infinity", "1e39", "-1e30"] {
                 f.evaluate("__rt.push(\(opcode.rawValue), 3, [\(bad), \(bad), 1], ['x'])")
                 f.evaluate("__rt.push(\(opcode.rawValue), 0, [\(bad), \(bad), 1], ['x'])")

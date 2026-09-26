@@ -102,9 +102,20 @@
         }
         const layer = this._effect._layer;
         if (this._dead || layer._dead) return;
-        objects.push(OP.setMaterialProperty, layer._slot, [this._effect._index, this._index].concat(values), [key]);
-        if (entry !== undefined) this._sent.add(key);
+        if (entry === undefined) {
+            objects.push(OP.setMaterialProperty, layer._slot, [this._effect._index, this._index].concat(values), [key]);
+            return;
+        }
+        // A declared constant is named by its pool offset: no string crosses to Swift.
+        objects.push(OP.setMaterialConstant, layer._slot, constantArguments(this._effect._index, this._index, entry, values));
+        this._sent.add(key);
     });
+
+    function constantArguments(effect, material, entry, values) {
+        const numbers = [effect, material, entry.offset];
+        for (let k = 0; k < values.length; k++) numbers.push(values[k]);
+        return numbers;
+    }
 
     // IEffect: one entry of a layer's `effects`.
     class Effect {
@@ -134,18 +145,22 @@
             const values = valueComponents(value);
             if (values === undefined) return;
             const key = String(name);
-            let changes = false, found = false;
+            let changes = false, first;
             for (let i = 0; i < this._materials.length; i++) {
                 const material = this._materials[i];
                 const entry = material._constants.get(key);
                 if (entry === undefined) continue;
-                found = true;
+                if (first === undefined) first = entry;
                 if (!material._sent.has(key) || !holds(material._t, entry, values)) changes = true;
                 writeConstant(material._t, entry, values);
             }
             // Unchanged everywhere it was sent before: nothing to tell the renderer.
-            if ((found && !changes) || this._dead) return;
-            objects.push(OP.setMaterialProperty, this._layer._slot, [this._index, -1].concat(values), [key]);
+            if ((first !== undefined && !changes) || this._dead) return;
+            if (first === undefined) {
+                objects.push(OP.setMaterialProperty, this._layer._slot, [this._index, -1].concat(values), [key]);
+            } else {
+                objects.push(OP.setMaterialConstant, this._layer._slot, constantArguments(this._index, -1, first, values));
+            }
             for (let i = 0; i < this._materials.length; i++) {
                 if (this._materials[i]._constants.has(key)) this._materials[i]._sent.add(key);
             }

@@ -220,6 +220,14 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
                   let material = SceneScriptNumber.index(numbers[1], in: -1...Self.maximumIndex) else { return nil }
             return .setMaterialProperty(slot: target, effect: effect, material: material < 0 ? nil : material,
                                         name: name, value: Array(numbers.dropFirst(2)))
+        case .materialSetConstant:
+            guard numbers.count >= 4,
+                  let effect = SceneScriptNumber.index(numbers[0], in: 0...Self.maximumIndex),
+                  let material = SceneScriptNumber.index(numbers[1], in: -1...Self.maximumIndex),
+                  let offset = SceneScriptNumber.index(numbers[2], in: 0...Int(Int32.max)),
+                  let name = store.constantNames[offset] else { return nil }
+            return .setMaterialProperty(slot: target, effect: effect, material: material < 0 ? nil : material,
+                                        name: name, value: Array(numbers.dropFirst(3)))
         case .materialExecuteFunction:
             guard let number = numbers.first, let name = command.strings.first,
                   let effect = SceneScriptNumber.index(number, in: 0...Self.maximumIndex) else { return nil }
