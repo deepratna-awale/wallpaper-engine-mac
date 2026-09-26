@@ -90,6 +90,43 @@ final class VolumetricsLibraryTests: XCTestCase {
         XCTAssertNil(stage.lastRecord, "disabled volumetrics draw nothing")
     }
 
+    /// Against WE itself (2.8.0.42 on Windows, 1920×1080, post-processing enabled): the mean of
+    /// the frame over x 300–700, y 0–400, where Hinata's spot throws its wedge from the top left,
+    /// is 15.4 with volumetrics disabled and 40.2, 40.4 and 40.3 at low, medium and high. The tiers
+    /// change blur and resolution, not brightness. This settles the light's rotation order
+    /// (test-risks LR4): the other order, `Rx·Ry·Rz`, gives about 50.
+    func testHinatasWedgeMatchesWE() throws {
+        let (directory, project) = try wallpaper("3352730400")
+        defer { Fixtures.removeStoredSettings(for: directory) }
+        let expected: [(GSLightingQuality, Double)] = [(.disabled, 15.4), (.low, 40.2), (.medium, 40.4), (.high, 40.3)]
+        for (quality, mean) in expected {
+            let model = SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory))
+            var settings = SceneRenderSettings()
+            settings.volumetrics = quality
+            settings.postProcessing = .enabled
+            model.setRenderSettings(settings)
+            let scene = try Scene(content: try XCTUnwrap(model.metalContent()), scripts: scripts)
+            defer { scene.close() }
+            scene.renderer.renderSettings = settings
+            for _ in 0..<40 { scene.draw() }
+            let size = Self.drawable
+            var bytes = [UInt8](repeating: 0, count: size.x * size.y * 4)
+            let texture = try XCTUnwrap(scene.view.currentDrawable?.texture)
+            texture.getBytes(&bytes, bytesPerRow: size.x * 4, from: MTLRegionMake2D(0, 0, size.x, size.y), mipmapLevel: 0)
+            var sum = 0.0, count = 0.0
+            for y in 0..<size.y {
+                for x in 0..<size.x {
+                    let scene = SIMD2((Double(x) + 0.5) / Double(size.x) * 1920, (Double(y) + 0.5) / Double(size.y) * 1080)
+                    guard scene.x >= 300, scene.x < 700, scene.y < 400 else { continue }
+                    let i = (y * size.x + x) * 4
+                    sum += (Double(bytes[i]) + Double(bytes[i + 1]) + Double(bytes[i + 2])) / 3
+                    count += 1
+                }
+            }
+            XCTAssertEqual(sum / count, mean, accuracy: 1.5, "\(quality): the wedge's mean against WE's")
+        }
+    }
+
     /// Every lit texel of the light buffer lies where the light's frustum projects (the blur
     /// spreads it by a texel each way); returns the lit texels' centroid.
     @discardableResult
