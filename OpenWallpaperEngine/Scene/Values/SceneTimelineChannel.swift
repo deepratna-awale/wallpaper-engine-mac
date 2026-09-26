@@ -2,14 +2,24 @@ import Foundation
 
 /// One component's keyframes and WE's per-frame sampler (`0x1401a9bc0`, docs/timeline-plan.md §2.3).
 ///
-/// `S(n)` is evaluated at integer frames only and cached: the cache grows lazily up to the highest
-/// frame asked for, so a channel costs its Bézier solves once. All arithmetic is float32, in WE's
-/// operation order.
+/// `S(n)` is evaluated at integer frames only and cached per frame, as WE caches it (the channel's
+/// `+0x18`). A frame is solved the first time it is asked for, never before: a jump far into the
+/// channel (`setFrame`, a high `rate`, a mirror's way back) costs its two frames, not every frame
+/// before them (test-risks TL20). Frames past `cachedFrames` (a hostile `length`, TL22) are solved
+/// each time instead of growing the cache. All arithmetic is float32, in WE's operation order.
 struct SceneTimelineChannel: Equatable {
     typealias Keyframe = SceneTimelineDocument.Keyframe
 
+    /// The most frames a channel caches: 64 k floats (256 KiB). The library's longest is 600.
+    static let cachedFrames = 1 << 16
+
     let keyframes: [Keyframe]
+    /// `S(n)` by frame; `unsolved` where frame `n` hasn't been asked for yet.
     private var cache: [Float] = []
+
+    /// Marks an unsolved frame: a signalling NaN, which no float arithmetic produces and no
+    /// keyframe value (a JSON number) can be.
+    private static let unsolved = Float(bitPattern: 0x7FA0_0DAD)
 
     init(keyframes: [Keyframe]) {
         self.keyframes = keyframes
@@ -21,14 +31,16 @@ struct SceneTimelineChannel: Equatable {
 
     /// `S(frame)`, cached.
     mutating func sample(_ frame: Int32) -> Float {
-        guard frame >= 0 else { return Self.evaluate(keyframes, at: frame) }
+        guard frame >= 0, Int(frame) < Self.cachedFrames else { return Self.evaluate(keyframes, at: frame) }
         let index = Int(frame)
-        if index < cache.count { return cache[index] }
-        cache.reserveCapacity(index + 1)
-        for missing in cache.count...index {
-            cache.append(Self.evaluate(keyframes, at: Int32(missing)))
+        if index >= cache.count {
+            cache.append(contentsOf: repeatElement(Self.unsolved, count: index + 1 - cache.count))
         }
-        return cache[index]
+        let cached = cache[index]
+        if cached.bitPattern != Self.unsolved.bitPattern { return cached }
+        let solved = Self.evaluate(keyframes, at: frame)
+        cache[index] = solved
+        return solved
     }
 
     /// `S(n)` without the cache:
