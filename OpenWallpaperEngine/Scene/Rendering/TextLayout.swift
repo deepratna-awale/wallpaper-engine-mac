@@ -158,6 +158,13 @@ struct SceneTextLayout {
 enum SceneTextRasterScale {
     static let maxTextureDimension: Float = 4096
 
+    /// Where a text layer is rasterised: WE draws plain text's glyphs at the display's density
+    /// (`onScreen`), but runs a text object's effects in buffers of its size, one pixel a scene
+    /// unit (its `font` material has no texture: `wallpaper64.exe` 0x140209206…0x14020923c).
+    static func layer(onScreen: Float, hasEffects: Bool) -> Float {
+        hasEffects ? 1 : onScreen
+    }
+
     static func quantized(_ pixelsPerUnit: Float) -> Float {
         guard pixelsPerUnit.isFinite, pixelsPerUnit > 0 else { return 1 }
         return exp2((log2(pixelsPerUnit) * 4).rounded(.up) / 4)

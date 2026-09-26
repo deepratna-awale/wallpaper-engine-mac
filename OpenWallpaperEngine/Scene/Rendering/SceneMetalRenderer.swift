@@ -811,7 +811,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard scripts.isVisible(entry.layer.id) else { continue }
             if entry.layer.text != nil {
                 let world = worldTransform(entry)
-                let pixelsPerUnit = max(world.axisScale.x, world.axisScale.y) * renderPixelsPerUnit
+                let onScreen = max(world.axisScale.x, world.axisScale.y) * renderPixelsPerUnit
+                let pixelsPerUnit = SceneTextRasterScale.layer(onScreen: onScreen,
+                                                               hasEffects: !entry.layer.weEffects.isEmpty)
                 textFrames[layerIndex] = layerTextFrame(entry, boxSize: layerBaseSize(entry),
                                                         pixelsPerUnit: pixelsPerUnit)
             }
@@ -1488,9 +1490,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         context.scriptRevision = scripted.revision
         if renderSettings.sceneDetail == .matchDisplay {
             context.footprint = effectFootprint(entry, draw: draw, input: input)
-            // Scene regions and text are drawn at the scene target's density, below full detail
-            // when the target is matched to a smaller display; a solid fill is at WE's own size.
-            if context.footprint == nil, fullDetailScale > 1, entry.layer.solidFill == nil {
+            // Scene regions are drawn at the scene target's density, below full detail when the
+            // target is matched to a smaller display; solid fills and text with effects are at
+            // WE's own buffer size.
+            if context.footprint == nil, fullDetailScale > 1, entry.layer.solidFill == nil, entry.layer.text == nil {
                 let standIn = (SIMD2(Float(input.width), Float(input.height)) * fullDetailScale).rounded(.toNearestOrAwayFromZero)
                 context.inputStandInSize = SIMD2(Int(standIn.x), Int(standIn.y))
             }

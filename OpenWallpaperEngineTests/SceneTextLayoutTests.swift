@@ -120,6 +120,14 @@ final class SceneTextLayoutTests: XCTestCase {
         XCTAssertEqual(layout("OUR JOURNEY IS\nTO THE STARS").lines.map(\.text), ["OUR JOURNEY IS", "TO THE STARS"])
     }
 
+    /// 3245833232's clock (scale 0.28 in a 4K scene on a 1080p display) blurs in WE's buffer of
+    /// its size; blurred at its on-screen 0.14 px a unit, the blur spread over the whole date.
+    func testTextWithEffectsRasterisesAtItsOwnSize() {
+        XCTAssertEqual(SceneTextRasterScale.layer(onScreen: 0.14, hasEffects: true), 1)
+        XCTAssertEqual(SceneTextRasterScale.layer(onScreen: 0.14, hasEffects: false), 0.14)
+        XCTAssertEqual(SceneTextRasterScale.layer(onScreen: 2, hasEffects: true), 1)
+    }
+
     func testRasterisesAtRequestedPixelScale() throws {
         let result = layout("12:34", size: SIMD2(600, 300))
         let image = try XCTUnwrap(result.rasterize(font: font(pointSize: 32), color: .white, pixelsPerUnit: 2))
