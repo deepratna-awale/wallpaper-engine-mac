@@ -1,6 +1,6 @@
 # Lighting, reflections, bloom and HDR: evidence and plan
 
-**Status: 2026-09-26. L0 (format, values, settings and seams) is done; the seams are in §4.4. A1 (the generated `LightingV1` and the light combos) is done. Nothing draws differently yet: lit image layers are still refused until A3.** This covers roadmap area 5 (lighting and reflections) and the image-material part of area 1 item 3 that area 5 needs: 3 library image layers fall back to our native draw because their materials set `LIGHTING`/`REFLECTION`. It sets out:
+**Status: 2026-09-26. L0 (format, values, settings and seams) is done; the seams are in §4.4. A1 (the generated `LightingV1` and the light combos) is done. C1 (`_rt_MipMappedFrameBuffer` and the reflection setting) is done: a `REFLECTION` layer without effects draws through its material. `LIGHTING` layers are still refused until A3.** This covers roadmap area 5 (lighting and reflections) and the image-material part of area 1 item 3 that area 5 needs: 3 library image layers fall back to our native draw because their materials set `LIGHTING`/`REFLECTION`. It sets out:
 
 - WE's format for lights and the `general` lighting, bloom and HDR settings, with a survey of the library;
 - how `wallpaper64.exe` collects lights, generates `#require LightingV1`, reflects, blooms, tone-maps and shadows;
@@ -225,8 +225,10 @@ A lit puppet switches to `genericimage2`. Two of our three fallback layers (witc
 
 All modern shaders (generic4, genericimage2/3/4, chroma4, fur4, foliage4) reflect in screen space; `_rt_Reflection` is not involved.
 
-- **Creating the target:** an object reporting feature bit 0x40 (`0x140181cf8`) creates `_rt_MipMappedFrameBuffer` at full resolution, with mips [?: 15 in HDR, 1 otherwise].
-- **Filling it:** it is copied, and its mips generated, after the main pass while render flag 0x80 is set, i.e. while the user's reflection setting is on. Otherwise it is cleared to (0,0,0,1) [L].
+- **Creating the target** (`0x140181c8b`…`0x140181dc5`): while the scene reports an object that samples it, `_rt_MipMappedFrameBuffer` is created at full resolution (divisor 1) in the frame-buffer format (the argument read earlier as "15 in HDR, 1 otherwise" is the format: 0xf RGBA16F, 1 RGBA8), with the mipmap flag 0x10.
+- **Mip count** (the render-target constructor, `0x1400d2dde`…`0x1400d2e76`): for each side, log2 of half the smallest power of two not below it; the smaller of the two, minus 2, at least 1. 1920×1080 has 8 levels. The texture is created with that many levels and `GENERATE_MIPS` when it is more than 1.
+- **`g_TextureNMipMapInfo`** (uniform ids 0x52…0x5b, setter `0x1400d98f4`) is the bound texture's level count as a float (1 without a texture), so `roughness · g_Texture3MipMapInfo` reaches one level past the last; the sampler clamps it.
+- **Filling it** (`0x140180a8c`): after the main pass, while render flag 0x80 (the user's reflection setting) is set, the frame is copied in (the target's vt+0x8: `CopyResource` of the bound target, or `ResolveSubresource` from MSAA) and its mips generated (vt+0x20, `GenerateMips`). Materials drawn in the main pass therefore read the **previous** frame. With the setting off it is cleared once, at creation, to (0,0,0,1) (`0x140181d2b`) and never filled.
 - **The reflection itself** (genericimage4):
   - The tangent-space normal is projected to screen: `normal.xy · (0.15, 0.15·g_Screen.z)`.
   - `screenUV += normal.xy · fresnel⁴ · g_ReflectivityDistance`, where `fresnel = max(0.001, dot(N, V))`.
@@ -345,10 +347,10 @@ Code references are to `OpenWallpaperEngine/Scene/…`.
 | `#require LightingV1` | generated per `LIGHTS_*` combo set (2.1) | ✅ A1: `Shaders/LightingV1Require.swift`, expanded per variant (`ShaderSource.text(combos:)`); text-equal to `Scripts/lightingv1-reference.py`. The old stub's `color * f0` is gone | every LIGHTING material |
 | `LIGHTS_*`, `HDR`, `SCENE_ORTHO` engine combos | set per material (2.2) | 🟡 A1: `LIGHTS_*`, `LIGHTS_SHADOW_MAPPING*`, `LIGHTS_COOKIE` and `SCENE_ORTHO` (`SceneEngineCombos+Lighting.swift`); `HDR` waits for B2 | — |
 | `g_L*` light arrays, legacy `g_Lights*` | packed per frame from live transforms (2.2) | ❌ never set | One piece girls (tubes); legacy: default projects |
-| Lit image layers (`LIGHTING`/`REFLECTION`) | direct path, or prelighting with effects (2.3) | ❌ refused: `ImageMaterialPlanBuilder.unsupportedCombos` (`Loading/ImageMaterialPlan.swift`:63) → "needs scene lights (roadmap area 5)", drawn natively | 3 layers (f1, witcher ×2) + Lofi Cafe (workshop) |
+| Lit image layers (`LIGHTING`/`REFLECTION`) | direct path, or prelighting with effects (2.3) | 🟡 `REFLECTION` alone draws on a layer without effects (C1); `LIGHTING`, and `REFLECTION` on a layer with effects or a puppet, are refused by `ImageMaterialPlanBuilder` ("needs scene lights", "needs the prelighting pass") and drawn natively | 3 layers (f1, witcher ×2) + Lofi Cafe (workshop) |
 | Prelighting (`PRELIGHTING`, `_rt_imageLayerAlbedo_`, `g_Alt*`) | 2.3 | ❌ | witcher ×2, Lofi Cafe |
 | Normal map / PBR mask on images | rg88 with `formatcombo`, `TEX1FORMAT` (1.4) | 🟡 the particle side sets `TEX<n>FORMAT=8`; images never reach it (behind LIGHTING) | меч |
-| Screen-space reflection `_rt_MipMappedFrameBuffer` | copied after the main pass, mipmapped, `g_Texture3MipMapInfo` (2.4) | 🟡 mapped to the non-mipmapped `.sceneSnapshot`; no mip info | меч (+ 4 materials per test-risks) |
+| Screen-space reflection `_rt_MipMappedFrameBuffer` | copied after the main pass, mipmapped, `g_Texture3MipMapInfo` (2.4) | ✅ C1: `SceneMipMappedFrameBuffer`, the first frame stage; REFLECTION draws on layers without effects (LIGHTING and prelit layers still fall back) | меч (+ 4 materials per test-risks) |
 | Planar `_rt_Reflection` | mirrored pass of the `reflected` list (2.5) | ❌ rejected | arsenal, fantasticcar (area 6) |
 | LDR bloom | 4 util passes on the composited frame (2.6) | 🟡 approximation: one 3×3 bright-pass in `sceneFragment` (`Rendering/SceneShaders.metal`:185), `max(authored, (_owe_bloom−1)·1.2)` (`SceneMetalRenderer.swift`:927-943); ignores `postprocessing` | **24 scenes** |
 | HDR (float targets, `HDR=1`, mip-chain bloom, combine) | 2.6 | ❌ `hdr` and `bloomhdr*` not decoded; the scene target is the drawable's `bgra8Unorm` | 5 scenes |
@@ -447,9 +449,14 @@ Most-used first: **B1 (bloom, 24 scenes)** and **A1–A3 (lighting)** are the cr
   - An overbright fixture (emissive or `brightness` > 1) blooms only in HDR.
   - The LDR output is unchanged by B2.
 
-**C1 — The mip-mapped frame buffer and the reflection setting.**
-- **Files:** `Rendering/SceneSnapshotTracker.swift` and `SceneRenderTargetPool.swift` (a mipmapped copy after the main pass; `g_Texture3MipMapInfo` = mip count − 1 [?: verify at `0x140181cf8`]; cleared to (0,0,0,1) when the setting is off); the `reflection` setting.
-- **Tests:** a unit test of the mip chain; меч renders with a visible reflection term (a CPU reference of §2.4 at a few pixels); the setting turned off gives no reflection.
+**C1 — The mip-mapped frame buffer and the reflection setting. Done.**
+- **What landed:**
+  - `Rendering/SceneMipMappedFrameBuffer.swift`, the first `SceneFrameStage`. It exists only while the content samples the target (`samples(_:)`: an image material, effect pass or particle stage). It keeps one target at the scene target's size and format with WE's mip count (§2.4), and it isn't pooled, since it lives across frames. After the scene pass it copies the frame and generates the mips while `renderSettings.reflection` is on. With the setting off it clears the target once to (0,0,0,1).
+  - `SceneEffectTextureInput.mipMappedFrameBuffer` replaces the alias to `.sceneSnapshot` in the image, effect and particle plan builders. The renderers bind the stage's target, which `SceneMetalRenderer` fetches before the scene pass, so draws read the previous frame as in WE. Reading it doesn't pause the scene pass, and an effect that reads it isn't cached.
+  - `g_Texture3MipMapInfo` is the level count (`EffectGraphRenderer.textureInfo`), not the count − 1.
+  - `ImageMaterialPlanBuilder` accepts `REFLECTION` without `LIGHTING` on a layer without effects or a puppet (`prelit` false). A prelit layer still falls back (A4), and so does `LIGHTING` (A3).
+- **Tests** (`SceneMipMappedFrameBufferTests`, `ImageMaterialReflectionTests`): WE's mip count; level 0 is the frame and each level is the box average of the one before; `g_Texture3MipMapInfo`; nothing is made while nothing samples the target; the setting off clears every level to (0,0,0,1); a `genericimage4` `REFLECTION` layer with a normal map and a PBR mask (fixture `ImageMaterials/materials/reflection.json`) matches a CPU reference of §2.4 at mip 0 and at the roughest mip, within 3/255; with the setting off it draws its albedo; through `SceneMetalRenderer`, the layer reflects the last frame and stops when the setting is turned off.
+- **Left for A3:** меч itself (LIGHTING, prelit); whether WE sets the `*_MAP` component combos from the mask by itself (the fixture authors them; меч's material doesn't).
 
 **D1 — Volumetrics (2D first: Hinata).**
 - **Files:** new `Scene/Rendering/SceneVolumetrics.swift` (volumes, back-face pass, ray-march, blur, combine per §2.8, the `RenderVar` packing, quality from the `volumetrics` setting).
@@ -504,10 +511,10 @@ L0 decoded the format and added the files, types and hook points below without c
 | HDR combo | `SceneEngineCombos+HDR.swift` (**B2**): `hdrCombos(for:)` returns `[:]` | called from `combos(for:)` | `HDR=1` when `hdr` is set; bump the revision |
 | Frame lighting | `Scene/Rendering/SceneFrameLighting.swift` (**A2**). `SceneFrameLighting.frame(_:input:)` returns the ambient and skylight colours (a script's `thisScene.ambientcolor` or `skylightcolor` wins) and an empty `arrays`. | `SceneMetalRenderer` calls it once per frame, after scripts and timelines, and stores the result in `BuiltinFrameContext.lighting`. `SceneFrameLightingInput` provides each object's live world transform (`world(id)`, with parents, scripts and timelines applied), `isVisible(id)`, the scripts' scene colours, the eye and the view forward. | New `SceneLightPacker.swift`; fill `arrays` by uniform name. In `BuiltinUniforms.swift` (**A2**), read `frame.lighting` for `g_LightAmbientColor`, `g_LightSkylightColor`, the `g_L*` and the `g_Lights*` arrays, and delete `BuiltinFrameContext.ambient`/`skylight` (the invented 0.2/0.3). |
 | Post-process | `Scene/Rendering/ScenePostProcess.swift` (**B1**, then **B2**). `encode(Frame)` draws the old composite, and `compositeUniform` holds the old bloom math. It owns the composite pipeline. | `SceneMetalRenderer` calls it after the scene pass and the frame stages. `Frame` holds the scene target, the drawable's pass, the placement uniform, `Bloom` (live values: scripts, then timelines, then the content; `hdr` included), `AppExtras` (`_owe_bloom`, `_owe_saturation`, `_owe_hue`, `_owe_blur`) and `settings`. | B1: `_rt_FullFrameBuffer`, `SceneBloomChain.swift` and the combine; honour `allowsBloom`; make `_owe_bloom` a strength multiplier; then the composite. Delete `sceneFragment`'s 3×3 bloom (`SceneShaders.metal`, `SceneComposite.swift`). B2: `SceneHDRChain.swift` and the float scene target in `SceneMetalRenderer.swift` and `EffectGraphRenderer.swift`. |
-| Frame stages | `Scene/Rendering/SceneFrameStage.swift`: `protocol SceneFrameStage` (`encode(SceneFrameStageContext)`, `setContent`) and `SceneFrameStages.make(device:)`, which returns `[]` | `SceneMetalRenderer` runs the stages in order between the scene pass and the post-process. Each gets the scene target, the command buffer, the scene size, the frame's `BuiltinFrameContext` (lighting included) and the settings, and `setContent` on every content change. | **C1** adds the `_rt_MipMappedFrameBuffer` copy as the first stage and **D1** adds `SceneVolumetrics` as the second: one line each in `make`, the only line they share. Otherwise D1 owns the file and may extend the context. |
-| Lit image materials | `Loading/ImageMaterialPlan.swift`, `Rendering/ImageMaterialUniforms.swift`, `ImageMaterialRenderer.swift` (**A3**) | unchanged: `LIGHTING` and `REFLECTION` are still refused | see A3 in §4.3 |
+| Frame stages | `Scene/Rendering/SceneFrameStage.swift`: `protocol SceneFrameStage` (`encode(SceneFrameStageContext)`, `setContent`) and `SceneFrameStages.make(device:)`, which returns C1's `SceneMipMappedFrameBuffer` | `SceneMetalRenderer` runs the stages in order between the scene pass and the post-process. Each gets the scene target, the command buffer, the scene size, the frame's `BuiltinFrameContext` (lighting included) and the settings, and `setContent` on every content change. | **C1** adds the `_rt_MipMappedFrameBuffer` copy as the first stage and **D1** adds `SceneVolumetrics` as the second: one line each in `make`, the only line they share. Otherwise D1 owns the file and may extend the context. |
+| Lit image materials | `Loading/ImageMaterialPlan.swift`, `Rendering/ImageMaterialUniforms.swift`, `ImageMaterialRenderer.swift` (**A3**) | `LIGHTING` is still refused; `REFLECTION` alone draws since C1 | see A3 in §4.3 |
 | Prelighting | `Loading/SceneWallpaperViewModel.swift` (the image-layer build) and `Rendering/EffectGraphRenderer.swift` (**A4**; in the latter, after B2's format change) | — | see A4 in §4.3 |
-| Reflection copy | `SceneSnapshotTracker.swift`, `SceneRenderTargetPool.swift` (**C1**); the setting is `renderSettings.reflection` | — | see C1 in §4.3, run as a frame stage |
+| Reflection copy | `SceneMipMappedFrameBuffer.swift` (**C1**, done); the setting is `renderSettings.reflection` | the first stage in `SceneFrameStages.make`; `SceneMetalRenderer` binds `target(matching:commandBuffer:)` to every draw | — |
 
 **Tests that pin the seams:**
 - `SceneLightDecodeTests`: each light type from the survey objects in `Tests/Fixtures/Scenes/lights`, WE's defaults, bindings, `lightconfig` masking and folding, and the HDR and lighting settings.
@@ -520,8 +527,8 @@ L0 decoded the format and added the files, types and hook points below without c
 
 1. The default for `postprocessing` in WE's settings UI (the engine writes "disabled" when the key is missing). The app defaults to "enabled" (today's look) and the user can change it; revisit once WE's UI default is known. The default of the `volumetrics` setting is also unconfirmed: the app takes shadows' "medium".
 2. `g_TexelSize` for the bloom passes (inferred as 1 / render size) and the device values of `g_RenderVar0` for the HDR combine.
-3. Whether `vt+0x8` on `_rt_FullFrameBuffer` is a frame copy (strongly implied), and what `[scene+0x158]` is.
-4. `_rt_MipMappedFrameBuffer`'s mip count in LDR (reported as 1, which would disable roughness blur) and `g_Texture3MipMapInfo`.
+3. What `[scene+0x158]` is. (`vt+0x8` of WE's render targets, `0x1400d3310`, is the frame copy: `CopyResource` of the bound target, or `ResolveSubresource` from MSAA; found for C1.)
+4. ~~`_rt_MipMappedFrameBuffer`'s mip count in LDR and `g_Texture3MipMapInfo`~~: resolved by C1 (§2.4). The "1 or 15" was the format.
 5. The prelighting pass order for lit layers with effects (`0x140209540`).
 6. The cookie texture's source key. (The default `intensity` is 0: §1.1.)
 7. The shadow atlas depth format and the exact cascade fit.
