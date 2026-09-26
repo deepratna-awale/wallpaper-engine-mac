@@ -33,6 +33,14 @@ final class SceneScriptInputTests: XCTestCase {
         XCTAssertEqual(world(SIMD2(1200, 500), placement: .center, pixelsPerPoint: 2), SIMD2(600, 500))
     }
 
+    /// WE shakes the camera's eye, so the scene point under the cursor moves with the shake.
+    func testTheWorldPositionIncludesTheCameraShake() {
+        let environment = SceneScriptEngineEnvironment(screenResolution: SIMD2(2000, 1000), canvasSize: SIMD2(1000, 1000),
+                                                       placement: .stretch)
+        let input = SceneScriptInput(cursorScreenPosition: SIMD2(500, 250), shakeOffset: SIMD2(3, -2))
+        XCTAssertEqual(input.cursorWorldPosition(in: environment), SIMD2(253, 748))
+    }
+
     func testScriptsSeeTheCursorAsFreshVectors() throws {
         let environment = SceneScriptEngineEnvironment(screenResolution: SIMD2(2000, 1000), canvasSize: SIMD2(1000, 1000),
                                                        placement: .stretch)

@@ -51,6 +51,8 @@ final class SceneScriptObjectStore {
     private var freeConstants: [Int: [Int]] = [:]
     private var allocations: [Int: Allocation] = [:]
     private(set) var animationReferences: [Int: SceneScriptAnimationReference] = [:]
+    /// What each placed animation was described as (its fps, length and property), by animation slot.
+    private(set) var animationDescriptions: [Int: SceneScriptAnimationDescription] = [:]
 
     init?(capacity: Capacity, in context: JSContext) {
         guard let table = SceneScriptObjectTable(capacity: capacity.objects, in: context),
@@ -80,6 +82,9 @@ final class SceneScriptObjectStore {
     }
 
     func isLive(_ slot: Int) -> Bool { allocations[slot] != nil }
+
+    /// The effect-buffer slots of a live object's effects, in effect order.
+    func effectBufferSlots(of slot: Int) -> [Int] { allocations[slot]?.effects ?? [] }
 
     // MARK: - Scene
 
@@ -152,6 +157,7 @@ final class SceneScriptObjectStore {
         allocation.animations.forEach {
             animationSlots.give($0)
             animationReferences[$0] = nil
+            animationDescriptions[$0] = nil
         }
         for range in allocation.constants { freeConstants[range.count, default: []].append(range.offset) }
     }
@@ -196,6 +202,7 @@ final class SceneScriptObjectStore {
         placed.name = animation.name
         placed.animationSlot = animationSlot
         animationReferences[animationSlot] = placed
+        animationDescriptions[animationSlot] = animation
         return ["slot": animationSlot, "name": animation.name, "fps": animation.fps,
                 "frameCount": animation.frameCount, "duration": animation.duration,
                 "property": animation.property.map { $0 as Any } ?? NSNull()]

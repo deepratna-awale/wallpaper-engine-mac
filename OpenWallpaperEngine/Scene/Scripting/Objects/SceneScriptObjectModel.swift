@@ -86,6 +86,14 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
         return slot >= 0 ? slot : nil
     }
 
+    /// The scene.json id of the live layer in `slot` (a `createLayer` layer's is the id its
+    /// description gave it).
+    func objectID(forSlot slot: Int) -> Int? {
+        guard let layer = runtime?.rt.forProperty("objects")?.invokeMethod("layerForSlot", withArguments: [slot]),
+              layer.isObject, let id = layer.forProperty("_id"), id.isNumber else { return nil }
+        return SceneScriptNumber.index(id.toDouble(), in: -(1 << 53)...(1 << 53))
+    }
+
     // MARK: - Native functions
 
     private func initialScene(_ store: SceneScriptObjectStore) -> [String: Any] {
