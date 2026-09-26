@@ -680,7 +680,8 @@ def shape_problems(animation):
 
 def link_groups(animations):
     """Clock groups: a timeline and the siblings (same owner, same file) whose options.parent.key
-    names its property key (§2.5). Returns [[owner record, child records...]] in library order."""
+    names its property key (§2.5). Returns [[owner record, children sorted by key...]] in library
+    order."""
     by_owner = {}
     for record in animations:
         by_owner.setdefault((record["item"], record["file"], tuple(record["path"][:-1])), []).append(record)
@@ -691,8 +692,9 @@ def link_groups(animations):
         parent = Timeline(record["animation"]).parent_key
         if parent is not None and parent in keys and parent != record["path"][-1]:
             continue  # sampled at its parent's clock, in the parent's group
-        children = [r for r in siblings if r is not record
-                    and Timeline(r["animation"]).parent_key == record["path"][-1]]
+        children = sorted((r for r in siblings if r is not record
+                           and Timeline(r["animation"]).parent_key == record["path"][-1]),
+                          key=lambda r: r["path"][-1])
         groups.append([record] + children)
     return groups
 
