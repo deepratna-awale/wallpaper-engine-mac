@@ -489,7 +489,8 @@ class TEXParser {
     }
 
     private static func floatToByte(_ value: Float) -> UInt8 {
-        UInt8(max(0, min(255, Int((value.isFinite ? value : 0) * 255))))
+        let scaled = Int((value.isFinite ? value : 0) * 255)
+        return UInt8(max(0, min(255, scaled)))
     }
 
     private func float16RGBAImage(_ bytes: [UInt8], width: Int, height: Int,
