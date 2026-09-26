@@ -27,7 +27,7 @@ struct SceneScriptReplayWallpaper {
     }
 
     struct Object {
-        /// scene.json `id` (a synthetic one for objects without an id).
+        /// scene.json `id`, else the object's index (`SceneScriptSceneDescriber.objectID`).
         var id: Int
         var name: String
         var kind: SceneScriptObjectDescription.Kind
@@ -78,7 +78,7 @@ struct SceneScriptReplayWallpaper {
         var objects: [Object] = []
         for (index, entry) in ((document["objects"] as? [Any]) ?? []).enumerated() {
             let json = entry as? [String: Any] ?? [:]
-            let objectID = (json["id"] as? NSNumber)?.intValue ?? 1_000_000 + index
+            let objectID = (json["id"] as? NSNumber)?.intValue ?? index
             objects.append(Object(id: objectID, name: json["name"] as? String ?? "", kind: Self.kind(of: json), json: json))
         }
         self.objects = objects
@@ -99,6 +99,17 @@ struct SceneScriptReplayWallpaper {
     /// A file of the wallpaper: the package first, then the folder. Nil when absent.
     func file(_ path: String) -> Data? {
         Self.file(path, packageFiles: packageFiles, directory: directory)
+    }
+
+    /// The scene document as the app reads it.
+    func sceneDocument() throws -> SceneJSON {
+        guard let data = file(documentName) else { throw LoadError(description: "\(id): no \(documentName)") }
+        return try SceneScriptSiteBuilder.document(from: data)
+    }
+
+    /// project.json's user properties with their authored values.
+    func sceneUserProperties() throws -> SceneScriptUserProperties {
+        SceneScriptUserProperties(project: try SceneScriptSiteBuilder.document(from: JSONSerialization.data(withJSONObject: project)))
     }
 
     // MARK: - Values

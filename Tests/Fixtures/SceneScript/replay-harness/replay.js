@@ -1,18 +1,12 @@
 'use strict';
 // Test-only runtime pieces for the SceneScript corpus replay (docs/scenescript-plan.md WP9),
 // evaluated by `SceneScriptReplaySupport.install` after the object model's files. Property binding
-// is WP8's own (SceneScriptBindingExtension); this file samples the bound properties and stands in
-// for packages that have not landed yet, following the plan's contract for each:
-//
-// - Cursor events (WP10): an inbox kind at `EVENT_ORDER.cursor` whose `target` is an object slot;
-//   only that object's scripts get the callback.
-// - Determinism (test-risks S24): `Date` follows the harness clock and `Math.random` is seeded.
+// (WP8) and cursor events (WP10) are the app's own; this file samples the bound properties and
+// makes the run deterministic (test-risks S24): `Date` follows the harness clock and `Math.random`
+// is seeded.
 (function (global) {
     const rt = global.__rt;
     const objects = rt.objects;
-    // runtime.js's READY load state: only scripts that finished loading get events.
-    const READY = 5;
-
     const order = [];
 
     // The object and key a site's property lives on, or null when it no longer exists.
@@ -42,19 +36,6 @@
     function bind(id, type, binding) {
         order.push({ id: id, type: type, binding: binding });
     }
-
-    // MARK: cursor (WP10 stand-in)
-
-    rt.addEventHandler('replayCursor', rt.EVENT_ORDER.cursor, function (event) {
-        const p = event.payload;
-        const records = rt.records;
-        for (let i = 0; i < records.length; i++) {
-            const record = records[i];
-            if (record.slot !== event.target || !record.enabled || record.state !== READY || record.pendingDestroy) continue;
-            const cursor = { worldPosition: objects.vec3(p.x, p.y, 0), localPosition: objects.vec3(p.lx, p.ly, 0) };
-            rt.invoke(record, p.name, [cursor]);
-        }
-    });
 
     // MARK: determinism
 

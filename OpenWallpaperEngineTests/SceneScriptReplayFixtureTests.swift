@@ -67,10 +67,11 @@ final class SceneScriptReplayFixtureTests: XCTestCase {
         let multiply = try samples(result, object: "Cover", field: "effects.0.passes.0.constantshadervalues.multiply")
         XCTAssertEqual(multiply.last.flatMap(number), 30)
 
-        // Cursor: only Solid objects get clicks (§1.9 P7).
+        // Cursor: only Solid objects get clicks (§1.9 P7). From frame 300 the cursor clicks each
+        // Solid layer with scripts in turn, four frames each.
         let button = try samples(result, object: "Button", field: "origin").map(vector)
         XCTAssertEqual(button[299].first, 0)
-        XCTAssertEqual(button[310].first, 1)
+        XCTAssertEqual(button[360].first, 1)
         XCTAssertEqual(button[599].first, 2)
         let decoration = try samples(result, object: "Decoration", field: "origin").map(vector)
         XCTAssertEqual(decoration[599].first, 0)

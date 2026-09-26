@@ -18,35 +18,45 @@ final class SceneScriptReplayScriptHost: SceneScriptHost {
     }
 }
 
-/// The renderer stand-in: the wallpaper's objects as descriptions, `createLayer` from the
-/// wallpaper's own files, and every command scripts issued.
+/// The renderer stand-in: the wallpaper's objects described by the app's own
+/// `SceneScriptSceneDescriber` (as the renderer's `SceneScriptSceneMirror` describes them),
+/// `createLayer` from the wallpaper's own files, and every command scripts issued.
 final class SceneScriptReplayObjectHost: SceneScriptObjectHost {
     let wallpaper: SceneScriptReplayWallpaper
     let scene: SceneScriptSceneDescription
+    private let describer: SceneScriptSceneDescriber
     private(set) var commands: [SceneScriptObjectCommand] = []
     private(set) var created = 0
-    private var nextID = 2_000_000
+    private var nextID = SceneScriptSceneDescriber.firstCreatedID
     /// Authored JSON by object id, for `createLayer(layer)` copies.
-    private var configurations: [Int: [String: Any]] = [:]
+    private var configurations: [Int: [String: SceneJSON]] = [:]
+    /// What each object is, by id, for the cursor pass stand-in.
+    private(set) var kinds: [Int: SceneScriptObjectDescription.Kind] = [:]
     /// Filled once the object model placed the scene: object id by slot.
     var objectIDsBySlot: [Int: Int] = [:]
 
-    init(wallpaper: SceneScriptReplayWallpaper) {
+    init(wallpaper: SceneScriptReplayWallpaper) throws {
         self.wallpaper = wallpaper
-        scene = SceneScriptReplayDescriptions.scene(wallpaper)
-        for object in wallpaper.objects { configurations[object.id] = object.json }
+        let document = try wallpaper.sceneDocument()
+        describer = SceneScriptSceneDescriber(userProperties: try wallpaper.sceneUserProperties(), file: wallpaper.file)
+        scene = describer.scene(document)
+        for (index, fields) in SceneScriptSceneDescriber.objects(of: document).enumerated() {
+            configurations[SceneScriptSceneDescriber.objectID(fields, index: index)] = fields
+        }
+        for object in scene.objects { kinds[object.id] = object.kind }
     }
 
     func sceneScriptScene() -> SceneScriptSceneDescription { scene }
 
     func sceneScriptDescribeLayer(_ source: SceneScriptLayerSource) -> SceneScriptObjectDescription? {
-        var copying: [String: Any]?
+        var copying: [String: SceneJSON]?
         if case .copy(let slot) = source, let id = objectIDsBySlot[slot] { copying = configurations[id] }
+        guard let made = describer.layer(source, id: nextID, copying: copying) else { return nil }
+        configurations[nextID] = made.json
+        kinds[nextID] = made.description.kind
         nextID += 1
-        guard let description = SceneScriptReplayDescriptions.layer(source, wallpaper: wallpaper, id: nextID,
-                                                                    copying: copying) else { return nil }
         created += 1
-        return description
+        return made.description
     }
 
     func sceneScriptPerform(_ command: SceneScriptObjectCommand) {
@@ -77,14 +87,12 @@ final class SceneScriptReplayMediaSource: MediaSessionSource {
     }
 }
 
-/// Installs `Tests/Fixtures/SceneScript/replay-harness/replay.js` (property binding, cursor events
-/// and determinism stand-ins; see that file) after the object model, and binds sites to it.
+/// Installs `Tests/Fixtures/SceneScript/replay-harness/replay.js` (property sampling and
+/// determinism; see that file) after the object model, and binds sites to it.
 final class SceneScriptReplaySupport: SceneScriptRuntimeExtension {
     struct InstallError: Error, CustomStringConvertible {
         var description: String
     }
-
-    static let cursorKind = SceneScriptEvent.Kind(rawValue: "replayCursor")
 
     private(set) var replay: JSValue?
 

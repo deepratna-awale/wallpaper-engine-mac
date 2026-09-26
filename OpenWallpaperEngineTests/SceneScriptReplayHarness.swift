@@ -11,9 +11,10 @@ import JavaScriptCore
 ///   time field of a clock changes during the run;
 /// - audio: silence until `toneFrames.lowerBound`, a moving two-channel tone until its end, then
 ///   silence again;
-/// - cursor: `input` moves on a Lissajous path the whole run; from each of `clickFrames` every
-///   Solid object with scripts gets enter, move, down, up, click and leave, one per frame, with the
-///   button down between down and up;
+/// - cursor: WP10's cursor pass with the renderer's stand-in (each object's world transform is its
+///   own origin and scale, an image or text without a size is 64 × 64). The cursor moves on a
+///   Lissajous path; from each of `clickFrames` it clicks every Solid object with scripts in turn:
+///   over it, button down, button up, away, one step per frame;
 /// - media: enabled and playing with a thumbnail at 30, timeline ticks, paused at 240, stopped
 ///   without thumbnail and with new properties at 360, playing with a new thumbnail at 480;
 /// - user properties: every flag flipped, every slider at its maximum and every combo on another
@@ -124,7 +125,8 @@ final class SceneScriptReplayHarness {
         var clock = options.startDate
         var spectrum = AudioSpectrumSnapshot.silent
         let scriptHost = SceneScriptReplayScriptHost(wallpaperID: wallpaper.id, prelude: prelude)
-        let objectHost = SceneScriptReplayObjectHost(wallpaper: wallpaper)
+        let objectHost = try SceneScriptReplayObjectHost(wallpaper: wallpaper)
+        let cursor = SceneScriptCursorExtension()
         let media = SceneScriptReplayMediaSource()
         let engine = SceneScriptEngineExtension(storage: SceneScriptStorage(directory: storageDirectory),
                                                 environment: environment, now: { clock },
@@ -135,7 +137,7 @@ final class SceneScriptReplayHarness {
         let support = SceneScriptReplaySupport()
         let runtime = try SceneScriptRuntime(host: scriptHost, compiler: SceneScriptModuleTransformer(),
                                              extensions: [engine, audio, SceneScriptMediaExtension(source: media), model,
-                                                          binding, support],
+                                                          binding, cursor, support],
                                              configuration: options.configuration)
         support.setClock(clock)
 
@@ -182,15 +184,32 @@ final class SceneScriptReplayHarness {
         let slotsWithScripts = Array(Set(records.compactMap { record in
             record.site.objectIndex.flatMap { slotsByObjectIndex[$0] }
         })).sorted()
+        func isHitTestable(_ slot: Int) -> Bool {
+            objectHost.objectIDsBySlot[slot].flatMap { objectHost.kinds[$0] }.map { $0 == .image || $0 == .text } == true
+        }
+        // Only Solid image and text layers are hit (§1.9 P7); the cursor visits each one with scripts.
+        let clickTargets = slotsWithScripts.filter { slot in
+            isHitTestable(slot) && model.store.map { $0.table[slot, .solid].first ?? 0 } ?? 0 != 0
+        }
+        let hitTestable = slotsByObjectIndex.sorted { $0.key < $1.key }.map(\.value).filter(isHitTestable)
 
         for frame in 0..<options.frames {
             clock = options.startDate.addingTimeInterval(Double(frame + 1) * options.deltaTime)
             support.setClock(clock)
             spectrum = options.toneFrames.contains(frame) ? Self.tone(frame: frame) : .silent
-            engine.input = cursorInput(frame: frame)
             postMedia(frame: frame, to: media)
             postUserProperties(frame: frame, to: runtime)
-            postCursor(frame: frame, slots: slotsWithScripts, model: model, runtime: runtime)
+            if let store = model.store {
+                Self.standInForRenderer(store.table, slots: Array(slotsByObjectIndex.values), hitTestable: Set(hitTestable))
+                let pointer = cursorPlan(frame: frame, targets: clickTargets, table: store.table)
+                engine.input = SceneScriptInput(cursorScreenPosition: screenPoint(pointer.position),
+                                                cursorLeftDown: pointer.down)
+                cursor.publish(SceneScriptCursorFrame(
+                    cursorWorldPosition: SIMD3(pointer.position.x, pointer.position.y, 0), leftButtonDown: pointer.down,
+                    layers: SceneScriptCursorLayer.layers(in: store.table,
+                                                          drawOrder: hitTestable.map { SceneScriptCursorLayer.TableEntry(slot: $0) },
+                                                          parentOf: { _ in nil })))
+            }
 
             let start = DispatchTime.now().uptimeNanoseconds
             let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
@@ -244,9 +263,10 @@ final class SceneScriptReplayHarness {
 
     // MARK: - Inputs
 
-    /// The project's own size when it declares one, else WE's default.
+    /// The project's own size when it declares one, else WE's default, placed stretched.
     private var environment: SceneScriptEngineEnvironment {
         var environment = SceneScriptEngineEnvironment.standard
+        environment.placement = .stretch
         if let general = wallpaper.document["general"] as? [String: Any],
            let projection = general["orthogonalprojection"] as? [String: Any],
            let width = (projection["width"] as? NSNumber)?.doubleValue,
@@ -281,32 +301,42 @@ final class SceneScriptReplayHarness {
         return snapshot
     }
 
-    private func cursorInput(frame: Int) -> SceneScriptInput {
-        let time = Double(frame) / 60
-        let screen = environment.screenResolution
-        let x: Double = screen.x * (0.5 + 0.4 * sin(time * 1.3))
-        let y: Double = screen.y * (0.5 + 0.4 * sin(time * 1.7))
-        let position = SIMD2<Double>(x, y)
-        let down = options.clickFrames.contains { (($0 + 2)...($0 + 3)).contains(frame) }
-        return SceneScriptInput(cursorScreenPosition: position, cursorLeftDown: down)
-    }
-
-    private static let cursorSequence = ["cursorEnter", "cursorMove", "cursorDown", "cursorUp", "cursorClick",
-                                         "cursorLeave"]
-
-    private func postCursor(frame: Int, slots: [Int], model: SceneScriptObjectModel, runtime: SceneScriptRuntime) {
+    /// The cursor this frame, in scene units: on its path, or at the click target's origin.
+    private func cursorPlan(frame: Int, targets: [Int], table: SceneScriptObjectTable) -> (position: SIMD2<Float>, down: Bool) {
         for start in options.clickFrames {
             let step = frame - start
-            guard step >= 0, step < Self.cursorSequence.count else { continue }
-            let name = Self.cursorSequence[step]
-            // Only objects marked Solid get cursor events (§1.9 P7).
-            for slot in slots where model.store.map({ $0.table[slot, .solid].first ?? 0 }) ?? 0 != 0 {
-                let origin = model.store.map { $0.table[slot, .origin] } ?? [0, 0, 0]
-                runtime.inbox.post(SceneScriptEvent(kind: SceneScriptReplaySupport.cursorKind,
-                                                    payload: ["name": name, "x": Double(origin[0]),
-                                                              "y": Double(origin[1]), "lx": 0.0, "ly": 0.0],
-                                                    target: slot))
+            guard step >= 0, step < targets.count * 4 else { continue }
+            let origin = table[targets[step / 4], .origin]
+            switch step % 4 {
+            case 0: return (SIMD2(origin[0], origin[1]), false)
+            case 1: return (SIMD2(origin[0], origin[1]), true)
+            case 2: return (SIMD2(origin[0], origin[1]), false)
+            default: return (SIMD2(-100_000, -100_000), false)
             }
+        }
+        let time = Double(frame) / 60
+        let canvas = environment.canvasSize
+        let x: Double = canvas.x * (0.5 + 0.4 * sin(time * 1.3))
+        let y: Double = canvas.y * (0.5 + 0.4 * sin(time * 1.7))
+        return (SIMD2(Float(x), Float(y)), false)
+    }
+
+    /// A scene point as screen pixels from the top-left (the environment places the scene stretched).
+    private func screenPoint(_ point: SIMD2<Float>) -> SIMD2<Double> {
+        let screen = environment.screenResolution, canvas = environment.canvasSize
+        return SIMD2(Double(point.x) * screen.x / canvas.x, screen.y - Double(point.y) * screen.y / canvas.y)
+    }
+
+    /// What the renderer keeps current in the table before each frame (WP11), as a stand-in:
+    /// each object's world transform is its own origin and scale, and an image or text without a
+    /// size gets 64 × 64.
+    private static func standInForRenderer(_ table: SceneScriptObjectTable, slots: [Int], hitTestable: Set<Int>) {
+        for slot in slots {
+            let origin = table[slot, .origin], scale = table[slot, .scale]
+            let base = SceneScriptObjectTable.index(slot: slot, field: SceneScriptObjectTable.Layout.worldMatrix)
+            let matrix: [Float] = [scale[0], 0, 0, 0, 0, scale[1], 0, 0, 0, 0, 1, 0, origin[0], origin[1], 0, 1]
+            for (index, value) in matrix.enumerated() { table.values[base + index] = value }
+            if hitTestable.contains(slot), table[slot, .size] == [0, 0] { table[slot, .size] = [64, 64] }
         }
     }
 
