@@ -114,4 +114,47 @@ final class RenderCheckTests: XCTestCase {
         XCTAssertGreaterThan(right.x, 240, "right \(right)")
         XCTAssertEqual(right.z, 255, "the fill's blue under the ramp")
     }
+
+    /// WE multiplies a layer's colour by its `brightness` only under the `ultra` (or `displayhdr`)
+    /// post-processing setting (engine flag 0x2000, 0x140207a2b). 2321732083's background
+    /// (brightness 0.89) is as bright in WE's capture, taken with post-processing enabled, as
+    /// without its brightness.
+    func testBrightnessAppliesOnlyUnderUltraPostProcessing() throws {
+        XCTAssertFalse(SceneRenderSettings().appliesBrightness)
+        let size = SIMD2(64, 64)
+        let directory = Fixtures.url("Scenes/brightness")
+        let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/brightness/project.json"))
+        defer { Fixtures.removeStoredSettings(for: directory) }
+        let content = try XCTUnwrap(SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory)).metalContent())
+        func centre(_ postProcessing: GSPostProcessingQuality) throws -> UInt8 {
+            let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+            let view = MTKView(frame: CGRect(x: 0, y: 0, width: size.x, height: size.y), device: device)
+            view.colorPixelFormat = .bgra8Unorm
+            view.framebufferOnly = false
+            view.autoResizeDrawable = false
+            view.drawableSize = CGSize(width: size.x, height: size.y)
+            let renderer = try XCTUnwrap(SceneMetalRenderer(view: view, scriptServices: nil, screenID: "brightness"))
+            defer { renderer.releaseContent() }
+            view.isPaused = true
+            renderer.setPlacement(.stretch)
+            var settings = SceneRenderSettings()
+            settings.postProcessing = postProcessing
+            renderer.renderSettings = settings
+            renderer.setContent(content)
+            var drawn = 0
+            let deadline = Date().addingTimeInterval(30)
+            repeat {
+                RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+                renderer.draw(in: view)
+                renderer.lastCommandBuffer?.waitUntilCompleted()
+                if renderer.hasContent { drawn += 1 }
+            } while drawn < 3 && Date() < deadline
+            var bytes = [UInt8](repeating: 0, count: size.x * size.y * 4)
+            view.currentDrawable?.texture.getBytes(&bytes, bytesPerRow: size.x * 4,
+                                                   from: MTLRegionMake2D(0, 0, size.x, size.y), mipmapLevel: 0)
+            return bytes[(32 * size.x + 32) * 4 + 1]
+        }
+        XCTAssertEqual(Int(try centre(.enabled)), 255, accuracy: 1, "post-processing enabled: brightness 1")
+        XCTAssertEqual(Int(try centre(.ultra)), 128, accuracy: 2, "ultra: brightness 0.5")
+    }
 }

@@ -31,6 +31,14 @@ struct SceneRenderSettings: Equatable {
         sceneDetail = settings.sceneDetail
     }
 
+    /// Whether a layer's `brightness` scales its colour. WE multiplies the colour it draws a layer
+    /// with by `brightness` only under engine flag 0x2000 (`0x140207a2b…0x140207a72`, and
+    /// likewise at `0x140207bd2` and `0x1402086e1`), which the `ultra` and `displayhdr`
+    /// post-processing settings set (`0x14010e6ba`, `0x14010e6da`); otherwise it uses 1.
+    var appliesBrightness: Bool {
+        postProcessing == .ultra || postProcessing == .displayhdr
+    }
+
     /// `settings` with the texture reduction WE's `resolution` setting gives on displays whose
     /// largest drawable is `outputPixels` (zero while none is known).
     init(_ settings: GlobalSettings, outputPixels: SIMD2<Float>) {

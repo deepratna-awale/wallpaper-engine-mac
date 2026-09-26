@@ -1327,7 +1327,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let animation = timelines.object(entry.layer.id)
         let rgb = script?.vector3(.color) ?? animation?.color
         let color = rgb.map { SIMD4<Float>($0.x, $0.y, $0.z, base.color.w) } ?? base.color
-        let brightness = script?.scalar(.brightness) ?? animation?.brightness ?? base.brightness
+        let brightness = renderSettings.appliesBrightness
+            ? script?.scalar(.brightness) ?? animation?.brightness ?? base.brightness : 1
         drawProbe?.record(layer: entry.layer.id, .init(opacity: opacity, color: color, brightness: brightness, local: own))
         return LayerDraw(opacity: opacity, color: color, brightness: brightness,
                          quad: SceneQuadGeometry(center: center, axisX: quad.axisX, axisY: quad.axisY),
