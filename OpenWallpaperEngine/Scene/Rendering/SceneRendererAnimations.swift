@@ -15,6 +15,9 @@ final class SceneRendererAnimations {
     private var animatedObjects: [SceneObjectAnimation.Indices] = []
     private var objectAnimations: [SceneObjectAnimation] = []
     private var position: [String: Int] = [:]
+    /// Where the timelines of the scene's own settings (`general.<field>`) sit in the set: only
+    /// numbers and vectors, the types WE's setter writes (a bool, 6, is skipped at `0x14017242d`).
+    private var sceneSettings: [SceneScriptSceneField: Int] = [:]
     /// Each animated layer's sprite frame this frame, by id (`spriteFrame(object:delta:)`).
     private var spriteFrames: [Int: Int32] = [:]
 
@@ -25,6 +28,7 @@ final class SceneRendererAnimations {
         animatedObjects = []
         objectAnimations = []
         position = [:]
+        sceneSettings = [:]
     }
 
     /// Takes the content's timelines: a new set for a new document, or when new scripts started
@@ -89,6 +93,10 @@ final class SceneRendererAnimations {
     private func refreshAnimatedObjects() {
         animatedObjects.removeAll()
         position.removeAll()
+        sceneSettings.removeAll()
+        for field in SceneScriptSceneField.allCases where field.type != .bool && !field.isCamera {
+            sceneSettings[field] = set?.index(of: SceneAnimationSite(owner: .scene, key: field.rawValue))
+        }
         var ids = Set<Int>()
         for site in set?.sites ?? [] where SceneObjectAnimation.keys.contains(site.key) {
             if case .object(let id) = site.owner { ids.insert(id) }
@@ -120,6 +128,12 @@ final class SceneRendererAnimations {
         let frame = set.advance(by: delta)
         readObjects()
         return frame.events
+    }
+
+    /// The scene setting `general.<field>` as its timeline set it this frame: its first component;
+    /// nil when no timeline drives it (or its value isn't finite).
+    func sceneScalar(_ field: SceneScriptSceneField) -> Float? {
+        sceneSettings[field].flatMap { set?.drawnComponents(at: $0)?.x }
     }
 
     /// Object `key`'s fields as its timelines set them this frame; nil when none is animated.

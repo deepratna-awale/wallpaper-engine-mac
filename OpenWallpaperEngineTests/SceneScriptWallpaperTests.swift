@@ -155,6 +155,25 @@ final class SceneScriptWallpaperTests: XCTestCase {
         XCTAssertFalse(wallpaper.take().events.contains { if case .animation = $0 { return true } else { return false } })
     }
 
+    /// §2.6 for the scene's settings (TF3): a script bound to an animated `general` value gets
+    /// this frame's animated value, and its different return holds for that frame only.
+    func testScriptsSeeAnimatedSceneSettingsAndBeatThemForTheirFrameOnly() throws {
+        let script = "export function update(value) { shared.seen = value; return shared.override ? 9 : value; }"
+        let bloom = #""bloomstrength": {"value": 1, "script": "\#(script)", "animation": {"c0": [{"frame": 0, "value": 0}, {"frame": 20, "value": 2}], "options": {"fps": 10, "length": 20}}}"#
+        let wallpaper = try make(objects: [], general: bloom)
+        let site = SceneAnimationSite(owner: .scene, key: "bloomstrength")
+        var input = SceneScriptFrameInput()
+        input.deltaTime = 1.0 / 60
+        for (value, override, drawn) in [(Float(0.5), false, Float?.none), (0.75, true, 9), (1, false, nil)] {
+            input.animations[site] = SceneAnimationState(name: nil, fps: 10, frameCount: 20, duration: 2, rate: 1, time: 0,
+                                                         flags: [], frame: 0, value: SIMD4(value, 0, 0, 0))
+            wallpaper.thread.sync { _ = wallpaper.scriptRuntime?.context.evaluateScript("shared.override = \(override)") }
+            let state = try frame(wallpaper, input)
+            XCTAssertEqual(try shared(wallpaper, "seen"), Double(value), "update(value) gets the animated value")
+            XCTAssertEqual(state.scene.scalar(.bloomstrength), drawn, "the script's value only while it differs")
+        }
+    }
+
     /// A timeline event reaches `animationEvent` of the scripts attached to the animation's owner,
     /// before `update` in the same frame (§3.3, P1).
     func testTimelineEventsReachTheOwnersScripts() throws {
@@ -255,8 +274,9 @@ final class SceneScriptWallpaperTests: XCTestCase {
         #"{"id": \#(id), "name": "Object \#(id)", \#(fields)}"#
     }
 
-    private func make(objects: [String]) throws -> SceneScriptWallpaper {
-        let text = #"{"general": {"orthogonalprojection": {"width": 200, "height": 100}}, "objects": [\#(objects.joined(separator: ", "))]}"#
+    private func make(objects: [String], general: String = "") throws -> SceneScriptWallpaper {
+        let settings = general.isEmpty ? "" : ", " + general
+        let text = #"{"general": {"orthogonalprojection": {"width": 200, "height": 100}\#(settings)}, "objects": [\#(objects.joined(separator: ", "))]}"#
         let document = try SceneScriptSiteBuilder.document(from: Data(text.utf8))
         let content = SceneScriptSceneContent(wallpaperID: "test-\(UUID().uuidString.prefix(8))", document: document,
                                               documentSignature: "1", project: nil, userValues: { [:] },

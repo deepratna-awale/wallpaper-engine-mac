@@ -45,11 +45,17 @@ struct SceneParticleOverrides: Equatable {
         return overrides
     }
 
-    init(_ override: WEInstanceOverride?, in context: SceneValueContext) {
+    /// `object` is the particle system's object id, whose `instanceoverride` timelines
+    /// (`SceneAnimationOwner.particleInstance`) beat the user-bound and authored values (§2.6).
+    init(_ override: WEInstanceOverride?, in context: SceneValueContext, object: Int? = nil) {
         guard let override else { return }
-        // Scripts run in the particle runtime; only the user binding and the literal resolve here.
+        // Scripts run in the particle runtime; the timeline, the user binding and the literal resolve here.
         func value(_ field: SceneInstanceOverrideField) -> ShaderValue? {
             guard let raw = override.values[field] else { return nil }
+            if let object, raw.animation != nil,
+               let animated = context.animationValue(SceneAnimationSite(owner: .particleInstance(object), key: field.rawValue)) {
+                return ShaderValue(components: animated)
+            }
             if let source = raw.userBindingSource { return SceneValueResolver.resolve(source, in: context) }
             return raw.literalString.flatMap(ShaderValue.init(string:))
         }

@@ -44,9 +44,10 @@ enum ParticleSystemBuilder {
         system.overrides = overrides
         system.ignoredOverrides = SceneParticleOverrides.Parts(systemFlags: particleSystem.flags ?? 0)
         system.startTime = max(Float(particleSystem.starttime ?? 0), 0)
-        // Bound to user properties: resolved again every frame, so a change shows at once.
+        // Bound to user properties or animated by a timeline: resolved again every frame, so a
+        // change shows at once.
         if let instanceOverride = object.instanceoverride,
-           instanceOverride.values.values.contains(where: { $0.userBindingSource != nil }) {
+           instanceOverride.values.values.contains(where: { $0.userBindingSource != nil || $0.animation != nil }) {
             system.liveOverrides = instanceOverride
         }
         if let emitter {

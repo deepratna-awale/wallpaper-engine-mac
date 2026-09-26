@@ -72,6 +72,12 @@ indirect enum SceneRawValue: Decodable, Equatable {
             throw DecodingError.dataCorruptedError(in: c, debugDescription: "unsupported shader value \(other)")
         }
     }
+
+    /// The bound value's keyframe `animation` object; nil for a literal or a value without one.
+    var animation: SceneJSON? {
+        if case .object(let object) = self { return object.animation }
+        return nil
+    }
 }
 
 /// Arbitrary JSON, for parts of the format that are kept raw.

@@ -222,7 +222,9 @@ struct ParticleFrameInputs {
     /// user properties, they resolve again, and scripts' values replace them.
     private mutating func applyOverrides(_ configuration: SceneMetalParticleSystem, values: SceneValueContext,
                                          scripted: SceneScriptInstanceOverrides?) -> SceneParticleOverrides {
-        let authored = configuration.liveOverrides.map { SceneParticleOverrides($0, in: values) } ?? configuration.overrides
+        let authored = configuration.liveOverrides.map {
+            SceneParticleOverrides($0, in: values, object: configuration.objectID.flatMap { Int($0) })
+        } ?? configuration.overrides
         let overrides = (scripted?.applied(to: authored) ?? authored).ignoring(configuration.ignoredOverrides)
         maximum = max(Int((Float(configuration.maximumParticleCount) * overrides.count).rounded()), 0)
         // Negative multipliers would invert the ranges; WE treats them as 0.

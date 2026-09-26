@@ -162,6 +162,16 @@ final class SceneScriptTableSync {
     }
 
     /// The scene settings scripts wrote since the last read, added to `state`. False when clean.
+    /// A scene setting a timeline set this frame (docs/timeline-plan.md §2.6): written into the
+    /// scene buffer and taken as its baseline, so only a script's write this frame makes the
+    /// setting the script's (`readScene`).
+    func writeScene(_ field: SceneScriptSceneField, _ value: SIMD4<Float>) {
+        for component in 0..<field.components {
+            store.scene[0, field.offset + component] = value[component]
+            sceneBaseline[field.offset + component] = value[component]
+        }
+    }
+
     func readScene(into state: inout SceneScriptSceneState) -> Bool {
         let scene = store.scene
         let settingsDirty = scene.dirty[SceneScriptSceneField.Layout.settingsDirty] != 0

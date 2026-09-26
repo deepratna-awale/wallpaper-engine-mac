@@ -123,4 +123,36 @@ final class SceneRendererAnimationsTests: XCTestCase {
         XCTAssertEqual(set.textures.objectIDs, [])
         XCTAssertNil(set.textures.clock(texture: sheet.texture))
     }
+
+    private static let settings = #"""
+    {"general": {
+      "bloomstrength": {"value": 1, "animation": {"c0": [{"frame": 0, "value": 0}, {"frame": 60, "value": 3}],
+                                                  "options": {"fps": 60, "length": 60, "mode": "single"}}},
+      "bloom": {"value": false, "animation": {"c0": [{"frame": 0, "value": 1}], "options": {"fps": 60, "length": 60}}}},
+     "objects": [{"id": 2, "parallaxDepth": {"value": "1 1", "animation": {"c0": [{"frame": 0, "value": 0.5}],
+                                                                           "c1": [{"frame": 0, "value": 0.25}],
+                                                                           "options": {"fps": 60, "length": 60}}},
+                  "instanceoverride": {"rate": {"value": 1, "animation": {"c0": [{"frame": 0, "value": 0}, {"frame": 60, "value": 6}],
+                                                                          "options": {"fps": 60, "length": 60, "mode": "single"}}},
+                                       "size": 2}}]}
+    """#
+
+    /// TF3: the scene's numeric settings, a particle system's `instanceoverride` values and an
+    /// object's `parallaxDepth` draw their timelines; a bool setting (`bloom`) doesn't, as WE's
+    /// setter skips a type-6 property (`0x14017242d`).
+    func testSettingsOverridesAndOtherFieldsDrawTheirTimelines() throws {
+        let timelines = try timelines(Self.settings)
+        for _ in 0..<30 { _ = timelines.advance(by: 1 / 60) }
+        XCTAssertEqual(try XCTUnwrap(timelines.sceneScalar(.bloomstrength)), 1.5, accuracy: 1e-4)
+        XCTAssertNil(timelines.sceneScalar(.bloom), "a bool isn't written")
+        XCTAssertNil(timelines.sceneScalar(.bloomthreshold), "not animated")
+        XCTAssertEqual(timelines.object("2")?.parallaxDepth, SIMD2(0.5, 0.25))
+
+        let block = #"{"rate": {"value": 1, "animation": {"c0": [{"frame": 0, "value": 0}]}}, "size": 2}"#
+        let override = try JSONDecoder().decode(WEInstanceOverride.self, from: Data(block.utf8))
+        let overrides = SceneParticleOverrides(override, in: timelines.values, object: 2)
+        XCTAssertEqual(overrides.rate, 3, accuracy: 1e-3, "the timeline's rate, not the authored 1")
+        XCTAssertEqual(overrides.size, 2, "an override without a timeline keeps its value")
+        XCTAssertEqual(SceneParticleOverrides(override, in: timelines.values).rate, 1, "without its object it can't be found")
+    }
 }

@@ -46,6 +46,8 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
     /// Material constants a timeline drives: the site, the constant's owner and its pool range.
     private var animatedConstants: [(site: SceneAnimationSite, objectID: Int, effect: Int, material: Int,
                                      range: SceneScriptObjectStore.PoolRange)] = []
+    /// The scene's settings a timeline drives (numbers and vectors: WE's setter skips a bool).
+    private var animatedSettings: [(site: SceneAnimationSite, field: SceneScriptSceneField)] = []
     private var animationTargetsValid = false
     /// The set's frame the animation slots were last published for (`animationFrame`).
     private var publishedAnimationFrame: UInt64 = 0
@@ -278,6 +280,7 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
         animationTargets.removeAll(keepingCapacity: true)
         animationSlots.removeAll(keepingCapacity: true)
         animatedConstants.removeAll(keepingCapacity: true)
+        animatedSettings.removeAll(keepingCapacity: true)
         for slot in store.animationReferences.keys.sorted() {
             guard let reference = store.animationReferences[slot] else { continue }
             let objectID = reference.slot.flatMap { objects[$0]?.id }
@@ -295,12 +298,16 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
                let range = store.constantRanges[.init(slot: objectSlot, effect: effect, material: material, name: site.key)] {
                 animatedConstants.append((site, id, effect, material, range))
             }
+            if site.owner == .scene, let field = SceneScriptSceneField(rawValue: site.key), field.type != .bool,
+               !field.isCamera {
+                animatedSettings.append((site, field))
+            }
         }
     }
 
-    /// The material constants' side of §2.6 (P2): the timeline's setter writes a constant every
-    /// frame before the scripts run, so a bound `update(value)` and every read see the animated
-    /// value, and a script's write of it holds for its frame only (test-risks TF1).
+    /// The material constants' and scene settings' side of §2.6 (P2): the timeline's setter writes
+    /// them every frame before the scripts run, so a bound `update(value)` and every read see the
+    /// animated value, and a script's write holds for its frame only (test-risks TF1, TF3).
     private func feedAnimatedConstants(_ input: SceneScriptFrameInput, store: SceneScriptObjectStore) {
         for constant in animatedConstants {
             guard let animation = input.animations[constant.site] else { continue }
@@ -311,6 +318,11 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
                   object.dropConstantWrites(effect: constant.effect, material: constant.material, name: constant.site.key)
             else { continue }
             state.objects[constant.objectID] = object
+        }
+        for setting in animatedSettings {
+            guard let animation = input.animations[setting.site] else { continue }
+            sync?.writeScene(setting.field, animation.value)
+            state.scene.owned.remove(setting.field)
         }
     }
 

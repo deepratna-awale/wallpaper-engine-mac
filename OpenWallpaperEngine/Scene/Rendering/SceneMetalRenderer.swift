@@ -690,14 +690,16 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // WE's engine frame time and frame-rate limit steer drag and the operators' half steps
             // (`ParticleFrameInputs.dragDeltaTime`, `substeps`); the pre-simulation runs in this frame.
             let prewarm = ParticlePrewarm.steps(system).map {
-                ParticleFrameInputs.advance(system, deltaTime: $0, cursor: cursor, emitter: emitter, scripted: scripted,
+                ParticleFrameInputs.advance(system, deltaTime: $0, cursor: cursor, emitter: emitter, values: timelines.values,
+                                            scripted: scripted,
                                             audio: effectFrame.audio, frameTime: Float(clock.delta),
                                             frameRateLimit: view.preferredFramesPerSecond)
             }
             // A script's `pause()` holds the system as it is; `stop()` clears it until `play()`.
             let paused = script?.playback == .pause
             var inputs = ParticleFrameInputs.advance(system, deltaTime: paused ? 0 : Float(clock.delta), cursor: cursor,
-                                                     emitter: emitter, scripted: scripted, audio: effectFrame.audio,
+                                                     emitter: emitter, values: timelines.values, scripted: scripted,
+                                                     audio: effectFrame.audio,
                                                      frameTime: Float(clock.delta), frameRateLimit: view.preferredFramesPerSecond)
             Self.applyScriptPlayback(script?.playback, emitting: objectID.flatMap { pendingEmits.removeValue(forKey: $0) },
                                      to: &inputs)
@@ -916,8 +918,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // `thisScene.bloom`, `bloomstrength` and `bloomthreshold` once a script set them.
         let scene = scripts.state.scene
         let bloomEnabled = scene.flag(.bloom) ?? bloom.enabled
-        let bloomThreshold = scene.scalar(.bloomthreshold) ?? bloom.threshold
-        let authoredBloom = bloomEnabled ? (scene.scalar(.bloomstrength) ?? bloom.strength) * bloomMultiplier : 0
+        let bloomThreshold = scene.scalar(.bloomthreshold) ?? timelines.sceneScalar(.bloomthreshold) ?? bloom.threshold
+        let bloomStrengthSetting = scene.scalar(.bloomstrength) ?? timelines.sceneScalar(.bloomstrength) ?? bloom.strength
+        let authoredBloom = bloomEnabled ? bloomStrengthSetting * bloomMultiplier : 0
         let userBloom = max(bloomMultiplier - 1, 0) * 1.2
         let bloomStrength = max(authoredBloom, userBloom)
         // The app's saturation and hue are linear in colour, so on the composite they equal applying
@@ -951,7 +954,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return
         }
         for id in sounds.ids {
-            if let volume = scripts.object(String(id))?.scalar(.volume) { sounds.setVolume(volume, of: id) }
+            if let volume = scripts.object(String(id))?.scalar(.volume) ?? timelines.object(String(id))?.volume {
+                sounds.setVolume(volume, of: id)
+            }
         }
         let now = CACurrentMediaTime()
         if let last = lastSoundTime { sounds.update(deltaTime: min(now - last, Self.maxSoundStep)) }
@@ -1037,24 +1042,30 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let scene = scripts.state.scene
         let shaking = scene.flag(.camerashake) ?? camera.shake
         let shake = shaking
-            ? SceneCameraShake.cameraOffset(time: time, speed: scene.scalar(.camerashakespeed) ?? camera.shakeSpeed,
-                                            amplitude: scene.scalar(.camerashakeamplitude) ?? camera.shakeAmplitude,
-                                            roughness: scene.scalar(.camerashakeroughness) ?? camera.shakeRoughness,
+            ? SceneCameraShake.cameraOffset(time: time, speed: sceneSetting(.camerashakespeed) ?? camera.shakeSpeed,
+                                            amplitude: sceneSetting(.camerashakeamplitude) ?? camera.shakeAmplitude,
+                                            roughness: sceneSetting(.camerashakeroughness) ?? camera.shakeRoughness,
                                             orthographicHeight: camera.orthographic ? sceneSize.y : nil)
             : .zero
         var parallax: (state: SceneCameraParallax, amount: Float)?
         if parallaxEnabled {
             cameraParallax.update(cursor: pointer, eye: SIMD2(shake.x, shake.y), sceneSize: sceneSize,
-                                  influence: scene.scalar(.cameraparallaxmouseinfluence) ?? camera.parallaxMouseInfluence,
-                                  delay: scene.scalar(.cameraparallaxdelay) ?? camera.parallaxDelay,
+                                  influence: sceneSetting(.cameraparallaxmouseinfluence) ?? camera.parallaxMouseInfluence,
+                                  delay: sceneSetting(.cameraparallaxdelay) ?? camera.parallaxDelay,
                                   deltaTime: deltaTime)
             // `_owe_effect_parallax_amount` is an app extra, 1 (WE's amount) by default.
-            let amount = (scene.scalar(.cameraparallaxamount) ?? camera.parallaxAmount)
+            let amount = (sceneSetting(.cameraparallaxamount) ?? camera.parallaxAmount)
                 * WallpaperServices.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
             if camera.orthographic { parallax = (cameraParallax, amount) }
         }
         return CameraMotion(parallax: parallax, shake: SIMD2(shake.x, shake.y),
                             audioLevel: WallpaperServices.shared.audioLevel)
+    }
+
+    /// A number of the scene's settings this frame: a script's, else its timeline's; nil leaves
+    /// the authored (or user-bound) one.
+    private func sceneSetting(_ field: SceneScriptSceneField) -> Float? {
+        scripts.state.scene.scalar(field) ?? timelines.sceneScalar(field)
     }
 
     /// The parallax offset of a layer: its root object's live origin and `parallaxDepth`.
@@ -1064,7 +1075,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let rootID = transforms.root(of: entry.layer.id)
         if rootID == entry.layer.id {
             let depth = entry.layer.parallaxDepth
-            let scripted = scripts.object(rootID)?.vector2(.parallaxDepth)
+            let scripted = scripts.object(rootID)?.vector2(.parallaxDepth) ?? timelines.object(rootID)?.parallaxDepth
             return parallax.state.offset(rootOrigin: local.origin, rootDepth: scripted ?? SIMD2(depth.x, depth.y),
                                          amount: parallax.amount)
         }
@@ -1074,9 +1085,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                      amount: parallax.amount)
     }
 
-    /// A root object's `parallaxDepth`: a script's, else authored.
+    /// A root object's `parallaxDepth`: a script's, else its timeline's, else authored.
     private func parallaxDepth(of id: String, node: SceneTransformHierarchy.Node) -> SIMD2<Float> {
-        scripts.object(id)?.vector2(.parallaxDepth) ?? node.parallaxDepth
+        scripts.object(id)?.vector2(.parallaxDepth) ?? timelines.object(id)?.parallaxDepth ?? node.parallaxDepth
     }
 
     /// A visible layer's opacity, colour and placed quad this frame: what scripts wrote, then the
