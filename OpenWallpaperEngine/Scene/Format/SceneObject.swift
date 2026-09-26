@@ -71,6 +71,9 @@ struct WESceneObject: Decodable {
     var particle: String?    // path to particle JSON
     var instanceoverride: WEInstanceOverride?
 
+    // Sound objects (WE builds one when `"sound"` is not null)
+    var sound: WESceneSound?
+
     /// Every value-bearing field in its full authored form (literal, `user`, `script`, `animation`).
     /// The typed fields above hold only the literal fallback.
     var values: [SceneObjectValueField: SceneRawValue] = [:]
@@ -82,7 +85,7 @@ struct WESceneObject: Decodable {
         case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis, anchor, blockalign
         case image, alpha, brightness, color, colorBlendMode, clampuvs, size, alignment, shape
         case solid, disablepropagation, copybackground, parallaxDepth, perspective
-        case particle, instanceoverride
+        case particle, instanceoverride, sound
     }
 
     init(from decoder: Decoder) throws {
@@ -101,6 +104,14 @@ struct WESceneObject: Decodable {
         image = try? c.decodeIfPresent(String.self, forKey: .image)
         particle = try? c.decodeIfPresent(String.self, forKey: .particle)
         instanceoverride = c.decodeLogged(WEInstanceOverride.self, forKey: .instanceoverride, userInfo: decoder.userInfo)
+        // `decodeNil` throws only for a missing key, which `contains` ruled out.
+        if c.contains(.sound), (try? c.decodeNil(forKey: .sound)) == false {
+            do {
+                sound = try WESceneSound(from: decoder)
+            } catch {
+                OWELog.error(.scene, "sound object \(name ?? "?") can't be read: \(error)")
+            }
+        }
         effects = c.decodeElements(WEObjectEffect.self, forKey: .effects, userInfo: decoder.userInfo)
         shape = try? c.decodeIfPresent(String.self, forKey: .shape)
         if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {
