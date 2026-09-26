@@ -40,82 +40,21 @@ class SteamCmdService: ObservableObject {
     /// Which library items came in only as another wallpaper's dependency.
     let dependencyIndex: WorkshopDependencyIndex
 
-    init(dependencyIndex: WorkshopDependencyIndex = WorkshopDependencyIndex()) {
+    private let runner: SteamCmdRunning
+
+    init(dependencyIndex: WorkshopDependencyIndex = WorkshopDependencyIndex(),
+         runner: SteamCmdRunning = ProcessSteamCmdRunner()) {
         self.dependencyIndex = dependencyIndex
+        self.runner = runner
         detectSteamCmd()
         attemptCachedLogin()
     }
 
-    /// Run a steamcmd process with proper pipe handling to avoid deadlocks.
-    /// Reads stdout/stderr concurrently with process execution and applies a timeout.
-    /// The commands go to stdin, so no argument of theirs is visible in the process list.
+    /// Runs steamcmd with `script` on its stdin; nothing of the script shows in the process list.
     private func runSteamCmd(script: SteamCmdScript, timeout: TimeInterval = 30) -> (output: String, exitCode: Int32) {
         guard let cmdPath = steamCmdPath else { return ("", -1) }
-
-        let process = Process()
-        let outputPipe = Pipe()
-        let inputPipe = Pipe()
-        process.executableURL = URL(fileURLWithPath: cmdPath)
-        process.arguments = []
-        process.standardInput = inputPipe
-        process.standardOutput = outputPipe
-        process.standardError = outputPipe
-
-        // Read pipe concurrently to prevent buffer deadlock
-        var outputData = Data()
-        let readQueue = DispatchQueue(label: "steamcmd.pipe.read")
-        let handle = outputPipe.fileHandleForReading
-        handle.readabilityHandler = { fileHandle in
-            let data = fileHandle.availableData
-            if !data.isEmpty {
-                readQueue.sync { outputData.append(data) }
-            }
-        }
-
-        do {
-            try process.run()
-        } catch {
-            handle.readabilityHandler = nil
-            return ("Failed to run steamcmd: \(error.localizedDescription)", -1)
-        }
-        Self.write(script, to: inputPipe)
-
-        // Wait with timeout
-        let deadline = DispatchTime.now() + timeout
-        let waitGroup = DispatchGroup()
-        waitGroup.enter()
-        DispatchQueue.global().async {
-            process.waitUntilExit()
-            waitGroup.leave()
-        }
-
-        if waitGroup.wait(timeout: deadline) == .timedOut {
-            process.terminate()
-            handle.readabilityHandler = nil
-            return ("steamcmd timed out after \(Int(timeout))s", -1)
-        }
-
-        handle.readabilityHandler = nil
-        // Read any remaining data
-        let remaining = handle.readDataToEndOfFile()
-        readQueue.sync { outputData.append(remaining) }
-
-        let output = String(data: outputData, encoding: .utf8) ?? ""
-        return (output, process.terminationStatus)
-    }
-
-    /// Writes the whole script and closes stdin, so steamcmd reads EOF after `quit`.
-    private static func write(_ script: SteamCmdScript, to pipe: Pipe) {
-        let handle = pipe.fileHandleForWriting
-        // If steamcmd already exited, the write must fail with EPIPE rather than kill the app.
-        _ = fcntl(handle.fileDescriptor, F_SETNOSIGPIPE, 1)
-        do {
-            try handle.write(contentsOf: script.standardInput)
-            try handle.close()
-        } catch {
-            // steamcmd exited before reading its input; its output says why.
-            OWELog.error(.workshop, "Can't write the steamcmd script: \(error)")
-        }
+        let run = runner.run(executable: URL(fileURLWithPath: cmdPath), script: script, timeout: timeout)
+        return (run.output, run.exitCode)
     }
 
     /// Automatically try cached session if we have a saved username and steamcmd is installed.
@@ -375,59 +314,19 @@ class SteamCmdService: ObservableObject {
                 return
             }
 
-            let process = Process()
-            let outputPipe = Pipe()
-            let inputPipe = Pipe()
-            process.executableURL = URL(fileURLWithPath: cmdPath)
-            process.currentDirectoryURL = URL(fileURLWithPath: cmdPath).deletingLastPathComponent()
-            process.arguments = []
-            process.standardInput = inputPipe
-            process.standardOutput = outputPipe
-            process.standardError = outputPipe
-
-            // Read output in real-time for progress updates
-            var fullOutput = ""
-            let handle = outputPipe.fileHandleForReading
-            handle.readabilityHandler = { [weak self] fileHandle in
-                let data = fileHandle.availableData
-                guard !data.isEmpty, let line = String(data: data, encoding: .utf8) else { return }
-                fullOutput += line
-
-                let status = self?.parseProgress(line) ?? nil
-                let percentage = self?.parseDownloadPercentage(line)
-                if let status = status {
-                    DispatchQueue.main.async {
-                        self?.downloadProgress[workshopId] = .downloading(status: status)
-                        if let percentage {
-                            self?.downloadPercentages[workshopId] = percentage
-                        }
-                    }
-                } else if let percentage {
-                    DispatchQueue.main.async {
-                        self?.downloadPercentages[workshopId] = percentage
-                    }
-                }
-            }
-
-            do {
-                try process.run()
-                Self.write(script, to: inputPipe)
-                process.waitUntilExit()
-            } catch {
-                handle.readabilityHandler = nil
+            // Output arrives in chunks as steamcmd reports progress.
+            let run = self.runner.run(executable: URL(fileURLWithPath: cmdPath), script: script, timeout: nil) { [weak self] chunk in
+                let status = self?.parseProgress(chunk)
+                let percentage = self?.parseDownloadPercentage(chunk)
+                guard status != nil || percentage != nil else { return }
                 DispatchQueue.main.async {
-                    self.downloadProgress[workshopId] = .failed("steamcmd failed to run: \(error.localizedDescription)")
-                    onCompleted?(nil)
+                    if let status { self?.downloadProgress[workshopId] = .downloading(status: status) }
+                    if let percentage { self?.downloadPercentages[workshopId] = percentage }
                 }
-                return
             }
+            let fullOutput = run.output
 
-            handle.readabilityHandler = nil
-            // Read any remaining data
-            let remaining = handle.readDataToEndOfFile()
-            if let str = String(data: remaining, encoding: .utf8) { fullOutput += str }
-
-            let exitCode = process.terminationStatus
+            let exitCode = run.exitCode
             OWELog.info(.workshop, "steamcmd download [\(workshopId)] exit=\(exitCode)\n\(fullOutput)")
 
             // Find downloaded content
@@ -671,27 +570,6 @@ class SteamCmdService: ObservableObject {
         return min(max(percentage / 100, 0), 1)
     }
 
-    private func findSteamAppsDir(cmdPath: String) -> URL? {
-        // steamcmd typically stores downloads relative to its install location
-        let cmdURL = URL(fileURLWithPath: cmdPath)
-
-        // Homebrew: /opt/homebrew/Cellar/steamcmd/...  -> steamapps at ~/Library/Application Support/Steam
-        // Manual: wherever steamcmd is -> steamapps in same dir
-        let possiblePaths = [
-            cmdURL.deletingLastPathComponent().appending(path: "steamapps"),
-            FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Library/Application Support/Steam/steamapps"),
-            FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Steam/steamapps"),
-        ]
-
-        for path in possiblePaths {
-            if FileManager.default.fileExists(atPath: path.path) {
-                return path
-            }
-        }
-        return nil
-    }
 }
 
 private enum PreviewError: LocalizedError {
