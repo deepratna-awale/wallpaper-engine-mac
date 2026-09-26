@@ -714,7 +714,8 @@ class SceneWallpaperViewModel: ObservableObject {
     static func lights(in objects: [WESceneObject], context: SceneValueContext) -> [SceneLightObject] {
         objects.compactMap { object in
             guard let light = object.light, let id = object.id else { return nil }
-            return SceneLightObject(id: String(id), authored: light, light: SceneLight(light, in: context))
+            return SceneLightObject(id: String(id), authored: light, light: SceneLight(light, in: context),
+                                    depth: SceneLightDepth(object: object))
         }
     }
 

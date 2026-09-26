@@ -969,15 +969,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     /// This frame's lighting (`SceneFrameLighting`), from the objects' live transforms and
-    /// visibility and the scripts' scene colours.
+    /// visibility, the scripts' scene colours and the user's shadows setting.
     private func frameLighting(eye: SIMD3<Float>, forward: SIMD3<Float>) -> SceneFrameLighting {
         let scene = scripts.state.scene
         return SceneFrameLighting.frame(lighting, input: SceneFrameLightingInput(
-            world: { [unowned self] id in
-                self.transforms.nodes[id] == nil ? nil : self.transforms.world(of: id) { self.liveLocal($0) }
-            },
+            local: { [unowned self] id in self.liveLocal(id) ?? self.transforms.nodes[id]?.local },
+            parentWorld: { [unowned self] id in self.transforms.parentWorld(of: id) { self.liveLocal($0) } },
             isVisible: { [unowned self] id in self.scripts.isVisible(id) },
             sceneColor: { scene.vector3($0) },
+            shadows: renderSettings.shadows != .disabled,
             eyePosition: eye, viewForward: forward))
     }
 
