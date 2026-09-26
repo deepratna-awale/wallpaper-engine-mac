@@ -129,12 +129,16 @@ final class ParticleGPUSimulator {
         case scanBlocks, scanSums, compact, trailScanBlocks, trailScanSums, finish, write
     }
 
-    /// One request's step: its buffers and frame, captured when the frame is encoded.
-    private struct StepPlan {
+    /// One request's step: its buffers and frame, captured when the frame is encoded. A class, so
+    /// the stages share it rather than copy it.
+    private final class StepPlan {
         let request: Request
         let gpu: ParticleGPUSystem
         let parent: ParticleGPUSystem?
         var frame: ParticleGPUFrame
+        let isInstanced: Bool
+        /// An instanced child of an event (`eventfollow`, `eventspawn`, `eventdeath`).
+        let isEventChild: Bool
         let particles, stepped, alive, offsets, blockSums, records: MTLBuffer
         let history, nextHistory, trailCounts, instances, linked: MTLBuffer
         /// The initializers, then the operators (`ParticleProgramOp`).
@@ -152,6 +156,8 @@ final class ParticleGPUSimulator {
                   let records = gpu.recordBuffer(for: request.kind, subdivision: subdivision) else { return nil }
             parent = request.system.parent?.gpu
             if configuration.isInstanced, parent == nil { return nil }
+            isInstanced = configuration.isInstanced
+            isEventChild = configuration.isInstanced && configuration.link?.kind != .static
             self.request = request
             self.gpu = gpu
             frame = ParticleGPUFrame(request.inputs, sceneSize: sceneSize, targetSize: targetSize, kind: request.kind,
@@ -186,7 +192,6 @@ final class ParticleGPUSimulator {
     /// Encodes `plan`'s dispatch for `stage`; false when the stage has none for it.
     private func encode(_ stage: Stage, _ plan: StepPlan, encoder: MTLComputeCommandEncoder) -> Bool {
         let gpu = plan.gpu, control = gpu.control
-        var frame = plan.frame
         let frameLength = MemoryLayout<ParticleGPUFrame>.stride
         let group = MTLSize(width: Self.threadgroupSize, height: 1, depth: 1)
         let single = MTLSize(width: 1, height: 1, depth: 1)
@@ -194,8 +199,6 @@ final class ParticleGPUSimulator {
             encoder.dispatchThreadgroups(indirectBuffer: control, indirectBufferOffset: ParticleGPUSystem.Control.dispatchOffset,
                                          threadsPerThreadgroup: group)
         }
-        let configuration = plan.request.system.configuration
-        let isEventChild = configuration.isInstanced && configuration.link?.kind != .static
         switch stage {
         case .linkPoints:
             guard let linkedPoints = gpu.linkedPoints, let parent = plan.parent, let parentParticles = parent.particles else {
@@ -217,11 +220,11 @@ final class ParticleGPUSimulator {
             encoder.setBuffer(plan.alive, offset: 0, index: 1)
             encoder.setBuffer(control, offset: 0, index: 2)
             encoder.setBuffer(gpu.parameters, offset: 0, index: 3)
-            encoder.setBytes(&frame, length: frameLength, index: 4)
+            encoder.setBytes(&plan.frame, length: frameLength, index: 4)
             encoder.setBuffer(plan.instances, offset: 0, index: 5)
             perParticle()
         case .eventMark, .eventScanBlocks, .eventScanSums, .eventScatter:
-            guard isEventChild, let parent = plan.parent, let parentStepped = parent.stepped, let parentAlive = parent.alive,
+            guard plan.isEventChild, let parent = plan.parent, let parentStepped = parent.stepped, let parentAlive = parent.alive,
                   let flags = gpu.eventFlags, let offsets = gpu.eventOffsets, let blockSums = gpu.eventBlockSums,
                   let events = gpu.events else { return false }
             let perParentParticle = {
@@ -253,14 +256,14 @@ final class ParticleGPUSimulator {
                 perParentParticle()
             }
         case .begin:
-            if configuration.isInstanced {
+            if plan.isInstanced {
                 guard let parent = plan.parent, let instances = gpu.instances, let parentStepped = parent.stepped,
                       let parentParticles = parent.particles else { return false }
                 encoder.setComputePipelineState(instanceStep)
                 encoder.setBuffer(control, offset: 0, index: 0)
                 encoder.setBuffer(instances, offset: 0, index: 1)
                 encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
-                encoder.setBytes(&frame, length: frameLength, index: 3)
+                encoder.setBytes(&plan.frame, length: frameLength, index: 3)
                 encoder.setBuffer(parentStepped, offset: 0, index: 4)
                 encoder.setBuffer(parentParticles, offset: 0, index: 5)
                 encoder.setBuffer(parent.control, offset: 0, index: 6)
@@ -273,7 +276,7 @@ final class ParticleGPUSimulator {
                 encoder.setComputePipelineState(begin)
                 encoder.setBuffer(control, offset: 0, index: 0)
                 encoder.setBuffer(gpu.parameters, offset: 0, index: 1)
-                encoder.setBytes(&frame, length: frameLength, index: 2)
+                encoder.setBytes(&plan.frame, length: frameLength, index: 2)
                 bindEmitterSteps(plan.steps, index: 3, encoder: encoder)
                 encoder.setBuffer(gpu.emitterStates, offset: 0, index: 4)
             }
@@ -284,7 +287,7 @@ final class ParticleGPUSimulator {
             encoder.setBuffer(plan.particles, offset: 0, index: 0)
             encoder.setBuffer(control, offset: 0, index: 1)
             encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
-            encoder.setBytes(&frame, length: frameLength, index: 3)
+            encoder.setBytes(&plan.frame, length: frameLength, index: 3)
             encoder.setBuffer(plan.instances, offset: 0, index: 4)
             encoder.setBuffer(plan.linked, offset: 0, index: 5)
             bindProgram(plan.program, index: 6, fallback: control, encoder: encoder)
@@ -304,7 +307,7 @@ final class ParticleGPUSimulator {
             encoder.setBuffer(plan.history, offset: 0, index: 3)
             encoder.setBuffer(control, offset: 0, index: 4)
             encoder.setBuffer(gpu.parameters, offset: 0, index: 5)
-            encoder.setBytes(&frame, length: frameLength, index: 6)
+            encoder.setBytes(&plan.frame, length: frameLength, index: 6)
             encoder.setBuffer(plan.instances, offset: 0, index: 7)
             let collisions = plan.request.inputs.collisions
             let collisionBytes = collisions.count * MemoryLayout<ParticleCollisionPlacement>.stride
@@ -358,7 +361,7 @@ final class ParticleGPUSimulator {
             encoder.setBuffer(control, offset: 0, index: 0)
             encoder.setBuffer(plan.request.renderVar?.buffer ?? control, offset: 0, index: 1)
             encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
-            encoder.setBytes(&frame, length: frameLength, index: 3)
+            encoder.setBytes(&plan.frame, length: frameLength, index: 3)
             encoder.dispatchThreads(single, threadsPerThreadgroup: single)
         case .write:
             guard let writer = writers[plan.request.kind] else { return false }
@@ -371,11 +374,11 @@ final class ParticleGPUSimulator {
                 encoder.setBuffer(plan.blockSums, offset: 0, index: 4)
                 encoder.setBuffer(control, offset: 0, index: 5)
                 encoder.setBuffer(gpu.parameters, offset: 0, index: 6)
-                encoder.setBytes(&frame, length: frameLength, index: 7)
+                encoder.setBytes(&plan.frame, length: frameLength, index: 7)
             } else {
                 encoder.setBuffer(control, offset: 0, index: 2)
                 encoder.setBuffer(gpu.parameters, offset: 0, index: 3)
-                encoder.setBytes(&frame, length: frameLength, index: 4)
+                encoder.setBytes(&plan.frame, length: frameLength, index: 4)
             }
             perParticle()
         }
