@@ -108,7 +108,7 @@ final class SceneColorCorrectionTests: XCTestCase {
         XCTAssertEqual(volume.rgba.count, 32 * 32 * 32 * 4)
         for (x, y, z) in [(0, 0, 0), (31, 0, 0), (0, 31, 0), (0, 0, 31), (5, 7, 9), (31, 31, 31)] {
             let i = ((z * 32 + y) * 32 + x) * 4
-            let expected = [x, y, z].map { UInt8((Double($0) * 255 / 31).rounded()) }
+            let expected: [UInt8] = [x, y, z].map { (value: Int) -> UInt8 in UInt8((Double(value) * 255 / 31).rounded()) }
             XCTAssertEqual(Array(volume.rgba[i..<i + 3]), expected, "(\(x), \(y), \(z))")
         }
     }
