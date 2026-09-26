@@ -95,43 +95,112 @@ final class ParticleGPUSimulator {
             }
         }
         blit?.endEncoding()
-        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
-        encoder.label = "Particle simulation"
+        // Every system's steps go stage by stage, all systems of a wave at once: dispatches of one
+        // stage run concurrently and one barrier separates the stages, instead of each small
+        // system's dozen dispatches running one after another. A system's next request and a
+        // child's first run a wave after their parent's (they read its particles and events).
+        var plans: [[StepPlan]] = []
+        var lastWave: [ObjectIdentifier: Int] = [:]
         for request in requests {
-            guard let gpu = request.system.gpu, gpu.isReady else { continue }
-            encode(request, gpu: gpu, sceneSize: sceneSize, targetSize: targetSize, encoder: encoder)
+            guard let gpu = request.system.gpu, gpu.isReady,
+                  let plan = StepPlan(request, gpu: gpu, sceneSize: sceneSize, targetSize: targetSize) else { continue }
+            let own = lastWave[ObjectIdentifier(request.system)].map { $0 + 1 } ?? 0
+            let parent = request.system.parent.flatMap { lastWave[ObjectIdentifier($0)] }.map { $0 + 1 } ?? 0
+            let wave = max(own, parent)
+            lastWave[ObjectIdentifier(request.system)] = wave
+            while plans.count <= wave { plans.append([]) }
+            plans[wave].append(plan)
+        }
+        guard !plans.isEmpty, let encoder = commandBuffer.makeComputeCommandEncoder(dispatchType: .concurrent) else { return }
+        encoder.label = "Particle simulation"
+        for wave in plans {
+            for stage in Stage.allCases {
+                var encoded = false
+                for plan in wave where encode(stage, plan, encoder: encoder) { encoded = true }
+                if encoded { encoder.memoryBarrier(scope: .buffers) }
+            }
         }
         encoder.endEncoding()
     }
 
-    private func encode(_ request: Request, gpu: ParticleGPUSystem, sceneSize: SIMD2<Float>, targetSize: SIMD2<Float>,
-                        encoder: MTLComputeCommandEncoder) {
-        let subdivision = max(request.system.configuration.ropeSubdivision, 1)
-        guard let particles = gpu.particles, let stepped = gpu.stepped, let alive = gpu.alive,
-              let offsets = gpu.offsets, let blockSums = gpu.blockSums,
-              let records = gpu.recordBuffer(for: request.kind, subdivision: subdivision) else { return }
-        var frame = ParticleGPUFrame(request.inputs, sceneSize: sceneSize, targetSize: targetSize, kind: request.kind,
+    /// The dispatches of a system's step, in order; each reads what the ones before it wrote.
+    private enum Stage: CaseIterable {
+        case linkPoints, age, eventMark, eventScanBlocks, eventScanSums, eventScatter, begin, emit, simulate
+        case scanBlocks, scanSums, compact, trailScanBlocks, trailScanSums, finish, write
+    }
+
+    /// One request's step: its buffers and frame, captured when the frame is encoded.
+    private struct StepPlan {
+        let request: Request
+        let gpu: ParticleGPUSystem
+        let parent: ParticleGPUSystem?
+        var frame: ParticleGPUFrame
+        let particles, stepped, alive, offsets, blockSums, records: MTLBuffer
+        let history, nextHistory, trailCounts, instances, linked: MTLBuffer
+        /// The initializers, then the operators (`ParticleProgramOp`).
+        let program: [ParticleProgramOp]
+        let steps: [ParticleGPUEmitterStep]
+        let trails: Bool
+        /// Spawns and steps in one thread (`ParticleGPUSystem.writesControlPoints`).
+        let serialPoints: MTLBuffer?
+
+        init?(_ request: Request, gpu: ParticleGPUSystem, sceneSize: SIMD2<Float>, targetSize: SIMD2<Float>) {
+            let configuration = request.system.configuration
+            let subdivision = max(configuration.ropeSubdivision, 1)
+            guard let particles = gpu.particles, let stepped = gpu.stepped, let alive = gpu.alive,
+                  let offsets = gpu.offsets, let blockSums = gpu.blockSums,
+                  let records = gpu.recordBuffer(for: request.kind, subdivision: subdivision) else { return nil }
+            parent = request.system.parent?.gpu
+            if configuration.isInstanced, parent == nil { return nil }
+            self.request = request
+            self.gpu = gpu
+            frame = ParticleGPUFrame(request.inputs, sceneSize: sceneSize, targetSize: targetSize, kind: request.kind,
                                      materialVertexCount: request.materialVertexCount,
                                      renderVarOffset: request.renderVar?.offset)
-        frame.emission.y = UInt32(gpu.emitterCount)
-        let ropeUV = request.system.configuration.ropeUV
-        frame.rope = SIMD4(ropeUV.rate * request.inputs.ropeRateScale, ropeUV.lifetime * request.inputs.ropeLifetimeScale,
-                           Float(request.inputs.frameRateLimit), ropeUV.inverseScale)
+            frame.emission.y = UInt32(gpu.emitterCount)
+            let ropeUV = configuration.ropeUV
+            frame.rope = SIMD4(ropeUV.rate * request.inputs.ropeRateScale, ropeUV.lifetime * request.inputs.ropeLifetimeScale,
+                               Float(request.inputs.frameRateLimit), ropeUV.inverseScale)
+            self.particles = particles
+            self.stepped = stepped
+            self.alive = alive
+            self.offsets = offsets
+            self.blockSums = blockSums
+            self.records = records
+            // Buffers a system without trails never touches still need a binding.
+            history = gpu.history[gpu.historyIndex] ?? gpu.control
+            nextHistory = gpu.history[gpu.historyIndex ^ 1] ?? gpu.control
+            gpu.toggleHistory()
+            trailCounts = gpu.trailCounts ?? gpu.control
+            instances = gpu.instances ?? gpu.control
+            linked = gpu.linkedPoints ?? gpu.control
+            program = request.inputs.initializers + request.inputs.operators
+            var steps = request.inputs.emitters.prefix(gpu.emitterCount).map(ParticleGPUEmitterStep.init)
+            while steps.count < max(gpu.emitterCount, 1) { steps.append(ParticleGPUEmitterStep(ParticleEmitterStep())) }
+            self.steps = steps
+            trails = request.kind == .ropeTrail || request.kind == .fallbackRopeTrail
+            serialPoints = gpu.writesControlPoints ? gpu.pointStates : nil
+        }
+    }
+
+    /// Encodes `plan`'s dispatch for `stage`; false when the stage has none for it.
+    private func encode(_ stage: Stage, _ plan: StepPlan, encoder: MTLComputeCommandEncoder) -> Bool {
+        let gpu = plan.gpu, control = gpu.control
+        var frame = plan.frame
         let frameLength = MemoryLayout<ParticleGPUFrame>.stride
-        let control = gpu.control
-        // Buffers a system without trails never touches still need a binding.
-        let history = gpu.history[gpu.historyIndex] ?? control
-        let nextHistory = gpu.history[gpu.historyIndex ^ 1] ?? control
-        let trailCounts = gpu.trailCounts ?? control
         let group = MTLSize(width: Self.threadgroupSize, height: 1, depth: 1)
         let single = MTLSize(width: 1, height: 1, depth: 1)
         func perParticle() {
             encoder.dispatchThreadgroups(indirectBuffer: control, indirectBufferOffset: ParticleGPUSystem.Control.dispatchOffset,
                                          threadsPerThreadgroup: group)
         }
-        let instances = gpu.instances ?? control
-        let linked = gpu.linkedPoints ?? control
-        if let linkedPoints = gpu.linkedPoints, let parent = request.system.parent?.gpu, let parentParticles = parent.particles {
+        let configuration = plan.request.system.configuration
+        let isEventChild = configuration.isInstanced && configuration.link?.kind != .static
+        switch stage {
+        case .linkPoints:
+            guard let linkedPoints = gpu.linkedPoints, let parent = plan.parent, let parentParticles = parent.particles else {
+                return false
+            }
             var slots = UInt32(gpu.slots)
             encoder.setComputePipelineState(linkPoints)
             encoder.setBuffer(parentParticles, offset: 0, index: 0)
@@ -141,134 +210,180 @@ final class ParticleGPUSimulator {
             encoder.setBytes(&slots, length: 4, index: 4)
             encoder.dispatchThreads(MTLSize(width: gpu.slots, height: 1, depth: 1),
                                     threadsPerThreadgroup: MTLSize(width: min(gpu.slots, 64), height: 1, depth: 1))
-        }
-
-        // WE's order: every particle ages first and those past their lifetime die (0x140236d91).
-        encoder.setComputePipelineState(age)
-        encoder.setBuffer(particles, offset: 0, index: 0)
-        encoder.setBuffer(alive, offset: 0, index: 1)
-        encoder.setBuffer(control, offset: 0, index: 2)
-        encoder.setBuffer(gpu.parameters, offset: 0, index: 3)
-        encoder.setBytes(&frame, length: frameLength, index: 4)
-        encoder.setBuffer(instances, offset: 0, index: 5)
-        perParticle()
-
-        if request.system.configuration.isInstanced {
-            guard let parent = request.system.parent?.gpu else { return }
-            encodeInstanceStep(request.system, inputs: request.inputs, gpu: gpu, parent: parent, frame: &frame, encoder: encoder)
-        } else {
-            encoder.setComputePipelineState(begin)
-            encoder.setBuffer(control, offset: 0, index: 0)
-            encoder.setBuffer(gpu.parameters, offset: 0, index: 1)
-            encoder.setBytes(&frame, length: frameLength, index: 2)
-            bindEmitterSteps(request.inputs, count: gpu.emitterCount, index: 3, encoder: encoder)
-            encoder.setBuffer(gpu.emitterStates, offset: 0, index: 4)
-            encoder.dispatchThreads(single, threadsPerThreadgroup: single)
-        }
-
-        // A program that writes control points spawns and steps in one thread, in WE's order.
-        let serialPoints = gpu.writesControlPoints ? gpu.pointStates : nil
-        encoder.setComputePipelineState(serialPoints == nil ? emit : emitSerial)
-        encoder.setBuffer(particles, offset: 0, index: 0)
-        encoder.setBuffer(control, offset: 0, index: 1)
-        encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
-        encoder.setBytes(&frame, length: frameLength, index: 3)
-        encoder.setBuffer(instances, offset: 0, index: 4)
-        encoder.setBuffer(linked, offset: 0, index: 5)
-        bindProgram(request.inputs, index: 6, fallback: control, encoder: encoder)
-        encoder.setBuffer(gpu.emitterParameters, offset: 0, index: 7)
-        encoder.setBuffer(gpu.emitterStates, offset: 0, index: 8)
-        if let serialPoints {
-            encoder.setBuffer(serialPoints, offset: 0, index: 9)
-            encoder.dispatchThreads(single, threadsPerThreadgroup: single)
-        } else {
-            perParticle()
-        }
-
-        encoder.setComputePipelineState(serialPoints == nil ? simulate : simulateSerial)
-        encoder.setBuffer(particles, offset: 0, index: 0)
-        encoder.setBuffer(stepped, offset: 0, index: 1)
-        encoder.setBuffer(alive, offset: 0, index: 2)
-        encoder.setBuffer(history, offset: 0, index: 3)
-        encoder.setBuffer(control, offset: 0, index: 4)
-        encoder.setBuffer(gpu.parameters, offset: 0, index: 5)
-        encoder.setBytes(&frame, length: frameLength, index: 6)
-        encoder.setBuffer(instances, offset: 0, index: 7)
-        let collisions = request.inputs.collisions
-        let collisionBytes = collisions.count * MemoryLayout<ParticleCollisionPlacement>.stride
-        if collisions.isEmpty {
-            encoder.setBuffer(control, offset: 0, index: 8)
-        } else if collisionBytes <= 4096 {
-            collisions.withUnsafeBytes { encoder.setBytes($0.baseAddress!, length: collisionBytes, index: 8) }
-        } else if let buffer = device.makeBuffer(bytes: collisions, length: collisionBytes, options: .storageModeShared) {
-            encoder.setBuffer(buffer, offset: 0, index: 8)
-        } else {
-            encoder.setBuffer(control, offset: 0, index: 8)
-        }
-        encoder.setBuffer(linked, offset: 0, index: 9)
-        bindProgram(request.inputs, index: 10, fallback: control, encoder: encoder)
-        if let serialPoints, let serialStates = gpu.serialStates {
-            encoder.setBuffer(serialPoints, offset: 0, index: 11)
-            encoder.setBuffer(serialStates, offset: 0, index: 12)
-            encoder.dispatchThreads(single, threadsPerThreadgroup: single)
-        } else {
-            perParticle()
-        }
-
-        scan(alive, count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.count, offsets: offsets,
-             blockSums: blockSums, control: control, encoder: encoder)
-
-        encoder.setComputePipelineState(compact)
-        encoder.setBuffer(stepped, offset: 0, index: 0)
-        encoder.setBuffer(particles, offset: 0, index: 1)
-        encoder.setBuffer(alive, offset: 0, index: 2)
-        encoder.setBuffer(offsets, offset: 0, index: 3)
-        encoder.setBuffer(blockSums, offset: 0, index: 4)
-        encoder.setBuffer(history, offset: 0, index: 5)
-        encoder.setBuffer(nextHistory, offset: 0, index: 6)
-        encoder.setBuffer(trailCounts, offset: 0, index: 7)
-        encoder.setBuffer(control, offset: 0, index: 8)
-        encoder.setBuffer(gpu.parameters, offset: 0, index: 9)
-        perParticle()
-        gpu.toggleHistory()
-
-        let trails = request.kind == .ropeTrail || request.kind == .fallbackRopeTrail
-        if trails {
-            scan(trailCounts, count: ParticleGPUSystem.Control.count, into: ParticleGPUSystem.Control.trailTotal,
-                 offsets: offsets, blockSums: blockSums, control: control, encoder: encoder)
-        }
-
-        encoder.setComputePipelineState(finish)
-        encoder.setBuffer(control, offset: 0, index: 0)
-        encoder.setBuffer(request.renderVar?.buffer ?? control, offset: 0, index: 1)
-        encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
-        encoder.setBytes(&frame, length: frameLength, index: 3)
-        encoder.dispatchThreads(single, threadsPerThreadgroup: single)
-
-        guard let writer = writers[request.kind] else { return }
-        encoder.setComputePipelineState(writer)
-        if trails {
-            encoder.setBuffer(particles, offset: 0, index: 0)
-            encoder.setBuffer(records, offset: 0, index: 1)
-            encoder.setBuffer(nextHistory, offset: 0, index: 2)
-            encoder.setBuffer(offsets, offset: 0, index: 3)
-            encoder.setBuffer(blockSums, offset: 0, index: 4)
-            encoder.setBuffer(control, offset: 0, index: 5)
-            encoder.setBuffer(gpu.parameters, offset: 0, index: 6)
-            encoder.setBytes(&frame, length: frameLength, index: 7)
-        } else {
-            encoder.setBuffer(particles, offset: 0, index: 0)
-            encoder.setBuffer(records, offset: 0, index: 1)
+        case .age:
+            // WE's order: every particle ages first and those past their lifetime die (0x140236d91).
+            encoder.setComputePipelineState(age)
+            encoder.setBuffer(plan.particles, offset: 0, index: 0)
+            encoder.setBuffer(plan.alive, offset: 0, index: 1)
             encoder.setBuffer(control, offset: 0, index: 2)
             encoder.setBuffer(gpu.parameters, offset: 0, index: 3)
             encoder.setBytes(&frame, length: frameLength, index: 4)
+            encoder.setBuffer(plan.instances, offset: 0, index: 5)
+            perParticle()
+        case .eventMark, .eventScanBlocks, .eventScanSums, .eventScatter:
+            guard isEventChild, let parent = plan.parent, let parentStepped = parent.stepped, let parentAlive = parent.alive,
+                  let flags = gpu.eventFlags, let offsets = gpu.eventOffsets, let blockSums = gpu.eventBlockSums,
+                  let events = gpu.events else { return false }
+            let perParentParticle = {
+                encoder.dispatchThreadgroups(indirectBuffer: parent.control, indirectBufferOffset: ParticleGPUSystem.Control.dispatchOffset,
+                                             threadsPerThreadgroup: group)
+            }
+            switch stage {
+            case .eventMark:
+                encoder.setComputePipelineState(eventMark)
+                encoder.setBuffer(parentStepped, offset: 0, index: 0)
+                encoder.setBuffer(parentAlive, offset: 0, index: 1)
+                encoder.setBuffer(parent.control, offset: 0, index: 2)
+                encoder.setBuffer(flags, offset: 0, index: 3)
+                encoder.setBuffer(gpu.parameters, offset: 0, index: 4)
+                perParentParticle()
+            case .eventScanBlocks:
+                scanBlocks(flags, count: ParticleGPUSystem.Control.total, offsets: offsets, blockSums: blockSums,
+                           control: parent.control, encoder: encoder)
+            case .eventScanSums:
+                scanSums(count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.eventTotal, blockSums: blockSums,
+                         control: parent.control, totals: control, encoder: encoder)
+            default:
+                encoder.setComputePipelineState(eventScatter)
+                encoder.setBuffer(flags, offset: 0, index: 0)
+                encoder.setBuffer(offsets, offset: 0, index: 1)
+                encoder.setBuffer(blockSums, offset: 0, index: 2)
+                encoder.setBuffer(parent.control, offset: 0, index: 3)
+                encoder.setBuffer(events, offset: 0, index: 4)
+                perParentParticle()
+            }
+        case .begin:
+            if configuration.isInstanced {
+                guard let parent = plan.parent, let instances = gpu.instances, let parentStepped = parent.stepped,
+                      let parentParticles = parent.particles else { return false }
+                encoder.setComputePipelineState(instanceStep)
+                encoder.setBuffer(control, offset: 0, index: 0)
+                encoder.setBuffer(instances, offset: 0, index: 1)
+                encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
+                encoder.setBytes(&frame, length: frameLength, index: 3)
+                encoder.setBuffer(parentStepped, offset: 0, index: 4)
+                encoder.setBuffer(parentParticles, offset: 0, index: 5)
+                encoder.setBuffer(parent.control, offset: 0, index: 6)
+                encoder.setBuffer(gpu.events ?? control, offset: 0, index: 7)
+                encoder.setBuffer(parent.instances ?? control, offset: 0, index: 8)
+                encoder.setBuffer(gpu.emitterParameters, offset: 0, index: 9)
+                bindEmitterSteps(plan.steps, index: 10, encoder: encoder)
+                encoder.setBuffer(gpu.emitterStates, offset: 0, index: 11)
+            } else {
+                encoder.setComputePipelineState(begin)
+                encoder.setBuffer(control, offset: 0, index: 0)
+                encoder.setBuffer(gpu.parameters, offset: 0, index: 1)
+                encoder.setBytes(&frame, length: frameLength, index: 2)
+                bindEmitterSteps(plan.steps, index: 3, encoder: encoder)
+                encoder.setBuffer(gpu.emitterStates, offset: 0, index: 4)
+            }
+            encoder.dispatchThreads(single, threadsPerThreadgroup: single)
+        case .emit:
+            // A program that writes control points spawns and steps in one thread, in WE's order.
+            encoder.setComputePipelineState(plan.serialPoints == nil ? emit : emitSerial)
+            encoder.setBuffer(plan.particles, offset: 0, index: 0)
+            encoder.setBuffer(control, offset: 0, index: 1)
+            encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
+            encoder.setBytes(&frame, length: frameLength, index: 3)
+            encoder.setBuffer(plan.instances, offset: 0, index: 4)
+            encoder.setBuffer(plan.linked, offset: 0, index: 5)
+            bindProgram(plan.program, index: 6, fallback: control, encoder: encoder)
+            encoder.setBuffer(gpu.emitterParameters, offset: 0, index: 7)
+            encoder.setBuffer(gpu.emitterStates, offset: 0, index: 8)
+            if let serialPoints = plan.serialPoints {
+                encoder.setBuffer(serialPoints, offset: 0, index: 9)
+                encoder.dispatchThreads(single, threadsPerThreadgroup: single)
+            } else {
+                perParticle()
+            }
+        case .simulate:
+            encoder.setComputePipelineState(plan.serialPoints == nil ? simulate : simulateSerial)
+            encoder.setBuffer(plan.particles, offset: 0, index: 0)
+            encoder.setBuffer(plan.stepped, offset: 0, index: 1)
+            encoder.setBuffer(plan.alive, offset: 0, index: 2)
+            encoder.setBuffer(plan.history, offset: 0, index: 3)
+            encoder.setBuffer(control, offset: 0, index: 4)
+            encoder.setBuffer(gpu.parameters, offset: 0, index: 5)
+            encoder.setBytes(&frame, length: frameLength, index: 6)
+            encoder.setBuffer(plan.instances, offset: 0, index: 7)
+            let collisions = plan.request.inputs.collisions
+            let collisionBytes = collisions.count * MemoryLayout<ParticleCollisionPlacement>.stride
+            if collisions.isEmpty {
+                encoder.setBuffer(control, offset: 0, index: 8)
+            } else if collisionBytes <= 4096 {
+                collisions.withUnsafeBytes { encoder.setBytes($0.baseAddress!, length: collisionBytes, index: 8) }
+            } else if let buffer = device.makeBuffer(bytes: collisions, length: collisionBytes, options: .storageModeShared) {
+                encoder.setBuffer(buffer, offset: 0, index: 8)
+            } else {
+                encoder.setBuffer(control, offset: 0, index: 8)
+            }
+            encoder.setBuffer(plan.linked, offset: 0, index: 9)
+            bindProgram(plan.program, index: 10, fallback: control, encoder: encoder)
+            if let serialPoints = plan.serialPoints, let serialStates = gpu.serialStates {
+                encoder.setBuffer(serialPoints, offset: 0, index: 11)
+                encoder.setBuffer(serialStates, offset: 0, index: 12)
+                encoder.dispatchThreads(single, threadsPerThreadgroup: single)
+            } else {
+                perParticle()
+            }
+        case .scanBlocks:
+            scanBlocks(plan.alive, count: ParticleGPUSystem.Control.total, offsets: plan.offsets, blockSums: plan.blockSums,
+                       control: control, encoder: encoder)
+        case .scanSums:
+            scanSums(count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.count, blockSums: plan.blockSums,
+                     control: control, totals: control, encoder: encoder)
+        case .compact:
+            encoder.setComputePipelineState(compact)
+            encoder.setBuffer(plan.stepped, offset: 0, index: 0)
+            encoder.setBuffer(plan.particles, offset: 0, index: 1)
+            encoder.setBuffer(plan.alive, offset: 0, index: 2)
+            encoder.setBuffer(plan.offsets, offset: 0, index: 3)
+            encoder.setBuffer(plan.blockSums, offset: 0, index: 4)
+            encoder.setBuffer(plan.history, offset: 0, index: 5)
+            encoder.setBuffer(plan.nextHistory, offset: 0, index: 6)
+            encoder.setBuffer(plan.trailCounts, offset: 0, index: 7)
+            encoder.setBuffer(control, offset: 0, index: 8)
+            encoder.setBuffer(gpu.parameters, offset: 0, index: 9)
+            perParticle()
+        case .trailScanBlocks:
+            guard plan.trails else { return false }
+            scanBlocks(plan.trailCounts, count: ParticleGPUSystem.Control.count, offsets: plan.offsets, blockSums: plan.blockSums,
+                       control: control, encoder: encoder)
+        case .trailScanSums:
+            guard plan.trails else { return false }
+            scanSums(count: ParticleGPUSystem.Control.count, into: ParticleGPUSystem.Control.trailTotal, blockSums: plan.blockSums,
+                     control: control, totals: control, encoder: encoder)
+        case .finish:
+            encoder.setComputePipelineState(finish)
+            encoder.setBuffer(control, offset: 0, index: 0)
+            encoder.setBuffer(plan.request.renderVar?.buffer ?? control, offset: 0, index: 1)
+            encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
+            encoder.setBytes(&frame, length: frameLength, index: 3)
+            encoder.dispatchThreads(single, threadsPerThreadgroup: single)
+        case .write:
+            guard let writer = writers[plan.request.kind] else { return false }
+            encoder.setComputePipelineState(writer)
+            encoder.setBuffer(plan.particles, offset: 0, index: 0)
+            encoder.setBuffer(plan.records, offset: 0, index: 1)
+            if plan.trails {
+                encoder.setBuffer(plan.nextHistory, offset: 0, index: 2)
+                encoder.setBuffer(plan.offsets, offset: 0, index: 3)
+                encoder.setBuffer(plan.blockSums, offset: 0, index: 4)
+                encoder.setBuffer(control, offset: 0, index: 5)
+                encoder.setBuffer(gpu.parameters, offset: 0, index: 6)
+                encoder.setBytes(&frame, length: frameLength, index: 7)
+            } else {
+                encoder.setBuffer(control, offset: 0, index: 2)
+                encoder.setBuffer(gpu.parameters, offset: 0, index: 3)
+                encoder.setBytes(&frame, length: frameLength, index: 4)
+            }
+            perParticle()
         }
-        perParticle()
+        return true
     }
 
     /// The step's program (`ParticleProgramOp`: initializers, then operators) at `index`.
-    private func bindProgram(_ inputs: ParticleFrameInputs, index: Int, fallback: MTLBuffer, encoder: MTLComputeCommandEncoder) {
-        let records = inputs.initializers + inputs.operators
+    private func bindProgram(_ records: [ParticleProgramOp], index: Int, fallback: MTLBuffer, encoder: MTLComputeCommandEncoder) {
         let bytes = records.count * MemoryLayout<ParticleProgramOp>.stride
         if records.isEmpty {
             encoder.setBuffer(fallback, offset: 0, index: index)
@@ -281,82 +396,36 @@ final class ParticleGPUSimulator {
         }
     }
 
-    /// The step's emitters (`ParticleGPUEmitterStep`) at `index`: `count`, the system's.
-    private func bindEmitterSteps(_ inputs: ParticleFrameInputs, count: Int, index: Int, encoder: MTLComputeCommandEncoder) {
-        var steps = inputs.emitters.prefix(count).map(ParticleGPUEmitterStep.init)
-        while steps.count < max(count, 1) { steps.append(ParticleGPUEmitterStep(ParticleEmitterStep())) }
+    /// The step's emitters (`ParticleGPUEmitterStep`) at `index`.
+    private func bindEmitterSteps(_ steps: [ParticleGPUEmitterStep], index: Int, encoder: MTLComputeCommandEncoder) {
         steps.withUnsafeBytes { encoder.setBytes($0.baseAddress!, length: $0.count, index: index) }
     }
 
-    /// Prefix sums of `values` (`countControl[count]` of them) into `offsets` and `blockSums`, the
-    /// total into `totals[total]` (`countControl` by default).
-    private func scan(_ values: MTLBuffer, count: Int, into total: Int, offsets: MTLBuffer, blockSums: MTLBuffer,
-                      control countControl: MTLBuffer, totals: MTLBuffer? = nil, encoder: MTLComputeCommandEncoder) {
-        let group = MTLSize(width: Self.threadgroupSize, height: 1, depth: 1)
+    /// Per-group prefix sums of `values` (`control[count]` of them) into `offsets` and `blockSums`.
+    private func scanBlocks(_ values: MTLBuffer, count: Int, offsets: MTLBuffer, blockSums: MTLBuffer, control: MTLBuffer,
+                            encoder: MTLComputeCommandEncoder) {
         var countIndex = UInt32(count)
         encoder.setComputePipelineState(scanBlocks)
         encoder.setBuffer(values, offset: 0, index: 0)
         encoder.setBuffer(offsets, offset: 0, index: 1)
         encoder.setBuffer(blockSums, offset: 0, index: 2)
-        encoder.setBuffer(countControl, offset: 0, index: 3)
+        encoder.setBuffer(control, offset: 0, index: 3)
         encoder.setBytes(&countIndex, length: 4, index: 4)
-        encoder.dispatchThreadgroups(indirectBuffer: countControl, indirectBufferOffset: ParticleGPUSystem.Control.dispatchOffset,
-                                     threadsPerThreadgroup: group)
+        encoder.dispatchThreadgroups(indirectBuffer: control, indirectBufferOffset: ParticleGPUSystem.Control.dispatchOffset,
+                                     threadsPerThreadgroup: MTLSize(width: Self.threadgroupSize, height: 1, depth: 1))
+    }
+
+    /// The groups' offsets from `scanBlocks`' totals, and the grand total into `totals[total]`.
+    private func scanSums(count: Int, into total: Int, blockSums: MTLBuffer, control: MTLBuffer, totals: MTLBuffer,
+                          encoder: MTLComputeCommandEncoder) {
         var indices = SIMD2<UInt32>(UInt32(count), UInt32(total))
         encoder.setComputePipelineState(scanBlockSums)
         encoder.setBuffer(blockSums, offset: 0, index: 0)
-        encoder.setBuffer(countControl, offset: 0, index: 1)
+        encoder.setBuffer(control, offset: 0, index: 1)
         encoder.setBytes(&indices, length: MemoryLayout<SIMD2<UInt32>>.stride, index: 2)
-        encoder.setBuffer(totals ?? countControl, offset: 0, index: 3)
-        encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1), threadsPerThreadgroup: group)
-    }
-
-    /// An instanced system's `particleBegin`: its parent's events (event children), then its
-    /// instances and emission (`ParticleInstances.metal`).
-    private func encodeInstanceStep(_ system: ParticleSystemRuntime, inputs: ParticleFrameInputs, gpu: ParticleGPUSystem,
-                                    parent: ParticleGPUSystem,
-                                    frame: inout ParticleGPUFrame, encoder: MTLComputeCommandEncoder) {
-        guard let instances = gpu.instances, let parentStepped = parent.stepped, let parentParticles = parent.particles,
-              let parentAlive = parent.alive else { return }
-        let group = MTLSize(width: Self.threadgroupSize, height: 1, depth: 1)
-        let perParentParticle = { encoder.dispatchThreadgroups(indirectBuffer: parent.control,
-                                                               indirectBufferOffset: ParticleGPUSystem.Control.dispatchOffset,
-                                                               threadsPerThreadgroup: group) }
-        let isEventChild = system.configuration.link?.kind != .static
-        if isEventChild, let flags = gpu.eventFlags, let offsets = gpu.eventOffsets, let blockSums = gpu.eventBlockSums,
-           let events = gpu.events {
-            encoder.setComputePipelineState(eventMark)
-            encoder.setBuffer(parentStepped, offset: 0, index: 0)
-            encoder.setBuffer(parentAlive, offset: 0, index: 1)
-            encoder.setBuffer(parent.control, offset: 0, index: 2)
-            encoder.setBuffer(flags, offset: 0, index: 3)
-            encoder.setBuffer(gpu.parameters, offset: 0, index: 4)
-            perParentParticle()
-            scan(flags, count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.eventTotal,
-                 offsets: offsets, blockSums: blockSums, control: parent.control, totals: gpu.control, encoder: encoder)
-            encoder.setComputePipelineState(eventScatter)
-            encoder.setBuffer(flags, offset: 0, index: 0)
-            encoder.setBuffer(offsets, offset: 0, index: 1)
-            encoder.setBuffer(blockSums, offset: 0, index: 2)
-            encoder.setBuffer(parent.control, offset: 0, index: 3)
-            encoder.setBuffer(events, offset: 0, index: 4)
-            perParentParticle()
-        }
-        encoder.setComputePipelineState(instanceStep)
-        encoder.setBuffer(gpu.control, offset: 0, index: 0)
-        encoder.setBuffer(instances, offset: 0, index: 1)
-        encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
-        encoder.setBytes(&frame, length: MemoryLayout<ParticleGPUFrame>.stride, index: 3)
-        encoder.setBuffer(parentStepped, offset: 0, index: 4)
-        encoder.setBuffer(parentParticles, offset: 0, index: 5)
-        encoder.setBuffer(parent.control, offset: 0, index: 6)
-        encoder.setBuffer(gpu.events ?? gpu.control, offset: 0, index: 7)
-        encoder.setBuffer(parent.instances ?? gpu.control, offset: 0, index: 8)
-        encoder.setBuffer(gpu.emitterParameters, offset: 0, index: 9)
-        bindEmitterSteps(inputs, count: gpu.emitterCount, index: 10, encoder: encoder)
-        encoder.setBuffer(gpu.emitterStates, offset: 0, index: 11)
-        let single = MTLSize(width: 1, height: 1, depth: 1)
-        encoder.dispatchThreads(single, threadsPerThreadgroup: single)
+        encoder.setBuffer(totals, offset: 0, index: 3)
+        encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: Self.threadgroupSize, height: 1, depth: 1))
     }
 
     /// An instanced system's instances after the last committed step (tests). Blocks until the
