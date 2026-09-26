@@ -1775,7 +1775,7 @@ Status: 2026-09-26. Each fix has a regression test that fails without it.
 | LR19, LR24 | `591e5a8` | Only what a content is built for rebuilds it (`SceneRenderSettings.contentKey`: HDR, shadows, volumetrics, particle budget, texture reduction). Reflection, the bloom gate, render resolution and scene detail apply per frame. | `SceneRenderSettingsContentTests` |
 
 Not done, with the evidence:
-- **`ccsimple`** (step 6): WE loads it with `COL` and/or `LUT` only when the user's colour correction differs from identity (0x1401826a2…0x1401826f3: the parameters at ctx+0x3110…0x3120, a `lut/<name>` at +0x3128 with its strength at +0x3148 > 0). At the defaults no pass is made, which is what the app draws. Where WE's UI sets those values wasn't traced, so the app's `_owe_saturation`/`_owe_hue` extras stay its own.
+- **`ccsimple`** (step 6): WE loads it with `COL` and/or `LUT` only when the user's colour correction differs from identity (0x1401826a2…0x1401826f3: the parameters at ctx+0x3110…0x3120, a `lut/<name>` at +0x3128 with its strength at +0x3148 > 0). At the defaults no pass is made. They are WE's `wcc_v`/`wcc_amt`/`wec_*` wallpaper properties (we-values-audit §7.8), which the app now offers and draws through `ccsimple`; the app's `_owe_saturation`/`_owe_hue` extras stay its own.
 - **The camera fade** (`fade.json`, step 7) is loaded only when `camerafade` is on **and** the scene has camera paths (0x140181bae…0x140181bda). The library has no camera paths, and the app doesn't play them, so nothing is missing.
 - **Script cameras** (`setCameraTransforms`) aren't read by the renderer at all yet (layers included), so the volumetrics don't follow them either.
 

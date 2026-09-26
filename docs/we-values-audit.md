@@ -277,6 +277,61 @@ Test: `ParticleEditorTemplateTests` runs the template and gets the editor's valu
 
 **7.6 Light sliders — noted.** The editor's ranges: intensity 0…25, radius 0…30, falloff 0…4, cone 0…180 (degrees). Our inspector doesn't expose light properties (lights are read from scene.json only), so there is nothing to range yet; an inspector for lights should use these.
 
+**7.7 An effect's Composite option — confirmed, no engine change.** The editor offers Normal, Blend, Under and Cutout, and Blend an Alpha slider (0…2, default 1). `wallpaper64.exe` and `wallpaperui.exe` have no compositing of their own for it (no `COMPOSITE` or `compositealpha` string in either): it is the `COMPOSITE` combo of the effect's own shader, `shaders/common_composite.h`:
+
+| Mode | `COMPOSITE` | `ApplyComposite(original, effect)` (effect.rgb × `compositecolor` first, greyed by `COMPOSITEMONO`) |
+|---|---|---|
+| Normal | 0 | the effect |
+| Blend | 1 | rgb `ApplyBlending(BLENDMODE, original, effect, effect.a × compositealpha)`; a max(effect.a × saturate(compositealpha), original.a) |
+| Under | 2 | effect.a × saturate(compositealpha), then mix(effect, original, original.a) |
+| Cutout | 3 | effect.a × saturate(compositealpha) × (1 − original.a) |
+
+scene.json stores it in the pass: `"combos": {"COMPOSITE": 1}` and `compositealpha`, `compositecolor`, `compositeoffset` (UV offset in texels, only when `COMPOSITE` ≠ 0). In WE 2.8.42's assets only `effects/blur`'s combine includes it; the library uses Blend in 3546971487 (alpha 0.78) and 2963872291 (1.2, offset −2.28). The effect graph already runs it as any combo; the inspector lists the combo with WE's labels. Test: `EffectCompositeTests` (WE's blur in each mode against `ApplyComposite`, colour and monochrome). Open: WE's editor shows Alpha (and Offset) only while the compiled variant uses them; our inspector lists every annotated uniform.
+
+**7.8 Image filter and colour options — fixed** (they were absent). WE adds seven properties to every wallpaper (`wallpaper64.exe` 0x140107160…0x140108bba) and reads them back when it applies properties (0x140182336…0x14018262f):
+
+| Key | Label | Type, range, default | Shown |
+|---|---|---|---|
+| `wcc_v` | Image filter | `combolutfilters`: "" (None) or a LUT | always |
+| `wcc_amt` | Filter strength | slider 0…100, 100 | `wcc_v.value` |
+| `wec_e` | Show color options | bool, false | always |
+| `wec_brs`, `wec_con`, `wec_sa`, `wec_hue` | Brightness, Contrast, Saturation, Hue shift | slider 0…100, 50 | `wec_e.value` |
+
+The filters are WE's `lutFilterOptionFiles` (`scripts.js`), listed as "1 Vibrant Contrast" … "25 Retro Handheld" after None: `k23_b`, `lutx32_adventure`, `lutx32_coloration`, `simple_film`, `lutx32_bluenavy`, `80s_post-apocalyptic_action`, `desert_4`, `desperado`, `lutx32_dusk`, `lutx32_honeyb`, `lutx32_sandyskyd`, `lutx32_slate`, `lutx32_westernf`, `setting_sun`, `tower`, `lutx32_amber`, `aliens_2`, `lutx32_daisy`, `lutx32_emeraldd`, `lutx32_ferne`, `lutx32_backsea`, `lutx32_beach`, `lutx32_studio`, `sharp_wasteland`, `gamebob_2`: 32³ volume `.tex` files in `materials/lut` (TEXI flag 0x40; one PNG, blue slices stacked). WE keeps con, brs and sa / 50, hue / 100 − 0.5 and strength / 100. It makes `materials/util/ccsimple.json` only when they aren't identity: `COL` when the options are shown and any is away from (1, 1, 1, 0), `LUT` when a filter is chosen with strength > 0; then `params` = ((brs/50)², √(con/50), √(sa/50), hue/100 − 0.5), texture 1 = `lut/<filter>`, `lutparams` = strength/100. The pass runs after the bloom and its combine (lighting-plan §2.6 step 6).
+
+Ours: the wallpaper properties sidebar shows the seven for scenes, with WE's keys, labels (WE's locale when installed), ranges, defaults and conditions; `ScenePostProcess` runs WE's `ccsimple` through the effect graph as WE does, the chosen filter's volume bound each frame. A HDR frame is corrected as the composite shows it [?: WE's HDR input to `ccsimple`]. Tests: `SceneColorCorrectionTests` (the derivations, the gates, the 25 LUTs, the pass against a CPU model of `ccsimple.frag`: within 2/255). WE's UI also offers these for video wallpapers [?: whether the engine applies them there]; ours shows them for scenes.
+
+**7.9 Anti-aliasing — fixed** (the setting was stored but unused, defaulting to x2). WE's `msaa` (none, x2, x4, x8; none is WE's default and its low/medium presets', x2 its high/ultra presets'). With it, WE draws the scene objects into `_rt_FullFrameBufferMultiSampled` (render-target flags 0x20, 0x140181dcc) and resolves it into the frame buffer (`ResolveSubresource`, vtable +0x1c8 at 0x1400d3310, which copies instead when the target isn't multisampled) after the objects (0x140183550). Effects, bloom and the other passes stay single-sampled. Ours: the scene pass draws into a multisampled target resolved at the end of every stretch of the pass (a pause for a scene-reading layer resolves what's drawn so far), with its layer, image-material and particle pipelines made for the sample count; a count the GPU lacks falls to the next lower. The setting is stored under WE's key `msaa`, so the old unused value is left behind. Test: `SceneMSAATests` (WE's default, the stored key, supported counts, hard edges without MSAA and coverage-smoothed ones with it).
+
+**7.10 Text layers.** The editor's new text layer ("Text Layer", white, opacity 1, Arial 32, padding 32, Smooth Font Scaling on, centred) is a template it writes into the object. `wallpaper64.exe`'s text constructor (0x140256ae0), matched to the fields by the property table (0x140259190…), is what an absent field means:
+
+| Field | WE's parse default | Ours before | Verdict |
+|---|---|---|---|
+| `pointsize` | 32 | 24 | fixed |
+| `padding` | 32 | 0 | fixed (every library text object authors it) |
+| `spacing` | 0 0 | not read | open: the layout doesn't apply `spacing` yet (3802509485 authors 10.48) |
+| `maxwidth`, `maxrows` (when limited) | 500, 1 | unlimited | fixed |
+| `horizontalalign`, `verticalalign` | centre | centre | confirmed |
+| `font` | empty (the system's) | the system's | confirmed |
+| `msdf`, `outline`, `blur`, `dropshadow` | off | — | confirmed |
+| `outlinethickness`, `outlinecolor` | 4, black | — | new |
+| `blursize` | 6 (the editor's new layer writes 1) | — | new |
+| `dropshadowsize`, `dropshadowopacity`, `dropshadowoffset`, `dropshadowcolor` | 6, 1, 4 4, black | — | new |
+
+Scripts see the same values (`SceneScriptSceneDescriber`). Tests: `WETextDefaultsTests`.
+
+*Font effects — fixed* (they were ignored). WE draws them in `shaders/font.frag` from an MSDF atlas of 32 px per em with a 24 px range (`MSDF_RANGE`). The engine sets the shader from the object (0x1401b3b60…0x1401b3f5f): sizes in scene units × 32 / pointsize × 0.24 (atlas pixels per unit; the em is pointsize × 300/72 units), clamped to outline ≤ 5.1, blur, shadow size and offsets ≤ 6, outline + blur ≤ 5.1; `OUTLINE_ENABLED` from a thickness of 1, `BLUR_ENABLED` above 0, `DROP_SHADOW_ENABLED` for a size above 0 or any offset. The MSDF atlas is used whenever `msdf` or any effect is on (0x1401b0600…0x1401b0640); otherwise glyphs are rasterised at their size. Ours: the glyphs' signed distance from their coverage raster (an exact Euclidean transform) stands in for the MSDF atlas, and `SceneTextEffects` evaluates the shader's math on it into a coloured raster; such text draws natively (the `font` material reads coverage). The library's users: 3803044683's five clocks and titles (outline 4 or 1.33, drop shadow 6, offset 4 4, black). Smooth Font Scaling (`msdf`) alone looks the same as our raster at display resolution. Tests: `SceneTextEffectsTests` (fields, WE's shader values and clamps, the distance field, outline, drop shadow and blur on a square). Not compared with a WE capture: none of the captures has text effects.
+
+**7.11 Solid layers — confirmed.** A solid layer is an image object on `models/util/solidlayer.json`; the editor's Resolution is its `size` (1920 × 1080 for a new one), and "Enable click events" is `solid`, on unless authored false: WE's object constructor sets flag 0x2000 (0x1401ddc72), and the scripts' object table starts every object solid (`SceneScriptObjectField.defaultValue`), overridden only by an authored `solid`. The loader sizes the layer from `size` (the scene's only when it has none). No change.
+
+**7.12 Effect defaults seen in the editor — our values.** The inspector's defaults and ranges are the shaders' annotations (materials set no constants for these), checked for every effect by `testEveryEffectParameterIsItsAnnotation`:
+- **Shine:** ray threshold 0.5 (0…1), noise on, noise amount 0.4 (0.01…1), noise scale 3 (0.01…10), noise speed 0.15 (0.01…1), direction 0, speed 0 (−1…1), edges 4, quality 8 samples, ray length 0.1 (0.01…1), ray intensity 1 (0.01…2), colour white, blur scale 1 1 (0.01…2, 13×13), blend mode Linear dodge (9).
+- **Depth parallax:** quality Occlusion (performance), depth 1 1 (0.01…2), perspective 1 (−5…5), center 0.3 (0…1).
+- **Pulse:** blend mode Linear dodge (9), pulse colour on, pulse alpha off, amount 1 (0…2), speed 3 (0…10), phase 0 (0…6.282; the vertex shader's time offset 0…1), bounds 0 1, power 1 (0…4), noise amount 0 (0…2), noise speed 0.5 (0…1), tint low and high white, audio response off, frequency 0…1 (0…15), audio amount 1 (0…2), exponent 1 (0…4), audio bounds 0.5 1.
+- **Blur:** scale 1 1 (0.01…2), kernel 13×13, Composite Normal (Alpha 1, 0…2), blend mode Normal, monochrome off, blur alpha on.
+
+The recordings' numbers weren't in the brief, so these are listed for comparison: any that differs is a mismatch to fix.
+
 ## Tests
 
 `OpenWallpaperEngineTests/WEAuthoredValuesTests.swift`:
@@ -295,4 +350,4 @@ Test: `ParticleEditorTemplateTests` runs the template and gets the editor's valu
 
 `OpenWallpaperEngineTests/ParticleProgramTests.swift` checks WE's particle defaults per element (2D and 3D), two operators of a kind, the oscillators' per-particle random, `hsvcolorrandom`'s hue steps, the remap default, movement in the object's units, sequences restarting each period and `starttime`. `ParticleSimulationParityTests` runs every operator and initializer kind on both simulations, several emitters and the low-frame-rate drag and half steps among them. `ParticleRendererOptionsTests` checks the orientations and the rope layout; `ParticleRemapControlPointTests` the remap's control point inputs and outputs and their write-back, on both simulations.
 
-The editor's ground truth (§7) is checked by `SceneTransformTests` (angles), `WEImageBlendModesTests` (the blend-mode list against `common_blending.h` and WE's labels), `WallpaperPropertyScopeTests` (per-display stores, instance grouping, sound once), `ParticleEditorTemplateTests` and `TexClampUVsDefaultTests`.
+The editor's ground truth (§7) is checked by `SceneTransformTests` (angles), `WEImageBlendModesTests` (the blend-mode list against `common_blending.h` and WE's labels), `WallpaperPropertyScopeTests` (per-display stores, instance grouping, sound once), `ParticleEditorTemplateTests` and `TexClampUVsDefaultTests`; §7.7–7.10 by `EffectCompositeTests`, `SceneColorCorrectionTests`, `SceneMSAATests`, `WETextDefaultsTests` and `SceneTextEffectsTests`.
