@@ -682,7 +682,7 @@ extension ShaderPrelude {
 
     /// `a op b` with vectors of different sizes: HLSL truncates the wider one (`vec4 * vec2` is a
     /// `vec2`). Only operands whose size is evident are touched, and only when they are the
-    /// operator's whole operands (not one factor of a product).
+    /// operator's whole operands: a product (`v4 + v2 * 0.5`) is a whole operand of `+`/`-`.
     private static func vectorOperandSizes(_ code: [UInt16]) -> [UInt16] {
         let types = declaredTypes(String(decoding: code, as: UTF16.self) as NSString)
         let operators: Set<UInt16> = [ascii("+"), ascii("-"), ascii("*"), ascii("/")]
@@ -700,10 +700,27 @@ extension ShaderPrelude {
             while before >= 0, isSpace(code[before]) { before -= 1 }
             var after = rightEnd
             while after < code.count, isSpace(code[after]) { after += 1 }
-            // The left operand of `+`/`*` must not be the last factor of a longer product, nor the
-            // right operand of `+`/`-` the first factor of one.
+            // An operand of `+`/`-` that is a product is sized as a whole (`termSize`); the left
+            // operand of `*`/`/` must not be the last factor of a longer product.
+            if !multiplicative.contains(code[index]),
+               (before >= 0 && multiplicative.contains(code[before])) || (after < code.count && multiplicative.contains(code[after])) {
+                guard let termStart = operandStart(code, before: index),
+                      let leftTerm = termSize(code, from: termStart, types: types), leftTerm.end == leftEnd + 1,
+                      let rightTerm = termSize(code, from: index + 1, types: types),
+                      leftTerm.size > 1, rightTerm.size > 1, leftTerm.size != rightTerm.size else { continue }
+                let smaller = swizzle(min(leftTerm.size, rightTerm.size))
+                let (start, end, factors) = leftTerm.size > rightTerm.size
+                    ? (termStart, leftTerm.end, leftTerm.factors)
+                    : (code[(index + 1)...].firstIndex { !isSpace($0) } ?? index + 1, rightTerm.end, rightTerm.factors)
+                if factors > 1 {
+                    edits.append((start, "("))
+                    edits.append((end, ").\(smaller)"))
+                } else {
+                    edits.append((end, ".\(smaller)"))
+                }
+                continue
+            }
             if before >= 0, multiplicative.contains(code[before]) { continue }
-            if !multiplicative.contains(code[index]), after < code.count, multiplicative.contains(code[after]) { continue }
             let left = Array(code[leftStart...leftEnd])
             let right = Array(code[(index + 1)..<rightEnd])
             guard let leftSize = operandSize(left, types: types), let rightSize = operandSize(right, types: types),
@@ -712,6 +729,44 @@ extension ShaderPrelude {
             edits.append((leftSize > rightSize ? leftEnd + 1 : rightEnd, ".\(smaller)"))
         }
         return insert(edits, into: code)
+    }
+
+    /// The product of factors (unary/postfix expressions joined by `*`/`/`) starting at `start`:
+    /// its end (exclusive), its factor count, and its size: the narrowest vector factor, as HLSL
+    /// truncates, or 1 when every factor is a scalar. nil when a factor's size isn't evident.
+    private static func termSize(_ code: [UInt16], from start: Int, types: [String: String]) -> (end: Int, factors: Int, size: Int)? {
+        var position = start - 1
+        var sizes: [Int] = []
+        while true {
+            guard let end = operandEnd(code, after: position) else { return nil }
+            let factor = Array(code[(position + 1)..<end])
+            guard let size = operandSize(factor, types: types) ?? scalarSize(factor, types: types) else { return nil }
+            sizes.append(size)
+            var next = end
+            while next < code.count, isSpace(code[next]) { next += 1 }
+            guard next + 1 < code.count, code[next] == ascii("*") || code[next] == ascii("/"),
+                  code[next + 1] != ascii("="), code[next + 1] != code[next] else {
+                let vectors = sizes.filter { $0 > 1 }
+                return (end, sizes.count, vectors.min() ?? 1)
+            }
+            position = next
+        }
+    }
+
+    private static let scalarExpressionPattern = NSRegularExpression.shader(#"^[-+]?[\d.eE+\-*/()\s]*\d[\d.eE+\-*/()\s]*$"#)
+    private static let signedNamePattern = NSRegularExpression.shader(#"^[-+]?\s*(\w+)$"#)
+
+    /// 1 for an evident scalar: a literal or an expression of literals (`(0.33 - 0.5)`, `- 0.5`),
+    /// or a name declared `float`, `int` or `uint`; nil otherwise.
+    private static func scalarSize(_ operand: [UInt16], types: [String: String]) -> Int? {
+        let text = String(decoding: operand, as: UTF16.self).trimmingCharacters(in: .whitespaces)
+        if scalarExpressionPattern.matches(text) { return 1 }
+        if let match = signedNamePattern.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+           let range = Range(match.range(at: 1), in: text), let type = types[String(text[range])],
+           ["float", "int", "uint"].contains(type) {
+            return 1
+        }
+        return nil
     }
 
     /// Start of the postfix expression (name, call, index, member chain) ending at `end`.

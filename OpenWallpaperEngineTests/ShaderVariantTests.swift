@@ -156,6 +156,26 @@ final class ShaderVariantTests: XCTestCase {
         XCTAssertTrue(out.contains("p.xy * scale)"), out)
     }
 
+    /// A product is one operand of `+`/`-`, sized by its narrowest vector factor: a workshop FXAA
+    /// samples at `v_TexCoord + dir * (0.33333 - 0.5)` with a `vec4` texcoord and a `vec2` dir.
+    func testAProductIsSizedAsOneOperandOfASum() {
+        let out = ShaderPrelude.fixupAfterPreprocess("""
+        in vec4 v_TexCoord; uniform float u;
+        void main() {
+         vec2 dir = vec2(1.0);
+         vec2 a = v_TexCoord + dir * (0.33333 - 0.5); vec2 b = v_TexCoord - dir * - 0.5 * u;
+         vec2 c = dir * 2.0 + v_TexCoord; vec2 d = dir + v_TexCoord * 2.0; vec4 e = v_TexCoord + v_TexCoord * u;
+         vec2 f = dir + v_TexCoord * g(1.0);
+        }
+        """)
+        XCTAssertTrue(out.contains("v_TexCoord.xy + dir * (0.33333 - 0.5)"), out)
+        XCTAssertTrue(out.contains("v_TexCoord.xy - dir * - 0.5 * u"), out)
+        XCTAssertTrue(out.contains("dir * 2.0 + v_TexCoord.xy"), out)
+        XCTAssertTrue(out.contains("dir + (v_TexCoord * 2.0).xy"), out)
+        XCTAssertTrue(out.contains("v_TexCoord + v_TexCoord * u)"), "same sizes: untouched: \(out)")
+        XCTAssertTrue(out.contains("dir + v_TexCoord * g(1.0))"), "a factor of unknown size: untouched: \(out)")
+    }
+
     /// HLSL lets a vertex shader modify its inputs; GLSL doesn't.
     func testWrittenAttributeBecomesAGlobalCopy() {
         let vertex = "#version 450\nin vec2 a_TexCoord;\nout vec2 v_TexCoord;\nvoid main() {\n a_TexCoord *= 2.0;\n v_TexCoord = a_TexCoord;\n}\n"
