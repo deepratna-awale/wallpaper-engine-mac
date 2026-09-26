@@ -64,6 +64,9 @@ struct WESceneObject: Decodable {
     var sizeAnimation: WEVectorKeyframeAnimation?
     var alignment: String?
     var solid: Bool?
+    /// A cursor hit on this object stops cursor events from reaching objects under it, while it
+    /// and its parents are visible (wallpaper64.exe 0x14018a86f; flag 0x4000). WE's default: false.
+    var disablepropagation: Bool?
     var copybackground: Bool?
     var parallaxDepth: String?
     var perspective: Bool?
@@ -92,7 +95,7 @@ struct WESceneObject: Decodable {
         case id, parent, name, origin, scale, angles, visible, effects, text, font, pointsize, horizontalalign, verticalalign
         case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis, anchor, blockalign
         case image, alpha, brightness, color, colorBlendMode, clampuvs, size, alignment, shape
-        case solid, copybackground, parallaxDepth, perspective
+        case solid, disablepropagation, copybackground, parallaxDepth, perspective
         case particle, instanceoverride
     }
 
@@ -194,6 +197,7 @@ struct WESceneObject: Decodable {
         sizeAnimation = scriptedSize?.vectorAnimation
         alignment = try? c.decodeIfPresent(String.self, forKey: .alignment)
         solid = try? c.decodeIfPresent(Bool.self, forKey: .solid)
+        disablepropagation = c.decodeLogged(Bool.self, forKey: .disablepropagation, userInfo: decoder.userInfo)
         copybackground = try? c.decodeIfPresent(Bool.self, forKey: .copybackground)
         parallaxDepth = try? c.decodeIfPresent(String.self, forKey: .parallaxDepth)
         perspective = try? c.decodeIfPresent(Bool.self, forKey: .perspective)
