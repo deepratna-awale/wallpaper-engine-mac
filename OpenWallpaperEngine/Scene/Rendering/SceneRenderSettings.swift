@@ -1,4 +1,5 @@
 import Foundation
+import Metal
 import simd
 
 /// The user's quality settings that change how WE draws a scene (`wallpaper64.exe` 0x14010ed80;
@@ -18,6 +19,8 @@ struct SceneRenderSettings: Equatable {
     var renderResolution = GSRenderResolution.native
     /// Draw as WE does (`full`, what a settings-less renderer does) or no more than the display shows.
     var sceneDetail = GSSceneDetail.full
+    /// WE's `msaa`: the scene pass's samples per pixel.
+    var antiAliasing = GSAntiAliasingQuality.none
 
     init() {}
 
@@ -29,6 +32,15 @@ struct SceneRenderSettings: Equatable {
         particleBudget = settings.particleBudget
         renderResolution = settings.renderResolution
         sceneDetail = settings.sceneDetail
+        antiAliasing = settings.antiAliasing
+    }
+
+    /// The scene pass's sample count on `device`: the setting's, or the most below it the GPU
+    /// supports (1 always is).
+    func sceneSampleCount(on device: MTLDevice) -> Int {
+        var count = antiAliasing.sampleCount
+        while count > 1, !device.supportsTextureSampleCount(count) { count /= 2 }
+        return max(count, 1)
     }
 
     /// Whether a layer's `brightness` scales its colour. WE multiplies the colour it draws a layer

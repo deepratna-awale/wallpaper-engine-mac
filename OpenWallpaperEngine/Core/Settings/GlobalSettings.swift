@@ -16,9 +16,21 @@ enum GSPlayback: String, CaseIterable, Identifiable, Codable {
     case keepRunning, mute, pause, stop
 }
 
+/// WE's `msaa` setting (none, x2, x4, x8): the scene pass draws multisampled and resolves into
+/// `_rt_FullFrameBuffer` (`wallpaper64.exe` 0x140181dcc, 0x140183550, 0x1400d3310).
 enum GSAntiAliasingQuality: String, CaseIterable, Identifiable, Codable {
     var id: Self { self }
     case none, msaa_x2, msaa_x4, msaa_x8
+
+    /// Samples per pixel.
+    var sampleCount: Int {
+        switch self {
+        case .none: return 1
+        case .msaa_x2: return 2
+        case .msaa_x4: return 4
+        case .msaa_x8: return 8
+        }
+    }
 }
 
 /// WE's `postprocessing` setting (docs/lighting-plan.md §2.6): "disabled" turns bloom off,
@@ -123,7 +135,8 @@ struct GlobalSettings: Codable, Equatable {
     var laptopOnBattery = GSPlayback.keepRunning
     
     // MARK: Quality
-    var antiAliasing = GSAntiAliasingQuality.msaa_x2
+    /// WE's default is none (`config.json` `"msaa": "none"`).
+    var antiAliasing = GSAntiAliasingQuality.none
     /// "enabled" draws WE's bloom as the app always has. WE's own UI default is unknown (its
     /// engine reads a missing key as "disabled"; docs/lighting-plan.md §5).
     var postProcessing = GSPostProcessingQuality.enabled
@@ -182,12 +195,14 @@ struct GlobalSettings: Codable, Equatable {
     // MARK: Scene Assets
     var wallpaperEngineAssetsDirectory: String?
 
-    /// The stored keys. `postProcessing` and `reflections` moved to new keys when the renderer
-    /// started reading them: the old keys hold values saved while the settings did nothing
-    /// (post-processing then defaulted to "disabled"), so they are left behind.
+    /// The stored keys. `postProcessing`, `reflections` and `antiAliasing` moved to new keys when
+    /// the renderer started reading them: the old keys hold values saved while the settings did
+    /// nothing (post-processing then defaulted to "disabled", anti-aliasing to MSAA x2), so they
+    /// are left behind.
     enum CodingKeys: String, CodingKey {
         case otherApplicationFocused, otherApplicationFullscreen, otherApplicationPlayingAudio, displayAsleep
-        case laptopOnBattery, antiAliasing, textureResolution, shadows, volumetrics, fps, particleBudget
+        case laptopOnBattery, textureResolution, shadows, volumetrics, fps, particleBudget
+        case antiAliasing = "msaa"
         case renderResolution, sceneDetail
         case postProcessing = "postProcessingQuality"
         case reflections = "reflection"

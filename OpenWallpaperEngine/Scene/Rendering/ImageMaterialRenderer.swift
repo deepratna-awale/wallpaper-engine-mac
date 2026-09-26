@@ -124,13 +124,14 @@ final class ImageMaterialRenderer {
         var ignoredAdjustments = false
     }
 
-    /// Encodes the layer into `encoder` (a pass of `commandBuffer` on a `pixelFormat` target). False
-    /// when the layer must be drawn another way this frame: the pipeline is compiling or failed, or
-    /// an input is missing. Leaves the encoder's pipeline state changed.
-    func draw(_ plan: ImageMaterialPlan, _ draw: Draw, pixelFormat: MTLPixelFormat,
+    /// Encodes the layer into `encoder` (a pass of `commandBuffer` on a `pixelFormat` target of
+    /// `sampleCount` samples). False when the layer must be drawn another way this frame: the
+    /// pipeline is compiling or failed, or an input is missing. Leaves the encoder's pipeline state changed.
+    func draw(_ plan: ImageMaterialPlan, _ draw: Draw, pixelFormat: MTLPixelFormat, sampleCount: Int = 1,
               encoder: MTLRenderCommandEncoder, commandBuffer: MTLCommandBuffer) -> Bool {
         guard plan.pass.variant != nil,
-              let pipeline = pipeline(for: plan.pass, material: plan.materialPath, pixelFormat: pixelFormat) else { return false }
+              let pipeline = pipeline(for: plan.pass, material: plan.materialPath, pixelFormat: pixelFormat,
+                                      sampleCount: sampleCount) else { return false }
         let extent = draw.quad.extent
         // A zero-area quad covers no pixels; nothing to draw, and nothing for a fallback to draw either.
         guard extent.x > 0, extent.y > 0, extent.x.isFinite, extent.y.isFinite else { return true }
@@ -400,33 +401,36 @@ final class ImageMaterialRenderer {
 
     // MARK: - Pipelines
 
-    static func pipelineKey(_ pass: SceneEffectPassPlan, pixelFormat: MTLPixelFormat) -> String {
-        "image|\(pass.variantKey)|\(pixelFormat.rawValue)|\(pass.blending.lowercased())"
+    /// A multisampled pipeline's key carries its sample count; a single-sampled one's is unchanged.
+    static func pipelineKey(_ pass: SceneEffectPassPlan, pixelFormat: MTLPixelFormat, sampleCount: Int = 1) -> String {
+        "image|\(pass.variantKey)|\(pixelFormat.rawValue)|\(pass.blending.lowercased())" + (sampleCount > 1 ? "|x\(sampleCount)" : "")
     }
 
     /// The ready pipeline, or nil while it compiles (the compile is started here) or after it failed.
-    private func pipeline(for pass: SceneEffectPassPlan, material: String, pixelFormat: MTLPixelFormat) -> MTLRenderPipelineState? {
-        let key = Self.pipelineKey(pass, pixelFormat: pixelFormat)
+    private func pipeline(for pass: SceneEffectPassPlan, material: String, pixelFormat: MTLPixelFormat,
+                          sampleCount: Int = 1) -> MTLRenderPipelineState? {
+        let key = Self.pipelineKey(pass, pixelFormat: pixelFormat, sampleCount: sampleCount)
         let state: (pipeline: MTLRenderPipelineState?, busy: Bool) = pipelineLock.withLock {
             if pipelines[key] != nil { usedPipelines.insert(key) }
             return (pipelines[key], pending.contains(key) || failed.contains(key))
         }
         if let pipeline = state.pipeline { return pipeline }
         if !state.busy, let variant = pass.variant {
-            compile(variant, blending: pass.blending, material: material, pixelFormat: pixelFormat, key: key)
+            compile(variant, blending: pass.blending, material: material, pixelFormat: pixelFormat,
+                    sampleCount: sampleCount, key: key)
         }
         return nil
     }
 
     /// Blocks until the plan's pipelines (its prelighting pass's too, into `prelitFormat`) compiled
     /// or failed (tests, prewarming). True when they are ready.
-    func waitUntilReady(_ plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat, prelitFormat: MTLPixelFormat = .rgba8Unorm,
-                        timeout: TimeInterval = 60) -> Bool {
+    func waitUntilReady(_ plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat, sampleCount: Int = 1,
+                        prelitFormat: MTLPixelFormat = .rgba8Unorm, timeout: TimeInterval = 60) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        let passes = [(plan.pass, pixelFormat)] + (plan.prelighting.map { [($0, prelitFormat)] } ?? [])
-        for (pass, format) in passes {
-            let key = Self.pipelineKey(pass, pixelFormat: format)
-            while pipeline(for: pass, material: plan.materialPath, pixelFormat: format) == nil {
+        let passes = [(plan.pass, pixelFormat, sampleCount)] + (plan.prelighting.map { [($0, prelitFormat, 1)] } ?? [])
+        for (pass, format, samples) in passes {
+            let key = Self.pipelineKey(pass, pixelFormat: format, sampleCount: samples)
+            while pipeline(for: pass, material: plan.materialPath, pixelFormat: format, sampleCount: samples) == nil {
                 if pipelineLock.withLock({ failed.contains(key) }) || Date() > deadline { return false }
                 Thread.sleep(forTimeInterval: 0.005)
             }
@@ -435,7 +439,7 @@ final class ImageMaterialRenderer {
     }
 
     private func compile(_ variant: TranslatedShaderVariant, blending: String, material: String, pixelFormat: MTLPixelFormat,
-                         key: String) {
+                         sampleCount: Int, key: String) {
         pipelineLock.withLock { _ = pending.insert(key) }
         let device = self.device
         let archive = self.archive
@@ -452,6 +456,7 @@ final class ImageMaterialRenderer {
                 descriptor.vertexFunction = vertex
                 descriptor.fragmentFunction = fragment
                 descriptor.colorAttachments[0].pixelFormat = pixelFormat
+                descriptor.rasterSampleCount = sampleCount
                 if let blend = EffectGraphRenderer.blendMode(blending) {
                     let attachment = descriptor.colorAttachments[0]!
                     attachment.isBlendingEnabled = true

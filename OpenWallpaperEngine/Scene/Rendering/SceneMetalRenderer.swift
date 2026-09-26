@@ -57,9 +57,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let commandQueue: MTLCommandQueue
     /// The scene pass's own pipelines, in the scene target's format (`SceneLayerPipelines`).
     private let layerPipelines: SceneLayerPipelines
-    private var renderPipeline: MTLRenderPipelineState { layerPipelines.pipelines(for: sceneRenderTarget?.pixelFormat).normal }
-    private var additiveRenderPipeline: MTLRenderPipelineState {
-        layerPipelines.pipelines(for: sceneRenderTarget?.pixelFormat).additive
+    private var renderPipeline: MTLRenderPipelineState { scenePassPipelines.normal }
+    private var additiveRenderPipeline: MTLRenderPipelineState { scenePassPipelines.additive }
+    /// The layer pipelines for the scene target's format and this frame's sample count.
+    private var scenePassPipelines: SceneLayerPipelines.Pipelines {
+        guard let format = sceneRenderTarget?.pixelFormat else { return layerPipelines.pipelines(for: nil) }
+        return layerPipelines.pipelines(for: format, sampleCount: sceneSampleCount) ?? layerPipelines.pipelines(for: format)
     }
     /// An unblended copy in the drawables' format: a shared frame onto a display (`present(in:)`).
     private let copyPipeline: MTLRenderPipelineState
@@ -198,6 +201,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// The user's quality settings (post-processing, reflection, shadows, volumetrics); the view sets them.
     var renderSettings = SceneRenderSettings()
     private var sceneRenderTarget: MTLTexture?
+    /// The scene pass's multisampled target with WE's MSAA setting, resolved into `sceneRenderTarget`
+    /// at the end of every stretch of the pass (WE's `_rt_FullFrameBufferMultiSampled`).
+    private var sceneMultisampleTarget: MTLTexture?
+    /// This frame's scene-pass samples per pixel (1 without MSAA).
+    private var sceneSampleCount = 1
     /// This frame's prelit images (`prelit`), by layer id.
     private var prelitImages: [String: MTLTexture] = [:]
     /// A shared scene's finished frame, the scene target's size (`sharedFrame`).
@@ -743,6 +751,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // Layers and particles are drawn in scene units onto a target at the output's pixel
         // density; placement scaling happens once, in the final composite pass.
         let drawableSize = SIMD2<Float>(Float(sceneTexture.width), Float(sceneTexture.height))
+        let multisampledScene = sceneMultisample(for: sceneTexture)
         // Draws sample the last frame's copy; this frame's is made after the scene pass.
         mipMappedTarget = mipMappedFrameBuffer?.target(matching: sceneTexture, commandBuffer: commandBuffer)
         let animationSpeed = WallpaperServices.shared.userPropertyValue("_owe_speed", fallback: 1)
@@ -838,11 +847,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // WE clears the scene to `general.clearcolor` (the composite's letterbox stays black).
         let clear = scripts.state.scene.vector3(.clearcolor) ?? clearColor
         let sceneRenderPass = MTLRenderPassDescriptor()
-        sceneRenderPass.colorAttachments[0].texture = sceneTexture
+        Self.attachScene(sceneTexture, multisampled: multisampledScene, to: sceneRenderPass)
         sceneRenderPass.colorAttachments[0].loadAction = .clear
         sceneRenderPass.colorAttachments[0].clearColor = MTLClearColor(red: Double(clear.x), green: Double(clear.y),
                                                                        blue: Double(clear.z), alpha: 1)
-        sceneRenderPass.colorAttachments[0].storeAction = .store
         // One instanced draw per system rather than one per particle (or per rope segment, which
         // multiplies out to thousands on trail renderers).
         particleInstances.removeAll(keepingCapacity: true)
@@ -881,7 +889,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             if particleSimulator != nil {
                 // The GPU steps the system and writes whichever records it is drawn from.
                 let rendererName = system.configuration.rendererName
-                if let simulated = particleMaterials?.prepareSimulated(system, pixelFormat: sceneTexture.pixelFormat) {
+                if let simulated = particleMaterials?.prepareSimulated(system, pixelFormat: sceneTexture.pixelFormat,
+                                                                       sampleCount: sceneSampleCount) {
                     let kind = ParticleGPUDrawKind.material(simulated.format, rendererName: rendererName)
                     for step in prewarm {
                         particleRequests.append(.init(system: system, inputs: step, kind: kind, materialVertexCount: simulated.vertexCount))
@@ -899,7 +908,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             }
             for step in prewarm { ParticleCPUSimulation.step(system, inputs: step) }
             ParticleCPUSimulation.step(system, inputs: inputs)
-            if particleMaterials?.prepare(system, pixelFormat: sceneTexture.pixelFormat,
+            if particleMaterials?.prepare(system, pixelFormat: sceneTexture.pixelFormat, sampleCount: sceneSampleCount,
                                           opacity: { [unowned self] in self.particleOpacity($0, in: system) }) == true {
                 particleBatches.append((system, base, 0, true, false))
                 continue
@@ -1081,7 +1090,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
                    assetSprite: { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) },
                    ignoredAdjustments: !ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: draw.brightness)),
-                   pixelFormat: sceneTexture.pixelFormat, encoder: encoder, commandBuffer: commandBuffer) {
+                   pixelFormat: sceneTexture.pixelFormat, sampleCount: sceneSampleCount, encoder: encoder,
+                   commandBuffer: commandBuffer) {
                 encoder.setRenderPipelineState(renderPipeline)
                 continue
             }
@@ -1554,9 +1564,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Continues the scene pass after a pause (a snapshot of it, or effects run in between).
     private func resumeScenePass(on scene: MTLTexture, commandBuffer: MTLCommandBuffer) -> MTLRenderCommandEncoder? {
         let resume = MTLRenderPassDescriptor()
-        resume.colorAttachments[0].texture = scene
+        Self.attachScene(scene, multisampled: sceneMultisampleTarget, to: resume)
         resume.colorAttachments[0].loadAction = .load
-        resume.colorAttachments[0].storeAction = .store
         let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: resume)
         encoder?.setRenderPipelineState(renderPipeline)
         return encoder
@@ -1690,6 +1699,54 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
 
     /// The scene target, at `renderPixelsPerUnit` pixels per scene unit.
+    /// Draws into `multisampled` when there is one, resolving into `scene` whenever the pass
+    /// ends (so a pause for a scene-reading layer resolves what's drawn so far, as WE resolves its
+    /// multisampled target before reading `_rt_FullFrameBuffer`, 0x1400d3310); else into `scene`.
+    static func attachScene(_ scene: MTLTexture, multisampled: MTLTexture?, to pass: MTLRenderPassDescriptor) {
+        let attachment = pass.colorAttachments[0]!
+        if let multisampled {
+            attachment.texture = multisampled
+            attachment.resolveTexture = scene
+            attachment.storeAction = .storeAndMultisampleResolve
+        } else {
+            attachment.texture = scene
+            attachment.storeAction = .store
+        }
+    }
+
+    /// This frame's multisampled scene target for WE's MSAA setting, made or remade to match
+    /// `scene`; nil without MSAA (or when it can't be made, logged, when the pass draws without).
+    /// Sets `sceneSampleCount`.
+    private func sceneMultisample(for scene: MTLTexture) -> MTLTexture? {
+        var samples = renderSettings.sceneSampleCount(on: device)
+        if samples > 1, layerPipelines.pipelines(for: scene.pixelFormat, sampleCount: samples) == nil { samples = 1 }
+        guard samples > 1 else {
+            sceneMultisampleTarget = nil
+            sceneSampleCount = 1
+            return nil
+        }
+        if let target = sceneMultisampleTarget, target.width == scene.width, target.height == scene.height,
+           target.pixelFormat == scene.pixelFormat, target.sampleCount == samples {
+            sceneSampleCount = samples
+            return target
+        }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: scene.pixelFormat, width: scene.width,
+                                                                  height: scene.height, mipmapped: false)
+        descriptor.textureType = .type2DMultisample
+        descriptor.sampleCount = samples
+        descriptor.usage = [.renderTarget]
+        descriptor.storageMode = .private
+        guard let target = device.makeTexture(descriptor: descriptor) else {
+            OWELog.error(.scene, "Could not allocate the \(scene.width)×\(scene.height) \(samples)× MSAA scene target; drawing without MSAA")
+            sceneMultisampleTarget = nil
+            sceneSampleCount = 1
+            return nil
+        }
+        sceneMultisampleTarget = target
+        sceneSampleCount = samples
+        return target
+    }
+
     private func sceneRenderTarget(pixelFormat: MTLPixelFormat) -> MTLTexture? {
         let pixelSize = SceneRenderResolution.targetSize(sceneSize: sceneSize, pixelsPerUnit: renderPixelsPerUnit)
         if let sceneRenderTarget, sceneRenderTargetSize == pixelSize, sceneRenderTarget.pixelFormat == pixelFormat {

@@ -42,6 +42,7 @@ final class ParticleMaterialRenderer {
         let uniformBlocks: ParticleRecordBuffer
         var programs: [String: UniformProgram] = [:]
         /// Each stage's pipeline key, by pixel format: built once, looked up every frame.
+        /// By target format and sample count (`targetKey`).
         var pipelineKeys: [UInt: [String]] = [:]
         /// The particle uniforms' members in each stage's block (`ParticleMaterialUniforms.Members`).
         var members: [String: ParticleMaterialUniforms.Members] = [:]
@@ -131,13 +132,13 @@ final class ParticleMaterialRenderer {
     /// Picks `system`'s stage and writes its records for this frame. False means the system
     /// can't draw through its material; the caller draws it the built-in way. True while its
     /// pipeline compiles, when `draw` draws nothing.
-    func prepare(_ system: ParticleSystemRuntime, pixelFormat: MTLPixelFormat,
+    func prepare(_ system: ParticleSystemRuntime, pixelFormat: MTLPixelFormat, sampleCount: Int = 1,
                  opacity: (Particle) -> Float) -> Bool {
         guard let plan = system.configuration.material else { return false }
         let state = state(for: system)
         state.prepared = nil
         let ready: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState)
-        switch readiness(plan, pixelFormat: pixelFormat, state: state) {
+        switch readiness(plan, pixelFormat: pixelFormat, sampleCount: sampleCount, state: state) {
         case .unavailable: return false
         case .compiling: return true
         case .ready(let stage, let pipeline): ready = (stage, pipeline)
@@ -156,12 +157,12 @@ final class ParticleMaterialRenderer {
     /// Picks `system`'s stage for a draw whose records the GPU simulation writes this frame.
     /// Nil means the system can't draw through its material (see `prepare`); while its pipeline
     /// compiles, the simulation writes the compiling stage's records and `draw` draws nothing.
-    func prepareSimulated(_ system: ParticleSystemRuntime, pixelFormat: MTLPixelFormat) -> Simulated? {
+    func prepareSimulated(_ system: ParticleSystemRuntime, pixelFormat: MTLPixelFormat, sampleCount: Int = 1) -> Simulated? {
         guard let plan = system.configuration.material else { return nil }
         let state = state(for: system)
         state.prepared = nil
         let ready: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState)
-        switch readiness(plan, pixelFormat: pixelFormat, state: state) {
+        switch readiness(plan, pixelFormat: pixelFormat, sampleCount: sampleCount, state: state) {
         case .unavailable: return nil
         case .compiling(let stage):
             return Simulated(format: plan.format, vertexCount: Self.vertexCount(stage), renderVar: nil)
@@ -329,14 +330,16 @@ final class ParticleMaterialRenderer {
         case unavailable
     }
 
-    private func readiness(_ plan: ParticleMaterialPlan, pixelFormat: MTLPixelFormat, state: SystemState) -> Readiness {
+    private func readiness(_ plan: ParticleMaterialPlan, pixelFormat: MTLPixelFormat, sampleCount: Int,
+                           state: SystemState) -> Readiness {
         var reasons: [String] = []
         let keys: [String]
-        if let known = state.pipelineKeys[pixelFormat.rawValue] {
+        let target = pixelFormat.rawValue &* 16 &+ UInt(max(sampleCount, 1))
+        if let known = state.pipelineKeys[target] {
             keys = known
         } else {
-            keys = plan.stages.map { Self.pipelineKey($0, plan: plan, pixelFormat: pixelFormat) }
-            state.pipelineKeys[pixelFormat.rawValue] = keys
+            keys = plan.stages.map { Self.pipelineKey($0, plan: plan, pixelFormat: pixelFormat, sampleCount: sampleCount) }
+            state.pipelineKeys[target] = keys
         }
         for (stage, key) in zip(plan.stages, keys) {
             let status: (pipeline: MTLRenderPipelineState?, pending: Bool, failure: String?) = pipelineLock.withLock {
@@ -349,7 +352,7 @@ final class ParticleMaterialRenderer {
                 reasons.append("\(stage.geometry): \(failure)")
                 continue
             }
-            compile(stage, plan: plan, pixelFormat: pixelFormat, key: key)
+            compile(stage, plan: plan, pixelFormat: pixelFormat, sampleCount: sampleCount, key: key)
             return .compiling(stage)
         }
         if !state.reportedFallback {
@@ -361,13 +364,14 @@ final class ParticleMaterialRenderer {
         return .unavailable
     }
 
+    /// A multisampled pipeline's key carries its sample count; a single-sampled one's is unchanged.
     private static func pipelineKey(_ stage: ParticleMaterialPlan.Stage, plan: ParticleMaterialPlan,
-                                     pixelFormat: MTLPixelFormat) -> String {
-        "\(stage.variantKey)|\(plan.format)|\(plan.blending)|\(pixelFormat.rawValue)"
+                                     pixelFormat: MTLPixelFormat, sampleCount: Int = 1) -> String {
+        "\(stage.variantKey)|\(plan.format)|\(plan.blending)|\(pixelFormat.rawValue)" + (sampleCount > 1 ? "|x\(sampleCount)" : "")
     }
 
     private func compile(_ stage: ParticleMaterialPlan.Stage, plan: ParticleMaterialPlan,
-                         pixelFormat: MTLPixelFormat, key: String) {
+                         pixelFormat: MTLPixelFormat, sampleCount: Int = 1, key: String) {
         pipelineLock.withLock { _ = pendingPipelines.insert(key) }
         let device = self.device
         let format = plan.format
@@ -377,7 +381,7 @@ final class ParticleMaterialRenderer {
             var pipeline: MTLRenderPipelineState?
             do {
                 pipeline = try Self.makePipeline(stage, format: format, blending: blending,
-                                                 pixelFormat: pixelFormat, device: device)
+                                                 pixelFormat: pixelFormat, sampleCount: sampleCount, device: device)
             } catch {
                 failure = "\(error)"
                 OWELog.error(.shader, "Particle pipeline failed (\(plan.materialPath), \(stage.geometry)): \(error)")
@@ -412,7 +416,7 @@ final class ParticleMaterialRenderer {
     }
 
     static func makePipeline(_ stage: ParticleMaterialPlan.Stage, format: ParticleVertexFormat, blending: String,
-                             pixelFormat: MTLPixelFormat, device: MTLDevice) throws -> MTLRenderPipelineState {
+                             pixelFormat: MTLPixelFormat, sampleCount: Int = 1, device: MTLDevice) throws -> MTLRenderPipelineState {
         let vertexLibrary = try device.makeLibrary(source: stage.variant.vertexMSL, options: nil)
         let fragmentLibrary = try device.makeLibrary(source: stage.variant.fragmentMSL, options: nil)
         guard let vertex = vertexLibrary.makeFunction(name: "main0"),
@@ -423,6 +427,7 @@ final class ParticleMaterialRenderer {
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
         descriptor.colorAttachments[0].pixelFormat = pixelFormat
+        descriptor.rasterSampleCount = sampleCount
         if let blend = EffectGraphRenderer.blendMode(blending) {
             let attachment = descriptor.colorAttachments[0]!
             attachment.isBlendingEnabled = true
