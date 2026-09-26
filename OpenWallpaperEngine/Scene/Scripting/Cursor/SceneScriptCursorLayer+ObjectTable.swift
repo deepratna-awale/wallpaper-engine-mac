@@ -20,35 +20,39 @@ extension SceneScriptCursorLayer {
     /// table are skipped. On the runtime's thread, like every read of the table.
     static func layers(in table: SceneScriptObjectTable, drawOrder: [TableEntry],
                        parentOf: (Int) -> Int?) -> [SceneScriptCursorLayer] {
-        drawOrder.compactMap { entry in
-            guard (0..<table.capacity).contains(entry.slot) else { return nil }
+        // Every frame, for every image and text layer: straight reads of the table's floats.
+        let values = table.values.pointer
+        typealias Layout = SceneScriptObjectTable.Layout
+        let size = SceneScriptObjectField.size.offset, origin = SceneScriptObjectField.origin.offset
+        let depth = SceneScriptObjectField.parallaxDepth.offset, solid = SceneScriptObjectField.solid.offset
+        var layers: [SceneScriptCursorLayer] = []
+        layers.reserveCapacity(drawOrder.count)
+        for entry in drawOrder {
             let slot = entry.slot
-            let size = table[slot, .size], origin = table[slot, .origin], depth = table[slot, .parallaxDepth]
-            return SceneScriptCursorLayer(
-                slot: slot, worldMatrix: worldMatrix(in: table, slot: slot),
-                size: SIMD2(size[0], size[1]), origin: SIMD2(origin[0], origin[1]),
-                parallaxDepth: SIMD2(depth[0], depth[1]), isSolid: table[slot, .solid][0] != 0,
-                disablesPropagation: entry.disablesPropagation,
-                isVisible: isVisible(slot, in: table, parentOf: parentOf))
+            guard (0..<table.capacity).contains(slot) else { continue }
+            let row = values + slot * Layout.stride
+            let m = row + Layout.worldMatrix
+            let matrix = simd_float4x4(SIMD4(m[0], m[1], m[2], m[3]), SIMD4(m[4], m[5], m[6], m[7]),
+                                       SIMD4(m[8], m[9], m[10], m[11]), SIMD4(m[12], m[13], m[14], m[15]))
+            layers.append(SceneScriptCursorLayer(
+                slot: slot, worldMatrix: matrix, size: SIMD2(row[size], row[size + 1]),
+                origin: SIMD2(row[origin], row[origin + 1]), parallaxDepth: SIMD2(row[depth], row[depth + 1]),
+                isSolid: row[solid] != 0, disablesPropagation: entry.disablesPropagation,
+                isVisible: isVisible(slot, in: table, parentOf: parentOf)))
         }
-    }
-
-    private static func worldMatrix(in table: SceneScriptObjectTable, slot: Int) -> simd_float4x4 {
-        let base = SceneScriptObjectTable.index(slot: slot, field: SceneScriptObjectTable.Layout.worldMatrix)
-        func column(_ index: Int) -> SIMD4<Float> {
-            SIMD4((0..<4).map { table.values[base + index * 4 + $0] })
-        }
-        return simd_float4x4(column(0), column(1), column(2), column(3))
+        return layers
     }
 
     /// `visible` of the object and every parent (0x140185010). A parent chain longer than the table
     /// is a cycle and counts as hidden.
     private static func isVisible(_ slot: Int, in table: SceneScriptObjectTable, parentOf: (Int) -> Int?) -> Bool {
+        let values = table.values.pointer
+        let visible = SceneScriptObjectField.visible.offset
         var current: Int? = slot
         var steps = 0
         while let object = current {
             guard (0..<table.capacity).contains(object), steps <= table.capacity else { return false }
-            if table[object, .visible][0] == 0 { return false }
+            if values[object * SceneScriptObjectTable.Layout.stride + visible] == 0 { return false }
             current = parentOf(object)
             steps += 1
         }
