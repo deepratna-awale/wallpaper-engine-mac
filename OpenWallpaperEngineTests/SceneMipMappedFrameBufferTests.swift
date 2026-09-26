@@ -109,6 +109,27 @@ final class SceneMipMappedFrameBufferTests: XCTestCase {
         XCTAssertEqual(value, [4], "the level count, not the count − 1")
     }
 
+    /// LF9: WE makes the target with the scene it loads, so a new content's first frame reads
+    /// transparent black, not the last content's frame, even at the same size.
+    func testANewContentDoesntReflectTheLastOne() throws {
+        let stage = SceneMipMappedFrameBuffer(device: device)
+        stage.setContent(Self.content(layers: [Self.samplingLayer()]))
+        let scene = try Self.sceneTexture(device: device)
+        let copy = try XCTUnwrap(queue.makeCommandBuffer())
+        stage.encode(Self.stageContext(scene, copy, reflection: true))
+        copy.commit()
+        copy.waitUntilCompleted()
+        XCTAssertEqual(stage.framesCopied, 1)
+
+        stage.setContent(Self.content(layers: [Self.samplingLayer()]))
+        let next = try XCTUnwrap(queue.makeCommandBuffer())
+        let target = try XCTUnwrap(stage.target(matching: scene, commandBuffer: next))
+        next.commit()
+        next.waitUntilCompleted()
+        XCTAssertTrue(try Self.levels(of: target, queue: queue).allSatisfy { $0.allSatisfy { $0 == 0 } },
+                      "the new content's first frame reads transparent black")
+    }
+
     /// Render flag 0x80 off: the target is cleared to (0, 0, 0, 1) once and never filled.
     func testReflectionOffClearsItToOpaqueBlack() throws {
         let stage = SceneMipMappedFrameBuffer(device: device)

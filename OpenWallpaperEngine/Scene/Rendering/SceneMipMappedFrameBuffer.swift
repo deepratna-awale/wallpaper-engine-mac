@@ -78,9 +78,12 @@ final class SceneMipMappedFrameBuffer: SceneFrameStage {
         }
     }
 
+    /// WE makes the target with the scene it loads, so a new content never reads the last one's
+    /// frame: the target is made again, transparent black, on the next frame.
     func setContent(_ content: SceneMetalContent) {
         isSampled = Self.samples(content)
-        if !isSampled { texture = nil }
+        texture = nil
+        contents = .empty
     }
 
     /// The target this frame's draws sample, (re)made to match `scene` (the scene target); nil
