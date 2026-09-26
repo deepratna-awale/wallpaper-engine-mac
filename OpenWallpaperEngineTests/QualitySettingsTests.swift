@@ -28,7 +28,7 @@ final class QualitySettingsTests: XCTestCase {
         let old = #"{"otherApplicationFocused":"pause","antiAliasing":"msaa_x4","postProcessing":"disabled","reflections":false,"fps":45,"videoFramework":"metal","logLevel":"verbose","appearance":"sparkly"}"#
         let settings = try JSONDecoder().decode(GlobalSettings.self, from: Data(old.utf8))
         XCTAssertEqual(settings.otherApplicationFocused, .pause)
-        XCTAssertEqual(settings.antiAliasing, .msaa_x4)
+        XCTAssertEqual(settings.antiAliasing, .none, "saved while it did nothing: left behind (WE's key is msaa)")
         XCTAssertEqual(settings.fps, 45)
         XCTAssertEqual(settings.videoFramework, .metal)
         XCTAssertEqual(settings.logLevel, .verbose)
