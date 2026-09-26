@@ -57,6 +57,10 @@ final class EffectGraphRenderer {
         var programs: [[UniformProgram?]] = []
         /// Last output of a chain that doesn't change over time, and what produced it.
         var staticOutput: (key: StaticChainKey, output: MTLTexture)?
+        /// The output of the chain's leading effects when they don't change over time but later ones
+        /// do (`staticPrefix`), kept in `prefixTarget` so the frame starts after them; and what produced it.
+        var prefixOutput: (key: StaticChainKey, effects: Int)?
+        var prefixTarget: MTLTexture?
 
         init(width: Int, height: Int) {
             self.width = width
@@ -106,6 +110,8 @@ final class EffectGraphRenderer {
     /// Counters for tests and diagnostics.
     private(set) var passesEncoded = 0
     private(set) var layersReused = 0
+    /// Frames that started after a kept static prefix (`staticPrefix`).
+    private(set) var prefixesReused = 0
     private(set) var targetsAllocated = 0
     var failedPipelineCount: Int { pipelineLock.withLock { failedPipelines.count } }
     /// Pipeline compiles started (at most one per pipeline key).
@@ -292,8 +298,13 @@ final class EffectGraphRenderer {
             allocateTargets(state, effects: effects, width: width, height: height, standIn: standIn)
         }
 
+        // The leading effects that don't change over time, when later ones do: their output is kept
+        // and the frame starts after them while it stays valid.
+        let prefix = Self.staticPrefix(effects, programs: state.programs, hidden: context.hiddenEffects)
+        var prefixValueCount = 0
         var dynamicValues: [Float] = []
         for (effectIndex, programs) in state.programs.enumerated() where !context.hiddenEffects.contains(effectIndex) {
+            defer { if effectIndex < prefix { prefixValueCount = dynamicValues.count } }
             for program in programs { program?.appendDynamicValues(to: &dynamicValues, values: context.values) }
             // A sprite sheet's frame changes the output like a live constant does.
             guard let assetSprite = context.assetSprite else { continue }
@@ -308,6 +319,11 @@ final class EffectGraphRenderer {
         let staticKey = StaticChainKey(input: input, inputVersion: context.inputVersion,
                                        color: context.layerColor, alpha: context.layerAlpha,
                                        scriptRevision: context.scriptRevision, dynamicValues: dynamicValues)
+        let prefixKey = prefix > 0
+            ? StaticChainKey(input: input, inputVersion: context.inputVersion, color: context.layerColor,
+                             alpha: context.layerAlpha, scriptRevision: context.scriptRevision,
+                             dynamicValues: Array(dynamicValues.prefix(prefixValueCount)))
+            : nil
         // A scene snapshot, or the last frame's copy, keeps its texture identity while its contents
         // change every frame.
         let readsScene = context.sceneSnapshot != nil
@@ -316,12 +332,23 @@ final class EffectGraphRenderer {
             layersReused += 1
             return cached.output
         }
-        guard let pingA = state.pingA, let pingB = state.pingB else { return nil }
-
         var current = input
         var didRender = false
         var reusable = true
-        for (effectIndex, effect) in effects.enumerated() where !context.hiddenEffects.contains(effectIndex) {
+        var firstEffect = 0
+        if !readsScene, let prefixKey, let cached = state.prefixOutput, cached.effects == prefix,
+           cached.key.matches(prefixKey), let kept = state.prefixTarget {
+            current = kept
+            firstEffect = prefix
+            didRender = true
+            prefixesReused += 1
+        }
+        var keepsPrefix = prefixKey != nil && firstEffect == 0 && !readsScene
+        for (effectIndex, effect) in effects.enumerated() where effectIndex >= firstEffect && !context.hiddenEffects.contains(effectIndex) {
+            if keepsPrefix, effectIndex >= prefix, let prefixKey {
+                keepsPrefix = false
+                keepPrefix(current, of: state, input: input, key: prefixKey, effects: prefix, commandBuffer: commandBuffer)
+            }
             let previous = current
             var fbos = state.fbos[effectIndex]
             for (passIndex, pass) in effect.passes.enumerated() {
@@ -345,7 +372,10 @@ final class EffectGraphRenderer {
                         guard let fbo = fbos[name] else { continue }
                         output = fbo
                     } else {
-                        output = current === pingA ? pingB : pingA
+                        // The ping-pong target the current image isn't in, made on first use: a
+                        // one-pass chain (the engine's, most layers') never needs the second.
+                        guard let ping = pingTarget(of: state, second: current === state.pingA) else { continue }
+                        output = ping
                     }
                     reusable = reusable && program.isReusable && !pass.readsSceneSnapshot && !pass.readsMipMappedFrameBuffer
                     encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
@@ -364,6 +394,42 @@ final class EffectGraphRenderer {
         // per-frame cost).
         state.staticOutput = reusable && !readsScene ? (staticKey, current) : nil
         return current
+    }
+
+    /// How many of the chain's leading effects (by index, hidden ones included) give an output that
+    /// doesn't change over time, when some later visible effect does: 0 when the whole chain is
+    /// static (its output is kept whole) or its first visible effect varies.
+    static func staticPrefix(_ effects: [SceneEffectPlan], programs: [[UniformProgram?]], hidden: Set<Int>) -> Int {
+        func isStatic(_ index: Int) -> Bool {
+            zip(effects[index].passes, programs[index]).allSatisfy { pass, program in
+                guard case .render = pass.command else { return true }
+                return (program?.isReusable ?? true) && !pass.readsSceneSnapshot && !pass.readsMipMappedFrameBuffer
+            }
+        }
+        var prefix = 0
+        while prefix < effects.count, hidden.contains(prefix) || isStatic(prefix) { prefix += 1 }
+        let visibleBefore = (0..<prefix).contains { !hidden.contains($0) }
+        let variesLater = (prefix..<effects.count).contains { !hidden.contains($0) }
+        return visibleBefore && variesLater ? prefix : 0
+    }
+
+    /// Keeps `output`, the chain's image after its static prefix, for the frames that follow.
+    private func keepPrefix(_ output: MTLTexture, of state: LayerState, input: MTLTexture, key: StaticChainKey,
+                            effects: Int, commandBuffer: MTLCommandBuffer) {
+        state.prefixOutput = nil
+        // A prefix that drew nothing into the chain leaves the input, which needs no keeping.
+        guard output !== input else { return }
+        if state.prefixTarget.map({ $0.width != output.width || $0.height != output.height || $0.pixelFormat != output.pixelFormat }) ?? true {
+            state.prefixTarget.map(recycle)
+            state.prefixTarget = target(width: output.width, height: output.height, format: output.pixelFormat)
+            if let kept = state.prefixTarget, let size = state.standInSizes[ObjectIdentifier(output)] {
+                state.standInSizes[ObjectIdentifier(kept)] = size
+            }
+        }
+        guard let kept = state.prefixTarget, let blit = commandBuffer.makeBlitCommandEncoder() else { return }
+        blit.copy(from: output, to: kept)
+        blit.endEncoding()
+        state.prefixOutput = (key, effects)
     }
 
     // MARK: - Pipelines
@@ -620,6 +686,7 @@ final class EffectGraphRenderer {
         state.width = width
         state.height = height
         state.staticOutput = nil
+        state.prefixOutput = nil
         let standIn = standIn ?? SIMD2(width, height)
         state.standInSize = standIn
         state.standInSizes = [:]
@@ -628,10 +695,9 @@ final class EffectGraphRenderer {
             guard drawnSmaller, let texture else { return }
             state.standInSizes[ObjectIdentifier(texture)] = SIMD2(Float(size.x), Float(size.y))
         }
-        state.pingA = target(width: width, height: height, format: state.targetFormats.output)
-        state.pingB = target(width: width, height: height, format: state.targetFormats.output)
-        remember(state.pingA, standsFor: standIn)
-        remember(state.pingB, standsFor: standIn)
+        // The ping-pong targets are made when a pass first draws into one (`pingTarget`).
+        state.pingA = nil
+        state.pingB = nil
         state.fbos = effects.map { effect in
             Dictionary(effect.fbos.compactMap { fbo -> (String, MTLTexture)? in
                 let size = Self.fboSize(fbo, width: width, height: height)
@@ -644,20 +710,36 @@ final class EffectGraphRenderer {
     }
 
 
+    /// The layer's first or `second` ping-pong target, made at the chain's size on first use.
+    private func pingTarget(of state: LayerState, second: Bool) -> MTLTexture? {
+        if let existing = second ? state.pingB : state.pingA { return existing }
+        guard let made = target(width: state.width, height: state.height, format: state.targetFormats.output) else { return nil }
+        if state.standInSize != SIMD2(state.width, state.height) {
+            state.standInSizes[ObjectIdentifier(made)] = SIMD2(Float(state.standInSize.x), Float(state.standInSize.y))
+        }
+        if second { state.pingB = made } else { state.pingA = made }
+        return made
+    }
+
     /// Hands a layer's targets to the spare list. Contents don't matter: every pass either
     /// overwrites its target or (blended) runs after one that did.
     private func recycleTargets(_ state: LayerState) {
-        let owned = [state.pingA, state.pingB].compactMap { $0 } + state.fbos.flatMap(\.values)
+        let owned = [state.pingA, state.pingB, state.prefixTarget].compactMap { $0 } + state.fbos.flatMap(\.values)
         state.pingA = nil
         state.pingB = nil
+        state.prefixTarget = nil
         state.fbos = []
         state.staticOutput = nil
-        for texture in owned {
-            let key = TargetKey(width: texture.width, height: texture.height, format: texture.pixelFormat)
-            spareTargets[key, default: []].append(texture)
-            spareOrder.removeAll { $0 == key }
-            spareOrder.append(key)
-        }
+        state.prefixOutput = nil
+        owned.forEach(recycle)
+    }
+
+    /// Hands one target to the spare list, the oldest sizes leaving it past `maxSpareTargets`.
+    private func recycle(_ texture: MTLTexture) {
+        let key = TargetKey(width: texture.width, height: texture.height, format: texture.pixelFormat)
+        spareTargets[key, default: []].append(texture)
+        spareOrder.removeAll { $0 == key }
+        spareOrder.append(key)
         var count = spareTargets.values.reduce(0) { $0 + $1.count }
         while count > Self.maxSpareTargets, let oldest = spareOrder.first {
             count -= spareTargets[oldest]?.count ?? 0
