@@ -207,6 +207,22 @@
         return new AssetHandle(String(file), rt.current === null ? undefined : rt.byId.get(rt.current));
     };
 
+    // `engine.isObjectValid(object)`: undocumented, named in scenescript64.dll. Best guess: whether a
+    // layer (or one of its effects or materials) is still alive, i.e. not destroyed.
+    global.engine.isObjectValid = function (object) {
+        if (object === null || typeof object !== 'object') return false;
+        if (object instanceof objects.Layer) return !object._dead;
+        if (object instanceof objects.Effect) return !object._dead && !object._layer._dead;
+        if (object instanceof objects.Material) return !object._dead && !object._effect._layer._dead;
+        return false;
+    };
+
+    // `engine.requestFeatures(...)`: undocumented and global-scope only ("requestFeatures can only be
+    // called from global scope."); what it enables is not known, so it does nothing else.
+    global.engine.requestFeatures = function () {
+        rt.requireGlobalScope('requestFeatures');
+    };
+
     // MARK: thisLayer / thisObject
 
     // The object a binding names (SceneScriptObjectBinding), or null when it no longer exists.

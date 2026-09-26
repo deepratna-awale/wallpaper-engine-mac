@@ -132,6 +132,21 @@ final class SceneScriptWallpaperTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(state.objects[1]?.animationTimes["alpha"]), 0.5, accuracy: 1e-6, "frame 5 at 10 fps")
     }
 
+    /// `engine.isObjectValid` (undocumented, in scenescript64.dll): false once a layer is destroyed.
+    func testIsObjectValidFollowsDestroyLayer() throws {
+        let script = "let made; export function update(value) { if (!made) { made = thisScene.createLayer({ image: 'models/b.json' }); "
+            + "shared.before = engine.isObjectValid(made) ? 1 : 0; thisScene.destroyLayer(made); } "
+            + "else { shared.after = engine.isObjectValid(made) ? 1 : 0; shared.self = engine.isObjectValid(thisLayer) ? 1 : 0; } return value; }"
+        let wallpaper = try make(objects: [object(id: 1, fields: #""origin": {"script": "\#(script)", "value": "0 0 0"}"#)])
+        var input = SceneScriptFrameInput()
+        input.deltaTime = 1.0 / 60
+        _ = try frame(wallpaper, input)
+        _ = try frame(wallpaper, input)
+        XCTAssertEqual(try shared(wallpaper, "before"), 1)
+        XCTAssertEqual(try shared(wallpaper, "after"), 0)
+        XCTAssertEqual(try shared(wallpaper, "self"), 1)
+    }
+
     func testEffectVisibilityAndMaterialConstantsComeBack() throws {
         let effect = #"{"file": "effects/tint/effect.json", "visible": false, "passes": [{"constantshadervalues": {"color": "0 0 1"}}]}"#
         let wallpaper = try make(objects: [
