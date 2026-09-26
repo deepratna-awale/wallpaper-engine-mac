@@ -32,6 +32,8 @@ struct BuiltinFrameContext {
     var viewRight: SIMD3<Float> = SIMD3(1, 0, 0)
     var viewForward: SIMD3<Float> = SIMD3(0, 0, -1)
     var audio: AudioSpectrumSnapshot = .silent
+    /// This frame's lights and scene colours (`SceneFrameLighting`); not yet read by any uniform.
+    var lighting = SceneFrameLighting()
 
     /// `g_PointerState` for the current button state. `.x` mirrors `.z` so a shader that
     /// declares the uniform as a scalar `float` still sees the press.

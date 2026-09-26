@@ -59,6 +59,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let copyPipeline: MTLRenderPipelineState
     /// Everything after the scene pass, up to the drawable (bloom and the composite).
     private let postProcess: ScenePostProcess
+    /// WE's work on the finished frame before its bloom (`SceneFrameStages`).
+    private let frameStages: [SceneFrameStage]
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
@@ -145,6 +147,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Where the cursor was last seen on this renderer's display.
     private var cursorTracker = SceneCursorTracker()
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
+    /// The scene's lighting settings and light objects (`SceneMetalContent.lighting`).
+    private var lighting = SceneLightingContent()
     /// The user's quality settings (post-processing, reflection, shadows, volumetrics); the view sets them.
     var renderSettings = SceneRenderSettings()
     private var sceneRenderTarget: MTLTexture?
@@ -246,6 +250,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         self.device = device
         self.copyPipeline = copyPipeline
         self.postProcess = postProcess
+        self.frameStages = SceneFrameStages.make(device: device)
         self.commandQueue = commandQueue
         self.renderPipeline = renderPipeline
         self.additiveRenderPipeline = additiveRenderPipeline
@@ -345,6 +350,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 guard let self, self.isCurrentContentGeneration(generation) else { return }
                 self.sceneSize = content.size
                 self.bloom = content.bloom
+                self.lighting = content.lighting
+                for stage in self.frameStages { stage.setContent(content) }
                 self.particleSystems = preparedParticleSystems
                 self.transforms = content.transforms
                 self.objectMotions = content.motions
@@ -642,6 +649,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.audio = WallpaperServices.shared.advanceAudioSpectrumFrame()
         let motion = cameraMotion(pointer: pointer, time: time, deltaTime: Float(clock.delta))
         effectFrame.parallax = parallaxEnabled ? cameraParallax.shaderPosition(sceneSize: sceneSize) : SIMD2(0.5, 0.5)
+        effectFrame.lighting = frameLighting(eye: effectFrame.eyePosition, forward: effectFrame.viewForward)
         // Text is rasterised first so its effects run on the finished text, like an image layer's.
         var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
         // Only visible layers get an entry; the draw loop skips the rest.
@@ -915,6 +923,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard drawParticleBatches(before: .max) else { return }
         encoder.endEncoding()
 
+        let stageContext = SceneFrameStageContext(scene: sceneTexture, commandBuffer: commandBuffer, sceneSize: sceneSize,
+                                                  frame: effectFrame, settings: renderSettings)
+        for stage in frameStages { stage.encode(stageContext) }
         // The scene-resolution target goes onto the real drawable, placement applied exactly once.
         postProcess.encode(ScenePostProcess.Frame(
             scene: sceneTexture, output: descriptor, commandBuffer: commandBuffer,
@@ -945,6 +956,19 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                           saturation: services.userPropertyValue("_owe_saturation", fallback: 1),
                                           hue: services.userPropertyValue("_owe_hue", fallback: 0),
                                           blur: services.userPropertyValue("_owe_blur", fallback: 1))
+    }
+
+    /// This frame's lighting (`SceneFrameLighting`), from the objects' live transforms and
+    /// visibility and the scripts' scene colours.
+    private func frameLighting(eye: SIMD3<Float>, forward: SIMD3<Float>) -> SceneFrameLighting {
+        let scene = scripts.state.scene
+        return SceneFrameLighting.frame(lighting, input: SceneFrameLightingInput(
+            world: { [unowned self] id in
+                self.transforms.nodes[id] == nil ? nil : self.transforms.world(of: id) { self.liveLocal($0) }
+            },
+            isVisible: { [unowned self] id in self.scripts.isVisible(id) },
+            sceneColor: { scene.vector3($0) },
+            eyePosition: eye, viewForward: forward))
     }
 
     /// WE's sound layers each frame: the volumes scripts set, then their timers, in real time. A

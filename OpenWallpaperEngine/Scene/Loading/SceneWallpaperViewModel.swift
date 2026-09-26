@@ -46,6 +46,10 @@ class SceneWallpaperViewModel: ObservableObject {
     private let contentQueue = DispatchQueue(label: "com.winddog.wallpaper-engine.scene-content", qos: .userInitiated)
     private var cachedContent: SceneMetalContent?
     private var cachedContentRevision = -1
+    /// The user's quality settings the content is built for (`setRenderSettings`).
+    private var renderSettings = SceneRenderSettings()
+    /// The engine combos of the content being built, for every material plan built with it.
+    private var sceneEngineCombos = SceneEngineCombos()
     /// Retained for video wallpapers rendered through the scene pipeline.
     private var videoStream: VideoTextureStream?
     private var builtVideoFrameSize: SIMD2<Float>?
@@ -195,6 +199,15 @@ class SceneWallpaperViewModel: ObservableObject {
     func invalidateContent() {
         sceneLock.lock()
         defer { sceneLock.unlock() }
+        bumpRevision()
+    }
+
+    /// The user's quality settings; a change rebuilds the content, whose engine combos follow them.
+    func setRenderSettings(_ settings: SceneRenderSettings) {
+        sceneLock.lock()
+        defer { sceneLock.unlock() }
+        guard settings != renderSettings else { return }
+        renderSettings = settings
         bumpRevision()
     }
 
@@ -482,6 +495,11 @@ class SceneWallpaperViewModel: ObservableObject {
         scene.objects = SceneObjectIdentity.assigningFallbackIDs(
             authoredScene.objects.map { $0.resolvingUserBindings(in: valueContext) })
         let sceneSize = metalSceneSize(for: scene)
+        let bloom = bloomSettings(for: scene.general)
+        let lighting = SceneLightingSettings(scene.general, in: valueContext)
+        sceneEngineCombos = SceneEngineCombos(bloom: bloom, lighting: lighting,
+                                              orthographic: !scene.general.usesPerspectiveProjection,
+                                              settings: renderSettings)
         // Hidden objects are built too: a script can show them (docs/scenescript-plan.md §4.3).
         let visibility = Dictionary(scene.objects.map { (String($0.id ?? -1), isObjectVisible($0)) },
                                     uniquingKeysWith: { first, _ in first })
@@ -510,7 +528,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 transforms.makeRoot(layer.id, local: SceneLocalTransform(origin: layer.position, scale: layer.scale, angle: layer.rotation))
             }
             var content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
-                                            bloom: bloomSettings(for: scene.general),
+                                            bloom: bloom,
                                             transforms: transforms,
                                             camera: SceneCameraEffects(scene.general, in: valueContext),
                                             wallpaperKey: propertyStoreKey)
@@ -523,6 +541,8 @@ class SceneWallpaperViewModel: ObservableObject {
                                     document: $0.document, signature: $0.signature)
             }
             content.sounds = soundBuilder(wallpaperDir: wallpaperDir).sounds(in: scene.objects, context: valueContext)
+            content.lighting = SceneLightingContent(settings: lighting, lights: Self.lights(in: scene.objects, context: valueContext))
+            content.engineCombos = sceneEngineCombos
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -688,6 +708,15 @@ class SceneWallpaperViewModel: ObservableObject {
         SceneBloomSettings(general, in: userValueContext)
     }
 
+    /// The scene's light objects, in scene order. They draw nothing; their transforms are in the
+    /// content's hierarchy and motions like any other object's.
+    static func lights(in objects: [WESceneObject], context: SceneValueContext) -> [SceneLightObject] {
+        objects.compactMap { object in
+            guard let light = object.light, let id = object.id else { return nil }
+            return SceneLightObject(id: String(id), authored: light, light: SceneLight(light, in: context))
+        }
+    }
+
     /// Resolves user-bound values against this wallpaper's properties.
     private var userValueContext: LiveSceneValueContext {
         LiveSceneValueContext(wallpaper: propertyStoreKey)
@@ -776,7 +805,8 @@ class SceneWallpaperViewModel: ObservableObject {
         let builder = ImageMaterialPlanBuilder(
             translator: translator,
             readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
-            loadTexture: { [weak self] name, path in self?.loadMetalTexture(named: name, materialDir: path, wallpaperDir: wallpaperDir) })
+            loadTexture: { [weak self] name, path in self?.loadMetalTexture(named: name, materialDir: path, wallpaperDir: wallpaperDir) },
+            sceneEngineCombos: sceneEngineCombos)
         do {
             return try builder.build(materialPath: materialPath, colorBlendMode: object.colorBlendMode,
                                      clampUVs: object.clampuvs)
@@ -882,7 +912,8 @@ class SceneWallpaperViewModel: ObservableObject {
         let builder = ImageMaterialPlanBuilder(
             translator: translator,
             readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
-            loadTexture: { _, _ in nil })
+            loadTexture: { _, _ in nil },
+            sceneEngineCombos: sceneEngineCombos)
         let materialPath = "materials/fonts/basefont.json"
         do {
             return try builder.buildText(materialPath: materialPath)
@@ -1012,7 +1043,8 @@ class SceneWallpaperViewModel: ObservableObject {
             readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
             loadTexture: { [weak self] name, materialPath in
                 self?.loadMetalTexture(named: name, materialDir: materialPath, wallpaperDir: wallpaperDir)
-            })
+            },
+            sceneEngineCombos: sceneEngineCombos)
         var plans: [SceneEffectPlan] = []
         var handled = Set<Int>()
         let storeKey = propertyStoreKey
@@ -1226,7 +1258,8 @@ class SceneWallpaperViewModel: ObservableObject {
         let builder = ParticleMaterialPlanBuilder(
             translator: translator,
             readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
-            loadTexture: { [weak self] name, path in self?.loadMetalTexture(named: name, materialDir: path, wallpaperDir: wallpaperDir) })
+            loadTexture: { [weak self] name, path in self?.loadMetalTexture(named: name, materialDir: path, wallpaperDir: wallpaperDir) },
+            sceneEngineCombos: sceneEngineCombos)
         do {
             return try builder.build(materialPath: materialPath, renderer: renderer, flags: particleSystem.flags ?? 0,
                                      baseTexture: source, spriteSheet: spriteSheet)

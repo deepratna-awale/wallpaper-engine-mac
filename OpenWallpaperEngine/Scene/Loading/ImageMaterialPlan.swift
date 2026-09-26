@@ -58,6 +58,8 @@ struct ImageMaterialPlanBuilder {
     let readFile: (String) -> Data?
     /// Loads a texture by WE name relative to a material path.
     let loadTexture: (_ name: String, _ materialPath: String) -> SceneMetalTextureSource?
+    /// The combos WE's engine lays over every material of the scene (`SceneEngineCombos`).
+    var sceneEngineCombos = SceneEngineCombos()
 
     private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
     /// Combos whose inputs (scene lights, reflection targets) the renderer does not provide yet.
@@ -108,8 +110,8 @@ struct ImageMaterialPlanBuilder {
         }
         var overrides = [materialPass.combos]
         if let colorBlendMode { overrides.append(["BLENDMODE": colorBlendMode]) }
-        let combos = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment, overrides: overrides,
-                                                           boundTextureSlots: Set(inputs.keys).union([0]))
+        let combos = sceneEngineCombos.applied(to: ShaderVariantTranslator.resolveCombos(
+            vertex: vertex, fragment: fragment, overrides: overrides, boundTextureSlots: Set(inputs.keys).union([0])))
         for combo in Self.unsupportedCombos where (combos[combo] ?? 0) != 0 {
             throw ImageMaterialPlanError.unsupported("\(combo) needs scene lights (roadmap area 5)")
         }

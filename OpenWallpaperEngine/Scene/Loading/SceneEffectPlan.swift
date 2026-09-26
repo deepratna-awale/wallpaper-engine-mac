@@ -77,6 +77,8 @@ struct SceneEffectPlanBuilder {
     let readFile: (String) -> Data?
     /// Loads a texture by WE name (`util/noise`, `masks/foo`) relative to a material path.
     let loadTexture: (_ name: String, _ materialPath: String) -> SceneMetalTextureSource?
+    /// The combos WE's engine lays over every material of the scene (`SceneEngineCombos`).
+    var sceneEngineCombos = SceneEngineCombos()
 
     private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
 
@@ -154,10 +156,11 @@ struct SceneEffectPlanBuilder {
         // Explicitly bound slots decide combos (MASK etc.); defaults below don't.
         let boundSlots = Set(inputs.keys)
         let formats = formatCombos(samplers, names: names, materialPath: materialPath, effectDirectory: effectDirectory)
-        let combos = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment,
-                                                           overrides: [formats, materialPass.combos, instance?.combos ?? [:],
-                                                                       Self.comboOverrides(overrides, declared: vertex.combos + fragment.combos)],
-                                                           boundTextureSlots: boundSlots.union([0]))
+        let combos = sceneEngineCombos.applied(to: ShaderVariantTranslator.resolveCombos(
+            vertex: vertex, fragment: fragment,
+            overrides: [formats, materialPass.combos, instance?.combos ?? [:],
+                        Self.comboOverrides(overrides, declared: vertex.combos + fragment.combos)],
+            boundTextureSlots: boundSlots.union([0])))
         guard Self.conditionsHold(pass.conditions, combos: combos) else { return nil }
 
         let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)

@@ -23,6 +23,8 @@ struct ParticleMaterialPlanBuilder {
     let readFile: (String) -> Data?
     /// Loads a texture by WE name relative to a material path.
     let loadTexture: (_ name: String, _ materialPath: String) -> SceneMetalTextureSource?
+    /// The combos WE's engine lays over every material of the scene (`SceneEngineCombos`).
+    var sceneEngineCombos = SceneEngineCombos()
 
     private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
 
@@ -186,9 +188,9 @@ struct ParticleMaterialPlanBuilder {
         for (slot, name) in pass.textures.enumerated() where slot > 0 {
             if let name, let input = textureInput(named: name, materialPath: materialPath) { inputs[slot] = input }
         }
-        let combos = ShaderVariantTranslator.resolveCombos(vertex: declarations, fragment: fragment,
-                                                           overrides: [pass.combos, engineCombos],
-                                                           boundTextureSlots: Set(inputs.keys))
+        let combos = sceneEngineCombos.applied(to: ShaderVariantTranslator.resolveCombos(
+            vertex: declarations, fragment: fragment, overrides: [pass.combos, engineCombos],
+            boundTextureSlots: Set(inputs.keys)))
         let vertex: ShaderSource
         let stageGeometry: ParticleMaterialPlan.Stage.Geometry
         if let geometry {

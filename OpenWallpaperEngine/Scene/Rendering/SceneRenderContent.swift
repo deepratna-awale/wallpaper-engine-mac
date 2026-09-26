@@ -170,6 +170,10 @@ struct SceneMetalContent {
     var timelines: SceneTimelineSource?
     /// The scene's sound layers.
     var sounds: [SceneSoundContent] = []
+    /// `general`'s lighting settings and the scene's light objects.
+    var lighting = SceneLightingContent()
+    /// The combos WE's engine sets on every material of this content (`SceneEngineCombos`).
+    var engineCombos = SceneEngineCombos()
 }
 
 /// `scene.json` as the content was built from it, for the wallpaper instance's `SceneAnimationSet`

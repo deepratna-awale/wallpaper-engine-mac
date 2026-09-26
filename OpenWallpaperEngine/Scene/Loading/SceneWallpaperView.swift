@@ -9,6 +9,7 @@ import Cocoa
 import SwiftUI
 import MetalKit
 import AVKit
+import Combine
 
 struct SceneWallpaperView: NSViewRepresentable {
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
@@ -117,6 +118,21 @@ struct SceneWallpaperView: NSViewRepresentable {
             guard path == nil || path == sceneViewModel.currentWallpaper.wallpaperDirectory.path else { return }
             sceneViewModel.invalidateContent()
         }
+        // The user's quality settings: the renderer reads them per frame, the content is built for them.
+        let globalSettings = AppDelegate.shared.globalSettingsViewModel
+        let renderSettings = SceneRenderSettings(globalSettings.settings)
+        context.coordinator.renderer?.renderSettings = renderSettings
+        viewModel.setRenderSettings(renderSettings)
+        context.coordinator.renderSettingsObserver = globalSettings.$settings
+            .map(SceneRenderSettings.init)
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] settings in
+                guard let coordinator, let sceneViewModel else { return }
+                coordinator.renderer?.renderSettings = settings
+                sceneViewModel.setRenderSettings(settings)
+                coordinator.scheduleSceneUpdate(.rebuildContent, for: sceneViewModel)
+            }
         context.coordinator.renderer?.setPlacement(wallpaperViewModel.wallpaperPlacement)
         context.coordinator.metalRevision = viewModel.metalRevision
         viewModel.contentAsync { [weak coordinator = context.coordinator] content in
@@ -160,6 +176,8 @@ struct SceneWallpaperView: NSViewRepresentable {
         var sceneMusicObserver: NSObjectProtocol?
         var dependencyObserver: NSObjectProtocol?
         var videoMusicSyncObserver: NSObjectProtocol?
+        /// Follows the user's quality settings (`SceneRenderSettings`).
+        var renderSettingsObserver: AnyCancellable?
 
         private var pendingImpact: SceneChangeImpact = .none
         private var pendingUpdate: DispatchWorkItem?
