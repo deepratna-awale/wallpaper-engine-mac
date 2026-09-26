@@ -325,9 +325,6 @@ struct WEInstanceOverride: Decodable {
     /// Literal fallbacks, for callers that don't resolve bindings.
     var colorn: String? { values[.colorn]?.literalString }
     var size: Double? { values[.size]?.literalDouble }
-    var rate: WEScriptValue? {
-        values[.rate].map { WEScriptValue(script: $0.scriptSource, value: $0.literalDouble) }
-    }
 
     init(values: [SceneInstanceOverrideField: SceneRawValue] = [:], id: Int? = nil) {
         self.values = values
