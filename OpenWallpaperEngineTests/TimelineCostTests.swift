@@ -7,12 +7,18 @@ import XCTest
 /// states), measured as thread CPU time.
 ///
 /// The numbers that matter come from an optimised build (`SWIFT_OPTIMIZATION_LEVEL=-O`); the
-/// assertions only guard against order-of-magnitude regressions, so they hold in Debug too.
+/// assertions only guard against order-of-magnitude regressions, with room for an unoptimised
+/// build (`slowdown`: Debug solves a Bézier about 100× slower).
 /// Set `OWE_TIMELINE_COST_REPORT` to a path to get the table as a file.
 final class TimelineCostTests: XCTestCase {
     private static let warmUpFrames = 600
     private static let measuredFrames = 600
     private static let delta: Float = 1 / 60
+    #if DEBUG
+    private static let slowdown = 25.0
+    #else
+    private static let slowdown = 1.0
+    #endif
 
     /// Every animated library scene through the real loader: per-frame p50 / p99 / max.
     func testTheLibrarysTimelinesCostLittlePerFrame() throws {
@@ -35,13 +41,13 @@ final class TimelineCostTests: XCTestCase {
             report += [item.id, String(frame.timelineCount), String(frame.spriteLayers.count),
                        Self.format(Self.percentile(sorted, 0.5)), Self.format(p99),
                        Self.format(sorted.last ?? 0)].joined(separator: "\t") + "\n"
-            if p99 > 500 { over.append("\(item.id): \(Self.format(p99)) µs") }
+            if p99 > 50 * Self.slowdown { over.append("\(item.id): \(Self.format(p99)) µs") }
         }
         print("Timeline cost per frame, library:\n\(report)")
         if let path = ProcessInfo.processInfo.environment["OWE_TIMELINE_COST_REPORT"] {
             try report.write(toFile: path, atomically: true, encoding: .utf8)
         }
-        XCTAssertTrue(over.isEmpty, "p99 over half a millisecond: \(over)")
+        XCTAssertTrue(over.isEmpty, "p99 over TL20's 50 µs budget (×\(Self.slowdown) unoptimised): \(over)")
     }
 
     /// Many timelines (two per layer: a 600-frame `alpha` loop and a three-channel 600-frame
@@ -55,7 +61,7 @@ final class TimelineCostTests: XCTestCase {
             for _ in 0..<Self.measuredFrames { frame.run() }
             let perFrame = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start) / 1000 / Double(Self.measuredFrames)
             lines.append("\(count) timelines: \(Self.format(perFrame)) µs")
-            XCTAssertLessThan(perFrame, Double(count) * 5, "\(count) timelines")
+            XCTAssertLessThan(perFrame, Double(count) * Self.slowdown / 2, "\(count) timelines")
         }
         print("Timeline cost per frame, synthetic: \(lines.joined(separator: ", "))")
     }
@@ -71,7 +77,7 @@ final class TimelineCostTests: XCTestCase {
         frame.run()
         let microseconds = Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - start) / 1000
         print("Timeline cost of the first frame after setFrame(599) on 128 timelines: \(Self.format(microseconds)) µs")
-        XCTAssertLessThan(microseconds, 2000, "a jump costs a frame")
+        XCTAssertLessThan(microseconds, 2000 * Self.slowdown, "a jump costs a frame")
     }
 
     // MARK: - Support
