@@ -173,6 +173,9 @@ final class ShaderVariantTranslator {
     func variant(vertex: ShaderSource, fragment: ShaderSource, combos: [String: Int]) throws -> TranslatedShaderVariant {
         // Read per call: the in-process compiler hands over to the process compiler after a hang.
         let toolchain = compiler.cacheFingerprint
+        // Combos the shaders never name can't change the translation (the engine's `SCENE_ORTHO`
+        // and `HDR` reach every material): one variant serves all their values.
+        let combos = Self.effectiveCombos(vertex: vertex, fragment: fragment, combos: combos)
         let key = Self.cacheKey(vertex: vertex, fragment: fragment, combos: combos, toolchain: toolchain)
         lock.lock()
         if let cached = memory[key] { lock.unlock(); return cached }
@@ -187,8 +190,27 @@ final class ShaderVariantTranslator {
         return translated
     }
 
+    /// The combos of `combos` that can change the translation of `vertex` and `fragment`: those
+    /// either stage (includes inlined) or the prelude names as an identifier, which covers every
+    /// declared combo (its `// [COMBO]` line names it) and every `#if` on one, plus `LIGHTING` and
+    /// the `LIGHTS_*` counts where a stage `#require`s `LightingV1`, whose generated source they
+    /// shape (`LightingV1Require`).
+    static func effectiveCombos(vertex: ShaderSource, fragment: ShaderSource, combos: [String: Int]) -> [String: Int] {
+        let vertexNames = vertex.preludeAnalysis.identifiers, fragmentNames = fragment.preludeAnalysis.identifiers
+        let requiresLighting = vertexNames.contains(Substring(LightingV1Require.name))
+            || fragmentNames.contains(Substring(LightingV1Require.name))
+        return combos.filter { name, _ in
+            let token = Substring(name)
+            return vertexNames.contains(token) || fragmentNames.contains(token) || ShaderPrelude.commonIdentifiers.contains(token)
+                || (requiresLighting && (name == "LIGHTING" || name.hasPrefix("LIGHTS_")))
+        }
+    }
+
+    /// The variant's cache key. Only `effectiveCombos` are hashed, so a combo the shaders never
+    /// name doesn't fork the key (test-risks LR17).
     static func cacheKey(vertex: ShaderSource, fragment: ShaderSource, combos: [String: Int],
                          toolchain: String = "") -> String {
+        let combos = effectiveCombos(vertex: vertex, fragment: fragment, combos: combos)
         var hasher = SHA256()
         hasher.update(data: Data("\(revision)\u{0}\(toolchain)\u{0}".utf8))
         hasher.update(data: Data(vertex.text.utf8))

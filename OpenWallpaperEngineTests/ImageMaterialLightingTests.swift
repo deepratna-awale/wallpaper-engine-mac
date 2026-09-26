@@ -75,7 +75,9 @@ final class ImageMaterialLightingTests: XCTestCase {
         XCTAssertEqual(combos["ROUGHNESS_MAP"], 1, "flag bit 21")
         XCTAssertNotEqual(combos["REFLECTION_MAP"], 1, "bit 22 is clear")
         XCTAssertNotEqual(combos["EMISSIVE_MAP"], 1, "bit 23 is clear")
-        XCTAssertEqual(combos["TEX1FORMAT"], 8, "RG88")
+        // The builder sets `TEX1FORMAT` 8 (RG88) for the normal map, but genericimage4 never reads
+        // it (only common_fragment.h does), so it isn't part of the variant (LF8).
+        XCTAssertNil(combos["TEX1FORMAT"])
     }
 
     func testComponentCombosNeedTheirFlagBit() {

@@ -99,6 +99,36 @@ final class ShaderVariantCacheTests: XCTestCase {
                        "translated output changed: bump ShaderVariantTranslator.revision and record \(hash) for it")
     }
 
+    /// LF8: a combo neither stage names (the engine's `SCENE_ORTHO` and `HDR` are set for every
+    /// material) doesn't fork the key, so the same effect in a perspective or orthographic scene is
+    /// one variant. A combo the shader names, and `LIGHTING`/`LIGHTS_*` under
+    /// `#require LightingV1`, still does.
+    func testCombosTheShaderDoesntNameStayOutOfTheKey() throws {
+        let loader = ShaderSourceLoader(roots: [ShaderVariantTests.weAssets])
+        let path = "effects/tint/shaders/effects/tint"
+        let vertex = try loader.load(path, stage: .vertex), fragment = try loader.load(path, stage: .fragment)
+        let base = ShaderVariantTranslator.resolveCombos(vertex: vertex, fragment: fragment, overrides: [], boundTextureSlots: [0])
+        func key(_ extra: [String: Int]) -> String {
+            ShaderVariantTranslator.cacheKey(vertex: vertex, fragment: fragment, combos: base.merging(extra) { _, new in new })
+        }
+        XCTAssertEqual(key([:]), key(["SCENE_ORTHO": 1, "LIGHTS_POINT": 2]), "tint names neither")
+        XCTAssertNotEqual(key([:]), key(["HDR": 1]), "tint's common_blending.h tests HDR")
+        let declared = try XCTUnwrap(base.keys.sorted().first, "tint declares a combo")
+        XCTAssertNotEqual(key([declared: 7]), key([:]), "a declared combo keys the variant")
+
+        let lit = "shaders/genericimage4"
+        let litVertex = try loader.load(lit, stage: .vertex), litFragment = try loader.load(lit, stage: .fragment)
+        let combos = ShaderVariantTranslator.resolveCombos(vertex: litVertex, fragment: litFragment,
+                                                           overrides: [["LIGHTING": 1]], boundTextureSlots: [0])
+        func litKey(_ extra: [String: Int]) -> String {
+            ShaderVariantTranslator.cacheKey(vertex: litVertex, fragment: litFragment,
+                                             combos: combos.merging(extra) { _, new in new })
+        }
+        XCTAssertNotEqual(litKey(["LIGHTS_TUBE": 4]), litKey([:]), "LightingV1 is generated from the counts")
+        XCTAssertNotEqual(litKey(["HDR": 1]), litKey([:]), "genericimage4 tests HDR")
+        XCTAssertEqual(litKey(["UNUSED_ENGINE_COMBO": 1]), litKey([:]))
+    }
+
     // MARK: - Cache hygiene (risk 24)
 
     func testVariantsLiveInTheirGeneration() throws {

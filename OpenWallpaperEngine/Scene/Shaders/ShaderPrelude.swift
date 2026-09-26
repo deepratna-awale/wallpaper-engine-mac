@@ -23,12 +23,15 @@ enum ShaderPrelude {
         let clips: Bool
         /// GLSL reserved words the shader uses as names (`GLSLReservedWords`), sorted.
         let glslReservedNames: [String]
+        /// Every identifier the source names (comments and `// [COMBO]` declarations included).
+        let identifiers: Set<Substring>
 
         init(source: String) {
             (macros, functions) = definedNames(in: source)
             // A declaration needs the name as a whole identifier, so only names that occur as one
             // are checked with the (much slower) declaration patterns.
             let identifiers = identifierTokens(in: source)
+            self.identifiers = identifiers
             loadsTexels = Self.loadNames.contains { identifiers.contains(Substring($0)) }
             clips = identifiers.contains("clip")
             reservedLocals = cppReservedWords.subtracting(macros).sorted().filter { name in
@@ -100,6 +103,9 @@ enum ShaderPrelude {
     /// `HLSL` and `HLSL_SM30` are left undefined, as WE's GLSL backend leaves them: shaders test
     /// them with `#ifdef` (screen-space UV flips, half-texel offsets for D3D9), and in an `#if`
     /// an undefined name is 0.
+    /// Every identifier the prelude's own lines name: a combo they test would change a variant.
+    static let commonIdentifiers = identifierTokens(in: common.joined(separator: "\n"))
+
     private static let common = [
         "#define GLSL 1",
         "#define highp",
