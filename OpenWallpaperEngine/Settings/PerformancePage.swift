@@ -141,6 +141,7 @@ struct PerformancePage: SettingsPage {
                     Text("High Performance").tag(GSTextureResolutionQuality.highPerformance)
                     Text("Automatic").tag(GSTextureResolutionQuality.automatic)
                 }
+                .help("Wallpaper Engine's setting: High Performance loads textures at half their size and runs effects at half size too; Automatic does so on displays smaller than 1080p.")
                 Picker("Volumetrics", selection: $viewModel.settings.volumetrics) {
                     Text("Disabled").tag(GSLightingQuality.disabled)
                     Text("Low").tag(GSLightingQuality.low)

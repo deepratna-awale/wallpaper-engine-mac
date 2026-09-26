@@ -794,7 +794,8 @@ class SceneWallpaperViewModel: ObservableObject {
         } else {
             // In pixels, and for a .tex the image's own size, not the padded allocation around it.
             if case let .animated(animation) = source, animation.images.isEmpty { return nil }
-            size = source.pixelSize
+            size = source.pixelSize * textureReductionApplied(named: textureName, materialDir: materialPath,
+                                                              wallpaperDir: wallpaperDir)
         }
         let position: SIMD2<Float> = model.fullscreen == true
             ? sceneSize / 2
@@ -1215,7 +1216,9 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     private func loadMetalTexture(named name: String, materialDir: String, wallpaperDir: URL) -> SceneMetalTextureSource? {
-        let cacheKey = "\(materialDir)|\(name)"
+        // WE's texture reduction loads a smaller mipmap (`TextureReduction`), cached apart.
+        let reduction = renderSettings.textureReduction
+        let cacheKey = "\(materialDir)|\(name)" + (reduction > 1 ? "|reduced\(reduction)" : "")
         if let cached = cachedTexture(cacheKey) { return cached }
         OWEFrameMetrics.countTextureDecode()
         let signpost = OWESignpost.begin(OWESignpost.scene, "decodeTexture")
@@ -1225,26 +1228,44 @@ class SceneWallpaperViewModel: ObservableObject {
             return cacheTexture(.image(transparentPlaceholderImage), for: cacheKey)
         }
 
-        let materialDirPath = (materialDir as NSString).deletingLastPathComponent
-        let root = materialDirPath.split(separator: "/").first.map(String.init) ?? "materials"
-        let paths = Array(Set(["\(materialDirPath)/\(name).tex", "\(root)/\(name).tex",
-                       "materials/\(name).tex", "\(name).tex"]))
-        for path in paths {
+        for path in Self.texturePaths(named: name, materialDir: materialDir) {
             let data = assetData(named: path, wallpaperDir: wallpaperDir)
             guard let data else { continue }
             let parser = TEXParser(data: data)
-            if let animation = parser.extractAnimatedImages() {
+            if let animation = parser.extractAnimatedImages(reduction: reduction) {
                 return cacheTexture(.animated(animation), for: cacheKey)
             }
-            if let texture = parser.extractCompressedTexture() {
+            if let texture = parser.extractCompressedTexture(reduction: reduction) {
                 return cacheTexture(.dxt(texture), for: cacheKey)
             }
-            if let image = parser.extractImage() {
+            if let image = parser.extractImage(reduction: reduction) {
                 return cacheTexture(.image(image), for: cacheKey)
             }
         }
         guard let image = loadTexture(named: name, materialDir: materialDir, wallpaperDir: wallpaperDir) else { return nil }
         return cacheTexture(.image(image), for: cacheKey)
+    }
+
+    /// Where a material's texture `name` may be, in the order they are tried.
+    private static func texturePaths(named name: String, materialDir: String) -> [String] {
+        let materialDirPath = (materialDir as NSString).deletingLastPathComponent
+        let root = materialDirPath.split(separator: "/").first.map(String.init) ?? "materials"
+        return Array(Set(["\(materialDirPath)/\(name).tex", "\(root)/\(name).tex",
+                          "materials/\(name).tex", "\(name).tex"]))
+    }
+
+    /// How much smaller than its header's image texture `name` loaded under WE's texture reduction:
+    /// 2 when it skipped the first of several mipmaps, else 1. A layer sized by its image keeps the
+    /// header's size, as WE's texture keeps it (`TextureReduction`).
+    private func textureReductionApplied(named name: String, materialDir: String, wallpaperDir: URL) -> Float {
+        let reduction = renderSettings.textureReduction
+        guard reduction > 1 else { return 1 }
+        for path in Self.texturePaths(named: name, materialDir: materialDir) {
+            guard let data = assetData(named: path, wallpaperDir: wallpaperDir) else { continue }
+            let mipmaps = TEXParser(data: data).firstImageMipmapCount() ?? 1
+            return Float(1 << TextureReduction.loadedMipmap(reduction: reduction, mipmapCount: mipmaps))
+        }
+        return 1
     }
 
     /// How every object that isn't a drawn layer (groups, particle systems) moves, so its

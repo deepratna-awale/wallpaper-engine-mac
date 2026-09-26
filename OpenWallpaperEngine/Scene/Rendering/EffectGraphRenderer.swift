@@ -772,7 +772,7 @@ final class UniformProgram {
         write(frameBuiltins, frame: frame, pass: pass)
         // Name lookups are string work; do them only when the targets actually change.
         var signature: [Float] = [frame.screenSize.x, frame.screenSize.y, pass.targetSize.x, pass.targetSize.y, pass.alpha,
-                                  pass.color.x, pass.color.y, pass.color.z]
+                                  pass.color.x, pass.color.y, pass.color.z, frame.textureReductionScale]
         for slot in pass.textures.keys.sorted() {
             let info = pass.textures[slot]!
             signature += [Float(slot), info.allocatedSize.x, info.allocatedSize.y, info.contentSize.x, info.contentSize.y]

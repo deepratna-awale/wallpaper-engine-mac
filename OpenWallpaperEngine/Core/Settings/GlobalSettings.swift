@@ -62,6 +62,7 @@ enum GSParticleBudget: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// WE's "Texture Resolution" (config `resolution`: `full`, `half`, `auto`; `TextureReduction`).
 enum GSTextureResolutionQuality: String, CaseIterable, Identifiable, Codable {
     var id: Self { self }
     case highQuality, highPerformance, automatic

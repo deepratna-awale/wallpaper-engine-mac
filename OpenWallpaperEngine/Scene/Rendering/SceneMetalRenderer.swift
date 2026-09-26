@@ -755,6 +755,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         lastPointer = pointer
         effectFrame.pointerState = BuiltinFrameContext.pointerState(primaryDown: leftDown)
         effectFrame.screenSize = drawableSize
+        effectFrame.textureReductionScale = Float(renderSettings.textureReduction)
         effectFrame.audio = WallpaperServices.shared.advanceAudioSpectrumFrame()
         let motion = cameraMotion(pointer: pointer, time: time, deltaTime: Float(clock.delta))
         effectFrame.parallax = parallaxEnabled ? cameraParallax.shaderPosition(sceneSize: sceneSize) : SIMD2(0.5, 0.5)
@@ -973,7 +974,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer, needing: needed)
                 layerSnapshot = snapshot
                 let input = entry.layer.sceneInput
-                    ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, commandBuffer: commandBuffer) }
+                    ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, reducedFor: entry.layer,
+                                                     commandBuffer: commandBuffer) }
                     : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry)).texture
                 dynamicTextures[layerIndex] = input.flatMap {
                     runEffects(entry, draw: draw, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
@@ -1493,10 +1495,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// The scene under a scene-input layer, as that layer's base image (`SceneRegionResample`).
     /// A quad that is exactly the scene (composition and fullscreen layers) uses the snapshot as is.
-    private func sceneRegion(of snapshot: MTLTexture, under quad: SceneQuadGeometry,
+    /// Under WE's texture reduction a composition layer's buffers are its size over the reduction;
+    /// a fullscreen layer's aren't (`TextureReduction`).
+    private func sceneRegion(of snapshot: MTLTexture, under quad: SceneQuadGeometry, reducedFor layer: SceneMetalLayer,
                              commandBuffer: MTLCommandBuffer) -> MTLTexture? {
-        if SceneRegionResample.coversWholeScene(quad, sceneSize: sceneSize) { return snapshot }
-        guard let size = SceneRegionResample.targetSize(quad, pixelsPerUnit: renderPixelsPerUnit),
+        let reduction = layer.fillsScene ? 1 : Float(renderSettings.textureReduction)
+        if reduction == 1, SceneRegionResample.coversWholeScene(quad, sceneSize: sceneSize) { return snapshot }
+        guard let size = SceneRegionResample.targetSize(quad, pixelsPerUnit: renderPixelsPerUnit / reduction),
               let region = renderTargetPool.texture(width: size.x, height: size.y,
                                                     pixelFormat: snapshot.pixelFormat, avoiding: snapshot) else { return nil }
         let pass = MTLRenderPassDescriptor()

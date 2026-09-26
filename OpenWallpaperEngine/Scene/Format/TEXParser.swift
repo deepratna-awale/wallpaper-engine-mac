@@ -58,7 +58,10 @@ class TEXParser {
         self.data = data
     }
 
-    func extractAnimatedImages() -> TEXAnimatedImages? {
+    /// `reduction` is WE's texture reduction (`TextureReduction`): with 2, an image stored with more
+    /// than one mipmap loads from its second, as WE's loader skips the first (`wallpaper64.exe`
+    /// 0x14015d3fd); the frame rects, in the first mipmap's pixels, scale with it.
+    func extractAnimatedImages(reduction: Int = 1) -> TEXAnimatedImages? {
         var cursor = 0
         guard readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXV0005",
               readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXI0001",
@@ -89,9 +92,13 @@ class TEXParser {
         }
 
         var imagePayloads: [(stored: [UInt8], compression: UInt32, uncompressedSize: Int, width: Int, height: Int)] = []
+        // The loaded mipmap's size over the first's: frame rects are in the first's pixels.
+        var frameScale = SIMD2<Float>(1, 1)
         for _ in 0..<imageCount {
             guard let mipmapCount = readUInt32(from: bytes, cursor: &cursor), mipmapCount > 0 else { return nil }
+            let loaded = TextureReduction.loadedMipmap(reduction: reduction, mipmapCount: Int(mipmapCount))
             var firstPayload: (stored: [UInt8], compression: UInt32, uncompressedSize: Int, width: Int, height: Int)?
+            var fullSize = SIMD2<Float>(1, 1)
             for level in 0..<mipmapCount {
                 if usesConditionalMipmapLayout {
                     guard readV4ConditionalPreamble(from: bytes, cursor: &cursor) else { return nil }
@@ -113,8 +120,10 @@ class TEXParser {
                       Int(storedSize) <= bytes.count - cursor else { return nil }
                 let stored = Array(bytes[cursor..<(cursor + Int(storedSize))])
                 cursor += Int(storedSize)
-                guard level == 0 else { continue }
+                if level == 0 { fullSize = SIMD2(Float(max(width, 1)), Float(max(height, 1))) }
+                guard level == loaded else { continue }
                 firstPayload = (stored, compression, uncompressedSize, Int(width), Int(height))
+                frameScale = SIMD2(Float(width), Float(height)) / fullSize
             }
             guard let firstPayload else { return nil }
             imagePayloads.append(firstPayload)
@@ -147,8 +156,9 @@ class TEXParser {
             guard imageIndex >= 0, imageIndex < images.count, frame.duration.isFinite,
                   frame.width > 0, frame.height > 0 else { continue }
             frames.append(TEXAnimationFrame(imageIndex: imageIndex, duration: frame.duration,
-                                            x: frame.x, y: frame.y, width: frame.width, widthY: frame.widthY,
-                                            heightX: frame.heightX, height: frame.height))
+                                            x: frame.x * frameScale.x, y: frame.y * frameScale.y,
+                                            width: frame.width * frameScale.x, widthY: frame.widthY * frameScale.y,
+                                            heightX: frame.heightX * frameScale.x, height: frame.height * frameScale.y))
         }
         if frames.count != sheet.count {
             OWELog.error(.texture, "Animated TEX: dropped \(sheet.count - frames.count) of \(sheet.count) TEXS frames "
@@ -157,7 +167,8 @@ class TEXParser {
         return frames.isEmpty ? nil : TEXAnimatedImages(images: images, frames: frames)
     }
 
-    func extractCompressedTexture() -> TEXCompressedTexture? {
+    /// `reduction`: see `extractAnimatedImages(reduction:)`.
+    func extractCompressedTexture(reduction: Int = 1) -> TEXCompressedTexture? {
         var cursor = 0
 
         guard readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXV0005",
@@ -195,25 +206,11 @@ class TEXParser {
         guard let mipmapCount = readUInt32(from: bytes, cursor: &cursor), mipmapCount > 0 else {
             return nil
         }
-        guard
-              let width = readUInt32(from: bytes, cursor: &cursor),
-              let height = readUInt32(from: bytes, cursor: &cursor) else { return nil }
-
-        let compression: UInt32
-        let uncompressedSize: Int
-        if version == 1 {
-            compression = 0
-            uncompressedSize = 0
-        } else {
-            guard let value = readUInt32(from: bytes, cursor: &cursor),
-                  let size = readUInt32(from: bytes, cursor: &cursor) else { return nil }
-            compression = value
-            uncompressedSize = Int(size)
-        }
-
-        guard let storedSize = readUInt32(from: bytes, cursor: &cursor),
-              Int(storedSize) <= bytes.count - cursor else { return nil }
-        let storedData = Array(bytes[cursor..<(cursor + Int(storedSize))])
+        let loaded = TextureReduction.loadedMipmap(reduction: reduction, mipmapCount: Int(mipmapCount))
+        guard let mipmap = readMipmap(at: loaded, version: version, cursor: &cursor) else { return nil }
+        let width = mipmap.width, height = mipmap.height
+        let compression = mipmap.compression, uncompressedSize = mipmap.uncompressedSize
+        let storedData = mipmap.stored
         let mipmapData: [UInt8]
         if compression == 0 {
             mipmapData = storedData
@@ -230,11 +227,33 @@ class TEXParser {
         }
         let expectedSize = ((textureWidth + 3) / 4) * ((textureHeight + 3) / 4) * (format == 7 ? 8 : 16)
         guard mipmapData.count >= expectedSize else { return nil }
-        // A zero or oversized header size means "no crop": the whole allocation is content.
-        let contentWidth = imageWidth > 0 ? min(Int(imageWidth), textureWidth) : textureWidth
-        let contentHeight = imageHeight > 0 ? min(Int(imageHeight), textureHeight) : textureHeight
+        // A zero or oversized header size means "no crop": the whole allocation is content. A
+        // later mipmap holds the image at its own scale (halved per level).
+        let contentWidth = imageWidth > 0 ? min(TextureReduction.mipmapSide(Int(imageWidth), level: loaded), textureWidth) : textureWidth
+        let contentHeight = imageHeight > 0 ? min(TextureReduction.mipmapSide(Int(imageHeight), level: loaded), textureHeight) : textureHeight
         return TEXCompressedTexture(format: format, width: textureWidth, height: textureHeight, data: mipmapData,
                                     contentWidth: contentWidth, contentHeight: contentHeight)
+    }
+
+    /// How many mipmaps the first image stores (1 for a video's conditional layout, which loads
+    /// whole); nil for a file that isn't a TEX container.
+    func firstImageMipmapCount() -> Int? {
+        var cursor = 0
+        guard readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXV0005",
+              readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXI0001" else { return nil }
+        cursor += 7 * 4
+        guard let container = readNullTerminatedString(from: bytes, cursor: &cursor),
+              readUInt32(from: bytes, cursor: &cursor) != nil else { return nil }
+        switch container {
+        case "TEXB0001", "TEXB0002": break
+        case "TEXB0003": cursor += 4
+        case "TEXB0004":
+            guard let freeImageFormat = readUInt32(from: bytes, cursor: &cursor),
+                  let isVideoFlag = readUInt32(from: bytes, cursor: &cursor) else { return nil }
+            if isConditionalVideoFormat(freeImageFormat, isVideoFlag: isVideoFlag) { return 1 }
+        default: return nil
+        }
+        return readUInt32(from: bytes, cursor: &cursor).map(Int.init)
     }
 
     /// TEXB0004 mipmaps use the conditional-variant layout (param1/param2/conditionJson/param3 preamble)
@@ -256,9 +275,9 @@ class TEXParser {
         return true
     }
 
-    /// Extract the image from this TEX container.
-    func extractImage() -> NSImage? {
-        if let image = extractContainerImage() {
+    /// Extract the image from this TEX container. `reduction`: see `extractAnimatedImages(reduction:)`.
+    func extractImage(reduction: Int = 1) -> NSImage? {
+        if let image = extractContainerImage(reduction: reduction) {
             return image
         }
         OWELog.error(.texture, "Unsupported or malformed TEX container (\(data.count) bytes); refusing embedded thumbnail fallback")
@@ -281,7 +300,7 @@ class TEXParser {
 
     // MARK: - Private
 
-    private func extractContainerImage() -> NSImage? {
+    private func extractContainerImage(reduction: Int) -> NSImage? {
         var cursor = 0
 
         guard readNullTerminatedString(from: bytes, cursor: &cursor) == "TEXV0005",
@@ -318,33 +337,22 @@ class TEXParser {
             return nil
         }
 
+        // A video's conditional mipmap has its preamble before the count; it loads whole.
         if usesConditionalMipmapLayout {
             guard readV4ConditionalPreamble(from: bytes, cursor: &cursor) else { return nil }
         }
         guard let mipmapCount = readUInt32(from: bytes, cursor: &cursor), mipmapCount > 0 else {
             return nil
         }
-        guard
-              let mipmapWidth = readUInt32(from: bytes, cursor: &cursor),
-              let mipmapHeight = readUInt32(from: bytes, cursor: &cursor) else {
-            return nil
-        }
-
-        let compression: UInt32
-        let uncompressedSize: Int
-        if version == 1 {
-            compression = 0
-            uncompressedSize = 0
-        } else {
-            guard let compressed = readUInt32(from: bytes, cursor: &cursor),
-                  let size = readUInt32(from: bytes, cursor: &cursor) else { return nil }
-            compression = compressed
-            uncompressedSize = Int(size)
-        }
-
-        guard let storedSize = readUInt32(from: bytes, cursor: &cursor),
-              storedSize <= bytes.count - cursor else { return nil }
-        let storedData = Array(bytes[cursor..<(cursor + Int(storedSize))])
+        let loaded = usesConditionalMipmapLayout ? 0
+            : TextureReduction.loadedMipmap(reduction: reduction, mipmapCount: Int(mipmapCount))
+        guard let mipmap = readMipmap(at: loaded, version: version, cursor: &cursor) else { return nil }
+        let mipmapWidth = UInt32(mipmap.width), mipmapHeight = UInt32(mipmap.height)
+        let compression = mipmap.compression, uncompressedSize = mipmap.uncompressedSize
+        let storedData = mipmap.stored
+        // The image's own size at the loaded mipmap's scale.
+        let visibleImageWidth = TextureReduction.mipmapSide(Int(imageWidth), level: loaded)
+        let visibleImageHeight = TextureReduction.mipmapSide(Int(imageHeight), level: loaded)
         let mipmapData: [UInt8]
         if compression == 0 {
             mipmapData = storedData
@@ -359,13 +367,13 @@ class TEXParser {
             let width = Int(mipmapWidth)
             let height = Int(mipmapHeight)
             guard width > 0, height > 0, width <= 16_384, height <= 16_384 else { return nil }
-            let visibleWidth = min(Int(imageWidth), width)
-            let visibleHeight = min(Int(imageHeight), height)
+            let visibleWidth = min(visibleImageWidth, width)
+            let visibleHeight = min(visibleImageHeight, height)
             return decodeDXT(mipmapData, format: format, width: width, height: height,
                              visibleWidth: visibleWidth, visibleHeight: visibleHeight)
         default:
-            let visibleWidth = min(Int(imageWidth), Int(mipmapWidth))
-            let visibleHeight = min(Int(imageHeight), Int(mipmapHeight))
+            let visibleWidth = min(visibleImageWidth, Int(mipmapWidth))
+            let visibleHeight = min(visibleImageHeight, Int(mipmapHeight))
             if let image = rawChannelImage(mipmapData, format: format, width: Int(mipmapWidth), height: Int(mipmapHeight),
                                            visibleWidth: visibleWidth, visibleHeight: visibleHeight) {
                 return image
@@ -744,6 +752,32 @@ class TEXParser {
 
     private func color565(_ color: UInt16) -> (UInt8, UInt8, UInt8) {
         (UInt8((color >> 11) * 255 / 31), UInt8(((color >> 5) & 0x3F) * 255 / 63), UInt8((color & 0x1F) * 255 / 31))
+    }
+
+    /// Mipmap `level` of the first image, whose mipmap count the cursor is past; the levels before
+    /// it are skipped.
+    private func readMipmap(at level: Int, version: Int,
+                            cursor: inout Int) -> (width: Int, height: Int, compression: UInt32, uncompressedSize: Int, stored: [UInt8])? {
+        for current in 0...level {
+            guard let width = readUInt32(from: bytes, cursor: &cursor),
+                  let height = readUInt32(from: bytes, cursor: &cursor) else { return nil }
+            var compression: UInt32 = 0
+            var uncompressedSize = 0
+            if version != 1 {
+                guard let value = readUInt32(from: bytes, cursor: &cursor),
+                      let size = readUInt32(from: bytes, cursor: &cursor) else { return nil }
+                compression = value
+                uncompressedSize = Int(size)
+            }
+            guard let storedSize = readUInt32(from: bytes, cursor: &cursor),
+                  Int(storedSize) <= bytes.count - cursor else { return nil }
+            if current == level {
+                return (Int(width), Int(height), compression, uncompressedSize,
+                        Array(bytes[cursor..<(cursor + Int(storedSize))]))
+            }
+            cursor += Int(storedSize)
+        }
+        return nil
     }
 
     private func readNullTerminatedString(from bytes: [UInt8], cursor: inout Int) -> String? {

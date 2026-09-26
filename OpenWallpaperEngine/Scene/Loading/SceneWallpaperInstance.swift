@@ -139,6 +139,8 @@ final class SceneWallpaperInstance {
             loadContent()
         }
         renderer?.setPlacement(wallpapers.wallpaperPlacement)
+        // A display that joined or changed size can change WE's automatic texture resolution.
+        applyRenderSettings(renderSettings(for: environment.settings.settings))
         updateVideoPlayback()
         renderer?.sounds.setTargetGain(soundGain)
         let fps = Int(environment.settings.settings.fps)
@@ -202,9 +204,26 @@ final class SceneWallpaperInstance {
             renderer.frameTimeObserver = { watchdog.recordFrame(duration: $0) }
         }
         // The user's quality settings: the renderer reads them per frame, the content is built for them.
-        let renderSettings = SceneRenderSettings(environment.settings.settings)
+        let renderSettings = renderSettings(for: environment.settings.settings)
         renderer.renderSettings = renderSettings
         viewModel.setRenderSettings(renderSettings)
+    }
+
+    /// `settings` for this scene's displays: WE's automatic texture resolution follows the largest.
+    private func renderSettings(for settings: GlobalSettings) -> SceneRenderSettings {
+        let largest = displays.values.reduce(SIMD2<Float>(repeating: 0)) { largest, display in
+            guard let view = display.view else { return largest }
+            return simd_max(largest, SIMD2(Float(view.drawableSize.width), Float(view.drawableSize.height)))
+        }
+        return SceneRenderSettings(settings, outputPixels: largest)
+    }
+
+    /// Applies `settings` when they differ from the renderer's, rebuilding the content for them.
+    private func applyRenderSettings(_ settings: SceneRenderSettings) {
+        guard let renderer, settings != renderer.renderSettings else { return }
+        renderer.renderSettings = settings
+        viewModel.setRenderSettings(settings)
+        scheduleSceneUpdate(.rebuildContent)
     }
 
     private func observeChanges() {
@@ -254,15 +273,11 @@ final class SceneWallpaperInstance {
             }
         })
         environment.settings.$settings
-            .map(SceneRenderSettings.init)
-            .removeDuplicates()
             .dropFirst()
             .sink { [weak self] settings in
                 MainActor.assumeIsolated {
                     guard let self else { return }
-                    self.renderer?.renderSettings = settings
-                    self.viewModel.setRenderSettings(settings)
-                    self.scheduleSceneUpdate(.rebuildContent)
+                    self.applyRenderSettings(self.renderSettings(for: settings))
                 }
             }
             .store(in: &cancellables)

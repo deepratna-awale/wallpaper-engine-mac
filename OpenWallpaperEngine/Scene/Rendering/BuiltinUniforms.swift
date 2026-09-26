@@ -30,6 +30,8 @@ struct BuiltinFrameContext {
     var viewRight: SIMD3<Float> = SIMD3(1, 0, 0)
     var viewForward: SIMD3<Float> = SIMD3(0, 0, -1)
     var audio: AudioSpectrumSnapshot = .silent
+    /// `g_TextureReductionScale`: WE's texture reduction, 1 or 2 (`TextureReduction`).
+    var textureReductionScale: Float = 1
     /// This frame's scene colours and lights (`SceneFrameLighting`): `g_LightAmbientColor`,
     /// `g_LightSkylightColor`, the `LightingV1` arrays and the legacy `g_Lights*`.
     var lighting = SceneFrameLighting()
@@ -181,7 +183,7 @@ enum BuiltinUniforms {
         case "g_ViewUp": return flat(frame.viewUp)
         case "g_ViewRight": return flat(frame.viewRight)
         case "g_ViewForward": return flat(frame.viewForward)
-        case "g_TextureReductionScale": return [1]
+        case "g_TextureReductionScale": return [frame.textureReductionScale]
         default: return nil
         }
     }
