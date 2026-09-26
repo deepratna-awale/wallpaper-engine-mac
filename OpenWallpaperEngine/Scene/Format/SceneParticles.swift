@@ -251,6 +251,16 @@ struct WEParticleRenderer: Codable {
     @WEFlexibleInt var subdivision: Int?
     var fadealpha: Bool?
     var fadesize: Bool?
+    /// Every renderer (`ParticleOrientation`): "screen", "upright" or "fixed", the axis, and flags
+    /// (bit 0: the axis is in the scene rather than the object).
+    var orientation: String?
+    var axis: WEFlexValue?
+    @WEFlexibleInt var flags: Int?
+    /// `rope` and `ropetrail` (`ParticleRopeUV`): texture repeats along the rope, smoothing and
+    /// scrolling.
+    @WEFlexibleDouble var uvscale: Double?
+    var uvsmoothing: Bool?
+    var uvscrolling: Bool?
 }
 
 // MARK: - String Parsing Helpers

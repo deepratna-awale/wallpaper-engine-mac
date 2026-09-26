@@ -121,6 +121,12 @@ struct ParticleFrameInputs {
     /// The factor on the size of trail and rope records, whose width the shaders don't take from
     /// `drawLinear`: its area scale's square root (`ParticleSystemRuntime.drawSizeScale`).
     var drawSizeScale: Float = 1
+    /// A built-in sprite's quad axes: the renderer's orientation through `drawLinear`
+    /// (`ParticleSystemRuntime.spriteLinear`).
+    var spriteLinear = matrix_identity_float2x2
+    /// The instance overrides of rate and lifetime a rope lays its texture by (`ParticleRopeUV`).
+    var ropeRateScale: Float = 1
+    var ropeLifetimeScale: Float = 1
 
     /// The system's space to the scene's inverse linear part (identity when it collapses).
     var toSpace: simd_float2x2 { space.inverse?.linear ?? matrix_identity_float2x2 }
@@ -189,8 +195,13 @@ struct ParticleFrameInputs {
             inputs.spawnTurn = atan2(linear.columns.0.y, linear.columns.0.x)
         }
         system.drawLinear = configuration.worldSpace ? matrix_identity_float2x2 : world.linear
+        system.spriteLinear = configuration.orientation.spriteLinear(linear: system.drawLinear)
         inputs.drawLinear = system.drawLinear
         inputs.drawSizeScale = system.drawSizeScale
+        inputs.spriteLinear = system.spriteLinear
+        inputs.ropeRateScale = overrides.rate
+        inputs.ropeLifetimeScale = inputs.spawnScale.z
+        system.ropeFrame = SIMD3(inputs.ropeRateScale, inputs.ropeLifetimeScale, Float(frameRateLimit))
         inputs.placeControlPoints(system, world: world, cursor: cursor, overrides: overrides)
         inputs.encodeProgram(system, time: time, audio: audio, countScale: overrides.count)
         return inputs

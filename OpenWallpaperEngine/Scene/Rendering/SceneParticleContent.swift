@@ -27,6 +27,10 @@ struct SceneMetalParticleSystem {
     let trailLength: Float
     /// `spritetrail`'s `maxlength` and `minlength`: the stretch's limits.
     var trailLengthLimits = SIMD2<Float>(10, 0)
+    /// The renderer's `orientation`, `axis` and `flags`: the axes its sprites and ribbons face along.
+    var orientation = ParticleOrientation()
+    /// A rope's `uvscale`, `uvsmoothing` and `uvscrolling`.
+    var ropeUV = ParticleRopeUV()
     /// `ropetrail`'s `segments`: samples of history per particle.
     let trailSegments: Int
     /// `subdivision`: spline points per rope segment (the `TRAILSUBDIVISION` combo).

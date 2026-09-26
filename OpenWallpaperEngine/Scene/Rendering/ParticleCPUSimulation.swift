@@ -60,6 +60,14 @@ final class ParticleSystemRuntime {
     /// The emitter's scale, rotation and shear the particles are drawn through
     /// (`ParticleFrameInputs.drawLinear`), from the last step.
     var drawLinear = matrix_identity_float2x2
+    /// A built-in sprite's quad axes from the last step: the renderer's orientation through
+    /// `drawLinear` (`ParticleOrientation.spriteLinear`).
+    var spriteLinear = matrix_identity_float2x2
+    /// The last step's rope inputs (`ParticleRopeUV.layout`): rate and lifetime overrides and the
+    /// frame-rate limit.
+    var ropeFrame = SIMD3<Float>(1, 1, 0)
+    /// Particles that died of age since the system started (a scrolling rope's shift), on the CPU.
+    var died: UInt32 = 0
     /// Each emitter's clock (`ParticleEmitterTiming`), carried fraction and what its rate emitted this
     /// period (`ParticleFrameInputs.periodLimit`) for a system that isn't instanced; the CPU
     /// simulation's counts.
@@ -146,6 +154,7 @@ enum ParticleCPUSimulation {
         system.diedThisStep.removeAll(keepingCapacity: true)
         if inputs.clears {
             system.particles.removeAll(keepingCapacity: true)
+            system.died = 0
             for index in system.emitterStates.indices {
                 system.emitterStates[index].remainder = 0
                 system.emitterStates[index].periodEmitted = 0
@@ -239,7 +248,9 @@ enum ParticleCPUSimulation {
         if system.configuration.hasEventChildren {
             system.diedThisStep = system.particles.filter { $0.lifetime < $0.age }
         }
+        let count = system.particles.count
         system.particles.removeAll { $0.lifetime < $0.age }
+        system.died &+= UInt32(count - system.particles.count)
     }
 
     /// Carries a particle that lives in its emitter's space along with the emitter's move. Its size
@@ -372,13 +383,14 @@ extension ParticleSystemRuntime {
     }
 
     /// A built-in sprite's quad axes (`LayerUniform.quadAxisX`, y up) for a particle of `size` and
-    /// `rotation` drawn through `drawLinear`, as WE's model matrix draws it. `scale` takes scene
+    /// `rotation` drawn along `spriteLinear` (its orientation through `drawLinear`), as WE's model
+    /// matrix draws it. `scale` takes scene
     /// units to the target's pixels. `spriteAxes` in `ParticleShared.h` is the GPU's.
     func spriteAxes(size: Float, rotation: Float, scale: SIMD2<Float>) -> (x: SIMD2<Float>, y: SIMD2<Float>) {
         let c = cos(rotation), s = sin(rotation)
         // Rotated in the shader's y-down corner space, then flipped to y up.
-        let x: SIMD2<Float> = drawLinear * (SIMD2(c, -s) * size)
-        let y: SIMD2<Float> = drawLinear * (SIMD2(-s, -c) * size)
+        let x: SIMD2<Float> = spriteLinear * (SIMD2(c, -s) * size)
+        let y: SIMD2<Float> = spriteLinear * (SIMD2(-s, -c) * size)
         return (x * scale, -y * scale)
     }
 }

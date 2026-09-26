@@ -350,9 +350,18 @@ final class ParticleSimulationParityTests: XCTestCase {
     }
 
     func testRopeAndRopeTrailRecordsMatchTheCPUWriter() throws {
-        for renderer in ["rope", "ropetrail"] {
+        var scaled = ParticleRopeUV()
+        scaled.inverseScale = 0.5
+        scaled.rate = 600
+        scaled.lifetime = 1.5
+        var scrolling = scaled
+        scrolling.scrolling = true
+        scrolling.smoothing = false
+        for (renderer, uv) in [("rope", ParticleRopeUV()), ("ropetrail", ParticleRopeUV()), ("rope", scaled),
+                               ("rope", scrolling), ("ropetrail", scrolling)] {
             var system = ParticleTestSystem()
             system.rendererName = renderer
+            system.ropeUV = uv
             system.trailSegments = 5
             let kind = ParticleGPUDrawKind.material(.rope, rendererName: renderer)
             let (cpu, gpu) = try runBoth(system, kind: kind)
@@ -397,19 +406,27 @@ final class ParticleSimulationParityTests: XCTestCase {
         }
     }
 
-    /// The built-in sprite goes through the emitter's transform on both paths (`spriteAxes`).
+    /// The built-in sprite goes through the emitter's transform and the renderer's orientation on
+    /// both paths (`spriteAxes`).
     func testBuiltInSpritesTakeTheEmitterTransform() throws {
-        var system = ParticleTestSystem()
-        let turn = simd_float2x2(SIMD2(0.8, 0.6), SIMD2(-0.6, 0.8))
-        system.emitterLinear = turn * simd_float2x2(diagonal: SIMD2(2.5, 0.5))
-        let (cpu, gpu) = try runBoth(system, frames: 30, kind: .fallbackSprite)
-        let actual = simulator.records(gpu.runtime, as: LayerUniform.self, queue: queue).records
-        XCTAssertEqual(actual.count, cpu.particles.count)
-        XCTAssertEqual(cpu.drawLinear, system.emitterLinear)
-        for (record, particle) in zip(actual, cpu.particles) {
-            let axes = cpu.spriteAxes(size: particle.size, rotation: particle.rotation, scale: SIMD2(1, 1))
-            XCTAssertLessThan(simd_distance(record.quadAxisX, axes.x), 1e-2)
-            XCTAssertLessThan(simd_distance(record.quadAxisY, axes.y), 1e-2)
+        var upright = ParticleOrientation()
+        upright.mode = .upright
+        upright.objectSpace = false
+        for orientation in [ParticleOrientation(), upright] {
+            var system = ParticleTestSystem()
+            let turn = simd_float2x2(SIMD2(0.8, 0.6), SIMD2(-0.6, 0.8))
+            system.emitterLinear = turn * simd_float2x2(diagonal: SIMD2(2.5, 0.5))
+            system.orientation = orientation
+            let (cpu, gpu) = try runBoth(system, frames: 30, kind: .fallbackSprite)
+            let actual = simulator.records(gpu.runtime, as: LayerUniform.self, queue: queue).records
+            XCTAssertEqual(actual.count, cpu.particles.count)
+            XCTAssertEqual(cpu.drawLinear, system.emitterLinear)
+            XCTAssertEqual(cpu.spriteLinear, orientation.spriteLinear(linear: system.emitterLinear))
+            for (record, particle) in zip(actual, cpu.particles) {
+                let axes = cpu.spriteAxes(size: particle.size, rotation: particle.rotation, scale: SIMD2(1, 1))
+                XCTAssertLessThan(simd_distance(record.quadAxisX, axes.x), 1e-2)
+                XCTAssertLessThan(simd_distance(record.quadAxisY, axes.y), 1e-2)
+            }
         }
     }
 

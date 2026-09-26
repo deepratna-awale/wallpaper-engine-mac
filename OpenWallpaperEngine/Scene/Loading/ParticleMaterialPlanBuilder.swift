@@ -144,9 +144,16 @@ struct ParticleMaterialPlanBuilder {
         case .rope:
             // Per-segment end colour and size are always known.
             combos["THICKFORMAT"] = 1
-            if rendererName == "ropetrail" { combos["TRAILRENDERER"] = 1 }
+            if rendererName == "ropetrail" {
+                combos["TRAILRENDERER"] = 1
+                // A scrolling trail's texture moves along it (0x1401d261b…0x1401d2976).
+                if renderer?.uvscrolling == true { combos["TRAILSCROLLALPHA"] = 1 }
+            }
             // WE's subdivision: 4 for `rope`, 1 for `ropetrail` (`ParticleRendererDefaults`).
             combos["TRAILSUBDIVISION"] = ParticleRendererDefaults(renderer).subdivision
+            // The renderer's orientation: 0 faces the ribbon to the eye, else along
+            // `g_OrientationForward` (0x1401d271b / 0x1401d2b3e).
+            combos["ORIENTATION"] = ParticleOrientation(renderer).mode.rawValue
         }
         return combos
     }

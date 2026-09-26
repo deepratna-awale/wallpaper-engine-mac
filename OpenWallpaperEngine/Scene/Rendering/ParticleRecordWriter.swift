@@ -37,11 +37,17 @@ enum ParticleRecordWriter {
     }
 
     /// `g_RenderVar0` for a rope: `(points, 0, segment time offset, points)`. Trails are sampled at
-    /// the particle, so the newest segment is always whole (offset 1).
+    /// the particle, so the newest segment is always whole (offset 1). A scrolling `ropetrail`
+    /// (`TRAILSCROLLALPHA`) takes WE's `(slots − 1, 0, offset, (slots − 1) / uvscale)` (0x14023699a…).
     static func ropeRenderVar(_ system: ParticleSystemRuntime) -> SIMD4<Float> {
+        let configuration = system.configuration
+        if configuration.rendererName == "ropetrail", configuration.ropeUV.scrolling {
+            let slots = Float(max(configuration.trailSegments, 1))
+            return SIMD4(slots - 1, 0, 1, (slots - 1) * configuration.ropeUV.inverseScale)
+        }
         let points: Float
-        if system.configuration.rendererName == "ropetrail" {
-            points = Float(max(system.configuration.trailSegments, 1) + 1)
+        if configuration.rendererName == "ropetrail" {
+            points = Float(max(configuration.trailSegments, 1) + 1)
         } else {
             points = Float(system.particles.count)
         }
@@ -98,6 +104,12 @@ enum ParticleRecordWriter {
         let particles = system.particles
         let strands = ParticleRopeStrands(particles)
         let scale = system.drawSizeScale
+        let uv = system.configuration.ropeUV
+        let frame = system.ropeFrame
+        func layout(_ index: Int) -> (count: Float, shift: Float) {
+            uv.layout(points: strands.count[index], oldestAge: particles[strands.oldest[index]].age, died: system.died,
+                      rateScale: frame.x, lifetimeScale: frame.y, frameRateLimit: Int(frame.z))
+        }
         for index in 0..<min(count, max(particles.count - 1, 0)) {
             guard let following = strands.next[index] else {
                 records[index] = ParticleRopeSegmentInstance.empty
@@ -107,10 +119,11 @@ enum ParticleRecordWriter {
             let end = particles[following]
             let previous = particles[strands.previous[index] ?? index].position
             let next = particles[strands.next[following] ?? following].position
+            let place = layout(index)
             records[index] = ParticleRopeSegmentInstance(
                 start: SIMD4(start.position.x, start.position.y, 0, shaderSize(start, scale: scale)),
-                end: SIMD4(end.position.x, end.position.y, 0, Float(strands.count[index])),
-                previous: SIMD4(previous.x, previous.y, 0, Float(strands.index[index])),
+                end: SIMD4(end.position.x, end.position.y, 0, place.count),
+                previous: SIMD4(previous.x, previous.y, 0, Float(strands.index[index]) + place.shift),
                 next: SIMD4(next.x, next.y, 0, shaderSize(end, scale: scale)),
                 endColor: color(end, opacity: opacity),
                 color: color(start, opacity: opacity))
@@ -122,6 +135,8 @@ enum ParticleRecordWriter {
                                         count: Int, opacity: (Particle) -> Float) {
         var written = 0
         let scale = system.drawSizeScale
+        // Scrolling trails read the segment as their vertex index (`in_TrailVertexIndex`).
+        let scrolling = system.configuration.ropeUV.scrolling
         for particle in system.particles {
             let history = particle.history
             guard !history.isEmpty else { continue }
@@ -140,7 +155,7 @@ enum ParticleRecordWriter {
                 let next = point(min(segment + 2, points - 1))
                 records[written] = ParticleRopeSegmentInstance(
                     start: SIMD4(start.x, start.y, 0, size),
-                    end: SIMD4(end.x, end.y, 0, Float(points)),
+                    end: SIMD4(end.x, end.y, 0, scrolling ? Float(segment) : Float(points)),
                     previous: SIMD4(previous.x, previous.y, 0, Float(segment)),
                     next: SIMD4(next.x, next.y, 0, size),
                     endColor: rgba, color: rgba)
@@ -153,11 +168,13 @@ enum ParticleRecordWriter {
 /// A `rope`'s strands: the system's particles in spawn order, one strand per instance (all of them
 /// for a system without instances). `particleWriteRope` walks the same neighbours on the GPU.
 struct ParticleRopeStrands {
-    /// Each particle's neighbours on its strand, its place on it and the strand's length.
+    /// Each particle's neighbours on its strand, its place on it, the strand's length and its oldest
+    /// particle.
     var next: [Int?]
     var previous: [Int?]
     var index: [Int]
     var count: [Int]
+    var oldest: [Int]
 
     /// The strands' particles, each in spawn order, the strands in the order they first appear.
     static func strands(_ particles: [Particle]) -> [[Particle]] {
@@ -175,6 +192,7 @@ struct ParticleRopeStrands {
         previous = Array(repeating: nil, count: particles.count)
         index = Array(repeating: 0, count: particles.count)
         count = Array(repeating: 0, count: particles.count)
+        oldest = Array(repeating: 0, count: particles.count)
         var members: [Int: [Int]] = [:]
         for (position, particle) in particles.enumerated() { members[particle.instance, default: []].append(position) }
         for strand in members.values {
@@ -183,6 +201,7 @@ struct ParticleRopeStrands {
                 previous[position] = place > 0 ? strand[place - 1] : nil
                 index[position] = place
                 count[position] = strand.count
+                oldest[position] = strand[0]
             }
         }
     }

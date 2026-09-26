@@ -92,7 +92,8 @@ struct ParticleFrame {
     float4 spawnScale;       // instance overrides: size, alpha, lifetime, speed
     float4 colorScale;       // instance overrides: tint times brightness
     uint4 emission;          // substeps, emitters
-    float4 drawLinear;       // the emitter's linear its particles are drawn through: column 0 xy, column 1 xy
+    float4 spriteLinear;     // a built-in sprite's quad axes (`spriteLinear`): column 0 xy, column 1 xy
+    float4 rope;             // `ParticleRopeUV.layout`: rate, lifetime, frame-rate limit, 1 / uvscale
 };
 
 /// One encoded program record (`ParticleProgramOp`).
@@ -135,8 +136,8 @@ struct FallbackInstance {
 };
 
 // Flags (`ParticleGPUParameters.Flag`).
-constant uint kHistory = 1u << 0, kSpriteSheet = 1u << 2, kInstanced = 1u << 3;
-constant uint kWorldSpace = 1u << 4;
+constant uint kHistory = 1u << 0, kRopeSmoothing = 1u << 1, kSpriteSheet = 1u << 2, kInstanced = 1u << 3;
+constant uint kWorldSpace = 1u << 4, kRopeScrolling = 1u << 5;
 
 // Instance flags (`ParticleGPUInstance`).
 constant uint iActive = 1u << 0, iEmitting = 1u << 1, iFresh = 1u << 2, iClearing = 1u << 3;
@@ -271,7 +272,7 @@ static FallbackInstance fallbackInstance(float2 position, float2 size, float opa
     return instance;
 }
 
-/// A built-in sprite drawn through the emitter's `linear` (`ParticleSystemRuntime.drawLinear`), as
+/// A built-in sprite drawn along `linear` (`ParticleSystemRuntime.spriteLinear`), as
 /// WE's model matrix draws it: the quad's axes, in the target's pixels (`LayerUniform.quadAxisX`).
 /// The shader's corners run y down, rotated by `rotation`, and its axes are y up.
 static void spriteAxes(thread FallbackInstance &instance, float2x2 linear, float rotation, float size,

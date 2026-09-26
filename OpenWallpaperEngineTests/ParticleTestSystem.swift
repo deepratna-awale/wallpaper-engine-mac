@@ -45,6 +45,8 @@ struct ParticleTestSystem {
     var emitterTiming = ParticleEmitterTiming()
     /// Emitters after the first (`SceneMetalParticleSystem.extraEmitters`).
     var extraEmitters: [ParticleEmitter] = []
+    var orientation = ParticleOrientation()
+    var ropeUV = ParticleRopeUV()
     var emitterSpeed = SIMD2<Float>.zero
     /// A sphere's inner radius as a fraction of the outer.
     var minimumSpawnRatio: Float = 0
@@ -120,6 +122,8 @@ struct ParticleTestSystem {
         system.instantaneous = instantaneous
         system.emitterTiming = emitterTiming
         system.extraEmitters = extraEmitters
+        system.orientation = orientation
+        system.ropeUV = ropeUV
         system.material = material
         system.hasEventChildren = false
         return system

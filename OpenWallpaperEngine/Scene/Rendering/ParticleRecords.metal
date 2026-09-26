@@ -59,9 +59,10 @@ kernel void particleWriteSprites(device const ParticleState *particles [[buffer(
 }
 
 /// `ParticleRopeStrands` for particle `gid`: the next and previous particle of its strand (`count`
-/// for none), its place on the strand and the strand's length. A system without instances is one
-/// strand; an instanced one has one per instance, which a scan over the particles finds.
-struct RopeNeighbours { uint next, previous, index, length; };
+/// for none), its place on the strand, the strand's length and its oldest particle. A system without
+/// instances is one strand; an instanced one has one per instance, which a scan over the particles
+/// finds.
+struct RopeNeighbours { uint next, previous, index, length, oldest; };
 
 static RopeNeighbours ropeNeighbours(device const ParticleState *particles, uint count, uint gid,
                                      constant ParticleParameters &p) {
@@ -71,6 +72,7 @@ static RopeNeighbours ropeNeighbours(device const ParticleState *particles, uint
         n.previous = gid > 0 ? gid - 1 : count;
         n.index = gid;
         n.length = count;
+        n.oldest = 0;
         return n;
     }
     const float strand = particles[gid].trail.z;
@@ -78,13 +80,33 @@ static RopeNeighbours ropeNeighbours(device const ParticleState *particles, uint
     n.previous = count;
     n.index = 0;
     n.length = 0;
+    n.oldest = gid;
     for (uint j = 0; j < count; ++j) {
         if (particles[j].trail.z != strand) continue;
+        if (n.length == 0) n.oldest = j;
         n.length += 1;
         if (j < gid) { n.index += 1; n.previous = j; }
         if (j > gid && n.next == count) n.next = j;
     }
     return n;
+}
+
+/// `ParticleRopeUV.layout`: a strand's point count (x) and the shift of its places (y).
+static float2 ropeLayout(uint points, float oldestAge, uint died, constant ParticleParameters &p, constant ParticleFrame &f) {
+    const float alive = float(points);
+    float rate = f.rope.x;
+    const float lifetime = f.rope.y;
+    if (rate * lifetime > alive) rate = min(f.rope.z, rate);
+    const float expected = rate * lifetime;
+    float count = alive, shift = 0;
+    if (p.counts.y & kRopeScrolling) {
+        count = expected - 1;
+        shift = float(died);
+    } else if (expected > 0 && alive >= expected - 1 && (p.counts.y & kRopeSmoothing)) {
+        count = expected - 1;
+        shift = saturateValue((lifetime - oldestAge) * rate) - 1;
+    }
+    return float2(count * f.rope.w, shift);
 }
 
 /// `ParticleRecordWriter.writeRope`: one strand through the system (one per instance), oldest
@@ -107,10 +129,11 @@ kernel void particleWriteRope(device const ParticleState *particles [[buffer(0)]
     const float2 previous = particles[n.previous < count ? n.previous : gid].positionVelocity.xy;
     const RopeNeighbours after = ropeNeighbours(particles, count, n.next, p);
     const float2 next = particles[after.next < count ? after.next : n.next].positionVelocity.xy;
+    const float2 layout = ropeLayout(n.length, particles[n.oldest].life.x, control[cDied], p, f);
     RopeRecord record;
     record.start = float4(start.positionVelocity.xy, 0, start.life.z * f.motionExtras.w);
-    record.end = float4(end.positionVelocity.xy, 0, float(n.length));
-    record.previous = float4(previous, 0, float(n.index));
+    record.end = float4(end.positionVelocity.xy, 0, layout.x);
+    record.previous = float4(previous, 0, float(n.index) + layout.y);
     record.next = float4(next, 0, end.life.z * f.motionExtras.w);
     record.endColor = recordColor(end, p, f);
     record.color = recordColor(start, p, f);
@@ -151,7 +174,8 @@ kernel void particleWriteRopeTrails(device const ParticleState *particles [[buff
         const float2 next = trailPointNewestFirst(particle, own, min(segment + 2, points - 1));
         RopeRecord record;
         record.start = float4(start, 0, size);
-        record.end = float4(end, 0, float(points));
+        // Scrolling trails read the segment as their vertex index (`in_TrailVertexIndex`).
+        record.end = float4(end, 0, (p.counts.y & kRopeScrolling) ? float(segment) : float(points));
         record.previous = float4(previous, 0, float(segment));
         record.next = float4(next, 0, size);
         record.endColor = rgba;
@@ -188,7 +212,7 @@ kernel void particleWriteFallbackSprites(device const ParticleState *particles [
         instance = fallbackInstance(particle.positionVelocity.xy, float2(size), opacity, f);
         instance.particleShape = 1;
         instance.rotation = particle.alphaRotation.z;
-        spriteAxes(instance, float2x2(f.drawLinear.xy, f.drawLinear.zw), particle.alphaRotation.z, size, f);
+        spriteAxes(instance, float2x2(f.spriteLinear.xy, f.spriteLinear.zw), particle.alphaRotation.z, size, f);
     }
     instance.color = particle.color;
     const float4 cell = spriteSheetCell(particle, p);

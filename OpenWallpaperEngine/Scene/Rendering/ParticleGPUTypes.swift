@@ -119,8 +119,11 @@ struct ParticleGPUFrame {
     var colorScale: SIMD4<Float>
     /// `ParticleFrameInputs.substeps`, emitters (`ParticleGPUEmitterStep`), -, -.
     var emission: SIMD4<UInt32>
-    /// `ParticleFrameInputs.drawLinear`, column 0 xy, column 1 xy.
-    var drawLinear: SIMD4<Float>
+    /// `ParticleFrameInputs.spriteLinear`, column 0 xy, column 1 xy.
+    var spriteLinear: SIMD4<Float>
+    /// A rope's texture layout (`ParticleRopeUV.layout`): rate and lifetime with their overrides,
+    /// the frame-rate limit, 1 / `uvscale`.
+    var rope: SIMD4<Float>
 
     static let noRenderVar = UInt32.max
     static let noLimit = UInt32.max
@@ -150,7 +153,8 @@ struct ParticleGPUFrame {
         previousControlPoints3 = pair(inputs.previousControlPoints, 3)
         motionLinear = Self.columns(motion.linear)
         motionExtras = SIMD4(inputs.spawnSizeScale, inputs.spawnTurn, inputs.motion == nil ? 0 : 1, inputs.drawSizeScale)
-        drawLinear = Self.columns(inputs.drawLinear)
+        spriteLinear = Self.columns(inputs.spriteLinear)
+        rope = .zero
         extra = SIMD4(inputs.absolutePoints, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count),
                       UInt32(inputs.initializers.count) | UInt32(inputs.operators.count) << 16)
         spawnScale = inputs.spawnScale
@@ -167,7 +171,8 @@ struct ParticleGPUFrame {
 struct ParticleGPUParameters {
     struct Flag: OptionSet {
         let rawValue: UInt32
-        static let history = Flag(rawValue: 1 << 0)
+        static let history = Flag(rawValue: 1 << 0), ropeSmoothing = Flag(rawValue: 1 << 1)
+        static let ropeScrolling = Flag(rawValue: 1 << 5)
         static let spriteSheet = Flag(rawValue: 1 << 2), instanced = Flag(rawValue: 1 << 3)
         static let worldSpace = Flag(rawValue: 1 << 4)
     }
@@ -192,6 +197,8 @@ struct ParticleGPUParameters {
         var flags: Flag = []
         let historyLimit = max(c.trailSegments, 1)
         if c.rendererName == "ropetrail" { flags.insert(.history) }
+        if c.ropeUV.smoothing { flags.insert(.ropeSmoothing) }
+        if c.ropeUV.scrolling { flags.insert(.ropeScrolling) }
         let fades: Float = (c.fadeTrailAlpha ? 1 : 0) + (c.fadeTrailSize ? 2 : 0)
         trail = SIMD4(max(c.trailLength, 0.001) / Float(historyLimit), c.trailLength, Float(max(c.ropeSubdivision, 1)), fades)
         trailLimits = SIMD4(c.trailLengthLimits.x, c.trailLengthLimits.y, 0, 0)

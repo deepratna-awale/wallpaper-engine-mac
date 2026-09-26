@@ -38,6 +38,7 @@ enum ParticleSystemBuilder {
             opacityMultiplier: opacityMultiplier, refractive: refractAmount != nil,
             blending: material.passes?.first?.blending?.lowercased() ?? "translucent")
         system.trailLengthLimits = SIMD2(trail.maximumLength, trail.minimumLength)
+        system.orientation = ParticleOrientation(renderer)
         system.objectID = object.id.map(String.init)
         system.emitterLinear = world.linear
         system.worldSpace = particleSystem.isWorldSpace
@@ -62,6 +63,8 @@ enum ParticleSystemBuilder {
                             timing: ParticleEmitterTiming(authored), audio: ParticleAudioResponse(authored))
         }
         system.controlPoints = controlPoints(particleSystem.controlpoint ?? [])
+        system.ropeUV = ParticleRopeUV(renderer, rate: ropeRate(particleSystem.emitter ?? []),
+                                       lifetime: ropeLifetime(particleSystem.initializer ?? []))
         system.program = ParticleProgram(
             operators: (particleSystem.operator ?? []).compactMap {
                 ParticleOperatorBuilder.make($0, defaults: defaults, sceneSize: sceneSize, path: particlePath)
@@ -95,6 +98,20 @@ enum ParticleSystemBuilder {
         shape.cone = Float(emitter.cone ?? 0)
         shape.controlPoint = min(max(emitter.controlpoint ?? 0, 0), 7)
         return shape
+    }
+
+    /// The rate a rope lays its texture by (`ParticleRopeUV`): the first emitter's that isn't 0
+    /// (0x1401c6ab4).
+    static func ropeRate(_ emitters: [WEParticleEmitter]) -> Float {
+        emitters.lazy.map { max(Float($0.rate ?? 10), 0) }.first { $0 != 0 } ?? 0
+    }
+
+    /// The lifetime a rope lays its texture by: the first `lifetimerandom`'s middle, min + ½·(max −
+    /// min) with WE's defaults 0…1 (0x1401c72e5); 0 without one.
+    static func ropeLifetime(_ initializers: [WEParticleInitializer]) -> Float {
+        guard let lifetime = initializers.first(where: { $0.name?.lowercased() == "lifetimerandom" }) else { return 0 }
+        let low = ParticleDefaults.scalar(lifetime.min, 0), high = ParticleDefaults.scalar(lifetime.max, 1)
+        return low + 0.5 * (high - low)
     }
 
     /// The eight control points by index (WE ignores `id` and `locktopointer`, 0x1401d0530).

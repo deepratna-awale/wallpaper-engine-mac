@@ -111,6 +111,9 @@ final class ParticleGPUSimulator {
                                      materialVertexCount: request.materialVertexCount,
                                      renderVarOffset: request.renderVar?.offset)
         frame.emission.y = UInt32(gpu.emitterCount)
+        let ropeUV = request.system.configuration.ropeUV
+        frame.rope = SIMD4(ropeUV.rate * request.inputs.ropeRateScale, ropeUV.lifetime * request.inputs.ropeLifetimeScale,
+                           Float(request.inputs.frameRateLimit), ropeUV.inverseScale)
         let frameLength = MemoryLayout<ParticleGPUFrame>.stride
         let control = gpu.control
         // Buffers a system without trails never touches still need a binding.
