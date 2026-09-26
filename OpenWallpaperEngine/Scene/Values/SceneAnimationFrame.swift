@@ -28,6 +28,9 @@ struct SceneAnimationState: Equatable {
     var flags: SceneTimelineClock.Flags
     /// `getFrame()`: `time / frameDuration`, fractional.
     var frame: Float
+    /// The value the timeline set this frame (`c0`…`c3`, 0 past the last channel): what WE's
+    /// setter wrote before the scripts run (§2.1), so bound scripts and reads see it.
+    var value = SIMD4<Float>.zero
 
     var isPlaying: Bool { flags.isDisjoint(with: [.paused, .finished]) }
 }

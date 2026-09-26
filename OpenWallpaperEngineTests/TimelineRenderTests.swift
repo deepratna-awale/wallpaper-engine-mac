@@ -67,14 +67,37 @@ final class TimelineRenderTests: XCTestCase {
         XCTAssertEqual(set.clockOwner(of: SceneAnimationSite(owner: .object(5), key: "alpha")), origin)
     }
 
-    /// P2: `update(value)` gets this frame's animated value and its return is drawn; an
-    /// accumulator adds to the animated value each frame instead of running away.
+    /// P2: `update(value)` gets this frame's animated value (the timeline moves 0.2 → 0.6, so a
+    /// stale or load-time value shows) and its return is drawn; an accumulator adds to the
+    /// animated value each frame instead of running away (test-risks TF2).
     func testScriptsOnAnimatedFieldsSeeAndBeatTheAnimation() throws {
         let scene = try Scene(services: services())
         defer { scene.close() }
-        let pixels = try scene.draw(frames: 90)
-        XCTAssertEqual(Float(pixels.rgb(60, 56).x) / 255, 0.3, accuracy: 3 / 255, "update(v) { return v } draws the timeline")
-        XCTAssertEqual(Float(pixels.rgb(76, 56).x) / 255, 0.5, accuracy: 3 / 255, "0.3 animated + 0.2, every frame")
+        var model = try Self.timeline(of: 6, key: "alpha")
+        for frames in [30, 15, 30] {
+            let pixels = try scene.draw(frames: frames)
+            for _ in 0..<frames { model.clock.advance(by: Float(Self.step)) }
+            let expected = model.value()[0]
+            XCTAssertEqual(Float(pixels.rgb(60, 56).x) / 255, expected, accuracy: 3 / 255,
+                           "update(v) { return v } draws this frame's value")
+            XCTAssertEqual(Float(pixels.rgb(76, 56).x) / 255, expected + 0.2, accuracy: 3 / 255,
+                           "this frame's value + 0.2, every frame")
+        }
+    }
+
+    /// TF1: a script on an animated material constant sees the timeline's value and its return,
+    /// or any write, holds for its frame only; the next frame the timeline writes it again. The
+    /// three copies of `Tinted` (an identity `update`, an `init` returning its argument and a
+    /// one-off `setMaterialProperty` green on frame 5) all end blue, as the timeline does.
+    func testScriptsOnAnimatedConstantsHoldForTheirFrameOnly() throws {
+        try XCTSkipUnless(Fixtures.hasWEShaderSources, "WE's effect shaders are not available")
+        let scene = try Scene(services: services())
+        defer { scene.close() }
+        let pixels = try scene.draw(frames: 70) { $0.color(24, 24) == .white || $0.color(56, 24) == .white }
+        XCTAssertEqual(pixels.color(16, 8), .blue, "no script")
+        XCTAssertEqual(pixels.color(24, 24), .blue, "update(v) { return v }")
+        XCTAssertEqual(pixels.color(40, 24), .blue, "init(v) { return v }")
+        XCTAssertEqual(pixels.color(56, 24), .blue, "a write on frame 5")
     }
 
     /// Without scripts the animated values are drawn all the same (the set is the renderer's).
@@ -83,7 +106,7 @@ final class TimelineRenderTests: XCTestCase {
         defer { scene.close() }
         let pixels = try scene.draw(frames: 70)
         XCTAssertEqual(pixels.color(64, 40), .red)
-        XCTAssertEqual(Float(pixels.rgb(60, 56).x) / 255, 0.3, accuracy: 3 / 255)
+        XCTAssertEqual(Float(pixels.rgb(60, 56).x) / 255, 0.6, accuracy: 3 / 255, "Echo's single ended at 0.6")
         XCTAssertEqual(pixels.color(40, 8), .black, "nobody plays the paused one")
     }
 

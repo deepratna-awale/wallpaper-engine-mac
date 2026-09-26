@@ -28,6 +28,22 @@ struct SceneScriptObjectState {
 
     func owns(_ field: SceneScriptObjectField) -> Bool { owned.contains(field) }
 
+    /// Takes back scripts' writes of constant `name` of `effect`'s `material`, whose timeline
+    /// wrote it again (docs/timeline-plan.md §2.6: a script's write wins for its frame only). An
+    /// effect-wide write keeps reaching the effect's other materials. True when one was dropped.
+    mutating func dropConstantWrites(effect: Int, material: Int, name: String) -> Bool {
+        guard var writes = constants[effect], writes.contains(where: { $0.targets(name, material: material) }) else {
+            return false
+        }
+        writes.removeAll { $0.material == material && $0.targets(name, material: material) }
+        for index in writes.indices where writes[index].targets(name, material: material) {
+            writes[index].excluded.append(material)
+        }
+        constants[effect] = writes
+        effectRevision &+= 1
+        return true
+    }
+
     /// The field's table value when scripts own it.
     func value(_ field: SceneScriptObjectField) -> [Float]? {
         guard owned.contains(field) else { return nil }
@@ -91,6 +107,20 @@ struct SceneScriptConstantWrite: Equatable {
     /// The scene.json constant key (`constantshadervalues`), matched like the loader matches it.
     var name: String
     var value: [Float]
+    /// Materials an effect-wide write (`material` nil) no longer reaches: those whose constant a
+    /// timeline drives, where the write held for its frame only.
+    var excluded: [Int] = []
+
+    /// Whether the write reaches material (pass) `index`.
+    func reaches(material index: Int) -> Bool {
+        material.map { $0 == index } ?? !excluded.contains(index)
+    }
+
+    /// Whether the write is to constant `name` (as the renderer matches it, ignoring case) of
+    /// material `index`.
+    func targets(_ name: String, material index: Int) -> Bool {
+        reaches(material: index) && self.name.lowercased() == name.lowercased()
+    }
 }
 
 /// The scene's own settings scripts wrote (`thisScene.bloomstrength`, `camerashake`, …).

@@ -43,6 +43,9 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
     private var animationTargets: [(slot: Int, target: AnimationTarget)] = []
     /// The slot of each timeline site, for its events.
     private var animationSlots: [SceneAnimationSite: Int] = [:]
+    /// Material constants a timeline drives: the site, the constant's owner and its pool range.
+    private var animatedConstants: [(site: SceneAnimationSite, objectID: Int, effect: Int, material: Int,
+                                     range: SceneScriptObjectStore.PoolRange)] = []
     private var animationTargetsValid = false
     /// The image and text layers in draw order, for the cursor pass; rebuilt with the order.
     private var hitTestable: [SceneScriptCursorLayer.TableEntry] = []
@@ -195,6 +198,10 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
             }
         }
         publishAnimations(input)
+        if let store = model?.store {
+            refreshAnimationTargets(store)
+            feedAnimatedConstants(input, store: store)
+        }
         guard let cursor, let table = model?.store?.table else { return }
         if !hitTestableValid {
             hitTestableValid = true
@@ -267,6 +274,7 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
         animationTargetsValid = true
         animationTargets.removeAll(keepingCapacity: true)
         animationSlots.removeAll(keepingCapacity: true)
+        animatedConstants.removeAll(keepingCapacity: true)
         for slot in store.animationReferences.keys.sorted() {
             guard let reference = store.animationReferences[slot] else { continue }
             let objectID = reference.slot.flatMap { objects[$0]?.id }
@@ -280,6 +288,26 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
                                                 effect: reference.effect, material: reference.material) else { continue }
             animationTargets.append((slot, .timeline(site)))
             animationSlots[site] = slot
+            if case let .material(id, effect, material) = site.owner, let objectSlot = reference.slot,
+               let range = store.constantRanges[.init(slot: objectSlot, effect: effect, material: material, name: site.key)] {
+                animatedConstants.append((site, id, effect, material, range))
+            }
+        }
+    }
+
+    /// The material constants' side of §2.6 (P2): the timeline's setter writes a constant every
+    /// frame before the scripts run, so a bound `update(value)` and every read see the animated
+    /// value, and a script's write of it holds for its frame only (test-risks TF1).
+    private func feedAnimatedConstants(_ input: SceneScriptFrameInput, store: SceneScriptObjectStore) {
+        for constant in animatedConstants {
+            guard let animation = input.animations[constant.site] else { continue }
+            for component in 0..<constant.range.count {
+                store.constants[constant.range.offset + component, 0] = animation.value[component]
+            }
+            guard var object = state.objects[constant.objectID],
+                  object.dropConstantWrites(effect: constant.effect, material: constant.material, name: constant.site.key)
+            else { continue }
+            state.objects[constant.objectID] = object
         }
     }
 

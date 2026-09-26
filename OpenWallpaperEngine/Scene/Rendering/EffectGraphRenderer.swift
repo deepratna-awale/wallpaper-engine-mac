@@ -444,7 +444,7 @@ final class EffectGraphRenderer {
             passContext.color = context.layerColor
             passContext.alpha = context.layerAlpha
             program.update(frame: context.frame, pass: passContext, values: context.values)
-            program.write(scriptWrites.filter { $0.material == nil || $0.material == pass.materialIndex })
+            program.write(scriptWrites.filter { $0.reaches(material: pass.materialIndex) })
             program.bytes.withUnsafeBytes { raw in
                 uniformArena.bind(raw, index: 0, to: encoder, commandBuffer: commandBuffer)
             }

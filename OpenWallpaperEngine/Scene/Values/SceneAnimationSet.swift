@@ -185,7 +185,7 @@ final class SceneAnimationSet {
         let clock = entries[index].timeline.clock
         return SceneAnimationState(name: entries[index].timeline.name, fps: clock.fps, frameCount: clock.length,
                                    duration: clock.duration, rate: entries[index].rate, time: clock.time,
-                                   flags: clock.flags, frame: clock.frame)
+                                   flags: clock.flags, frame: clock.frame, value: entries[index].value)
     }
 
     /// `getAnimation(name)`: the first animation of `owner` whose `options.name` is `name`; with no

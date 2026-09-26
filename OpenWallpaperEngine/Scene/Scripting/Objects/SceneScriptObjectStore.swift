@@ -52,10 +52,20 @@ final class SceneScriptObjectStore {
         var count: Int
     }
 
+    /// A material constant of a placed object: its slot, effect index, material (pass) index and
+    /// scene.json key.
+    struct ConstantKey: Hashable {
+        var slot: Int
+        var effect: Int
+        var material: Int
+        var name: String
+    }
+
     /// What a live object slot holds besides its table row.
     private struct Allocation {
         var effects: [Int] = []
         var constants: [PoolRange] = []
+        var constantKeys: [ConstantKey] = []
         var animations: [Int] = []
     }
 
@@ -80,6 +90,8 @@ final class SceneScriptObjectStore {
     /// Each placed material constant's scene.json key, by its offset in the pool, so a write can
     /// name it without a string in the command ring (`materialSetConstant`).
     private(set) var constantNames: [Int: String] = [:]
+    /// Each placed material constant's pool range, by its object, effect, material and key.
+    private(set) var constantRanges: [ConstantKey: PoolRange] = [:]
 
     init?(capacity: Capacity, in context: JSContext) {
         guard let table = SceneScriptObjectTable(capacity: capacity.objects, in: context),
@@ -190,6 +202,7 @@ final class SceneScriptObjectStore {
             freeConstants[range.count, default: []].append(range.offset)
             constantNames[range.offset] = nil
         }
+        allocation.constantKeys.forEach { constantRanges[$0] = nil }
     }
 
     private func place(_ effect: SceneScriptObjectDescription.Effect, index: Int, slot: Int,
@@ -206,8 +219,12 @@ final class SceneScriptObjectStore {
             for constant in material.constants {
                 let count = min(4, max(1, constant.value.count))
                 guard let offset = takeConstants(count) else { return nil }
-                allocation.constants.append(PoolRange(offset: offset, count: count))
+                let range = PoolRange(offset: offset, count: count)
+                let key = ConstantKey(slot: slot, effect: index, material: materialIndex, name: constant.name)
+                allocation.constants.append(range)
+                allocation.constantKeys.append(key)
                 constantNames[offset] = constant.name
+                constantRanges[key] = range
                 var value = constant.value
                 while value.count < count { value.append(0) }
                 constants.write(Array(value.prefix(count)), slot: offset, offset: 0)
