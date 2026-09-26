@@ -67,16 +67,6 @@ final class SceneBindingDecodeTests: XCTestCase {
         XCTAssertEqual(text.values[.pointsize]?.userPropertyName, "fontsize")
     }
 
-    func testScriptPropertiesKeepUserEntries() throws {
-        let object = try loadScene().0.objects[1]
-        XCTAssertEqual(object.originScript, "export function update(v) { return v; }")
-        // Bound entries fall back to their innermost literal instead of "".
-        XCTAssertEqual(object.originScriptProperties, ["speed": "0", "label": "hi", "on": "true"])
-        XCTAssertEqual(object.originScriptPropertiesJSON["speed"],
-                       .object(["user": .string("ylensy1"),
-                                "value": .object(["user": .string("ylensy"), "value": .number(0)])]))
-    }
-
     func testInstanceOverrideDecodesEveryField() throws {
         let override = try XCTUnwrap(loadScene().0.objects[2].instanceoverride)
         XCTAssertEqual(override.id, 7)

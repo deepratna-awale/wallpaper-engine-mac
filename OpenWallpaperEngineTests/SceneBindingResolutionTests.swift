@@ -30,16 +30,13 @@ final class SceneBindingResolutionTests: XCTestCase {
         XCTAssertEqual(hidden.color, "1 0.5 0.25", "missing properties keep the literal")
     }
 
-    func testTextPointSizeAndScriptProperties() throws {
+    /// User-bound `scriptproperties` are the SceneScript runtime's (`SceneScriptSiteBuilder`).
+    func testTextAndPointSize() throws {
         let object = try loadScene().objects[1]
         let context = PropertyContext(properties: ["caption": "Hello there", "fontsize": "64", "ylensy": "0.7"])
         let resolved = object.resolvingUserBindings(in: context)
         XCTAssertEqual(resolved.textValue, "Hello there")
         XCTAssertEqual(resolved.pointsize, 64)
-        XCTAssertEqual(resolved.originScriptProperties, ["speed": "0.7", "label": "hi", "on": "true"])
-
-        let outer = object.resolvingUserBindings(in: PropertyContext(properties: ["ylensy1": "3", "ylensy": "0.7"]))
-        XCTAssertEqual(outer.originScriptProperties["speed"], "3", "the outer binding wins")
         XCTAssertEqual(object.resolvingUserBindings(in: PropertyContext()).textValue, "Default caption")
     }
 

@@ -72,14 +72,3 @@ extension SceneRawValue {
         return nil
     }
 }
-
-extension SceneJSON {
-    /// A `scriptproperties` entry's authored default as WE text. `{"user":…,"value":v}` entries
-    /// (possibly nested) yield their innermost literal `value`; nil for arrays and null.
-    var scriptPropertyLiteral: String? {
-        switch self {
-        case .object(let fields): return fields["value"]?.scriptPropertyLiteral
-        default: return scalarString
-        }
-    }
-}

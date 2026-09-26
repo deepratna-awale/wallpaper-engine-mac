@@ -221,13 +221,21 @@ final class WEAuthoredValuesTests: XCTestCase {
 
     // MARK: - createScriptProperties
 
+    /// WE's own builder and injection, as the runtime runs them: `createScriptProperties()` from
+    /// baseclasses.js, then the scene's `scriptproperties` through `_Internal.updateScriptProperties`.
     private func scriptProperties(_ builder: String, authored: [String: Any]) throws -> JSValue {
         let context = try XCTUnwrap(JSContext())
         let base = try String(contentsOf: ShaderVariantTests.weAssets.appending(path: "scripts/jsclasses/baseclasses.js"), encoding: .utf8)
         context.evaluateScript(base)
-        context.evaluateScript(SceneScriptPropertiesShim.source)
-        context.setObject(authored, forKeyedSubscript: "__scriptProperties" as NSString)
-        let result = try XCTUnwrap(context.evaluateScript("createScriptProperties()\(builder).finish()"))
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: authored), as: UTF8.self)
+        context.setObject(json, forKeyedSubscript: "__authored" as NSString)
+        let result = try XCTUnwrap(context.evaluateScript("""
+            (function () {
+                const script = { scriptProperties: createScriptProperties()\(builder).finish() };
+                _Internal.updateScriptProperties(script, __authored);
+                return script.scriptProperties;
+            })()
+            """))
         XCTAssertNil(context.exception, "\(String(describing: context.exception))")
         return result
     }
@@ -319,6 +327,5 @@ final class WEAuthoredValuesTests: XCTestCase {
 
 private struct NoValues: SceneValueContext {
     func userProperty(_ name: String) -> String? { nil }
-    func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? { nil }
     var time: Double { 0 }
 }

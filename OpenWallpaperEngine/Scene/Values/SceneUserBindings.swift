@@ -50,28 +50,6 @@ extension WESceneObject {
         if let name = textUserProperty, let text = context.userProperty(name) {
             object.textValue = text
         }
-        object.originScriptProperties = SceneScriptPropertyResolver.resolve(originScriptPropertiesJSON, in: context)
-        object.textScriptProperties = SceneScriptPropertyResolver.resolve(textScriptPropertiesJSON, in: context)
         return object
-    }
-}
-
-/// Resolves `scriptproperties` entries of the form `{"user": name, "value": v}` (possibly nested)
-/// to the user property's value, falling back to the innermost literal.
-enum SceneScriptPropertyResolver {
-    static func resolve(_ properties: [String: SceneJSON], in context: SceneValueContext) -> [String: String] {
-        properties.compactMapValues { resolve($0, in: context) }
-    }
-
-    static func resolve(_ entry: SceneJSON, in context: SceneValueContext) -> String? {
-        guard case .object(let fields) = entry else { return entry.scalarString }
-        let name: String?
-        switch fields["user"] {
-        case .string(let value)?: name = value
-        case .object(let user)?: if case .string(let value)? = user["name"] { name = value } else { name = nil }
-        default: name = nil
-        }
-        if let name, let value = context.userProperty(name) { return value }
-        return fields["value"].flatMap { resolve($0, in: context) }
     }
 }

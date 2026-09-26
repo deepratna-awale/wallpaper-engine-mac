@@ -1,8 +1,7 @@
 import Foundation
 
 /// The user properties of every running wallpaper instance, their music-synced modulation and the
-/// per-frame snapshot the render loop reads them from. Owned by `AudioReactiveScriptEngine`, which
-/// forwards to it until the SceneScript runtime takes over (docs/scenescript-plan.md, WP1).
+/// per-frame snapshot the render loop reads them from. Owned by `AudioReactiveScriptEngine`.
 final class SceneUserPropertyService {
     /// Guards every stored property except `frameSnapshot`, which is confined to the render thread.
     private let levelLock = NSLock()
@@ -20,12 +19,6 @@ final class SceneUserPropertyService {
         get { propertyStores.active.strings }
         set { propertyStores.active.strings = newValue }
     }
-    private var userPropertiesRevision = 0
-    private var scriptPropertyCacheRevision = -1
-    private var scriptPropertyCacheKey = ""
-    private var cachedModulatedGlobals: [String: Double] = [:]
-    private var cachedUserProperties: [String: Any] = [:]
-    private var cachedMusicSyncedKeys: [String] = []
     private var propertyNotificationWorkItem: DispatchWorkItem?
 
     init(audioLevel: @escaping () -> Double) {
@@ -39,7 +32,6 @@ final class SceneUserPropertyService {
         levelLock.lock()
         let changedKeys = propertyStores.set(values, for: wallpaper, replacing: replacing)
         if frameSnapshot == nil { propertyStores.activeKey = wallpaper }
-        userPropertiesRevision &+= 1
         levelLock.unlock()
         propertyNotificationWorkItem?.cancel()
         let work = DispatchWorkItem { [weak self] in
@@ -63,22 +55,12 @@ final class SceneUserPropertyService {
         var globalValues: [String: Double]
         var userPropertyStrings: [String: String]
         var level: Double
-        var revision: Int
     }
 
     private var frameSnapshot: FrameSnapshot?
 
     /// The audio level captured with the current frame's snapshot; nil outside a frame.
     var frameAudioLevel: Double? { frameSnapshot?.level }
-
-    /// Bumped whenever any user property changes. Render-side caches key off this to know when
-    /// derived GPU state is still valid.
-    var propertyRevision: Int {
-        if let frameSnapshot { return frameSnapshot.revision }
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return userPropertiesRevision
-    }
 
     /// Starts a frame of `wallpaper` (its directory path): reads until `endFrame` see that
     /// wallpaper's user properties.
@@ -87,8 +69,7 @@ final class SceneUserPropertyService {
         propertyStores.activeKey = wallpaper
         frameSnapshot = FrameSnapshot(globalValues: globalValues,
                                       userPropertyStrings: userPropertyStrings,
-                                      level: level,
-                                      revision: userPropertiesRevision)
+                                      level: level)
         levelLock.unlock()
     }
 
@@ -115,13 +96,6 @@ final class SceneUserPropertyService {
         return Float(modulatedValueLocked(key, fallback: Double(fallback)))
     }
 
-    /// The active wallpaper's modulated value, read under the lock (the script `property()` global).
-    func modulatedValue(_ key: String) -> Double {
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return modulatedValueLocked(key)
-    }
-
     private func modulatedValueLocked(_ key: String, fallback: Double = 0) -> Double {
         let base = globalValues[key] ?? fallback
         guard !key.hasSuffix("_musicSync"), !key.hasSuffix("_musicAmount"),
@@ -137,12 +111,6 @@ final class SceneUserPropertyService {
         levelLock.lock()
         defer { levelLock.unlock() }
         return userPropertyStrings["\(key)_musicSync"] == "true"
-    }
-
-    private func modulatedGlobalValuesLocked() -> [String: Double] {
-        Dictionary(uniqueKeysWithValues: globalValues.map { key, value in
-            (key, modulatedValueLocked(key, fallback: value))
-        })
     }
 
     func userPropertyString(_ key: String) -> String? {
@@ -165,59 +133,5 @@ final class SceneUserPropertyService {
         levelLock.lock()
         defer { levelLock.unlock() }
         return propertyStores.entry(for: wallpaper).strings
-    }
-
-    // MARK: - Script-published numbers
-
-    /// A number of the active wallpaper: the frame snapshot's inside a frame, else the store's.
-    func globalValue(_ key: String) -> Double? {
-        if let frameSnapshot { return frameSnapshot.globalValues[key] }
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return globalValues[key]
-    }
-
-    /// Publishes a number on the active wallpaper (scripts' `setGlobal`, `thisScene.camerashake`).
-    /// With `includingFrame`, the current frame's snapshot sees it too.
-    func setGlobalValue(_ value: Double, forKey key: String, includingFrame: Bool = false) {
-        levelLock.lock()
-        globalValues[key] = value
-        levelLock.unlock()
-        if includingFrame { frameSnapshot?.globalValues[key] = value }
-    }
-
-    /// The active wallpaper's numbers (music-synced ones modulated) and user properties as the
-    /// legacy script engine hands them to scripts, plus the property revision they belong to.
-    func scriptInputs() -> (globals: [String: Double], userProperties: [String: Any], revision: Int) {
-        levelLock.lock()
-        let propertyRevision = userPropertiesRevision
-        let snapshotLevel = level
-        // Converting every user property on each evaluation dominated script cost; rebuild only
-        // when properties actually change, then patch the (usually empty) music-synced subset.
-        if propertyRevision != scriptPropertyCacheRevision || propertyStores.activeKey != scriptPropertyCacheKey {
-            scriptPropertyCacheRevision = propertyRevision
-            scriptPropertyCacheKey = propertyStores.activeKey
-            cachedModulatedGlobals = globalValues
-            cachedMusicSyncedKeys = globalValues.keys.filter {
-                userPropertyStrings["\($0)_musicSync"] == "true"
-            }
-            cachedUserProperties = Dictionary(uniqueKeysWithValues: userPropertyStrings.map { key, value -> (String, Any) in
-                if value.caseInsensitiveCompare("true") == .orderedSame { return (key, true) }
-                if value.caseInsensitiveCompare("false") == .orderedSame { return (key, false) }
-                if let number = Double(value) { return (key, number) }
-                return (key, value)
-            })
-        }
-        var modulatedGlobals = cachedModulatedGlobals
-        var userProperties = cachedUserProperties
-        for key in cachedMusicSyncedKeys {
-            let amount = globalValues["\(key)_musicAmount"] ?? 0
-            guard abs(amount) > 0.0001 else { continue }
-            let modulated = (globalValues[key] ?? 0) + snapshotLevel * amount
-            modulatedGlobals[key] = modulated
-            userProperties[key] = modulated
-        }
-        levelLock.unlock()
-        return (modulatedGlobals, userProperties, propertyRevision)
     }
 }

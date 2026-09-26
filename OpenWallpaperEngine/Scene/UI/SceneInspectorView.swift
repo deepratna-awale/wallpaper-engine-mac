@@ -544,7 +544,6 @@ private final class SceneInspectorModel: ObservableObject {
         items[index].rawObject = prettyJSON(object)
         var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
         values["_owe_scene_object_\(item.id)_origin"] = origin
-        AudioReactiveScriptEngine.shared.setLayerVector2(item.id, property: "origin", value: SIMD2<Float>(Float(updated.x), Float(updated.y)))
         persist(values)
     }
 
@@ -571,8 +570,6 @@ private final class SceneInspectorModel: ObservableObject {
         items[index].rawObject = prettyJSON(object)
         var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
         values["_owe_scene_object_\(item.id)_scale"] = scale
-        AudioReactiveScriptEngine.shared.setLayerVector2(item.id, property: "scale",
-                                                         value: SIMD2<Float>(Float(value), Float(value)))
         persist(values)
     }
 

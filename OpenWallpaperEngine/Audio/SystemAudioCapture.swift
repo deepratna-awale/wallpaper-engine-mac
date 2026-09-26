@@ -3,14 +3,12 @@ import Cocoa
 import CoreMedia
 import ScreenCaptureKit
 
-/// System audio capture through ScreenCaptureKit: the stream, its restarts, the legacy 64-band
-/// level/spectrum/waveform and the WE-style spectrum analyzer. Owned by `AudioReactiveScriptEngine`,
-/// which forwards to it until the SceneScript runtime takes over (docs/scenescript-plan.md, WP1).
+/// System audio capture through ScreenCaptureKit: the stream, its restarts, the overall level
+/// (video music sync) and WE's spectrum analyzer (shaders' `g_AudioSpectrum*`, SceneScript's
+/// `registerAudioBuffers`). Owned by `AudioReactiveScriptEngine`.
 final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let levelLock = NSLock()
     private var level: Double = 0
-    private var spectrum = [Double](repeating: 0, count: 64)
-    private var waveform = [Double](repeating: 0, count: 64)
     private var stream: SCStream?
 
     /// Guards `stream`; capture starts and stops on arbitrary tasks.
@@ -99,33 +97,14 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private func resetAudioLevels() {
         levelLock.lock()
         level = 0
-        spectrum = [Double](repeating: 0, count: spectrum.count)
-        waveform = [Double](repeating: 0, count: waveform.count)
         levelLock.unlock()
         audioSpectrumAnalyzer.reset()
-    }
-
-    func audioVisualizationSnapshot() -> AudioVisualizationSnapshot {
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        let bandAverage: (Range<Int>) -> Double = { range in
-            guard !range.isEmpty else { return 0 }
-            return self.spectrum[range].reduce(0, +) / Double(range.count)
-        }
-        return AudioVisualizationSnapshot(level: level, spectrum: spectrum, waveform: waveform,
-                                          bass: bandAverage(0..<8), mid: bandAverage(8..<32), treble: bandAverage(32..<64))
     }
 
     var audioLevel: Double {
         levelLock.lock()
         defer { levelLock.unlock() }
         return level
-    }
-
-    var audioSpectrum: [Double] {
-        levelLock.lock()
-        defer { levelLock.unlock() }
-        return spectrum
     }
 
     /// Called only by `restartScheduler`, which guarantees a single start in flight; the previous
@@ -223,29 +202,15 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         var squaredSum: Float = 0
         vDSP_svesq(samples, 1, &squaredSum, vDSP_Length(sampleCount))
         let normalizedLevel = min(Double(sqrt(squaredSum / Float(sampleCount))) * 8, 1)
-        let magnitudes = frequencyMagnitudes(samples: samples, count: sampleCount)
-        var waveformValues = [Double](repeating: 0, count: 64)
-        for index in waveformValues.indices {
-            let start = index * sampleCount / waveformValues.count
-            let end = max(start + 1, (index + 1) * sampleCount / waveformValues.count)
-            var sum = 0.0
-            for sampleIndex in start..<min(end, sampleCount) {
-                sum += Double(samples[sampleIndex])
-            }
-            waveformValues[index] = sum / Double(max(end - start, 1))
-        }
         levelLock.lock()
         level = normalizedLevel
-        spectrum = magnitudes
-        waveform = waveformValues
         levelLock.unlock()
     }
 
     /// WE's `g_AudioSpectrum*` source. Fed on the audio thread; the analyzer owns its own lock.
     private let audioSpectrumAnalyzer = AudioSpectrumAnalyzer()
 
-    /// The latest smoothed WE spectra, without advancing the smoothing. (`audioSpectrum` is
-    /// already the legacy 64-band mono array used by the script bindings.)
+    /// The latest smoothed WE spectra, without advancing the smoothing.
     var audioSpectrumSnapshot: AudioSpectrumSnapshot { audioSpectrumAnalyzer.snapshot }
 
     /// Advances the spectrum smoothing by one frame. The renderer calls this exactly once per
@@ -284,74 +249,5 @@ final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
         withExtendedLifetime(retainedBlock) {
             audioSpectrumAnalyzer.ingest(left: left, right: right)
         }
-    }
-
-    // Audio-thread only: the capture stream delivers buffers serially, so these need no locking.
-    private var fftSetup: FFTSetup?
-    private var fftSetupLog2n: vDSP_Length = 0
-    private var fftWindow: [Float] = []
-    private var fftRealParts: [Float] = []
-    private var fftImaginaryParts: [Float] = []
-    private var fftWindowedSamples: [Float] = []
-    private var fftMagnitudes: [Float] = []
-
-    private func prepareFFT(size: Int) -> Bool {
-        let log2n = vDSP_Length(round(log2(Double(size))))
-        guard fftSetupLog2n != log2n || fftSetup == nil else { return true }
-        if let existing = fftSetup { vDSP_destroy_fftsetup(existing) }
-        guard let setup = vDSP_create_fftsetup(log2n, FFTRadix(kFFTRadix2)) else {
-            fftSetup = nil
-            return false
-        }
-        fftSetup = setup
-        fftSetupLog2n = log2n
-        fftWindow = [Float](repeating: 0, count: size)
-        vDSP_hann_window(&fftWindow, vDSP_Length(size), Int32(vDSP_HANN_DENORM))
-        fftWindowedSamples = [Float](repeating: 0, count: size)
-        fftRealParts = [Float](repeating: 0, count: size / 2)
-        fftImaginaryParts = [Float](repeating: 0, count: size / 2)
-        fftMagnitudes = [Float](repeating: 0, count: size / 2)
-        return true
-    }
-
-    private func frequencyMagnitudes(samples: UnsafePointer<Float>, count: Int) -> [Double] {
-        let signpost = OWESignpost.begin(OWESignpost.audio, "frequencyMagnitudes")
-        defer { signpost.end() }
-        let capped = min(1024, count)
-        guard capped >= 64 else { return [Double](repeating: 0, count: 64) }
-        // vDSP's radix-2 FFT needs a power-of-two length.
-        let fftSize = 1 << Int(floor(log2(Double(capped))))
-        guard fftSize >= 64, prepareFFT(size: fftSize), let setup = fftSetup else {
-            return [Double](repeating: 0, count: 64)
-        }
-        let start = count - fftSize
-        let halfSize = fftSize / 2
-
-        vDSP_vmul(samples + start, 1, fftWindow, 1, &fftWindowedSamples, 1, vDSP_Length(fftSize))
-
-        var bands = [Double](repeating: 0, count: 64)
-        fftRealParts.withUnsafeMutableBufferPointer { realBuffer in
-            fftImaginaryParts.withUnsafeMutableBufferPointer { imaginaryBuffer in
-                var split = DSPSplitComplex(realp: realBuffer.baseAddress!,
-                                            imagp: imaginaryBuffer.baseAddress!)
-                fftWindowedSamples.withUnsafeBufferPointer { windowed in
-                    windowed.baseAddress!.withMemoryRebound(to: DSPComplex.self, capacity: halfSize) { interleaved in
-                        vDSP_ctoz(interleaved, 2, &split, 1, vDSP_Length(halfSize))
-                    }
-                }
-                vDSP_fft_zrip(setup, &split, 1, fftSetupLog2n, FFTDirection(FFT_FORWARD))
-                // zrip packs Nyquist into imagp[0]; it is not a real bin and would alias into band 0.
-                imaginaryBuffer[0] = 0
-                vDSP_zvabs(&split, 1, &fftMagnitudes, 1, vDSP_Length(halfSize))
-            }
-        }
-
-        // zrip returns twice the true DFT magnitude, hence 8 rather than the scalar path's 16.
-        let scale = 8.0 / Double(fftSize)
-        for band in bands.indices {
-            let bin = max(1, min(halfSize - 1, (band + 1) * fftSize / 128))
-            bands[band] = min(Double(fftMagnitudes[bin]) * scale, 1)
-        }
-        return bands
     }
 }

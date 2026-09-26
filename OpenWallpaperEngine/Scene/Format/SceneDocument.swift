@@ -87,7 +87,6 @@ struct WEScene: Decodable {
     var general: WESceneGeneral
     var objects: [WESceneObject]
     var effects: [String]?
-    var script: String?
     var version: Int?
 }
 

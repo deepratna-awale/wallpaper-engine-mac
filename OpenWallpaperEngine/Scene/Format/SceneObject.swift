@@ -12,26 +12,19 @@ struct WESceneObject: Decodable {
     var parent: Int?
     var name: String?
     var origin: String?
-    var originScript: String?
-    var originScriptProperties: [String: String] = [:]
     var originAnimation: WEVectorKeyframeAnimation?
     var scale: String?
-    var scaleScript: String?
     var scaleAnimation: WEVectorKeyframeAnimation?
     var angles: String?
-    var anglesScript: String?
     var anglesAnimation: WEVectorKeyframeAnimation?
     var visible: Bool?
     var visibleCondition: String?
     var visibleUserProperty: String?
-    var visibleScript: String?
     var effects: [WEObjectEffect]?
     var shape: String?
 
     // Text objects
     var textValue: String?
-    var textScript: String?
-    var textScriptProperties: [String: String] = [:]
     var font: String?
     var pointsize: Double?
     var horizontalalign: String?
@@ -50,17 +43,13 @@ struct WESceneObject: Decodable {
     // Image objects
     var image: String?       // path to model JSON
     var alpha: Double?
-    var alphaScript: String?
     var alphaAnimation: WEKeyframeAnimation?
     var brightness: Double?
-    var brightnessScript: String?
     var color: String?
-    var colorScript: String?
     var colorBlendMode: Int?
     /// Sample the image with clamp-to-edge rather than WE's default repeat.
     var clampuvs: Bool?
     var size: String?
-    var sizeScript: String?
     var sizeAnimation: WEVectorKeyframeAnimation?
     var alignment: String?
     var solid: Bool?
@@ -87,9 +76,6 @@ struct WESceneObject: Decodable {
     var values: [SceneObjectValueField: SceneRawValue] = [:]
     /// `text` bound to a user property (`{"user":"name","value":"…"}`): the property's text replaces the value.
     var textUserProperty: String?
-    /// `scriptproperties` of the origin/text scripts as authored, so `{"user",…}` entries can be resolved.
-    var originScriptPropertiesJSON: [String: SceneJSON] = [:]
-    var textScriptPropertiesJSON: [String: SceneJSON] = [:]
 
     enum CodingKeys: String, CodingKey {
         case id, parent, name, origin, scale, angles, visible, effects, text, font, pointsize, horizontalalign, verticalalign
@@ -117,14 +103,10 @@ struct WESceneObject: Decodable {
         instanceoverride = c.decodeLogged(WEInstanceOverride.self, forKey: .instanceoverride, userInfo: decoder.userInfo)
         effects = c.decodeElements(WEObjectEffect.self, forKey: .effects, userInfo: decoder.userInfo)
         shape = try? c.decodeIfPresent(String.self, forKey: .shape)
-            if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {
+        if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {
             textValue = scriptedText.stringValue
-            textScript = scriptedText.script
-            textScriptProperties = scriptedText.scriptProperties
-            textScriptPropertiesJSON = scriptedText.scriptPropertiesJSON
         } else {
             textValue = try? c.decodeIfPresent(String.self, forKey: .text)
-            textScript = nil
         }
         font = try? c.decodeIfPresent(String.self, forKey: .font)
         pointsize = values[.pointsize]?.literalDouble
@@ -143,57 +125,43 @@ struct WESceneObject: Decodable {
         // Fields that may be simple values or {"script":..,"value":..} objects
         let scriptedOrigin = try? c.decode(WEScriptedProperty.self, forKey: .origin)
         origin = (try? c.decodeIfPresent(String.self, forKey: .origin)) ?? scriptedOrigin?.stringValue
-        originScript = scriptedOrigin?.script
-        originScriptProperties = scriptedOrigin?.scriptProperties ?? [:]
-        originScriptPropertiesJSON = scriptedOrigin?.scriptPropertiesJSON ?? [:]
         originAnimation = scriptedOrigin?.vectorAnimation
         let scriptedScale = try? c.decode(WEScriptedProperty.self, forKey: .scale)
         scale = (try? c.decodeIfPresent(String.self, forKey: .scale)) ?? scriptedScale?.stringValue
-        scaleScript = scriptedScale?.script
         scaleAnimation = scriptedScale?.vectorAnimation
         let scriptedAngles = try? c.decode(WEScriptedProperty.self, forKey: .angles)
         angles = (try? c.decodeIfPresent(String.self, forKey: .angles)) ?? scriptedAngles?.stringValue
-        anglesScript = scriptedAngles?.script
         anglesAnimation = scriptedAngles?.vectorAnimation
         if let conditional = try? c.decode(WEConditionalBool.self, forKey: .visible) {
             visible = conditional.value
             visibleCondition = conditional.condition
             visibleUserProperty = conditional.property
-            visibleScript = conditional.script
         } else {
             visible = try? c.decodeIfPresent(Bool.self, forKey: .visible)
             visibleCondition = nil
             visibleUserProperty = nil
-            visibleScript = nil
         }
         if let scriptedAlpha = try? c.decode(WEAnimatedScalar.self, forKey: .alpha) {
             alpha = scriptedAlpha.value
-            alphaScript = scriptedAlpha.script
             alphaAnimation = scriptedAlpha.animation
         } else {
             alpha = try? c.decodeIfPresent(Double.self, forKey: .alpha)
-            alphaScript = nil
             alphaAnimation = nil
         }
         if let scriptedBrightness = try? c.decode(WEScriptedProperty.self, forKey: .brightness) {
             brightness = scriptedBrightness.stringValue.flatMap(Double.init)
-            brightnessScript = scriptedBrightness.script
         } else {
             brightness = try? c.decodeIfPresent(Double.self, forKey: .brightness)
-            brightnessScript = nil
         }
         if let scriptedColor = try? c.decode(WEScriptedProperty.self, forKey: .color) {
             color = scriptedColor.stringValue
-            colorScript = scriptedColor.script
         } else {
             color = try? c.decodeIfPresent(String.self, forKey: .color)
-            colorScript = nil
         }
         colorBlendMode = try? c.decodeIfPresent(Int.self, forKey: .colorBlendMode)
         clampuvs = c.decodeLogged(Bool.self, forKey: .clampuvs, userInfo: decoder.userInfo)
         let scriptedSize = try? c.decode(WEScriptedProperty.self, forKey: .size)
         size = (try? c.decodeIfPresent(String.self, forKey: .size)) ?? scriptedSize?.stringValue
-        sizeScript = scriptedSize?.script
         sizeAnimation = scriptedSize?.vectorAnimation
         alignment = try? c.decodeIfPresent(String.self, forKey: .alignment)
         solid = try? c.decodeIfPresent(Bool.self, forKey: .solid)
@@ -212,7 +180,6 @@ struct WEObjectEffect: Decodable {
     let visible: Bool?
     let visibleCondition: String?
     let visibleUserProperty: String?
-    let visibleScript: String?
     let passes: [WEObjectEffectPass]?
 
     enum CodingKeys: String, CodingKey { case file, id, name, visible, passes }
@@ -229,15 +196,14 @@ struct WEObjectEffect: Decodable {
             visible = conditional?.value
             visibleCondition = conditional?.condition
             visibleUserProperty = conditional?.property
-            visibleScript = conditional?.script
         case .bool(let flag)?:
-            (visible, visibleCondition, visibleUserProperty, visibleScript) = (flag, nil, nil, nil)
+            (visible, visibleCondition, visibleUserProperty) = (flag, nil, nil)
         case .number(let number)?:
-            (visible, visibleCondition, visibleUserProperty, visibleScript) = (number != 0, nil, nil, nil)
+            (visible, visibleCondition, visibleUserProperty) = (number != 0, nil, nil)
         case .string(let text)?:
-            (visible, visibleCondition, visibleUserProperty, visibleScript) = (!["false", "0"].contains(text.lowercased()), nil, nil, nil)
+            (visible, visibleCondition, visibleUserProperty) = (!["false", "0"].contains(text.lowercased()), nil, nil)
         default:
-            (visible, visibleCondition, visibleUserProperty, visibleScript) = (nil, nil, nil, nil)
+            (visible, visibleCondition, visibleUserProperty) = (nil, nil, nil)
         }
         passes = container.decodeElements(WEObjectEffectPass.self, forKey: .passes, userInfo: info)
     }
@@ -294,15 +260,13 @@ struct WEConditionalBool: Decodable {
     let value: Bool?
     let condition: String?
     let property: String?
-    let script: String?
 
-    enum CodingKeys: String, CodingKey { case value, user, script }
+    enum CodingKeys: String, CodingKey { case value, user }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         value = (try? container.decodeIfPresent(Bool.self, forKey: .value))
             ?? (try? container.decodeIfPresent(Int.self, forKey: .value)).map { $0 != 0 }
-        script = try container.decodeIfPresent(String.self, forKey: .script)
         if let property = try? container.decode(String.self, forKey: .user) {
             self.property = property
             condition = nil
@@ -405,29 +369,21 @@ struct WEVectorKeyframe: Decodable {
 }
 
 struct WEAnimatedScalar: Decodable {
-    let script: String?
     @WEFlexibleDouble var value: Double?
     let animation: WEKeyframeAnimation?
 }
 
+/// A field authored as `{"value", "animation"?, "script"?}`: its value and animation. Its script
+/// runs in the wallpaper's SceneScript runtime (`SceneScriptSiteBuilder` finds it).
 struct WEScriptedProperty: Decodable {
-    let script: String?
     let stringValue: String?
     let vectorAnimation: WEVectorKeyframeAnimation?
-    /// Authored defaults as text; `{"user",…}` entries give their literal `value`.
-    let scriptProperties: [String: String]
-    /// `scriptproperties` exactly as authored.
-    let scriptPropertiesJSON: [String: SceneJSON]
 
-    enum CodingKeys: String, CodingKey { case script, value, animation, scriptproperties }
+    enum CodingKeys: String, CodingKey { case value, animation }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        script = try container.decodeIfPresent(String.self, forKey: .script)
         vectorAnimation = try? container.decodeIfPresent(WEVectorKeyframeAnimation.self, forKey: .animation)
-        scriptPropertiesJSON = container.decodeEntries(SceneJSON.self, forKey: .scriptproperties,
-                                                       userInfo: decoder.userInfo) ?? [:]
-        scriptProperties = scriptPropertiesJSON.compactMapValues(\.scriptPropertyLiteral)
         if let string = try? container.decode(String.self, forKey: .value) {
             stringValue = string
         } else if let number = try? container.decode(Double.self, forKey: .value) {
