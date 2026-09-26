@@ -120,12 +120,7 @@ class TEXParser {
             imagePayloads.append(firstPayload)
         }
 
-        guard let marker = readNullTerminatedString(from: bytes, cursor: &cursor), marker.hasPrefix("TEXS"),
-              let frameCount = readUInt32(from: bytes, cursor: &cursor), frameCount > 0 else { return nil }
-        if marker == "TEXS0003" {
-            guard readUInt32(from: bytes, cursor: &cursor) != nil,
-                  readUInt32(from: bytes, cursor: &cursor) != nil else { return nil }
-        }
+        guard let sheet = TEXSpriteFrames.parse(bytes, cursor: &cursor), !sheet.isEmpty else { return nil }
         let images = imagePayloads.compactMap { item -> NSImage? in
             let payload = item.compression == 0 ? item.stored
                 : item.compression == 1 ? decompressLZ4(item.stored, uncompressedSize: item.uncompressedSize) : []
@@ -144,43 +139,20 @@ class TEXParser {
                                 visibleWidth: item.width, visibleHeight: item.height)
         }
         guard images.count == imagePayloads.count else { return nil }
+        // Every frame stays, 0 s ones included (WE shows those for one engine frame). A frame
+        // that names a missing atlas or has no area can't be drawn; it is dropped, loudly.
         var frames: [TEXAnimationFrame] = []
-        for _ in 0..<frameCount {
-            guard let frameNumber = readUInt32(from: bytes, cursor: &cursor),
-                  let durationBits = readUInt32(from: bytes, cursor: &cursor) else { return nil }
-            let duration = Float(bitPattern: durationBits)
-            let x: Float
-            let y: Float
-            let width: Float
-            let widthY: Float
-            let heightX: Float
-            let height: Float
-            if marker == "TEXS0001" {
-                guard let rawX = readUInt32(from: bytes, cursor: &cursor),
-                      let rawY = readUInt32(from: bytes, cursor: &cursor),
-                      let rawWidth = readUInt32(from: bytes, cursor: &cursor),
-                      let rawWidthY = readUInt32(from: bytes, cursor: &cursor),
-                      let rawHeightX = readUInt32(from: bytes, cursor: &cursor),
-                      let rawHeight = readUInt32(from: bytes, cursor: &cursor) else { return nil }
-                x = Float(rawX); y = Float(rawY); width = Float(rawWidth); height = Float(rawHeight)
-                widthY = Float(rawWidthY); heightX = Float(rawHeightX)
-            } else {
-                guard let xBits = readUInt32(from: bytes, cursor: &cursor),
-                      let yBits = readUInt32(from: bytes, cursor: &cursor),
-                      let widthBits = readUInt32(from: bytes, cursor: &cursor),
-                      let widthYBits = readUInt32(from: bytes, cursor: &cursor),
-                      let heightXBits = readUInt32(from: bytes, cursor: &cursor),
-                      let heightBits = readUInt32(from: bytes, cursor: &cursor) else { return nil }
-                x = Float(bitPattern: xBits); y = Float(bitPattern: yBits)
-                width = Float(bitPattern: widthBits); height = Float(bitPattern: heightBits)
-                widthY = Float(bitPattern: widthYBits); heightX = Float(bitPattern: heightXBits)
-            }
-            let imageIndex = images.count == 1 ? 0 : Int(frameNumber)
-            if imageIndex < images.count, duration.isFinite, duration > 0,
-               width > 0, height > 0 {
-                frames.append(TEXAnimationFrame(imageIndex: imageIndex, duration: duration,
-                                                x: x, y: y, width: width, widthY: widthY, heightX: heightX, height: height))
-            }
+        for frame in sheet {
+            let imageIndex = images.count == 1 ? 0 : frame.imageIndex
+            guard imageIndex >= 0, imageIndex < images.count, frame.duration.isFinite,
+                  frame.width > 0, frame.height > 0 else { continue }
+            frames.append(TEXAnimationFrame(imageIndex: imageIndex, duration: frame.duration,
+                                            x: frame.x, y: frame.y, width: frame.width, widthY: frame.widthY,
+                                            heightX: frame.heightX, height: frame.height))
+        }
+        if frames.count != sheet.count {
+            OWELog.error(.texture, "Animated TEX: dropped \(sheet.count - frames.count) of \(sheet.count) TEXS frames "
+                         + "(missing atlas, no area or a non-finite frame time)")
         }
         return frames.isEmpty ? nil : TEXAnimatedImages(images: images, frames: frames)
     }
