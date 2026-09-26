@@ -548,6 +548,8 @@ class SceneWallpaperViewModel: ObservableObject {
             }
             content.sounds = soundBuilder(wallpaperDir: wallpaperDir).sounds(in: scene.objects, context: valueContext)
             content.lighting = SceneLightingContent(settings: lighting, lights: Self.lights(in: scene.objects, context: valueContext))
+            content.volumetrics = volumetricsPlan(content.lighting.lights, camera: SceneVolumetricsCamera(scene: scene, size: sceneSize),
+                                                  wallpaperDir: wallpaperDir)
             content.engineCombos = sceneEngineCombos
             content.bloomChain = engineChain("WE's bloom", wallpaperDir: wallpaperDir, SceneBloomChain.build)
             if sceneEngineCombos.hdr {
@@ -1074,6 +1076,25 @@ class SceneWallpaperViewModel: ObservableObject {
             return try build(builder)
         } catch {
             OWELog.error(.scene, "\(name) can't be planned; the scene draws without it: \(error)")
+            return nil
+        }
+    }
+
+    /// WE's volumetric lights (`SceneVolumetricsPlan`); nil, logged, when they can't be planned.
+    private func volumetricsPlan(_ lights: [SceneLightObject], camera: SceneVolumetricsCamera,
+                                 wallpaperDir: URL) -> SceneVolumetricsPlan? {
+        guard lights.contains(where: \.light.castVolumetrics), let translator = Self.effectTranslator else { return nil }
+        let builder = SceneEffectPlanBuilder(
+            translator: translator,
+            readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
+            loadTexture: { [weak self] name, materialPath in
+                self?.loadMetalTexture(named: name, materialDir: materialPath, wallpaperDir: wallpaperDir)
+            },
+            sceneEngineCombos: sceneEngineCombos)
+        do {
+            return try SceneVolumetricsPlan.build(lights: lights, camera: camera, settings: renderSettings, builder: builder)
+        } catch {
+            OWELog.error(.scene, "WE's volumetrics can't be planned; the scene draws without them: \(error)")
             return nil
         }
     }

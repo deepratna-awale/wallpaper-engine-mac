@@ -172,6 +172,9 @@ struct SceneMetalContent {
     var sounds: [SceneSoundContent] = []
     /// `general`'s lighting settings and the scene's light objects.
     var lighting = SceneLightingContent()
+    /// WE's volumetric lights, planned for the user's volumetrics setting; nil when it is
+    /// disabled or no light casts volumetrics (`SceneVolumetricsPlan`).
+    var volumetrics: SceneVolumetricsPlan?
     /// The combos WE's engine sets on every material of this content (`SceneEngineCombos`).
     var engineCombos = SceneEngineCombos()
     /// WE's LDR bloom passes, planned with the content's engine combos; nil without a shader

@@ -71,6 +71,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// its target for this frame's draws.
     let mipMappedFrameBuffer: SceneMipMappedFrameBuffer?
     private var mipMappedTarget: MTLTexture?
+    /// The volumetrics stage (tests and diagnostics).
+    var volumetrics: SceneVolumetrics? { frameStages.lazy.compactMap { $0 as? SceneVolumetrics }.first }
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
@@ -1025,8 +1027,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard drawParticleBatches(before: .max) else { return }
         encoder.endEncoding()
 
-        let stageContext = SceneFrameStageContext(scene: sceneTexture, commandBuffer: commandBuffer, sceneSize: sceneSize,
+        var stageContext = SceneFrameStageContext(scene: sceneTexture, commandBuffer: commandBuffer, sceneSize: sceneSize,
                                                   frame: effectFrame, settings: renderSettings)
+        stageContext.assetTexture = { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) }
         for stage in frameStages { stage.encode(stageContext) }
         // The scene-resolution target goes onto the real drawable, placement applied exactly once.
         postProcess.encode(ScenePostProcess.Frame(
