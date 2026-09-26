@@ -879,6 +879,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        rotation: Float(object.angles?.parseVector3().2 ?? 0), effects: .identity)
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         layer.alignment = object.alignment
+        layer.solidFill = SIMD4(Float(color.0), Float(color.1), Float(color.2), 1)
         return layer
     }
 
@@ -985,6 +986,7 @@ class SceneWallpaperViewModel: ObservableObject {
                        effects: .identity)
         layer.weEffects = plans
         layer.alignment = object.alignment
+        layer.solidFill = SIMD4(1, 1, 1, 0)
         return layer
     }
 

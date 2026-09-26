@@ -106,6 +106,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var effectAssetTextures: [String: MTLTexture] = [:]
     /// Animated asset textures' sprite frames, by the same key.
     private var effectAssetFrames: [String: [RenderTextureFrame]] = [:]
+    /// Textureless layers' effect inputs (`solidEffectInput`), by layer id; once per content.
+    private var solidEffectInputs: [String: MTLTexture] = [:]
     /// Scene time since the content loaded, speed applied; drives animations, `g_Time`,
     /// particles and scripts alike.
     private var clock = SceneClock()
@@ -332,6 +334,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         if level == .critical {
             effectAssetTextures.removeAll()
             effectAssetFrames.removeAll()
+            solidEffectInputs.removeAll()
         }
         OWELog.info(.scene, "Memory pressure (\(level)): freed \((before - renderTargetPool.residentBytes) >> 20) MB of pooled targets")
     }
@@ -344,6 +347,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     func setContent(_ content: SceneMetalContent?) {
         effectAssetTextures.removeAll()
         effectAssetFrames.removeAll()
+        solidEffectInputs.removeAll()
         effectGraph?.releaseTargets()
         particleMaterials?.releaseAll()
         imageMaterials?.releaseAll()
@@ -817,8 +821,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // Layers that read the scene run inside the scene pass, once what's beneath them is drawn.
             if entry.layer.readsScene { continue }
             if !entry.layer.weEffects.isEmpty {
-                let input = textFrames[layerIndex]?.frame ?? textureFrame(for: entry)
-                dynamicTextures[layerIndex] = runEffects(entry, draw: draw, input: input.texture,
+                let input = solidEffectInput(entry.layer, commandBuffer: commandBuffer)
+                    ?? (textFrames[layerIndex]?.frame ?? textureFrame(for: entry)).texture
+                dynamicTextures[layerIndex] = runEffects(entry, draw: draw, input: input,
                                                          snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
             }
         }
@@ -1023,7 +1028,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 let input = entry.layer.sceneInput
                     ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, reducedFor: entry.layer,
                                                      commandBuffer: commandBuffer) }
-                    : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry)).texture
+                    : solidEffectInput(entry.layer, commandBuffer: commandBuffer)
+                        ?? (textFrames[layerIndex]?.frame ?? textureFrame(for: entry)).texture
                 dynamicTextures[layerIndex] = input.flatMap {
                     runEffects(entry, draw: draw, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
                 }
@@ -1483,8 +1489,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         if renderSettings.sceneDetail == .matchDisplay {
             context.footprint = effectFootprint(entry, draw: draw, input: input)
             // Scene regions and text are drawn at the scene target's density, below full detail
-            // when the target is matched to a smaller display.
-            if context.footprint == nil, fullDetailScale > 1 {
+            // when the target is matched to a smaller display; a solid fill is at WE's own size.
+            if context.footprint == nil, fullDetailScale > 1, entry.layer.solidFill == nil {
                 let standIn = (SIMD2(Float(input.width), Float(input.height)) * fullDetailScale).rounded(.toNearestOrAwayFromZero)
                 context.inputStandInSize = SIMD2(Int(standIn.x), Int(standIn.y))
             }
@@ -1601,6 +1607,33 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         encoder.endEncoding()
         return region
+    }
+
+    /// A textureless layer's image as its effects start from it: its fill at WE's buffer size, the
+    /// layer's `size` rounded (`SceneMetalLayer.solidFill`), filled once per content; nil for a
+    /// layer with a texture (or when the target can't be made, and the 1×1 source stands in).
+    private func solidEffectInput(_ layer: SceneMetalLayer, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        guard let fill = layer.solidFill else { return nil }
+        let size = SolidEffectInput.size(layer.size)
+        if let cached = solidEffectInputs[layer.id], cached.width == size.x, cached.height == size.y { return cached }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm, width: size.x,
+                                                                  height: size.y, mipmapped: false)
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .private
+        guard let texture = device.makeTexture(descriptor: descriptor) else {
+            OWELog.error(.scene, "Layer \(layer.id): could not allocate its \(size.x)×\(size.y) effect input")
+            return nil
+        }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = texture
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: Double(fill.x), green: Double(fill.y),
+                                                            blue: Double(fill.z), alpha: Double(fill.w))
+        pass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
+        encoder.endEncoding()
+        solidEffectInputs[layer.id] = texture
+        return texture
     }
 
     private func effectAssetTexture(key: String, source: SceneMetalTextureSource) -> MTLTexture? {

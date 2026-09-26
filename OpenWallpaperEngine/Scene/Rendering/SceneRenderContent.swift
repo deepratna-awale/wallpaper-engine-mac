@@ -63,6 +63,11 @@ struct SceneMetalLayer {
     /// Composition, fullscreen and project layers: the base image is the scene rendered so far
     /// under the layer (`_rt_FullFrameBuffer`), not a texture.
     var sceneInput = false
+    /// A layer whose material has no texture (a solid layer's `flat`, a shape): its fill as
+    /// straight RGBA. Its quad stretches a 1×1 source, but WE sizes its effect buffers to the
+    /// layer's `size`, rounded (`wallpaper64.exe` 0x140209206…0x14020923c), so its effects start
+    /// from the fill at that size (`SceneMetalRenderer.solidEffectInput`).
+    var solidFill: SIMD4<Float>? = nil
     /// Index of the object in scene.json: layers and particle systems draw in that order.
     var order = 0
     /// `alignment` (images) or the text block's aligned edge: where the quad sits against `position`.

@@ -68,4 +68,50 @@ final class RenderCheckTests: XCTestCase {
             }
         }
     }
+
+    /// WE sizes a textureless layer's effect buffers to its `size` (0x140209206…0x14020923c),
+    /// not to the 1×1 fill its quad stretches. The fixture's effect writes the pixel's u into red:
+    /// at the layer's size it ramps across the layer; on a 1×1 buffer the layer was one flat colour.
+    func testSolidLayerEffectsRunAtTheLayersSize() throws {
+        XCTAssertEqual(SolidEffectInput.size(SIMD2(128, 64)), SIMD2(128, 64))
+        XCTAssertEqual(SolidEffectInput.size(SIMD2(100.5, 0.4)), SIMD2(101, 1))
+        let size = SIMD2(128, 64)
+        let directory = Fixtures.url("Scenes/solid-effect")
+        let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/solid-effect/project.json"))
+        defer { Fixtures.removeStoredSettings(for: directory) }
+        let content = try XCTUnwrap(SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory)).metalContent())
+        let layer = try XCTUnwrap(content.layers.first)
+        XCTAssertEqual(layer.solidFill, SIMD4(0, 0, 1, 1))
+        try XCTSkipIf(layer.weEffects.isEmpty, "no shader toolchain for the fixture's effect")
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let view = MTKView(frame: CGRect(x: 0, y: 0, width: size.x, height: size.y), device: device)
+        view.colorPixelFormat = .bgra8Unorm
+        view.framebufferOnly = false
+        view.autoResizeDrawable = false
+        view.drawableSize = CGSize(width: size.x, height: size.y)
+        let renderer = try XCTUnwrap(SceneMetalRenderer(view: view, scriptServices: nil, screenID: "solid-effect"))
+        defer { renderer.releaseContent() }
+        view.isPaused = true
+        renderer.setPlacement(.stretch)
+        renderer.setContent(content)
+        var bytes = [UInt8](repeating: 0, count: size.x * size.y * 4)
+        // (r, g, b) at a view pixel.
+        func rgb(_ x: Int, _ y: Int) -> SIMD3<UInt8> {
+            let i = (y * size.x + x) * 4
+            return SIMD3(bytes[i + 2], bytes[i + 1], bytes[i])
+        }
+        let deadline = Date().addingTimeInterval(60)
+        repeat {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+            renderer.draw(in: view)
+            renderer.lastCommandBuffer?.waitUntilCompleted()
+            view.currentDrawable?.texture.getBytes(&bytes, bytesPerRow: size.x * 4,
+                                                   from: MTLRegionMake2D(0, 0, size.x, size.y), mipmapLevel: 0)
+        } while rgb(size.x - 4, 32).x == 0 && Date() < deadline
+        let left = rgb(4, 32), middle = rgb(64, 32), right = rgb(size.x - 4, 32)
+        XCTAssertLessThan(left.x, 16, "left \(left)")
+        XCTAssertEqual(Int(middle.x), 128, accuracy: 4, "middle \(middle)")
+        XCTAssertGreaterThan(right.x, 240, "right \(right)")
+        XCTAssertEqual(right.z, 255, "the fill's blue under the ramp")
+    }
 }
