@@ -79,6 +79,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// This frame's scene snapshot target (`sceneSnapshot`), leased on first use, and which part
     /// of it matches the scene drawn so far.
     private var sceneCopy: MTLTexture?
+    /// This frame's scene snapshot goes into `_rt_MipMappedFrameBuffer`'s level 0
+    /// (`SceneMipMappedFrameBuffer.snapshotCanShare`).
+    private var snapshotSharesMipMappedTarget = false
     private(set) var snapshotTracker = SceneSnapshotTracker()
     /// Trims rebuildable memory when the system asks (`trimMemory`).
     private var memoryPressure: SceneMemoryPressure?
@@ -984,6 +987,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return true
         }
         sceneCopy = nil
+        snapshotSharesMipMappedTarget = mipMappedTarget != nil && SceneMipMappedFrameBuffer.snapshotCanShare(
+            layers: layers.lazy.map(\.layer), particleSystems: particleSystems.map(\.configuration),
+            reflection: renderSettings.reflection)
         snapshotTracker.reset()
         let targetSize = SIMD2(sceneTexture.width, sceneTexture.height)
         for (layerIndex, entry) in layers.enumerated() {
@@ -1536,8 +1542,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func sceneSnapshot(of scene: MTLTexture, commandBuffer: MTLCommandBuffer,
                                needing rect: SceneSnapshotTracker.Rect? = nil) -> MTLTexture? {
         if sceneCopy == nil {
-            sceneCopy = renderTargetPool.texture(width: scene.width, height: scene.height,
-                                                 pixelFormat: scene.pixelFormat, avoiding: scene)
+            // The reflection copy's level 0 when this frame allows (`snapshotCanShare`): one
+            // full-size target fewer.
+            let shared = snapshotSharesMipMappedTarget ? mipMappedTarget.flatMap {
+                $0.width == scene.width && $0.height == scene.height && $0.pixelFormat == scene.pixelFormat ? $0 : nil
+            } : nil
+            sceneCopy = shared ?? renderTargetPool.texture(width: scene.width, height: scene.height,
+                                                           pixelFormat: scene.pixelFormat, avoiding: scene)
             snapshotTracker.reset()
         }
         guard let copy = sceneCopy else { return nil }

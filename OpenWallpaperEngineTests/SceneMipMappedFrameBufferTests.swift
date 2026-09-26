@@ -1,4 +1,5 @@
 import XCTest
+import MetalKit
 import Metal
 import simd
 @testable import OpenWallpaperEngine
@@ -130,6 +131,62 @@ final class SceneMipMappedFrameBufferTests: XCTestCase {
                       "the new content's first frame reads transparent black")
     }
 
+    /// The scene snapshot may go into the target's level 0 (test-risks LR10) only while the copy
+    /// runs this frame and nothing from the first scene-reading layer on samples the target in the
+    /// scene pass. A layer whose effects sample it runs them before the scene pass.
+    func testTheSnapshotSharesTheTargetOnlyWhereNothingLaterReadsIt() {
+        var reader = Self.layer("reader")
+        reader.weEffects = [SceneEffectPlan(file: "effects/test/effect.json", fbos: [], passes: [Self.snapshotPass()])]
+        XCTAssertTrue(reader.readsScene)
+        var direct = Self.layer("direct")
+        direct.imageMaterial = ImageMaterialPlan(materialPath: "materials/test.json", pass: Self.samplingPass(),
+                                                 usesSpriteSheetUniforms: false, liveFactors: [:])
+        func share(_ layers: [SceneMetalLayer], reflection: Bool = true) -> Bool {
+            SceneMipMappedFrameBuffer.snapshotCanShare(layers: layers, particleSystems: [], reflection: reflection)
+        }
+        XCTAssertTrue(share([Self.samplingLayer(), direct, reader]), "the target is read before the snapshot")
+        XCTAssertFalse(share([reader, direct]), "a later draw reads the previous frame")
+        XCTAssertFalse(share([Self.samplingLayer(), reader], reflection: false), "with the setting off it stays black")
+        var both = Self.layer("both")
+        both.weEffects = [SceneEffectPlan(file: "effects/test/effect.json", fbos: [],
+                                          passes: [Self.snapshotPass(), Self.samplingPass()])]
+        XCTAssertFalse(share([both]), "the scene reader's own effects read it")
+    }
+
+    /// Through the renderer: where the snapshot may share the target, the frame leases no
+    /// full-size target for it.
+    func testASharedSnapshotLeasesNoTargetOfItsOwn() throws {
+        var reader = Self.layer("reader")
+        reader.weEffects = [SceneEffectPlan(file: "effects/test/effect.json", fbos: [], passes: [Self.snapshotPass()])]
+        var direct = Self.layer("direct")
+        direct.imageMaterial = ImageMaterialPlan(materialPath: "materials/test.json", pass: Self.samplingPass(),
+                                                 usesSpriteSheetUniforms: false, liveFactors: [:])
+        func poolBytes(_ layers: [SceneMetalLayer]) throws -> Int {
+            let size = 256
+            let view = MTKView(frame: CGRect(x: 0, y: 0, width: size, height: size / 2), device: device)
+            view.colorPixelFormat = .bgra8Unorm
+            view.framebufferOnly = false
+            view.autoResizeDrawable = false
+            view.drawableSize = CGSize(width: size, height: size / 2)
+            let renderer = try XCTUnwrap(SceneMetalRenderer(view: view))
+            defer { renderer.releaseContent() }
+            view.isPaused = true
+            renderer.setPlacement(.stretch)
+            renderer.setContent(Self.content(layers: layers))
+            let deadline = Date().addingTimeInterval(30)
+            while !renderer.hasContent, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+            for _ in 0..<3 {
+                renderer.draw(in: view)
+                renderer.lastCommandBuffer?.waitUntilCompleted()
+            }
+            XCTAssertNotNil(renderer.mipMappedFrameBuffer?.texture)
+            return renderer.frameTargetBytes["target pool (snapshots, regions)"] ?? 0
+        }
+        let target = 256 * 128 * 4
+        let shared = try poolBytes([direct, reader]), separate = try poolBytes([reader, direct])
+        XCTAssertGreaterThanOrEqual(separate - shared, target, "one full-size target fewer: \(shared) vs \(separate)")
+    }
+
     /// Render flag 0x80 off: the target is cleared to (0, 0, 0, 1) once and never filled.
     func testReflectionOffClearsItToOpaqueBlack() throws {
         let stage = SceneMipMappedFrameBuffer(device: device)
@@ -237,6 +294,13 @@ final class SceneMipMappedFrameBufferTests: XCTestCase {
     static func samplingPass() -> SceneEffectPassPlan {
         SceneEffectPassPlan(command: .render, variantKey: "", variant: nil, blending: "normal", target: nil,
                             textures: [0: .current, 1: .mipMappedFrameBuffer],
+                            constants: ShaderConstantResolver.ResolvedConstants(staticValues: [:], dynamic: []))
+    }
+
+    /// A pass that samples the scene drawn so far (`_rt_FullFrameBuffer`).
+    static func snapshotPass() -> SceneEffectPassPlan {
+        SceneEffectPassPlan(command: .render, variantKey: "", variant: nil, blending: "normal", target: nil,
+                            textures: [0: .current, 1: .sceneSnapshot],
                             constants: ShaderConstantResolver.ResolvedConstants(staticValues: [:], dynamic: []))
     }
 

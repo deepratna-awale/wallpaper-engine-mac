@@ -80,6 +80,43 @@ final class SceneMipMappedFrameBuffer: SceneFrameStage {
 
     /// WE makes the target with the scene it loads, so a new content never reads the last one's
     /// frame: the target is made again, transparent black, on the next frame.
+    /// Whether `layer` samples the target in the scene pass: through its own material, or, for a
+    /// layer that reads the scene (its effects run inside the pass), through its prepass or effects.
+    /// Any other layer's effects run before the scene pass.
+    static func readsInScenePass(_ layer: SceneMetalLayer) -> Bool {
+        func samples(_ textures: [Int: SceneEffectTextureInput]) -> Bool {
+            textures.values.contains { if case .mipMappedFrameBuffer = $0 { return true } else { return false } }
+        }
+        if let material = layer.imageMaterial, samples(material.pass.textures) { return true }
+        guard layer.readsScene else { return false }
+        return samples(layer.imageMaterial?.prelighting?.textures ?? [:])
+            || layer.weEffects.contains { $0.passes.contains(where: \.readsMipMappedFrameBuffer) }
+    }
+
+    /// Whether this frame's scene snapshot (the scene so far, for layers that read it) can be taken
+    /// into the target's level 0 instead of a full-size target of its own (test-risks LR10). It can
+    /// when the reflection copy runs this frame, which overwrites level 0 and makes the mips again
+    /// once the scene is drawn (with the setting off the target must stay black), when no particle
+    /// system samples the target, and when nothing from the first layer that reads the scene on
+    /// samples it in the scene pass: the draws before that read the previous frame before the
+    /// snapshot overwrites it, as the command buffer orders them. `layers` are in draw order.
+    static func snapshotCanShare<Layers: Sequence>(layers: Layers, particleSystems: [SceneMetalParticleSystem],
+                                                   reflection: Bool) -> Bool where Layers.Element == SceneMetalLayer {
+        guard reflection else { return false }
+        let particlesSample = particleSystems.contains { system in
+            system.material?.stages.contains { $0.textures.values.contains {
+                if case .mipMappedFrameBuffer = $0 { return true } else { return false }
+            } } ?? false
+        }
+        guard !particlesSample else { return false }
+        var readingScene = false
+        for layer in layers {
+            if layer.readsScene { readingScene = true }
+            if readingScene, readsInScenePass(layer) { return false }
+        }
+        return true
+    }
+
     func setContent(_ content: SceneMetalContent) {
         isSampled = Self.samples(content)
         texture = nil
