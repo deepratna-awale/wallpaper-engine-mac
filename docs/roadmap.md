@@ -14,6 +14,7 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 - Phase 5: parent transforms, image alignment, WE text layout and colour.
 - M8: library sweep passes (44 wallpapers, 0 failures).
 - Area 4 SceneScript, WP0–WP11 (docs/scenescript-plan.md): every scene's scripts run on `SceneScriptRuntime`, one per display, feeding the renderer through the object table; the legacy engine's scripting is deleted. Then WP11's gaps and the optimisation pass: WE's sound layers play, clicks count only on the wallpaper, a draw shows its own script frame, `createLayer` makes particle systems and sounds, `brightness`/`size` scripts are drawn, and JavaScriptCore JIT-compiles the scripts.
+- Area 3 Timeline animations, T0–T7 (docs/timeline-plan.md): WE's timeline format and maths, bit for bit against a reference model; one set per wallpaper instance driving layer fields, effect constants, scene settings, particle overrides and sprite sheets (layers, effects and materials); the script API (`IAnimation`, `ITextureAnimation`, `animationEvent`); a render sweep of every animated library scene; and an optimisation pass (the library's timelines cost under 4 µs a frame).
 
 ## Work queue (autonomous loop, from 2026-09-25 night)
 
@@ -22,7 +23,7 @@ Each step: research → parallel agents by file ownership + tester → fix the t
 1. Finish in flight: the depth-parallax and shine bug (3802047741). The particle finish (child control points, per-instance ropes, non-uniform scale, particle uniform arena, test cleanup) is done.
 2. WE-authored values everywhere (priority): every threshold, default, range, step and option comes from WE's json, shader annotations and scripts (effect.json, materials, `// {..}` uniform annotations, `[COMBO]`, project.json properties, particle jsons, SceneScript `createScriptProperties`). No invented constants, magic factors or app-made ranges. Audit → fix → a test that fails on hard-coded values.
 3. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise. WP0–WP11, their gaps and the optimisation pass done; WP12's timeline half is done with area 3 (animation layers and bones wait for areas 6 and 7).
-4. Area 3 Timeline animations → tester → optimise.
+4. ~~Area 3 Timeline animations → tester → optimise.~~ Done (animation layers wait for areas 6 and 7).
 5. Area 5 Lighting and reflections → tester → optimise.
 6. Area 6 3D models (with particle collisionmodel) → tester → optimise.
 7. Area 7 Puppet warp → tester → optimise.
@@ -55,13 +56,13 @@ Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs 
 7. ~~Every particle default and semantic from WE~~: done (`docs/we-values-audit.md` §6), with WE's low-frame-rate drag (the engine frame time [engine+0x14c]) and half steps at an fps limit of 1…20 ([engine+0x148]), renderer `orientation`/`axis`, and rope `uvscale`/`uvsmoothing`/`uvscrolling`.
 8. ~~Performance pass~~: done (2026-09-25; `ParticleLibraryBenchmarkTests`, `ParticleSimulationPerformanceTests`, `ParticleMaterialPerformanceTests`). The GPU step now runs stage by stage for every system at once (one concurrent encoder, a barrier between stages) instead of each system's dozen dispatches in turn: a small system's fixed cost fell from about 48 µs to 3 µs, and every library wallpaper's simulation takes 0.03…0.27 ms of GPU time (was up to 0.43 ms; 10–11 systems 0.29…0.38 → 0.07…0.09 ms). The CPU inputs and encode take 0.03…0.08 ms a system (Debug), the material draw about 0.07 ms; pipeline keys, uniform members, the time of day and the sprite axes are cached. Open: a rate bound to a script costs 0.5…4 ms a frame in the script engine (area 4); the draws are fill-bound and dominate the heaviest wallpaper (20 000 refracting rain sprites, several ms at 1080p); boids and an instanced rope's neighbour search are O(n²).
 
-### 3. Timeline animations (mostly implemented; docs/timeline-plan.md)
+### 3. Timeline animations (implemented but for animation layers; docs/timeline-plan.md)
 
 1. ~~Origin, scale, angles and size keyframes (E7)~~: done. WE's own format, evaluated per wallpaper instance by `SceneAnimationSet` (Bézier handles, per-frame samples, single/loop/mirror, `startpaused`, `wraploop`, `relative`, linked clocks); the timeline beats the static and user value, a script's return wins for its frame.
 2. ~~Bezier and easing parity, animated effect constants~~: done, bit for bit against the reference model.
 3. ~~The `getTextureAnimation` API~~: done. One clock per texture, one step per frame, a script's override (`rate`, `pause`, `stop`, `setFrame`, `join`).
-4. ~~`getAnimation`, `IAnimation` on objects, effects, materials and the scene, `animationEvent`~~: done. Open: `thisScene.getAnimation(name)` searches only the scene's own animations.
-5. Open: animated `general.*`, effect `visible` and particle `instanceoverride` fields are evaluated but not drawn (no library user); sprite-sheet effect textures (8.15); library render sweep and cost (T6).
+4. ~~`getAnimation`, `IAnimation` on objects, effects, materials and the scene, `animationEvent`~~: done; `thisScene.getAnimation(name)` searches every owner, taking only a string as scenescript64.dll does.
+5. ~~Animated `general.*` and particle `instanceoverride` values, sprite-sheet effect and material textures (8.15), the library render sweep and the optimisation pass (T6, T7)~~: done. Animated `visible` stays undrawn, as in WE (a bool isn't written). The tester's findings (script writes on animated constants, NaN clocks, late script frames, hidden layers' texture overrides, static-chain reuse, cold channels) are fixed.
 6. The animation-layer API for puppet and model animations; this completes with area 7.
 
 ### 4. SceneScript (mostly implemented; Phase 6)
@@ -116,7 +117,7 @@ Ranked; the area each item belongs to is in brackets.
 12. ~~Particles ignore parent scale, rotation and animation after load; image children of particle systems use the authored transform.~~ Done: emitters follow their live parents (scripts, timeline), particles live in the emitter's space unless `worldspace`, and groups and particle systems parent other objects live. [2]
 13. Text `size`: a non-stub size is a fixed box, and the stub test (≤ 2 inside the padding) is a guess. `anchor` and `blockalign` are not applied. [new, Phase 5]
 14. Unsupported `_rt_*` inputs (composite, half/quarter buffers) leave the slot unbound. [1/5]
-15. Built-ins never set: `g_PointerPositionLast`, `g_PointerState`, `g_ParallaxPosition`; `g_Texture*Resolution` reports the allocated size; spritesheet effect textures don't animate. [1]
+15. Built-ins never set: `g_PointerPositionLast`, `g_PointerState`, `g_ParallaxPosition`; `g_Texture*Resolution` reports the allocated size. ~~Spritesheet effect textures don't animate~~: done (area 3, T7). [1]
 16. Camera shake and parallax: amplitude, speed, roughness and delay are unused; parallax is our own model (0.18 factor). [new]
 17. Clear, ambient and skylight colours are decoded but not applied. [5]
 18. The sidebar writes to the un-keyed property store, so with two displays an edit can land on the other wallpaper. [4]

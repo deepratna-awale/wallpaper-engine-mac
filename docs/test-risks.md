@@ -1110,7 +1110,7 @@ S28 and S11 were closed with WP8 (see WP8 below).
 
 # Timeline animations
 
-Status: 2026-09-26, branch `deepratna/feature-work`, base `fee2a06`. Landed: T0 (oracle `Scripts/timeline-reference.py`, `Tests/Fixtures/Timeline/`, sweep tests), T1 (`SceneTimelineClock`/`Channel`/`Animation`), T2 (`SceneAnimationSet`, sites, holders), T5a (`SceneTextureAnimationClock`/`Control`/`Animations`), T4a (`objects-animations.js`). T3 (renderer) landed after this list was written; its status is in "T3 status" below. Adversarial list for [`timeline-plan.md`](timeline-plan.md); owners are its packages. Paths are relative to `OpenWallpaperEngine/`. Library cases are from `/Volumes/980Pro/dd-timeline/animations.json` and `anim_scripts.json`; "the oracle" is `Scripts/timeline-reference.py`.
+Status: 2026-09-26, branch `deepratna/feature-work`, base `fee2a06`. Landed: T0 (oracle `Scripts/timeline-reference.py`, `Tests/Fixtures/Timeline/`, sweep tests), T1 (`SceneTimelineClock`/`Channel`/`Animation`), T2 (`SceneAnimationSet`, sites, holders), T5a (`SceneTextureAnimationClock`/`Control`/`Animations`), T4a (`objects-animations.js`). T3 (renderer) landed after this list was written; its status is in "T3 status" below, and T6, T7 and the fixes of the tester's findings in "T6, T7 and the findings". Adversarial list for [`timeline-plan.md`](timeline-plan.md); owners are its packages. Paths are relative to `OpenWallpaperEngine/`. Library cases are from `/Volumes/980Pro/dd-timeline/animations.json` and `anim_scripts.json`; "the oracle" is `Scripts/timeline-reference.py`.
 
 | # | Sev | Owner | Risk |
 |---|-----|-------|------|
@@ -1323,9 +1323,29 @@ No library item has duplicate names or events.
 - **TL20.** Only the animated fields of animated objects are read each frame. `TimelineRenderTests.testThePerFrameCostIsSmall`, Debug build, 64 three-channel 600-frame timelines: about 117 µs to advance and 65 µs to read them per frame.
 - Open, not T3's: TL4, TL6, TL9–TL14, TL17, TL18, TL21, TL22.
 
+## T6, T7 and the findings (2026-09-26)
+Commits `14cb40b`…`b68c641`. Every finding below is fixed or documented, each with a test; the numbers are in the plan's §4.
+- **TF1 (fixed, `3c3a8fa`).** The mirror writes each animated constant's value into the scripts' pool before a script frame and takes back the last frame's writes of it, so a bound `update`/`init` or a `setMaterialProperty` wins for its frame only; an effect-wide write keeps reaching the other materials. `TimelineRenderTests.testScriptsOnAnimatedConstantsHoldForTheirFrameOnly` (identity `update`, `init`, a one-off write: all end on the timeline's blue; all three stayed green before).
+- **TF2 (fixed).** Echo and Accumulate animate 0.2 → 0.6; the test compares with the model at three times.
+- **TF3 (fixed, `ef222c1`).** `general.*` numbers, `instanceoverride` values, `parallaxDepth` and `volume` draw their timelines, and bound scene-setting scripts see the animated value. `visible` stays undrawn: WE's frame evaluation writes only float and vector types, and `visible` registers as type 6 (plan §1.1). No library scene animates an image layer's own material constants (every constant timeline is under `effects`), so those stay unbound.
+- **TF4 (fixed, `dfe9ddc`).** A chain without time, audio or pointer built-ins is reused while its live-bound constants keep their values (`EffectGraphReuseTests.testAnAnimatedConstantsChainIsReusedWhileItsValueStays`).
+- **TF5 / TL14 (fixed, `5bfeb76`).** A layer's override steps with the frame, drawn or hidden: WE steps it in the image layer's `update`, not its draw (plan §2.7). The shared clock still moves only when a layer or material draws the texture, so a texture only hidden layers use holds. Whether WE calls a hidden layer's `update` isn't traced.
+- **TF6 / TL6 (fixed, `1ec1f87`).** A value that isn't finite draws the static value, logged once; scripts still see WE's NaN, and `stop()`/`setFrame(0)` recovers (`SceneRendererAnimationsTests.testANonFiniteClockNeverReachesTheDraw`).
+- **TF7 / TL11 (documented).** WE-faithful float32 drift; plan §4.
+- **TF8 / TL20 / TL22 (fixed, `28e9182`).** A channel solves only the frames asked for: the first frame after `setFrame(599)` on 128 cold timelines costs 65 µs (`-O`), was 3.0 ms. Past 64 k frames nothing is cached.
+- **TL1 (verified).** The sweep asserts every site the renderer binds (and every reference-model member) is in the set, for every animated library scene.
+- **TL3 (fixed, `5bfeb76`).** Script calls come back tagged with the set frame they saw; a late one replays the advances since, on the restored clock (`SceneRendererAnimationsTests.testAScriptFrameThatComesBackLateLosesNoAdvance`). Texture overrides replay the same way.
+- **TL8 (fixed).** The override steps once per set frame, however often a layer is drawn or asked.
+- **TL16 (fixed, `11dd345`).** A rebuild drops the texture animations of the layers it lost.
+- **TL21.** `thisScene.getAnimation(name)` now searches every owner (`2a99fc6`): layers in scene order, their fields, effects and materials, then the scene. Within an owner the keys are still sorted, not in file order.
+- **T6 (`b68c641`).** `TimelineLibraryRenderTests`: 21 animated library scenes, 180 frames each with a song starting at frame 90. 30 sites match the model in the draw, 15 are checked against the set after scripts played them (the thumbnail fades, 3546971487's titles; one of its alphas is script-owned), and 17 sprite layers follow their clocks. Not drawn (hidden layers or effects, which WE doesn't draw either): 13 sites, and 3000562427's object 205, which isn't built (its model's asset is missing, not a timeline issue). Four scenes only have particle sprite sheets.
+- **T7 (`677ce72`).** An effect's or image material's animated texture takes its texture's shared clock and binds the frame's rect (`testAnEffectsSpriteSheetFollowsTheTexturesClock`, an effect sampling slot 1 through `g_Texture1Rotation/Translation`). No library effect or material binds an animated texture today.
+- Open: TL9 (texture steps per display frame, not WE's fps cap), TL10, TL12, TL13, TL17, TL18, TL19 (ground truth below).
+
 ## Needs WE ground truth (timelines)
 - Missing channels for the property's width (TL19): 0, garbage, or the static value?
-- Does a hidden layer advance its texture (TL14)?
+- Does a hidden layer's `update` run, so its texture override steps (TL14, TF5)? We step it.
+- The host's order for `thisScene.getAnimation(name)` (plan §3.1).
 - Does `relative` re-bake on a user change (TL13)?
 - Does the engine clamp the frame delta after sleep (TL10)?
 - Does WE's engine tick follow its fps cap for textures (TL9)?

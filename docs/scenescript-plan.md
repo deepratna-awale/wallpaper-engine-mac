@@ -773,6 +773,32 @@ What changed:
    - This took 3453730450's command ring from 70 to about 30 µs, and 3677897732's and 3803728810's from about 50 to under 1 µs.
 4. **The measurement's warm-up.** JIT tiering puts compile spikes into the first seconds: 3453730450's p99 was 0.68–0.86 ms after a one-second warm-up and 0.54–0.55 ms after ten.
 
+**After the timelines (area 3, T6).** The same test on `b68c641`, built with `-O` and signed with the app's development identity (so the JIT is on), one run. The mirror now also writes each animated constant's and scene setting's value into the scripts' buffers every frame and takes back the last frame's writes of them (docs/timeline-plan.md §4). Every scene stays under the targets, 3453730450 at p99 0.58 ms. The p50s are 0.01–0.03 ms above the earlier runs, on scenes without timelines as much as on those with them, which points at the machine's load rather than the change.
+
+| wallpaper | script p50 | script p99 | render thread p50 |
+|---|---|---|---|
+| 2406282996 | 0.075 | 0.190 | 0.025 |
+| 2764281221 | 0.091 | 0.193 | 0.027 |
+| 3109042108 | 0.098 | 0.261 | 0.094 |
+| 3121284565 | 0.092 | 0.244 | 0.044 |
+| 3244466773 | 0.090 | 0.309 | 0.023 |
+| 3245833232 | 0.110 | 0.282 | 0.032 |
+| 3352730400 | 0.103 | 0.221 | 0.045 |
+| 3384308105 | 0.084 | 0.165 | 0.026 |
+| 3443078996 | 0.081 | 0.195 | 0.023 |
+| 3453730450 | 0.248 | 0.581 | 0.084 |
+| 3546971487 | 0.140 | 0.353 | 0.040 |
+| 3672756984 | 0.126 | 0.284 | 0.040 |
+| 3677897732 | 0.141 | 0.340 | 0.032 |
+| 3742916237 | 0.080 | 0.196 | 0.028 |
+| 3802509485 | 0.074 | 0.190 | 0.022 |
+| 3802900973 | 0.090 | 0.203 | 0.033 |
+| 3803044683 | 0.125 | 0.330 | 0.061 |
+| 3803167460 | 0.105 | 0.273 | 0.047 |
+| 3803728810 | 0.140 | 0.286 | 0.047 |
+| 3805976313 | 0.079 | 0.149 | 0.022 |
+| 3806006894 | 0.083 | 0.207 | 0.024 |
+
 With polling traps on (the watchdog fix, see item 1), 3453730450 measured p50 0.22 ms and p99 0.68–0.80 ms in three runs while the machine was busier (load 5–6). Without traps at the same load it measured 0.23 ms and 0.69–0.74 ms, so the traps cost little and the p99 moves with the machine. Its slow frames are slow in every script at once, not in one script, and 2 of its texts change every frame (two `setString` commands per frame, about 30 µs of command-ring time with the state updates behind them). Its p99 under load is the open item.
 
 The render thread's share grew by 0.005–0.02 ms. It now builds the script frame's inputs before the draw and runs the sound layers, and it waits for the script frame, which costs wall time, not CPU. Unsigned test hosts (CI) run the interpreter, so their timings look like the "before" column.
