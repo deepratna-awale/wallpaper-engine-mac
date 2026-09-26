@@ -660,8 +660,9 @@ final class UniformProgram {
     private var passSignature: [Float] = []
 
     /// Built-ins whose value changes from frame to frame.
-    static let timeVarying: Set<String> = ["g_Time", "g_Frametime", "g_Daytime", "g_DayTime", "g_PointerPosition",
-                                           "g_PointerPositionLast", "g_PointerState", "g_ParallaxPosition"]
+    static let timeVarying: Set<String> = Set(["g_Time", "g_Frametime", "g_Daytime", "g_DayTime", "g_PointerPosition",
+                                               "g_PointerPositionLast", "g_PointerState", "g_ParallaxPosition"])
+        .union(SceneFrameLighting.uniformNames)
 
     init(layout: UniformLayout?, constants: ShaderConstantResolver.ResolvedConstants) {
         size = layout?.size ?? 0

@@ -25,14 +25,13 @@ struct BuiltinFrameContext {
     /// `0.5 + (mouse − 0.5)·influence`, computed by the caller.
     var parallax: SIMD2<Float> = SIMD2(0.5, 0.5)
     var screenSize: SIMD2<Float> = SIMD2(1920, 1080)
-    var ambient: SIMD3<Float> = SIMD3(repeating: 0.2)
-    var skylight: SIMD3<Float> = SIMD3(repeating: 0.3)
     var eyePosition: SIMD3<Float> = .zero
     var viewUp: SIMD3<Float> = SIMD3(0, 1, 0)
     var viewRight: SIMD3<Float> = SIMD3(1, 0, 0)
     var viewForward: SIMD3<Float> = SIMD3(0, 0, -1)
     var audio: AudioSpectrumSnapshot = .silent
-    /// This frame's lights and scene colours (`SceneFrameLighting`); not yet read by any uniform.
+    /// This frame's scene colours and lights (`SceneFrameLighting`): `g_LightAmbientColor`,
+    /// `g_LightSkylightColor`, the `LightingV1` arrays and the legacy `g_Lights*`.
     var lighting = SceneFrameLighting()
 
     /// `g_PointerState` for the current button state. `.x` mirrors `.z` so a shader that
@@ -100,13 +99,13 @@ enum BuiltinUniforms {
         "g_ViewProjectionMatrixInverse", "g_AltViewProjectionMatrix", "g_ViewMatrix",
         "g_EffectTextureProjectionMatrix", "g_EffectTextureProjectionMatrixInverse", "g_NormalModelMatrix",
         "g_Color4", "g_Color", "g_Alpha", "g_UserAlpha", "g_Brightness",
-        "g_LightAmbientColor", "g_LightSkylightColor", "g_EyePosition", "g_ViewUp", "g_ViewRight",
+        "g_EyePosition", "g_ViewUp", "g_ViewRight",
         "g_ViewForward", "g_TextureReductionScale",
     ]
 
     static func isBuiltin(_ name: String) -> Bool {
-        fixedNames.contains(name) || textureUniform(name) != nil || audioUniform(name) != nil
-            || renderVarIndex(name) != nil
+        fixedNames.contains(name) || SceneFrameLighting.uniformNames.contains(name) || textureUniform(name) != nil
+            || audioUniform(name) != nil || renderVarIndex(name) != nil
     }
 
     /// The value of built-in `name`, or nil when `name` is not a built-in. `arrayCount` limits
@@ -114,6 +113,12 @@ enum BuiltinUniforms {
     static func value(named name: String, frame: BuiltinFrameContext, pass: BuiltinPassContext,
                       arrayCount: Int? = nil) -> [Float]? {
         if let fixed = fixedValue(name, frame: frame, pass: pass) { return fixed }
+        if let perElement = SceneFrameLighting.uniformComponents[name] {
+            // Zero-padded or cut to the shader's array, whose length is the budget's too.
+            let values = frame.lighting.arrays[name] ?? []
+            let count = (arrayCount ?? 1) * perElement
+            return Array((values + [Float](repeating: 0, count: max(0, count - values.count))).prefix(count))
+        }
         if let (slot, suffix) = textureUniform(name) { return textureValue(suffix, info: pass.textures[slot]) }
         if let (bands, right) = audioUniform(name) {
             let values = frame.audio.values(bands: bands, right: right) ?? []
@@ -168,8 +173,8 @@ enum BuiltinUniforms {
         case "g_Alpha": return [pass.alpha]
         case "g_UserAlpha": return [pass.userAlpha]
         case "g_Brightness": return [pass.brightness]
-        case "g_LightAmbientColor": return flat(frame.ambient)
-        case "g_LightSkylightColor": return flat(frame.skylight)
+        case "g_LightAmbientColor": return flat(frame.lighting.ambient)
+        case "g_LightSkylightColor": return flat(frame.lighting.skylight)
         case "g_EyePosition": return flat(frame.eyePosition)
         case "g_ViewUp": return flat(frame.viewUp)
         case "g_ViewRight": return flat(frame.viewRight)

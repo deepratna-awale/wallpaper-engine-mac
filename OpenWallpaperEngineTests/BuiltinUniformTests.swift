@@ -113,8 +113,8 @@ final class BuiltinUniformTests: XCTestCase {
         pass.alpha = 0.5
         pass.userAlpha = 0.7
         pass.brightness = 2
-        frame.ambient = SIMD3(0.1, 0.1, 0.1)
-        frame.skylight = SIMD3(0.4, 0.5, 0.6)
+        frame.lighting.ambient = SIMD3(0.1, 0.1, 0.1)
+        frame.lighting.skylight = SIMD3(0.4, 0.5, 0.6)
         frame.eyePosition = SIMD3(1, 2, 3)
         XCTAssertEqual(value("g_Color4"), [0.1, 0.2, 0.3, 0.5])
         XCTAssertEqual(value("g_Color"), [0.1, 0.2, 0.3])

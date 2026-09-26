@@ -238,6 +238,31 @@ final class SceneLightPackerTests: XCTestCase {
         assertEqual(arrays["g_LightsColorPremultiplied"], [2, 2, 2, 18, 0, 0, 0, 0, 0, 0, 0, 0])
     }
 
+    // MARK: - Uniforms
+
+    /// The built-ins read the frame lighting, zero-padded to the shader's array; the invented
+    /// 0.2 and 0.3 ambient and skylight are gone.
+    func testBuiltinsReadTheFrameLighting() {
+        var frame = BuiltinFrameContext()
+        let pass = BuiltinPassContext(targetSize: SIMD2(1, 1))
+        XCTAssertEqual(BuiltinUniforms.value(named: "g_LightAmbientColor", frame: frame, pass: pass), [0, 0, 0],
+                       "WE's constructor zeroes the scene colours")
+        frame.lighting.ambient = SIMD3(0.3, 0.2, 0.1)
+        frame.lighting.skylight = SIMD3(0.4, 0.5, 0.6)
+        frame.lighting.arrays["g_LTube_Color"] = [1, 2, 3, 4]
+        XCTAssertEqual(BuiltinUniforms.value(named: "g_LightAmbientColor", frame: frame, pass: pass), [0.3, 0.2, 0.1])
+        XCTAssertEqual(BuiltinUniforms.value(named: "g_LightSkylightColor", frame: frame, pass: pass), [0.4, 0.5, 0.6])
+        XCTAssertEqual(BuiltinUniforms.value(named: "g_LTube_Color", frame: frame, pass: pass, arrayCount: 2),
+                       [1, 2, 3, 4, 0, 0, 0, 0])
+        XCTAssertEqual(BuiltinUniforms.value(named: "g_LTube_Color", frame: frame, pass: pass), [1, 2, 3, 4])
+        XCTAssertEqual(BuiltinUniforms.value(named: "g_LightsPosition", frame: frame, pass: pass, arrayCount: 4),
+                       [Float](repeating: 0, count: 12), "vec3[4]")
+        for name in ["g_LPoint_Color", "g_LFeature_ShadowProjection", "g_LightsColorPremultiplied", "g_LightSkylightColor"] {
+            XCTAssertTrue(BuiltinUniforms.isBuiltin(name), name)
+            XCTAssertTrue(UniformProgram.timeVarying.contains(name), "\(name) is written every frame")
+        }
+    }
+
     // MARK: - One piece girls
 
     /// One piece girls (3270035750): 4 `ltube` lights under `{"tube": 4}`, copied from its
