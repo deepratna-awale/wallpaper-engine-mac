@@ -68,6 +68,12 @@ struct SceneScriptSceneDescriber {
             let found = SceneScriptLayerSource.assetPaths(written, workshopID: workshopID).lazy
                 .compactMap { path in file(path).map { (path, $0) } }.first
             guard let (path, data) = found else { return nil }
+            // WE picks the kind by the asset's folder (scenescript64.dll 0x1816342a8): a file under
+            // `sounds/` is a sound object, which plays it.
+            if path.replacingOccurrences(of: "\\", with: "/").lowercased().hasPrefix("sounds/") {
+                json = ["sound": .string(path), "name": .string(path)]
+                break
+            }
             let object: SceneJSON
             do {
                 object = try decodeTolerant(SceneJSON.self, from: data)
@@ -114,6 +120,13 @@ struct SceneScriptSceneDescriber {
         if let size = components(json["size"], count: 2) { description.values[.size] = size }
         // WE starts particle systems playing; `isPlaying()` reads this until a script changes it.
         if kind == .particle { description.values[.playing] = [1] }
+        // A sound plays from load unless `startsilent` (wallpaper64.exe 0x1401f4f20); the renderer
+        // keeps it current from then on.
+        if kind == .sound {
+            var silent = false
+            if case .bool(let flag)? = json["startsilent"] { silent = flag }
+            description.values[.playing] = [silent ? 0 : 1]
+        }
         if case .object(let overrides)? = json["instanceoverride"] {
             let instanceFields: [String: SceneScriptObjectField] = [
                 "alpha": .instanceAlpha, "size": .instanceSize, "count": .instanceCount, "speed": .instanceSpeed,

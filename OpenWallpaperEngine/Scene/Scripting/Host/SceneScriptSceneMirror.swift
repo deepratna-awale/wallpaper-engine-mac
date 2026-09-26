@@ -146,8 +146,9 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
             }
         case .executeMaterialFunction:
             reportOnce("IEffect.executeMaterialFunction", "material functions are not supported yet")
-        case .sound:
-            reportOnce("ISoundLayer", "sound layers are not played yet; play/pause/stop only change isPlaying()")
+        case .sound(let slot, let playback):
+            guard let id = objects[slot]?.id else { return }
+            events.append(.sound(id: id, playback))
         case .particles(let slot, let playback):
             update(slot) { $0.playback = playback }
         case .emitParticles(let slot, let count):

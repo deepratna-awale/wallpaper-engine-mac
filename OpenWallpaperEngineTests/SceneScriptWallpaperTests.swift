@@ -109,7 +109,7 @@ final class SceneScriptWallpaperTests: XCTestCase {
                 switch event {
                 case .create(let id, _): created.insert(id)
                 case .destroy(let id): destroyed.insert(id)
-                case .emit: break
+                case .emit, .sound: break
                 }
             }
         }

@@ -96,6 +96,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var particleRequests: [ParticleGPUSimulator.Request] = []
     /// The wallpaper instance's scripts and what their last frame left.
     let scripts: SceneRendererScripts
+    /// The scene's sound layers; the view sets their gain (`sounds.setTargetGain`).
+    let sounds: SceneSoundLayers
+    /// When the sounds last advanced (real time: their timers follow the audio, not scene speed).
+    private var lastSoundTime: CFTimeInterval?
+    /// Particle systems and sounds scripts created, by object id, kept across content rebuilds
+    /// like `scriptLayers`.
+    private var scriptParticles: [String: (systems: [ParticleSystemRuntime], motion: SceneObjectMotion)] = [:]
+    private var scriptSounds: [Int: SceneSoundContent] = [:]
     /// Layers scripts created (`thisScene.createLayer`), kept across content rebuilds, by id, with
     /// their base `visible`.
     private var scriptLayers: [String: (entry: PreparedLayer, visible: Bool)] = [:]
@@ -103,6 +111,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var destroyedScriptLayers = Set<String>()
     /// `emitParticles` counts waiting for their system's next step, by object id.
     private var pendingEmits: [String: Int] = [:]
+    /// How many particle systems are drawn (tests, diagnostics).
+    var particleSystemCount: Int { particleSystems.count }
     /// Script-created layers still being built (tests wait for them).
     private(set) var pendingScriptLayers = 0
     /// The last `setContent` has been applied (its layers and scripts are in place).
@@ -229,6 +239,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         self.textureLoader = MTKTextureLoader(device: device)
         self.renderTargetPool = SceneRenderTargetPool(device: device)
         scripts = SceneRendererScripts(services: scriptServices, screenID: screenID)
+        sounds = SceneSoundLayers(label: screenID.isEmpty ? "sounds" : "sounds \(screenID)")
         super.init()
         memoryPressure = SceneMemoryPressure { [weak self] level in self?.trimMemory(level) }
         view.device = device
@@ -273,6 +284,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             particleSystems = []
             objectMotions = [:]
             scripts.stop()
+            sounds.stopAll()
+            lastSoundTime = nil
+            scriptParticles.removeAll()
+            scriptSounds.removeAll()
             scriptLayers.removeAll()
             destroyedScriptLayers.removeAll()
             pendingEmits.removeAll()
@@ -330,7 +345,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     self.scriptLayers.removeAll()
                     self.destroyedScriptLayers.removeAll()
                     self.pendingEmits.removeAll()
+                    self.scriptParticles.removeAll()
+                    self.scriptSounds.removeAll()
                 }
+                for (id, created) in self.scriptParticles {
+                    self.particleSystems += created.systems
+                    self.objectMotions[id] = created.motion
+                }
+                self.sounds.setContent(content.sounds + self.scriptSounds.keys.sorted().compactMap { self.scriptSounds[$0] })
                 for (id, created) in self.scriptLayers { self.scripts.setBaseVisibility(created.visible, for: id) }
                 self.layers = preparedLayers + self.scriptLayers.values.map(\.entry)
                 self.orderLayers()
@@ -367,12 +389,23 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 buildScriptLayer(String(id), object: object)
             case .destroy(let id):
                 let key = String(id)
-                if scriptLayers.removeValue(forKey: key) == nil { destroyedScriptLayers.insert(key) }
+                let createdParticles = scriptParticles.removeValue(forKey: key)
+                let createdSound = scriptSounds.removeValue(forKey: id)
+                if scriptLayers.removeValue(forKey: key) == nil, createdParticles == nil, createdSound == nil {
+                    destroyedScriptLayers.insert(key)
+                }
                 layers.removeAll { $0.layer.id == key }
                 textRasterScales.removeValue(forKey: key)
+                if createdParticles != nil {
+                    particleSystems.removeAll { particleObjectID($0) == key }
+                    objectMotions.removeValue(forKey: key)
+                }
+                sounds.remove(id)
                 removed.append(key)
             case .emit(let id, let count):
                 pendingEmits[String(id), default: 0] += count ?? 1
+            case .sound(let id, let playback):
+                sounds.perform(playback, on: id)
             }
         }
         if !removed.isEmpty {
@@ -382,7 +415,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
     }
 
-    /// Builds a script-created object's layer through the loader, off the main thread.
+    /// Builds an object a script created through the loader, off the main thread: a layer, a
+    /// particle system (with its children) or a sound.
     private func buildScriptLayer(_ id: String, object: [String: SceneJSON]) {
         guard let makeLayer = scripts.makeLayer else { return }
         var visible = true
@@ -392,26 +426,66 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         pendingScriptLayers += 1
         contentQueue.async { [weak self] in
             guard let self else { return }
-            let entry: PreparedLayer? = {
+            let built: PreparedScriptObject? = {
                 guard self.isCurrentContentGeneration(generation) else { return nil }
-                guard var layer = makeLayer(object) else {
-                    OWELog.error(.script, "createLayer: object \(id) can't be drawn (only image, text and shape layers can)")
+                guard let created = makeLayer(object) else {
+                    OWELog.error(.script, "createLayer: object \(id) can't be built")
                     return nil
                 }
-                layer.order = Int.max
-                guard let frames = self.makeTextureFrames(from: layer.source), !frames.isEmpty else { return nil }
-                return PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration }, layer: layer)
+                return self.prepare(created, id: id)
             }()
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.pendingScriptLayers -= 1
-                guard let entry, self.isCurrentContentGeneration(generation), self.scripts.wallpaper === wallpaper else { return }
+                guard let built, self.isCurrentContentGeneration(generation), self.scripts.wallpaper === wallpaper else { return }
                 guard self.destroyedScriptLayers.remove(id) == nil else { return }
-                self.scriptLayers[id] = (entry, visible)
                 self.scripts.setBaseVisibility(visible, for: id)
-                self.layers.append(entry)
+                switch built {
+                case .layer(let entry):
+                    self.scriptLayers[id] = (entry, visible)
+                    self.layers.append(entry)
+                case .particles(let systems, let motion):
+                    self.scriptParticles[id] = (systems, motion)
+                    self.objectMotions[id] = motion
+                    self.particleSystems.append(contentsOf: systems)
+                case .sound(let content):
+                    self.scriptSounds[content.id] = content
+                    self.sounds.add(content)
+                }
                 self.orderLayers()
             }
+        }
+    }
+
+    /// A created object with its textures loaded (off the main thread).
+    private enum PreparedScriptObject {
+        case layer(PreparedLayer)
+        case particles([ParticleSystemRuntime], motion: SceneObjectMotion)
+        case sound(SceneSoundContent)
+    }
+
+    private func prepare(_ created: SceneScriptCreatedObject, id: String) -> PreparedScriptObject? {
+        switch created {
+        case .layer(var layer):
+            layer.order = Int.max
+            guard let frames = makeTextureFrames(from: layer.source), !frames.isEmpty else { return nil }
+            return .layer(PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration }, layer: layer))
+        case .particles(let systems, let motion):
+            // Above every authored object, like WE's createLayer; the scripts' order places it.
+            let runtimes: [ParticleSystemRuntime?] = systems.enumerated().map { index, system in
+                var system = system
+                system.order = Int(Int32.max)
+                guard let texture = makeTextureFrames(from: system.source)?.first?.texture else { return nil }
+                let fallback = system.fallbackSource.flatMap { makeTextureFrames(from: $0)?.first?.texture }
+                let seed = UInt32(truncatingIfNeeded: (Int(id) ?? 0) &* 31 &+ index)
+                return ParticleSystemRuntime(texture: texture, configuration: system, seed: ParticleRandom.pcg(seed),
+                                             fallbackTexture: fallback)
+            }
+            ParticleSystemRuntime.linkFamilies(runtimes)
+            let prepared = runtimes.compactMap { $0 }
+            return prepared.isEmpty ? nil : .particles(prepared, motion: motion)
+        case .sound(let content):
+            return .sound(content)
         }
     }
 
@@ -420,7 +494,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func orderLayers() {
         let systems = particleSystems.map { system -> (id: String?, order: Int) in
             let order = system.configuration.order
-            return (order >= 0 && order < objectIDs.count ? String(objectIDs[order]) : nil, order)
+            if order >= 0 && order < objectIDs.count { return (String(objectIDs[order]), order) }
+            return (particleObjectID(system), order)
         }
         let order = SceneRendererScripts.drawOrder(layers: layers.map { ($0.layer.id, $0.layer.order) },
                                                    systems: systems, scriptOrder: scripts.state.order)
@@ -506,6 +581,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             orderLayers()
             beginTransformFrame()
         }
+        updateSounds()
         var dynamicTextures: [Int: MTLTexture] = [:]
         // Advanced once per frame: every advance smooths the spectrum one step further.
         var effectFrame = BuiltinFrameContext()
@@ -832,6 +908,23 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         lastCommandBuffer = commandBuffer
     }
 
+    /// WE's sound layers each frame: the volumes scripts set, then their timers, in real time. A
+    /// gap in drawing (a paused wallpaper) counts as at most `maxSoundStep`: its sounds were paused.
+    private func updateSounds() {
+        guard !sounds.isEmpty else {
+            lastSoundTime = nil
+            return
+        }
+        for id in sounds.ids {
+            if let volume = scripts.object(String(id))?.scalar(.volume) { sounds.setVolume(volume, of: id) }
+        }
+        let now = CACurrentMediaTime()
+        if let last = lastSoundTime { sounds.update(deltaTime: min(now - last, Self.maxSoundStep)) }
+        lastSoundTime = now
+    }
+
+    static let maxSoundStep: CFTimeInterval = 0.25
+
     /// Hands the scripts this frame: the clock, the display and cursor, and every object at this
     /// frame's time with the last drawn frame's transforms, text sizes and camera
     /// (docs/scenescript-plan.md §4.4). They run on their own thread; `finishFrame` waits for them.
@@ -871,7 +964,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 origin: own.origin, scale: own.scale, angle: own.angle, alpha: nil, color: nil,
                 visible: scripts.baseVisible(key), size: nil,
                 world: transforms.world(of: key) { [self] id in liveLocal(id, time: time) },
-                animated: objectMotion.animatedFields)
+                animated: objectMotion.animatedFields, playing: sounds.isPlaying(id))
         }
         scripts.submit(input)
     }

@@ -166,4 +166,6 @@ struct SceneMetalContent {
     var objectIDs: [Int] = []
     /// The scene's SceneScripts; nil when it has none.
     var scripts: SceneScriptSceneContent?
+    /// The scene's sound layers.
+    var sounds: [SceneSoundContent] = []
 }

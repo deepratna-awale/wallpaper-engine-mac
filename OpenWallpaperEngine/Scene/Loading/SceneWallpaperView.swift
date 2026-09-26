@@ -32,6 +32,15 @@ struct SceneWallpaperView: NSViewRepresentable {
         return Float(UserDefaults.standard.double(forKey: key))
     }
 
+    /// The wallpaper's sound gain (its sound layers fade to it): the app's volume times this
+    /// wallpaper's music volume, on the one display that plays the wallpaper's sound, and 0 while
+    /// muted, paused or with its music turned off, as WE's wallpaper volume goes to 0 then.
+    private func sceneSoundGain(for wallpaper: WEWallpaper) -> Float {
+        guard wallpaperViewModel.shouldPlaySceneAudio(on: screenId), sceneMusicEnabled(for: wallpaper),
+              wallpaperViewModel.playRate != 0 else { return 0 }
+        return wallpaperViewModel.playVolume * sceneMusicVolume(for: wallpaper)
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     /// `videoStream` is only built asynchronously inside `contentAsync`, so the very first
@@ -50,6 +59,7 @@ struct SceneWallpaperView: NSViewRepresentable {
         let metalView = MTKView(frame: .zero)
         context.coordinator.renderer = SceneMetalRenderer(view: metalView, scriptServices: AppDelegate.shared.sceneScriptServices,
                                                           screenID: screenId)
+        context.coordinator.renderer?.sounds.setTargetGain(sceneSoundGain(for: viewModel.currentWallpaper))
         context.coordinator.renderer?.scripts.onHalt = { [weak coordinator = context.coordinator,
                                                          weak sceneViewModel = viewModel] error in
             guard let coordinator, let sceneViewModel else { return }
@@ -95,11 +105,7 @@ struct SceneWallpaperView: NSViewRepresentable {
             guard let sceneViewModel else { return }
             let path = notification.userInfo?["path"] as? String
             guard path == nil || path == sceneViewModel.currentWallpaper.wallpaperDirectory.path else { return }
-            coordinator?.audio?.update(url: sceneViewModel.sceneAudioURL(),
-                                       enabled: wallpaperViewModel.shouldPlaySceneAudio(on: screenId)
-                                           && sceneMusicEnabled(for: sceneViewModel.currentWallpaper),
-                                       volume: wallpaperViewModel.playVolume * sceneMusicVolume(for: sceneViewModel.currentWallpaper),
-                                       isPaused: wallpaperViewModel.playRate == 0)
+            coordinator?.renderer?.sounds.setTargetGain(sceneSoundGain(for: sceneViewModel.currentWallpaper))
         }
         // Zoom/tilt/saturation amounts are baked into the layer when content is built, so the
         // toggles do nothing until the content is rebuilt.
@@ -117,11 +123,6 @@ struct SceneWallpaperView: NSViewRepresentable {
             coordinator?.renderer?.setContent(content)
             kickVideoPlaybackIfNeeded()
         }
-        context.coordinator.audio = SceneAudioPlayback(url: viewModel.sceneAudioURL(),
-                                enabled: wallpaperViewModel.shouldPlaySceneAudio(on: screenId)
-                                    && sceneMusicEnabled(for: viewModel.currentWallpaper),
-                                volume: wallpaperViewModel.playVolume * sceneMusicVolume(for: viewModel.currentWallpaper))
-        context.coordinator.audio?.play()
         metalView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
         return metalView
     }
@@ -146,11 +147,7 @@ struct SceneWallpaperView: NSViewRepresentable {
         context.coordinator.renderer?.setPlacement(wallpaperViewModel.wallpaperPlacement)
         // A video wallpaper on the Metal path has no scene audio; its own stream owns playback.
         kickVideoPlaybackIfNeeded()
-        context.coordinator.audio?.update(url: viewModel.sceneAudioURL(),
-                          enabled: wallpaperViewModel.shouldPlaySceneAudio(on: screenId)
-                              && sceneMusicEnabled(for: viewModel.currentWallpaper),
-                          volume: wallpaperViewModel.playVolume * sceneMusicVolume(for: viewModel.currentWallpaper),
-                          isPaused: wallpaperViewModel.playRate == 0)
+        context.coordinator.renderer?.sounds.setTargetGain(sceneSoundGain(for: viewModel.currentWallpaper))
         metalView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
         metalView.isPaused = wallpaperViewModel.playRate == 0
     }
@@ -163,7 +160,6 @@ struct SceneWallpaperView: NSViewRepresentable {
         var sceneMusicObserver: NSObjectProtocol?
         var dependencyObserver: NSObjectProtocol?
         var videoMusicSyncObserver: NSObjectProtocol?
-        var audio: SceneAudioPlayback?
 
         private var pendingImpact: SceneChangeImpact = .none
         private var pendingUpdate: DispatchWorkItem?
@@ -244,126 +240,10 @@ struct SceneWallpaperView: NSViewRepresentable {
                 NotificationCenter.default.removeObserver(videoMusicSyncObserver)
             }
             if let scriptsNotice { MainActor.assumeIsolated { scriptsNotice.close() } }
-            audio?.stop()
-            // Built layers hold the video stream, so the renderer has to let go of them or the
-            // soundtrack outlives this view.
+            // Built layers hold the video stream and the sound layers, so the renderer has to let
+            // go of them or the soundtrack outlives this view.
             renderer?.releaseContent()
             renderer = nil
         }
-    }
-}
-
-final class SceneAudioPlayback {
-    private var url: URL?
-    private var player: AVPlayer?
-    private var enabled: Bool
-    private var volume: Float
-    private var isPaused = false
-    private var fadeTimer: Timer?
-
-    init(url: URL?, enabled: Bool, volume: Float) {
-        self.url = url
-        self.enabled = enabled
-        self.volume = volume
-        if let url { player = AVPlayer(url: url) }
-        player?.isMuted = !enabled
-        player?.volume = volume
-        observeEnd(of: player?.currentItem)
-    }
-
-    func play() {
-        guard enabled, !isPaused else { return }
-        player?.play()
-    }
-
-    func update(url: URL?, enabled: Bool, volume: Float, isPaused: Bool) {
-        self.enabled = enabled
-        self.volume = volume
-        self.isPaused = isPaused
-
-        guard url != self.url else {
-            player?.isMuted = !enabled
-            player?.volume = volume
-            // Scene music has its own player, so a paused wallpaper stays audible without this.
-            if isPaused || !enabled { player?.pause() } else { player?.play() }
-            return
-        }
-
-        retireCurrentPlayer()
-        self.url = url
-        guard let url else { return }
-        let newPlayer = AVPlayer(url: url)
-        newPlayer.isMuted = !enabled
-        newPlayer.volume = volume
-        player = newPlayer
-        observeEnd(of: newPlayer.currentItem)
-        play()
-    }
-
-    func stop() {
-        fadeTimer?.invalidate()
-        fadeTimer = nil
-        retireCurrentPlayer(immediately: true)
-        url = nil
-    }
-
-    private func observeEnd(of item: AVPlayerItem?) {
-        guard let item else { return }
-        NotificationCenter.default.addObserver(self, selector: #selector(loop),
-                                               name: .AVPlayerItemDidPlayToEndTime, object: item)
-    }
-
-    /// Hands the outgoing player to a fade and drops it from `player` right away, so nothing can
-    /// resume it and a missed fade tick cannot leave it playing.
-    private func retireCurrentPlayer(immediately: Bool = false) {
-        fadeTimer?.invalidate()
-        fadeTimer = nil
-        guard let oldPlayer = player else { return }
-        player = nil
-        if let item = oldPlayer.currentItem {
-            NotificationCenter.default.removeObserver(self, name: .AVPlayerItemDidPlayToEndTime, object: item)
-        }
-
-        func shutDown() {
-            oldPlayer.pause()
-            oldPlayer.replaceCurrentItem(with: nil)
-        }
-        let startingVolume = max(oldPlayer.volume, 0)
-        guard !immediately, startingVolume > 0.001 else {
-            shutDown()
-            return
-        }
-
-        let startTime = Date()
-        let duration: TimeInterval = 0.3
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { timer in
-            let progress = min(max(Date().timeIntervalSince(startTime) / duration, 0), 1)
-            oldPlayer.volume = startingVolume * Float(1 - progress)
-            if progress >= 1 {
-                timer.invalidate()
-                shutDown()
-            }
-        }
-        fadeTimer = timer
-        // Default-mode timers stall while menus or scroll views are tracking, which previously
-        // left the outgoing soundtrack running indefinitely.
-        RunLoop.main.add(timer, forMode: .common)
-        // Backstop in case the run loop never services the timer at all.
-        DispatchQueue.main.asyncAfter(deadline: .now() + duration + 0.1) {
-            timer.invalidate()
-            shutDown()
-        }
-    }
-
-    @objc private func loop() {
-        guard enabled, !isPaused else { return }
-        player?.seek(to: .zero)
-        player?.play()
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
-        player?.pause()
-        player?.replaceCurrentItem(with: nil)
     }
 }

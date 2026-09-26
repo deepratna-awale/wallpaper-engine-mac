@@ -40,6 +40,8 @@ struct SceneScriptObjectFeedback {
     var world: SceneAffineTransform
     /// Fields a timeline animates this frame.
     var animated = SceneScriptOwnedFields()
+    /// A sound layer's `isPlaying()` as its playback stands; nil for other objects.
+    var playing: Bool?
 
     /// The world transform as the table's column-major 4×4 matrix.
     var worldMatrix: [Float] {

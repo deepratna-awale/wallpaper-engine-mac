@@ -37,6 +37,7 @@ final class SceneScriptTableSync {
     private static let color = SceneScriptObjectField.color.offset
     private static let visible = SceneScriptObjectField.visible.offset
     private static let size = SceneScriptObjectField.size.offset
+    private static let playing = SceneScriptObjectField.playing.offset
 
     private let store: SceneScriptObjectStore
     private var baselines: [Float]
@@ -95,6 +96,7 @@ final class SceneScriptTableSync {
                 put(Self.size, size.x)
                 put(Self.size + 1, size.y)
             }
+            if let playing = feedback.playing { put(Self.playing, playing ? 1 : 0) }
             // The world matrix, column-major like simd: the 2D affine part in a 4×4.
             let linear = feedback.world.linear, translation = feedback.world.translation
             let matrix = Layout.worldMatrix

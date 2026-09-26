@@ -198,41 +198,6 @@ class SceneWallpaperViewModel: ObservableObject {
         bumpRevision()
     }
 
-    /// Cache file name for a packaged audio entry: stable across launches (`hashValue` is seeded
-    /// per process), and distinct per wallpaper since entry paths repeat across packages.
-    static func sceneAudioCacheName(entry: String, wallpaperDirectory: URL?) -> String {
-        let key = "\(wallpaperDirectory?.standardizedFileURL.path ?? "")|\(entry)"
-        let digest = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "\(digest).\(URL(fileURLWithPath: entry).pathExtension)"
-    }
-
-    func sceneAudioURL() -> URL? {
-        let extensions = Set(["mp3", "ogg", "wav", "m4a", "flac"])
-        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appending(path: "Open Wallpaper Engine/SceneAudio")
-        if let entry = pkgParser?.fileList.first(where: { extensions.contains(URL(fileURLWithPath: $0).pathExtension.lowercased()) }),
-           let data = pkgParser?.extractFile(named: entry) {
-            try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
-            let destination = cacheDirectory.appending(path: Self.sceneAudioCacheName(entry: entry, wallpaperDirectory: loadedWallpaperDirectory))
-            if !FileManager.default.fileExists(atPath: destination.path) {
-                try? data.write(to: destination, options: .atomic)
-            }
-            return destination
-        }
-        if let directory = loadedWallpaperDirectory,
-           let url = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil)?
-            .compactMap({ $0 as? URL })
-            .first(where: { extensions.contains($0.pathExtension.lowercased()) }) {
-            return url
-        }
-        if let root = WallpaperEngineAssets.directory {
-            return FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)?
-                .compactMap({ $0 as? URL })
-                .first(where: { extensions.contains($0.pathExtension.lowercased()) })
-        }
-        return nil
-    }
-
     // MARK: - Scene Loading
 
     func loadScene(from wallpaper: WEWallpaper, prepareDefaults: Bool = true) {
@@ -553,6 +518,7 @@ class SceneWallpaperViewModel: ObservableObject {
             content.visibility = visibility
             content.objectIDs = scene.objects.map { $0.id ?? -1 }
             content.scripts = scriptContent(wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+            content.sounds = soundBuilder(wallpaperDir: wallpaperDir).sounds(in: scene.objects, context: valueContext)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -676,10 +642,10 @@ class SceneWallpaperViewModel: ObservableObject {
         return assetData(named: path, wallpaperDir: wallpaperDir)
     }
 
-    /// The layer of an object a script created (`thisScene.createLayer`), built like the scene's
-    /// own. Off the main thread, under the scene lock.
+    /// An object a script created (`thisScene.createLayer`), built like the scene's own: a layer,
+    /// a particle system or a sound. Off the main thread, under the scene lock.
     private func buildScriptLayer(_ json: [String: SceneJSON], wallpaperDir: URL,
-                                  sceneSize: SIMD2<Float>) -> SceneMetalLayer? {
+                                  sceneSize: SIMD2<Float>) -> SceneScriptCreatedObject? {
         sceneLock.lock()
         defer { sceneLock.unlock() }
         let object: WESceneObject
@@ -691,8 +657,30 @@ class SceneWallpaperViewModel: ObservableObject {
             return nil
         }
         let context = userValueContext
-        return buildLayer(object.resolvingUserBindings(in: context), wallpaperDir: wallpaperDir, sceneSize: sceneSize,
-                          context: context)
+        let resolved = object.resolvingUserBindings(in: context)
+        if resolved.particle != nil {
+            let systems = buildParticleFamily(resolved, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
+                                              pixelUnits: loadedScene.map(Self.particlesUsePixelUnits) ?? true,
+                                              transforms: SceneTransformHierarchy(objects: [resolved], sceneSize: sceneSize))
+            guard !systems.isEmpty else { return nil }
+            let motion = SceneObjectMotion(object: resolved, sceneSize: sceneSize,
+                                           bindings: SceneLayerBindings(object: resolved, builtWith: context))
+            return .particles(systems, motion: motion)
+        }
+        if resolved.sound != nil {
+            return soundBuilder(wallpaperDir: wallpaperDir).sounds(in: [resolved], context: context).first.map { .sound($0) }
+        }
+        return buildLayer(resolved, wallpaperDir: wallpaperDir, sceneSize: sceneSize, context: context).map { .layer($0) }
+    }
+
+    /// Finds the scene's sound files in the package, the folder, Workshop items and WE's assets.
+    private func soundBuilder(wallpaperDir: URL) -> SceneSoundContentBuilder {
+        let parser = pkgParser
+        let workshop = workshopAssets
+        return SceneSoundContentBuilder(wallpaperDirectory: wallpaperDir,
+                                        packagedData: { parser?.extractFile(named: $0) },
+                                        workshopURL: { workshop.url(for: $0) },
+                                        workshopData: { workshop.data(for: $0) })
     }
 
     private func bloomSettings(for general: WESceneGeneral) -> SceneBloomSettings {

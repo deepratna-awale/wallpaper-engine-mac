@@ -70,8 +70,8 @@ final class SceneRendererScripts {
         lastScreenSize = nil
     }
 
-    /// Builds the layer of an object a script created, through the loader. Off the main thread.
-    var makeLayer: (([String: SceneJSON]) -> SceneMetalLayer?)? { content?.makeLayer }
+    /// Builds an object a script created, through the loader. Off the main thread.
+    var makeLayer: (([String: SceneJSON]) -> SceneScriptCreatedObject?)? { content?.makeLayer }
 
     // MARK: - Frame
 

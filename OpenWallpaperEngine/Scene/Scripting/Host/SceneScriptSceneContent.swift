@@ -17,9 +17,9 @@ struct SceneScriptSceneContent {
     var userValues: () -> [String: String]
     /// Reads a file of the wallpaper (package, folder, Workshop dependencies, WE's assets).
     var file: (String) -> Data?
-    /// Builds the layer of an object `createLayer` made (scene.json form), through the loader's
-    /// builders; nil when it can't be drawn. Called off the main thread.
-    var makeLayer: ([String: SceneJSON]) -> SceneMetalLayer?
+    /// Builds an object `createLayer` made (scene.json form), through the loader's builders; nil
+    /// when it can't be built. Called off the main thread.
+    var makeLayer: ([String: SceneJSON]) -> SceneScriptCreatedObject?
 
     /// The user properties with the user's current values, in WE's raw form.
     func userProperties() -> SceneScriptUserProperties {

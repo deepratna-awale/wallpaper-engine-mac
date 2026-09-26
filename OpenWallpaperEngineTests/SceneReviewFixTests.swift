@@ -9,9 +9,9 @@ final class SceneReviewFixTests: XCTestCase {
 
     func testSceneAudioCacheNameIsStableAndPerWallpaper() {
         let a = URL(fileURLWithPath: "/w/a"), b = URL(fileURLWithPath: "/w/b")
-        let name = SceneWallpaperViewModel.sceneAudioCacheName(entry: "sounds/music.mp3", wallpaperDirectory: a)
-        XCTAssertEqual(name, SceneWallpaperViewModel.sceneAudioCacheName(entry: "sounds/music.mp3", wallpaperDirectory: a))
-        XCTAssertNotEqual(name, SceneWallpaperViewModel.sceneAudioCacheName(entry: "sounds/music.mp3", wallpaperDirectory: b))
+        let name = SceneSoundContentBuilder.cacheName(entry: "sounds/music.mp3", wallpaperDirectory: a)
+        XCTAssertEqual(name, SceneSoundContentBuilder.cacheName(entry: "sounds/music.mp3", wallpaperDirectory: a))
+        XCTAssertNotEqual(name, SceneSoundContentBuilder.cacheName(entry: "sounds/music.mp3", wallpaperDirectory: b))
         XCTAssertTrue(name.hasSuffix(".mp3"))
         XCTAssertEqual(name.count, 64 + 4, "SHA256 hex plus extension")
     }

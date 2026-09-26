@@ -137,4 +137,6 @@ enum SceneScriptRenderEvent {
     case destroy(id: Int)
     /// `IParticleSystem.emitParticles(count)`.
     case emit(id: Int, count: Int?)
+    /// `ISoundLayer.play()`, `pause()`, `stop()`.
+    case sound(id: Int, SceneScriptObjectCommand.Playback)
 }
