@@ -70,9 +70,8 @@ final class SceneSoundLayers {
     /// Adds one layer (a script's `createLayer`, or new content) and loads it.
     func add(_ content: SceneSoundContent) {
         if layers[content.id] != nil { remove(content.id) }
-        let mixer = self.mixer ?? SceneSoundMixer(label: label, offline: offline)
-        self.mixer = mixer
-        let voices = SceneSoundVoices(files: content.files, mixer: mixer, label: "\(label) '\(content.name)'")
+        let voices = SceneSoundVoices(files: content.files, mixer: { [weak self] in self?.sharedMixer() },
+                                      label: "\(label) '\(content.name)'")
         let playback = SceneSoundPlayback(sound: content.sound, durations: content.files.map(\.duration),
                                           volume: content.volume, sceneGain: gain, output: voices, random: random)
         layers[content.id] = Layer(content: content, voices: voices, playback: playback)
@@ -165,6 +164,14 @@ final class SceneSoundLayers {
             fadeTimer = nil
         }
         idleIfSilent()
+    }
+
+    /// The one mixer of this wallpaper instance, made when the first voice plays.
+    private func sharedMixer() -> SceneSoundMixer {
+        if let mixer { return mixer }
+        let made = SceneSoundMixer(label: label, offline: offline)
+        mixer = made
+        return made
     }
 
     /// Pauses the engine while no voice plays.

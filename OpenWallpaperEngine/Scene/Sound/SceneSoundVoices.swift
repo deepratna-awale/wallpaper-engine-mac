@@ -14,16 +14,18 @@ final class SceneSoundVoices: SceneSoundOutput {
     }
 
     private let files: [SceneSoundContent.File]
-    private let mixer: SceneSoundMixer
+    /// The wallpaper's mixer, made on first use (`SceneSoundLayers`).
+    private let makeMixer: () -> SceneSoundMixer?
+    private var mixer: SceneSoundMixer?
     private let label: String
     private var voices: [Voice]
     /// A voice's loop keeps scheduling only while its generation stands.
     private var generations: [Int]
     private var reported = Set<Int>()
 
-    init(files: [SceneSoundContent.File], mixer: SceneSoundMixer, label: String) {
+    init(files: [SceneSoundContent.File], mixer: @escaping () -> SceneSoundMixer?, label: String) {
         self.files = files
-        self.mixer = mixer
+        makeMixer = mixer
         self.label = label
         voices = files.map { _ in Voice() }
         generations = Array(repeating: 0, count: files.count)
@@ -31,7 +33,7 @@ final class SceneSoundVoices: SceneSoundOutput {
 
     deinit {
         for index in voices.indices { stop(file: index) }
-        for voice in voices where voice.attached { mixer.detach(voice.node) }
+        for voice in voices where voice.attached { mixer?.detach(voice.node) }
     }
 
     func start(file index: Int, loop: Bool) {
@@ -46,7 +48,7 @@ final class SceneSoundVoices: SceneSoundOutput {
         } else {
             voice.node.scheduleSegment(file, startingFrame: 0, frameCount: frames, at: nil)
         }
-        guard mixer.run() else { return }
+        guard mixer?.run() == true else { return }
         voice.node.play()
     }
 
@@ -56,7 +58,7 @@ final class SceneSoundVoices: SceneSoundOutput {
     }
 
     func resume(file index: Int) {
-        guard voices.indices.contains(index), voices[index].attached, mixer.run() else { return }
+        guard voices.indices.contains(index), voices[index].attached, mixer?.run() == true else { return }
         voices[index].node.play()
     }
 
@@ -94,6 +96,8 @@ final class SceneSoundVoices: SceneSoundOutput {
             }
         }
         if !voice.attached, let file = voice.file {
+            if mixer == nil { mixer = makeMixer() }
+            guard let mixer else { return nil }
             mixer.attach(voice.node, format: file.processingFormat)
             voice.attached = true
         }

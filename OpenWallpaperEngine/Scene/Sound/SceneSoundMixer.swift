@@ -1,9 +1,9 @@
 import AVFoundation
 
 /// One wallpaper instance's audio graph: an `AVAudioEngine` whose main mixer takes every sound
-/// layer's voices. The engine starts when a voice first plays and pauses when the layers go
-/// silent, so a quiet wallpaper costs no audio thread. Offline (manual rendering) for tests.
-/// Main thread.
+/// layer's voices. It is made when a voice first plays (a muted wallpaper, or a display that
+/// doesn't play the wallpaper's sound, never touches the audio hardware), starts then, and pauses
+/// when the layers go silent. Offline (manual rendering) for tests. Main thread.
 final class SceneSoundMixer {
     let engine = AVAudioEngine()
     private var failed = false
@@ -20,12 +20,13 @@ final class SceneSoundMixer {
                 failed = true
             }
         }
-        // The main mixer (and its connection to the output) exists once it is first asked for.
-        _ = engine.mainMixerNode
     }
 
     deinit {
-        engine.stop()
+        // Disposing an engine's output talks to coreaudiod; a stalled daemon must not stall the
+        // renderer, so the engine goes on a queue of its own.
+        let engine = self.engine
+        DispatchQueue.global(qos: .utility).async { engine.stop() }
     }
 
     func attach(_ node: AVAudioPlayerNode, format: AVAudioFormat) {

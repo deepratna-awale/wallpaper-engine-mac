@@ -94,6 +94,20 @@ final class SceneSoundLayersTests: XCTestCase {
         XCTAssertGreaterThan(try render(layers, seconds: 0.05), 0.1)
     }
 
+    /// A muted wallpaper (or a display that doesn't play its sound) never makes an audio engine,
+    /// so it never touches the audio hardware; unmuting makes it and starts the sound.
+    func testASilentWallpaperMakesNoEngine() throws {
+        let layers = SceneSoundLayers(label: "test", offline: format)
+        layers.setTargetGain(0)
+        layers.setContent([content(try tone("tone.wav"))])
+        XCTAssertNil(layers.soundMixer)
+        XCTAssertEqual(layers.isPlaying(7), false)
+        layers.setTargetGain(1)
+        for _ in 0..<60 { layers.stepFade(1.0 / 60) }
+        XCTAssertNotNil(layers.soundMixer)
+        XCTAssertEqual(layers.isPlaying(7), true)
+    }
+
     /// A rebuild of the same content (a user property changed a layer) keeps the sound going.
     func testTheSameContentKeepsPlaying() throws {
         let layers = SceneSoundLayers(label: "test", offline: format)
