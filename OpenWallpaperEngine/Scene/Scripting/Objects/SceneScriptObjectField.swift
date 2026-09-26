@@ -117,12 +117,14 @@ enum SceneScriptObjectField: String, CaseIterable {
     }
 
     /// WE's defaults for a field the object leaves out: unit scale, colour, alpha and instance
-    /// multipliers, visible, parallax depth (1, 1) (`WESceneObject.parallaxDepthValue`).
+    /// multipliers, visible, solid, parallax depth (1, 1) (`WESceneObject.parallaxDepthValue`).
+    /// WE's object constructor starts every object visible and solid (flags 0x2001 at
+    /// wallpaper64.exe 0x1401ddc72).
     var defaultValue: [Float] {
         switch self {
         case .scale, .color: return [1, 1, 1]
         case .parallaxDepth: return [1, 1]
-        case .alpha, .visible, .volume, .zoom, .instanceAlpha, .instanceSize, .instanceCount, .instanceSpeed,
+        case .alpha, .visible, .solid, .volume, .zoom, .instanceAlpha, .instanceSize, .instanceCount, .instanceSpeed,
              .instanceLifetime, .instanceRate, .instanceColorn: return [1]
         default: return Array(repeating: 0, count: components)
         }
