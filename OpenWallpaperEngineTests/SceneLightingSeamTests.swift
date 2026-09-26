@@ -7,12 +7,17 @@ import XCTest
 final class SceneLightingSeamTests: XCTestCase {
     // MARK: - Engine combos
 
-    /// The light combos are in (A1, `LightingV1RequireTests`); HDR sets nothing yet.
-    func testEngineCombosSetNoHDRYet() {
+    /// The light combos are in (A1, `LightingV1RequireTests`); HDR sets `HDR=1` on every material
+    /// (B2), and an LDR material doesn't see the name (`common_blending.h` tests `#ifdef HDR`).
+    func testEngineCombosSetHDROnlyInHDR() {
         let combos = SceneEngineCombos(hdr: true, sceneOrtho: false, lightBudget: WELightConfig(point: 4, tube: 2),
                                        shadowQuality: 4)
-        XCTAssertNil(combos.combos(for: ["LIGHTING": 1, "REFLECTION": 1])["HDR"])
-        XCTAssertEqual(combos.applied(to: ["LIGHTING": 0, "BLENDMODE": 3]), ["LIGHTING": 0, "BLENDMODE": 3])
+        XCTAssertEqual(combos.combos(for: ["LIGHTING": 1, "REFLECTION": 1])["HDR"], 1)
+        XCTAssertEqual(combos.applied(to: ["LIGHTING": 0, "BLENDMODE": 3]), ["LIGHTING": 0, "BLENDMODE": 3, "HDR": 1])
+        XCTAssertEqual(combos.applied(to: ["HDR": 0]), ["HDR": 1], "the engine's value wins")
+        let ldr = SceneEngineCombos(hdr: false, sceneOrtho: false)
+        XCTAssertEqual(ldr.applied(to: ["LIGHTING": 0, "BLENDMODE": 3]), ["LIGHTING": 0, "BLENDMODE": 3])
+        XCTAssertNil(ldr.combos(for: ["LIGHTING": 1])["HDR"])
     }
 
     /// HDR is on only for `bloom` and `hdr` with post-processing "ultra" or "displayhdr".
