@@ -100,6 +100,8 @@ final class SceneTimelineTests: XCTestCase {
         XCTAssertEqual(SceneTimelineAnimation.relativeOffsets("1 2 3 4"), [1, 2, 3])
         // A leading space ends the first token at once, so the first number is read twice.
         XCTAssertEqual(SceneTimelineAnimation.relativeOffsets(" 1 2 3"), [1, 1, 2])
+        XCTAssertEqual(SceneTimelineAnimation.relativeOffsets("0x1.8 -inf 2e1x"), [1.5, -.infinity, 20])
+        XCTAssertEqual(SceneTimelineAnimation.relativeOffsets(".5 +1. 0x"), [0.5, 1, 0])
         XCTAssertNil(SceneTimelineAnimation.relativeOffsets("5"))
         XCTAssertNil(SceneTimelineAnimation.relativeOffsets("1 2"))
         XCTAssertNil(SceneTimelineAnimation.relativeOffsets("1\t2\t3"))

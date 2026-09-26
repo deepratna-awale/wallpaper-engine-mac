@@ -104,31 +104,23 @@ struct SceneTimelineAnimation: Equatable {
     }
 
     /// C's `atof` in the "C" locale on NUL-terminated bytes: leading whitespace, then the longest
-    /// decimal prefix (sign, digits, fraction, exponent); 0 when there is none.
+    /// decimal, hexadecimal, `inf` or `nan` prefix; 0 when there is none.
     private static func atof(_ bytes: [UInt8], from start: Int) -> Double {
-        func isDigit(_ index: Int) -> Bool { (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(bytes[index]) }
-        var begin = start
-        while [9, 10, 11, 12, 13, 32].contains(bytes[begin]) { begin += 1 }
-        var end = begin
-        if bytes[end] == UInt8(ascii: "+") || bytes[end] == UInt8(ascii: "-") { end += 1 }
-        var digits = 0
-        while isDigit(end) { end += 1; digits += 1 }
-        if bytes[end] == UInt8(ascii: ".") {
-            end += 1
-            while isDigit(end) { end += 1; digits += 1 }
-        }
-        guard digits > 0 else { return 0 }
-        if bytes[end] == UInt8(ascii: "e") || bytes[end] == UInt8(ascii: "E") {
-            var exponent = end + 1
-            if bytes[exponent] == UInt8(ascii: "+") || bytes[exponent] == UInt8(ascii: "-") { exponent += 1 }
-            if isDigit(exponent) {
-                end = exponent
-                while isDigit(end) { end += 1 }
-            }
-        }
-        // The prefix is a valid decimal literal, which Double parses with correct rounding.
-        return Double(String(decoding: bytes[begin..<end], as: UTF8.self)) ?? 0
+        let text = String(decoding: bytes[start..<(bytes.firstIndex(of: 0) ?? bytes.endIndex)], as: Unicode.ASCII.self)
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = atofPrefix.firstMatch(in: text, range: range),
+              let sign = Range(match.range(at: 1), in: text),
+              let body = Range(match.range(at: 2), in: text) else { return 0 }
+        var literal = String(text[body])
+        if literal.lowercased().hasPrefix("0x"), !literal.lowercased().contains("p") { literal += "p0" }
+        // The prefix is a valid literal, which Double parses with correct rounding.
+        let magnitude = Double(literal) ?? 0
+        return text[sign] == "-" ? -magnitude : magnitude
     }
+
+    private static let atofPrefix = try! NSRegularExpression(pattern:
+        #"^[ \t\n\x0B\f\r]*([+-]?)(0[xX](?:[0-9a-fA-F]+\.?[0-9a-fA-F]*|\.[0-9a-fA-F]+)(?:[pP][+-]?[0-9]+)?"# +
+        #"|(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?|[iI][nN][fF](?:[iI][nN][iI][tT][yY])?|[nN][aA][nN])"#)
 
     /// The `wraploop` fix-up (`0x1401a98b0`), per channel with at least two keyframes: keyframes
     /// past `length` are dropped from the end (keeping one); a keyframe is appended at `length`
