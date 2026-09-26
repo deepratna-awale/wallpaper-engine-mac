@@ -17,6 +17,8 @@ enum ShaderPrelude {
         let functions: Set<String>
         /// C++ keywords the shader declares itself, sorted.
         let reservedLocals: [String]
+        /// GLSL reserved words the shader uses as names (`GLSLReservedWords`), sorted.
+        let glslReservedNames: [String]
 
         init(source: String) {
             (macros, functions) = definedNames(in: source)
@@ -26,6 +28,8 @@ enum ShaderPrelude {
             reservedLocals = cppReservedWords.subtracting(macros).sorted().filter { name in
                 identifiers.contains(Substring(name)) && declaresLocal(name, in: source)
             }
+            let skipped = macros.union(reservedLocals)
+            glslReservedNames = GLSLReservedWords.used(in: source).filter { !skipped.contains($0) }
         }
     }
 
@@ -54,6 +58,12 @@ enum ShaderPrelude {
         // declares itself are renamed, never an interface name, which binds by name.
         for name in analysis.reservedLocals {
             lines.append("#define \(name) we_\(name)")
+        }
+        // GLSL reserves names WE's HLSL compiler accepts (`float common;`). These are renamed
+        // everywhere, interface names included: both stages rename a varying alike, and the
+        // uniform block is reflected back to WE's names (`GLSLReservedWords.originalName`).
+        for name in analysis.glslReservedNames {
+            lines.append("#define \(name) \(GLSLReservedWords.prefix)\(name)")
         }
         switch stage {
         case .vertex:

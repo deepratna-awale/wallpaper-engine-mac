@@ -249,9 +249,11 @@ final class ShaderVariantTranslator {
               let members = types[typeID]?["members"] as? [[String: Any]] else { return nil }
         var result: [String: UniformMember] = [:]
         for member in members {
-            guard let name = member["name"] as? String, let offset = member["offset"] as? Int else {
+            guard let reflected = member["name"] as? String, let offset = member["offset"] as? Int else {
                 throw ShaderVariantError.reflection("member without name/offset in \(typeID)")
             }
+            // Material constants bind by WE's name, not the one the prelude gave a reserved word.
+            let name = GLSLReservedWords.originalName(reflected)
             let count = (member["array"] as? [Int])?.first ?? 1
             result[name] = UniformMember(name: name, type: member["type"] as? String ?? "",
                                          offset: offset, count: max(count, 1),
