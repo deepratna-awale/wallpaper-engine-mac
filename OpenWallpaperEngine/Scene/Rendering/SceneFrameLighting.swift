@@ -12,6 +12,15 @@ struct SceneLightObject {
     var depth = SceneLightDepth()
 }
 
+/// A light object's placement in one frame (`SceneFrameLighting.objects`).
+struct SceneFrameLightObject: Equatable {
+    var id: String
+    /// Its world matrix, as the packer reads it (`SceneFrameLighting.world`).
+    var world: simd_float4x4
+    /// It and every ancestor are shown.
+    var visible: Bool
+}
+
 /// A light's own out-of-plane transform (`SceneLightObject.depth`).
 struct SceneLightDepth: Equatable {
     var originZ: Float = 0
@@ -68,19 +77,26 @@ struct SceneFrameLighting: Equatable {
     var skylight = SceneGeneralDefaults.skylightColor
     /// Packed uniform values by uniform name, flattened per element (`SceneLightPacker`).
     var arrays: [String: [Float]] = [:]
+    /// Every light object this frame, in scene order, whatever the budget: the volumetrics
+    /// (`SceneVolumetrics`) draw each one's volume from it.
+    var objects: [SceneFrameLightObject] = []
 
     static func frame(_ content: SceneLightingContent, input: SceneFrameLightingInput) -> SceneFrameLighting {
         var lighting = SceneFrameLighting(ambient: input.sceneColor(.ambientcolor) ?? content.settings.ambient,
                                           skylight: input.sceneColor(.skylightcolor) ?? content.settings.skylight)
         guard !content.lights.isEmpty else { return lighting }
+        var objects: [SceneFrameLightObject] = []
         let lights = content.lights.compactMap { object -> SceneLightPacker.Light? in
             guard let local = input.local(object.id) else { return nil }
-            return SceneLightPacker.Light(
+            let light = SceneLightPacker.Light(
                 light: object.light,
                 world: world(parent: input.parentWorld(object.id), local: local, depth: object.depth),
                 localOrigin: SIMD3(local.origin, object.depth.originZ),
                 visible: input.isVisible(object.id))
+            objects.append(SceneFrameLightObject(id: object.id, world: light.world, visible: light.visible))
+            return light
         }
+        lighting.objects = objects
         lighting.arrays = SceneLightPacker.legacy(lights)
         if let config = content.settings.lightConfig {
             let budget = input.shadows ? config : config.withShadowsDisabled
