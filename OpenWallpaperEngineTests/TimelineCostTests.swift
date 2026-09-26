@@ -44,8 +44,8 @@ final class TimelineCostTests: XCTestCase {
         XCTAssertTrue(over.isEmpty, "p99 over half a millisecond: \(over)")
     }
 
-    /// Many timelines (two per layer: a 600-frame `alpha` loop and a three-channel `origin`
-    /// mirror): the steady cost grows with the count, not with the length of the channels.
+    /// Many timelines (two per layer: a 600-frame `alpha` loop and a three-channel 600-frame
+    /// `origin` mirror): the steady cost grows with the count, not with the length of the channels.
     func testManyTimelinesCostLittlePerFrame() throws {
         var lines: [String] = []
         for count in [20, 128, 1000] {
@@ -125,17 +125,21 @@ final class TimelineCostTests: XCTestCase {
         }
     }
 
-    /// `layers` objects, each with a 600-frame `alpha` loop and a three-channel `origin` mirror.
+    /// `layers` objects, each with a 600-frame `alpha` loop and a three-channel 600-frame `origin`
+    /// mirror, on WE's default (ease) handles like the library's keyframes.
     static func syntheticScene(layers: Int) -> SceneJSON {
+        func key(_ frame: Int, _ value: Int) -> String {
+            #"{"frame": \#(frame), "value": \#(value), "back": {"enabled": true, "x": -1, "y": 0}, "front": {"enabled": true, "x": 1, "y": 0}}"#
+        }
         var objects: [String] = []
         for index in 0..<layers {
-            let alpha = #""c0": [{"frame": 0, "value": 0}, {"frame": 300, "value": 1}, {"frame": 600, "value": 0}]"#
+            let alpha = #""c0": [\#(key(0, 0)), \#(key(300, 1)), \#(key(600, 0))]"#
             let origin = (0..<3).map { channel in
-                #""c\#(channel)": [{"frame": 0, "value": 0}, {"frame": 17, "value": \#(index)}, {"frame": 45, "value": -3}]"#
+                #""c\#(channel)": [\#(key(0, 0)), \#(key(170, index)), \#(key(450, -3)), \#(key(600, 0))]"#
             }.joined(separator: ", ")
             objects.append(#"{"id": \#(index), "#
                 + #""alpha": {"value": 1, "animation": {\#(alpha), "options": {"fps": 60, "length": 600, "mode": "loop"}}}, "#
-                + #""origin": {"value": "0 0 0", "animation": {\#(origin), "options": {"fps": 30, "length": 45, "mode": "mirror"}}}}"#)
+                + #""origin": {"value": "0 0 0", "animation": {\#(origin), "options": {"fps": 30, "length": 600, "mode": "mirror"}}}}"#)
         }
         let json = #"{"objects": [\#(objects.joined(separator: ","))]}"#
         do {

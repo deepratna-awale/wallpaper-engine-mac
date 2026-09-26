@@ -119,36 +119,6 @@ final class TimelineRenderTests: XCTestCase {
         XCTAssertEqual(held.sharedFrame, 0)
     }
 
-    // MARK: - Cost
-
-    /// The per-frame cost of the timelines: the set's advance and the renderer's reads, for the
-    /// library's largest shape (64 timelines, 3 channels, 600 frames), after the sample caches warm.
-    func testThePerFrameCostIsSmall() throws {
-        var objects: [String] = []
-        for index in 0..<64 {
-            let keys = (0..<3).map { channel in
-                #""c\#(channel)": [{"frame": 0, "value": 0}, {"frame": 300, "value": \#(index)}, {"frame": 600, "value": 0}]"#
-            }.joined(separator: ", ")
-            objects.append(#"{"id": \#(index), "origin": {"value": "0 0 0", "animation": {\#(keys), "options": {"fps": 60, "length": 600, "mode": "loop"}}}}"#)
-        }
-        let document = try JSONDecoder().decode(SceneJSON.self, from: Data(#"{"objects": [\#(objects.joined(separator: ","))]}"#.utf8))
-        let set = SceneAnimationSet(document: document, wallpaperID: "cost")
-        XCTAssertEqual(set.sites.count, 64)
-        for _ in 0..<1200 { set.advance(by: 1 / 60) }
-        let frames = 600
-        let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-        for _ in 0..<frames { set.advance(by: 1 / 60) }
-        let advanced = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-        for _ in 0..<frames {
-            for id in 0..<64 { _ = SceneObjectAnimation(set, object: id, keys: ["origin"]) }
-        }
-        let end = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-        let advance = Double(advanced - start) / 1000 / Double(frames), read = Double(end - advanced) / 1000 / Double(frames)
-        let microseconds = advance + read
-        print("Timeline cost: \(String(format: "%.1f", advance)) µs advance + \(String(format: "%.1f", read)) µs reads per frame, 64 timelines")
-        XCTAssertLessThan(microseconds, 1000, "a millisecond is a frame's budget gone")
-    }
-
     // MARK: - Support
 
     private static func timeline(of id: Int, key: String) throws -> SceneTimelineAnimation {

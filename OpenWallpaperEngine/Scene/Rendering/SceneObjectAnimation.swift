@@ -19,27 +19,62 @@ struct SceneObjectAnimation: Equatable {
     /// before scripts run (§1.9 P2).
     private(set) var fields = SceneScriptOwnedFields()
 
+    /// Where an object's animated fields sit in a set (`SceneAnimationSet.index(of:)`): found once
+    /// when the set's sites change, so a frame's read is array indexing, not a keyed lookup.
+    struct Indices: Equatable {
+        var origin: Int?
+        var scale: Int?
+        var angles: Int?
+        var color: Int?
+        var size: Int?
+        var alpha: Int?
+        var brightness: Int?
+        /// The fields these indices animate.
+        var fields = SceneScriptOwnedFields()
+
+        /// Object `id`'s animated fields in `set`; nil when none is animated.
+        init?(_ set: SceneAnimationSet, object id: Int) {
+            func index(_ key: String) -> Int? { set.index(of: SceneAnimationSite(owner: .object(id), key: key)) }
+            origin = index("origin")
+            scale = index("scale")
+            angles = index("angles")
+            color = index("color")
+            size = index("size")
+            alpha = index("alpha")
+            brightness = index("brightness")
+            let found: [(Int?, SceneScriptObjectField)] = [(origin, .origin), (scale, .scale), (angles, .angles),
+                                                            (color, .color), (size, .size), (alpha, .alpha),
+                                                            (brightness, .brightness)]
+            for (index, field) in found where index != nil { fields.insert(field) }
+            guard !fields.isEmpty else { return nil }
+        }
+    }
+
     init() {}
 
     /// The object fields the renderer draws from a timeline.
     static let keys: Set<String> = ["origin", "scale", "angles", "color", "size", "alpha", "brightness"]
 
-    /// Object `id`'s fields as `set` last sampled them. `keys` (the object's animated ones, when
-    /// known) spares the lookups of the others.
-    init(_ set: SceneAnimationSet, object id: Int, keys: Set<String> = Self.keys) {
-        func read(_ key: String, _ field: SceneScriptObjectField, width: Int) -> [Float]? {
-            guard keys.contains(key),
-                  let value = set.value(of: SceneAnimationSite(owner: .object(id), key: key)) else { return nil }
-            fields.insert(field)
-            return (0..<width).map { $0 < value.count ? value[$0] : 0 }
+    /// Object `id`'s fields as `set` last sampled them.
+    init(_ set: SceneAnimationSet, object id: Int) {
+        guard let indices = Indices(set, object: id) else {
+            self.init()
+            return
         }
-        origin = read("origin", .origin, width: 3).map { SIMD3($0[0], $0[1], $0[2]) }
-        scale = read("scale", .scale, width: 3).map { SIMD3($0[0], $0[1], $0[2]) }
-        angles = read("angles", .angles, width: 3).map { SIMD3($0[0], $0[1], $0[2]) }
-        color = read("color", .color, width: 3).map { SIMD3($0[0], $0[1], $0[2]) }
-        size = read("size", .size, width: 2).map { SIMD2($0[0], $0[1]) }
-        alpha = read("alpha", .alpha, width: 1)?[0]
-        brightness = read("brightness", .brightness, width: 1)?[0]
+        self.init(set, indices: indices)
+    }
+
+    /// The fields at `indices` as `set` last sampled them.
+    init(_ set: SceneAnimationSet, indices: Indices) {
+        func read(_ index: Int?) -> SIMD4<Float>? { index.map(set.components(at:)) }
+        origin = read(indices.origin).map { SIMD3($0.x, $0.y, $0.z) }
+        scale = read(indices.scale).map { SIMD3($0.x, $0.y, $0.z) }
+        angles = read(indices.angles).map { SIMD3($0.x, $0.y, $0.z) }
+        color = read(indices.color).map { SIMD3($0.x, $0.y, $0.z) }
+        size = read(indices.size).map { SIMD2($0.x, $0.y) }
+        alpha = read(indices.alpha)?.x
+        brightness = read(indices.brightness)?.x
+        fields = indices.fields
     }
 
     var isEmpty: Bool { fields.isEmpty }

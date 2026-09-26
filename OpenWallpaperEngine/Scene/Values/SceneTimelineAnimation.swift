@@ -74,11 +74,22 @@ struct SceneTimelineAnimation: Equatable {
     /// parent's when it is linked.
     mutating func value(on clock: SceneTimelineClock) -> [Float] {
         let position = clock.samplePosition
-        return channels.indices.map { index in
-            let upper = channels[index].sample(position.frame1)
-            let lower = channels[index].sample(position.frame0)
-            return upper * position.fraction + lower * (1 - position.fraction)
-        }
+        return channels.indices.map { sample($0, at: position) }
+    }
+
+    /// `value(on:)` without an array: the first four channels (`c0`…`c3`, all WE samples) in a
+    /// vector, 0 past the last.
+    mutating func components(on clock: SceneTimelineClock) -> SIMD4<Float> {
+        let position = clock.samplePosition
+        var components = SIMD4<Float>.zero
+        for index in 0..<min(channels.count, 4) { components[index] = sample(index, at: position) }
+        return components
+    }
+
+    private mutating func sample(_ channel: Int, at position: SceneTimelineClock.SamplePosition) -> Float {
+        let upper = channels[channel].sample(position.frame1)
+        let lower = channels[channel].sample(position.frame0)
+        return upper * position.fraction + lower * (1 - position.fraction)
     }
 
     // MARK: - Load-time transforms

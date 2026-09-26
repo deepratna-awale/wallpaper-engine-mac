@@ -41,10 +41,8 @@ enum SceneAnimationControl: Equatable {
     case setRate(Float)
 }
 
-/// What one `SceneAnimationSet.advance(by:)` produced: every site's value this frame (the setter
-/// runs every frame, paused or not, §2.1) and the events crossed, in WE's firing order.
+/// What one `SceneAnimationSet.advance(by:)` produced: the events crossed, in WE's firing order.
+/// The values it sampled are read from the set (`value(of:)`, `components(at:)`).
 struct SceneAnimationFrame {
-    /// One component per channel (`c0`…); the property's width picks how many are used.
-    var values: [SceneAnimationSite: [Float]] = [:]
     var events: [SceneAnimationEvent] = []
 }

@@ -24,13 +24,19 @@ final class SceneAnimationSet {
         var rate: Float = 1
         /// The frame counter of this clock's last advance: a clock moves at most once per frame.
         var advanced: UInt64 = 0
-        /// The last value sampled (`advance(by:)` or `refresh()`).
-        var value: [Float] = []
+        /// The last value sampled (`advance(by:)` or `refresh()`): `c0`…`c3`, 0 past the last.
+        var value = SIMD4<Float>.zero
+        /// The clock owner's time `value` was sampled at (its bit pattern): the value is a function
+        /// of that time alone, so a clock that didn't move (paused, finished, rate 0) isn't
+        /// sampled again. Nil until the first sample, and after a relink.
+        var sampledAt: UInt32?
     }
 
     private let wallpaperID: String
     private var entries: [Entry] = []
     private var indices: [SceneAnimationSite: Int] = [:]
+    /// Every animated site, in registration (evaluation) order: `index(of:)` counts in it.
+    private(set) var sites: [SceneAnimationSite] = []
     /// Counts `advance(by:)` calls: WE's engine frame counter (`[engine+0x144]`).
     private(set) var frameCounter: UInt64 = 0
     /// The texture clocks and layer overrides of the same instance.
@@ -65,6 +71,7 @@ final class SceneAnimationSet {
         guard entries.contains(where: { $0.site.owner.objectID == id }) else { return }
         entries.removeAll { $0.site.owner.objectID == id }
         indices = Dictionary(uniqueKeysWithValues: entries.enumerated().map { ($0.element.site, $0.offset) })
+        sites = entries.map(\.site)
         relink()
     }
 
@@ -80,6 +87,7 @@ final class SceneAnimationSet {
             let timeline = try SceneTimelineAnimation(json: json, staticValue: holder.fields["value"])
             indices[holder.site] = entries.count
             entries.append(Entry(site: holder.site, timeline: timeline))
+            sites.append(holder.site)
         } catch {
             OWELog.error(.scene, "\(wallpaperID): the animation of \(holder.site) is not used: \(error)")
         }
@@ -93,6 +101,7 @@ final class SceneAnimationSet {
             entries[index].parent = child.timeline.parentKey.flatMap {
                 indices[SceneAnimationSite(owner: child.site.owner, key: $0)]
             }
+            entries[index].sampledAt = nil
             if let key = child.timeline.parentKey, entries[index].parent == nil {
                 OWELog.debug(.scene, "\(wallpaperID): \(child.site) follows '\(key)', which isn't animated here")
             }
@@ -102,13 +111,13 @@ final class SceneAnimationSet {
     // MARK: - Frame
 
     /// One frame (plan P1: after media, before timers and `update`): advances every clock owner
-    /// once by `delta × rate`, samples every site on its owner's clock and returns the values and
-    /// the events crossed. `delta` is the frame's scene delta (`SceneClock`), in seconds.
+    /// once by `delta × rate`, samples every site on its owner's clock (`value(of:)`,
+    /// `components(at:)`) and returns the events crossed. `delta` is the frame's scene delta
+    /// (`SceneClock`), in seconds.
     @discardableResult
     func advance(by delta: Float) -> SceneAnimationFrame {
         frameCounter &+= 1
         var frame = SceneAnimationFrame()
-        frame.values.reserveCapacity(entries.count)
         for index in entries.indices {
             let owner = entries[index].parent ?? index
             if entries[owner].advanced != frameCounter {
@@ -120,32 +129,46 @@ final class SceneAnimationSet {
                 }
             }
             sample(index)
-            frame.values[entries[index].site] = entries[index].value
         }
         return frame
     }
 
     /// Samples every site again without moving any clock (after script calls, or at load).
     func refresh() {
-        entries.indices.forEach(sample)
+        for index in entries.indices {
+            entries[index].sampledAt = nil
+            sample(index)
+        }
     }
 
     private func sample(_ index: Int) {
-        let clock = entries[entries[index].parent ?? index].timeline.clock
-        entries[index].value = entries[index].timeline.value(on: clock)
+        let owner = entries[index].parent ?? index
+        let time = entries[owner].timeline.clock.time.bitPattern
+        guard entries[index].sampledAt != time else { return }
+        entries[index].value = entries[index].timeline.components(on: entries[owner].timeline.clock)
+        entries[index].sampledAt = time
     }
 
     // MARK: - Reads
 
-    /// Every animated site, in registration (evaluation) order.
-    var sites: [SceneAnimationSite] { entries.map(\.site) }
-
     func contains(_ site: SceneAnimationSite) -> Bool { indices[site] != nil }
 
-    /// The site's value as last sampled: one component per channel.
+    /// Where `site` sits in `sites`, for `components(at:)`; valid until an object is added or
+    /// removed.
+    func index(of site: SceneAnimationSite) -> Int? { indices[site] }
+
+    /// The site's value as last sampled: one component per channel (at most four, `c0`…`c3`).
     func value(of site: SceneAnimationSite) -> [Float]? {
-        indices[site].map { entries[$0].value }
+        guard let index = indices[site] else { return nil }
+        let count = min(entries[index].timeline.channels.count, 4)
+        return (0..<count).map { entries[index].value[$0] }
     }
+
+    /// The value at `index` (in `sites`) as last sampled, 0 past its last channel.
+    func components(at index: Int) -> SIMD4<Float> { entries[index].value }
+
+    /// How many channels the timeline at `index` has (`c0`…), at most four.
+    func channelCount(at index: Int) -> Int { min(entries[index].timeline.channels.count, 4) }
 
     /// The site's clock owner: its parent when linked, else itself.
     func clockOwner(of site: SceneAnimationSite) -> SceneAnimationSite? {
@@ -154,11 +177,14 @@ final class SceneAnimationSet {
 
     /// The `IAnimation` state of the site's own animation.
     func state(of site: SceneAnimationSite) -> SceneAnimationState? {
-        guard let index = indices[site] else { return nil }
-        let entry = entries[index]
-        let clock = entry.timeline.clock
-        return SceneAnimationState(name: entry.timeline.name, fps: clock.fps, frameCount: clock.length,
-                                   duration: clock.duration, rate: entry.rate, time: clock.time,
+        indices[site].map(state(at:))
+    }
+
+    /// The `IAnimation` state of the animation at `index` (in `sites`).
+    func state(at index: Int) -> SceneAnimationState {
+        let clock = entries[index].timeline.clock
+        return SceneAnimationState(name: entries[index].timeline.name, fps: clock.fps, frameCount: clock.length,
+                                   duration: clock.duration, rate: entries[index].rate, time: clock.time,
                                    flags: clock.flags, frame: clock.frame)
     }
 

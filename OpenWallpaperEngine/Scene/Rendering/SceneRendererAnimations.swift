@@ -10,10 +10,11 @@ final class SceneRendererAnimations {
     private(set) var set: SceneAnimationSet?
     /// The document `set` was built from (`SceneTimelineSource`).
     private var key: (wallpaperID: String, signature: String)?
-    /// Objects whose own fields a timeline drives (with those fields' keys), and the fields'
-    /// values this frame, by id.
-    private var animatedObjects: [(id: Int, key: String, fields: Set<String>)] = []
-    private var objectAnimations: [String: SceneObjectAnimation] = [:]
+    /// Objects whose own fields a timeline drives, with where those fields sit in the set, and
+    /// the fields' values this frame (`objectAnimations[position[id]]`).
+    private var animatedObjects: [SceneObjectAnimation.Indices] = []
+    private var objectAnimations: [SceneObjectAnimation] = []
+    private var position: [String: Int] = [:]
     /// Each animated layer's sprite frame this frame, by id (`spriteFrame(object:delta:)`).
     private var spriteFrames: [Int: Int32] = [:]
 
@@ -22,7 +23,8 @@ final class SceneRendererAnimations {
         set = nil
         key = nil
         animatedObjects = []
-        objectAnimations = [:]
+        objectAnimations = []
+        position = [:]
     }
 
     /// Takes the content's timelines: a new set for a new document, or when new scripts started
@@ -71,16 +73,26 @@ final class SceneRendererAnimations {
 
     /// The objects with an animated field of their own, whose values `advance` reads.
     private func refreshAnimatedObjects() {
-        var fields: [Int: Set<String>] = [:]
+        animatedObjects.removeAll()
+        position.removeAll()
+        var ids = Set<Int>()
         for site in set?.sites ?? [] where SceneObjectAnimation.keys.contains(site.key) {
-            if case .object(let id) = site.owner { fields[id, default: []].insert(site.key) }
+            if case .object(let id) = site.owner { ids.insert(id) }
         }
-        animatedObjects = fields.keys.sorted().map { ($0, String($0), fields[$0] ?? []) }
-        objectAnimations.removeAll()
+        if let set {
+            for id in ids.sorted() {
+                guard let indices = SceneObjectAnimation.Indices(set, object: id) else { continue }
+                position[String(id)] = animatedObjects.count
+                animatedObjects.append(indices)
+            }
+        }
+        readObjects()
+    }
+
+    private func readObjects() {
+        objectAnimations.removeAll(keepingCapacity: true)
         guard let set else { return }
-        for object in animatedObjects {
-            objectAnimations[object.key] = SceneObjectAnimation(set, object: object.id, keys: object.fields)
-        }
+        for indices in animatedObjects { objectAnimations.append(SceneObjectAnimation(set, indices: indices)) }
     }
 
     // MARK: - Frame
@@ -92,15 +104,13 @@ final class SceneRendererAnimations {
         spriteFrames.removeAll(keepingCapacity: true)
         guard let set else { return [] }
         let frame = set.advance(by: delta)
-        for object in animatedObjects {
-            objectAnimations[object.key] = SceneObjectAnimation(set, object: object.id, keys: object.fields)
-        }
+        readObjects()
         return frame.events
     }
 
     /// Object `key`'s fields as its timelines set them this frame; nil when none is animated.
     func object(_ key: String) -> SceneObjectAnimation? {
-        objectAnimations[key]
+        position[key].map { objectAnimations[$0] }
     }
 
     /// The sprite frame layer `id` draws this frame, taken once per frame (a script's override
@@ -117,7 +127,8 @@ final class SceneRendererAnimations {
     func describe(into input: inout SceneScriptFrameInput, events: [SceneAnimationEvent]) {
         guard let set else { return }
         input.animationEvents = events
-        for site in set.sites { input.animations[site] = set.state(of: site) }
+        input.animations.reserveCapacity(set.sites.count)
+        for (index, site) in set.sites.enumerated() { input.animations[site] = set.state(at: index) }
         for id in set.textures.objectIDs { input.textureAnimations[id] = set.textures.state(object: id) }
     }
 

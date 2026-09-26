@@ -99,9 +99,6 @@ final class SceneAnimationSetOracleTests: XCTestCase {
                     : (fields[1].array ?? []).compactMap(\.number).map(Float.init)
                 for tick in 0..<count {
                     let frame = set.advance(by: deltas[tick % deltas.count])
-                    for site in sites where frame.values[site] != set.value(of: site) {
-                        return "op \(index) tick \(tick): the frame's value of \(site) isn't the set's"
-                    }
                     if let mismatch = compare(index, tick, fired: frame.events) { return mismatch }
                 }
                 continue
