@@ -55,9 +55,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// The drawables' format, which the layer and copy pipelines draw in.
     private let pixelFormat: MTLPixelFormat
     private let commandQueue: MTLCommandQueue
-    private let renderPipeline: MTLRenderPipelineState
-    private let additiveRenderPipeline: MTLRenderPipelineState
-    /// Unblended resample of a texture through per-vertex UVs (`sceneRegion`).
+    /// The scene pass's own pipelines, in the scene target's format (`SceneLayerPipelines`).
+    private let layerPipelines: SceneLayerPipelines
+    private var renderPipeline: MTLRenderPipelineState { layerPipelines.pipelines(for: sceneRenderTarget?.pixelFormat).normal }
+    private var additiveRenderPipeline: MTLRenderPipelineState {
+        layerPipelines.pipelines(for: sceneRenderTarget?.pixelFormat).additive
+    }
+    /// An unblended copy in the drawables' format: a shared frame onto a display (`present(in:)`).
     private let copyPipeline: MTLRenderPipelineState
     /// Everything after the scene pass, up to the drawable (bloom and the composite).
     let postProcess: ScenePostProcess
@@ -227,38 +231,18 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
-        let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.vertexFunction = vertex
-        descriptor.fragmentFunction = fragment
-        descriptor.colorAttachments[0].pixelFormat = pixelFormat
-        descriptor.colorAttachments[0].isBlendingEnabled = true
-        descriptor.colorAttachments[0].rgbBlendOperation = .add
-        descriptor.colorAttachments[0].alphaBlendOperation = .add
-        descriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        descriptor.colorAttachments[0].sourceAlphaBlendFactor = .sourceAlpha
-        descriptor.colorAttachments[0].destinationRGBBlendFactor = .oneMinusSourceAlpha
-        descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
-        guard let renderPipeline = try? device.makeRenderPipelineState(descriptor: descriptor) else {
-            return nil
-        }
-        let additiveDescriptor = descriptor.copy() as! MTLRenderPipelineDescriptor
-        additiveDescriptor.colorAttachments[0].sourceRGBBlendFactor = .sourceAlpha
-        additiveDescriptor.colorAttachments[0].sourceAlphaBlendFactor = .one
-        additiveDescriptor.colorAttachments[0].destinationRGBBlendFactor = .one
-        additiveDescriptor.colorAttachments[0].destinationAlphaBlendFactor = .one
-        guard let additiveRenderPipeline = try? device.makeRenderPipelineState(descriptor: additiveDescriptor) else {
+        let descriptor = SceneLayerPipelines.layerDescriptor(vertex: vertex, fragment: fragment, format: pixelFormat)
+        let layerPipelines: SceneLayerPipelines
+        do {
+            // The drawable's format, and the HDR scene target's (docs/lighting-plan.md §2.6).
+            layerPipelines = try SceneLayerPipelines(device: device, vertex: vertex, fragment: fragment,
+                                                     copyFragment: copyFragment, formats: [pixelFormat, .rgba16Float])
+        } catch {
+            OWELog.error(.scene, "The scene pipelines can't be made: \(error)")
             return nil
         }
 
         guard let postProcess = ScenePostProcess(device: device, layerDescriptor: descriptor) else {
-            return nil
-        }
-
-        let copyDescriptor = MTLRenderPipelineDescriptor()
-        copyDescriptor.vertexFunction = vertex
-        copyDescriptor.fragmentFunction = copyFragment
-        copyDescriptor.colorAttachments[0].pixelFormat = pixelFormat
-        guard let copyPipeline = try? device.makeRenderPipelineState(descriptor: copyDescriptor) else {
             return nil
         }
 
@@ -275,14 +259,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
         self.device = device
         self.pixelFormat = pixelFormat
-        self.copyPipeline = copyPipeline
+        self.copyPipeline = layerPipelines.pipelines(for: pixelFormat).copy
         self.postProcess = postProcess
         let frameStages = SceneFrameStages.make(device: device)
         self.frameStages = frameStages
         self.mipMappedFrameBuffer = frameStages.lazy.compactMap { $0 as? SceneMipMappedFrameBuffer }.first
         self.commandQueue = commandQueue
-        self.renderPipeline = renderPipeline
-        self.additiveRenderPipeline = additiveRenderPipeline
+        self.layerPipelines = layerPipelines
         self.dxtDecodePipeline = decodePipeline
         self.textureLoader = MTKTextureLoader(device: device)
         self.renderTargetPool = SceneRenderTargetPool(device: device)
@@ -705,7 +688,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // The largest target any display needs, so each shows the scene at its own density.
         renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize,
                                                                   drawableSize: SceneViewport.largestDrawable(viewports))
-        guard let sceneTexture = sceneRenderTarget(pixelFormat: destination.pixelFormat),
+        // A content drawn in HDR draws into RGBA16F (docs/lighting-plan.md §2.6).
+        guard let sceneTexture = sceneRenderTarget(pixelFormat: postProcess.drawsHDR ? .rgba16Float : destination.pixelFormat),
               let commandBuffer = commandQueue.makeCommandBuffer(),
               let descriptor = destination.descriptor ?? sharedFramePass(matching: sceneTexture) else {
             return
@@ -1405,6 +1389,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             layerColor: SIMD3(draw.color.x, draw.color.y, draw.color.z),
             layerAlpha: draw.opacity)
         context.mipMappedFrameBuffer = mipMappedTarget
+        // WE's layer buffers are frame-buffer class: RGBA16F in HDR.
+        context.frameBufferFormat = postProcess.drawsHDR ? .rgba16Float : .rgba8Unorm
         context.assetContentSize = { _, source in source.contentSize }
         context.assetSprite = { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) }
         if let probe = drawProbe { context.recordAnimated = { probe.record(constant: $0, value: $1) } }
@@ -1486,7 +1472,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         pass.colorAttachments[0].storeAction = .store
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: pass) else { return nil }
         var uniform = SceneRegionResample.uniform(quad, sceneSize: sceneSize, targetSize: size)
-        encoder.setRenderPipelineState(copyPipeline)
+        encoder.setRenderPipelineState(layerPipelines.pipelines(for: region.pixelFormat).copy)
         encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
         encoder.setFragmentBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
         encoder.setFragmentTexture(snapshot, index: 0)
@@ -1540,7 +1526,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// The scene target, at `renderPixelsPerUnit` pixels per scene unit.
     private func sceneRenderTarget(pixelFormat: MTLPixelFormat) -> MTLTexture? {
         let pixelSize = SceneRenderResolution.targetSize(sceneSize: sceneSize, pixelsPerUnit: renderPixelsPerUnit)
-        if let sceneRenderTarget, sceneRenderTargetSize == pixelSize { return sceneRenderTarget }
+        if let sceneRenderTarget, sceneRenderTargetSize == pixelSize, sceneRenderTarget.pixelFormat == pixelFormat {
+            return sceneRenderTarget
+        }
 
         // Owned outright, not pooled: the scene is drawn into for the whole frame, so a pooled
         // scratch request of the same size (a scene-input region) must never be handed it.

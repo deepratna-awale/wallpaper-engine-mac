@@ -549,7 +549,10 @@ class SceneWallpaperViewModel: ObservableObject {
             content.sounds = soundBuilder(wallpaperDir: wallpaperDir).sounds(in: scene.objects, context: valueContext)
             content.lighting = SceneLightingContent(settings: lighting, lights: Self.lights(in: scene.objects, context: valueContext))
             content.engineCombos = sceneEngineCombos
-            content.bloomChain = bloomChain(wallpaperDir: wallpaperDir)
+            content.bloomChain = engineChain("WE's bloom", wallpaperDir: wallpaperDir, SceneBloomChain.build)
+            if sceneEngineCombos.hdr {
+                content.hdrChain = engineChain("WE's HDR bloom", wallpaperDir: wallpaperDir, SceneHDRChain.build)
+            }
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -1055,8 +1058,10 @@ class SceneWallpaperViewModel: ObservableObject {
         }
     }()
 
-    /// WE's LDR bloom passes (`SceneBloomChain`); nil, logged, when they can't be planned.
-    private func bloomChain(wallpaperDir: URL) -> SceneBloomChain? {
+    /// One of WE's post-processing chains (`SceneBloomChain`, `SceneHDRChain`) planned by `build`;
+    /// nil, logged, when it can't be planned.
+    private func engineChain<Chain>(_ name: String, wallpaperDir: URL,
+                                    _ build: (SceneEffectPlanBuilder) throws -> Chain) -> Chain? {
         guard let translator = Self.effectTranslator else { return nil }
         let builder = SceneEffectPlanBuilder(
             translator: translator,
@@ -1066,9 +1071,9 @@ class SceneWallpaperViewModel: ObservableObject {
             },
             sceneEngineCombos: sceneEngineCombos)
         do {
-            return try SceneBloomChain.build(with: builder)
+            return try build(builder)
         } catch {
-            OWELog.error(.scene, "WE's bloom can't be planned; the scene draws without it: \(error)")
+            OWELog.error(.scene, "\(name) can't be planned; the scene draws without it: \(error)")
             return nil
         }
     }

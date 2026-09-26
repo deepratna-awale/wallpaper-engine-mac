@@ -1,4 +1,5 @@
 import XCTest
+import Metal
 @testable import OpenWallpaperEngine
 
 /// `ScenePostProcess`, the stage after the scene pass: WE's bloom gate and strength, and the
@@ -37,6 +38,29 @@ final class ScenePostProcessTests: XCTestCase {
         }
         settings.postProcessing = .disabled
         XCTAssertFalse(ScenePostProcess.runsBloom(on, settings: settings), "post-processing disabled")
+    }
+
+    /// In HDR the chain runs where bloom does, over WE's levels capped by `bloomhdriterations`;
+    /// elsewhere the frame takes `combine_srgb` (nil).
+    func testHDRLevelsFollowTheBloomGateAndIterations() throws {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba16Float, width: 64, height: 48,
+                                                                  mipmapped: false)
+        let scene = try XCTUnwrap(device.makeTexture(descriptor: descriptor))
+        var hdr = SceneHDRBloomSettings()
+        hdr.enabled = true
+        var frame = ScenePostProcess.Frame(
+            scene: scene, output: MTLRenderPassDescriptor(), commandBuffer: try XCTUnwrap(queue.makeCommandBuffer()),
+            placement: placement,
+            bloom: ScenePostProcess.Bloom(enabled: true, strength: 2, threshold: 0.65, tint: SIMD3(repeating: 1), hdr: hdr),
+            extras: .init(), settings: SceneRenderSettings())
+        frame.settings.postProcessing = .ultra
+        XCTAssertEqual(ScenePostProcess.hdrLevels(frame), 5, "48 halves 5 times")
+        frame.bloom.hdr.iterations = 3
+        XCTAssertEqual(ScenePostProcess.hdrLevels(frame), 3)
+        frame.bloom.enabled = false
+        XCTAssertNil(ScenePostProcess.hdrLevels(frame), "a script turned bloom off: combine_srgb")
     }
 
     /// The app's bloom slider scales WE's strength; 1 is WE's own.

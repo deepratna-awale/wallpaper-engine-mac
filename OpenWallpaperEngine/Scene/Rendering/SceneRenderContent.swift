@@ -177,6 +177,9 @@ struct SceneMetalContent {
     /// WE's LDR bloom passes, planned with the content's engine combos; nil without a shader
     /// toolchain. Planned for every scene: a script or user property can turn `bloom` on.
     var bloomChain: SceneBloomChain?
+    /// WE's HDR bloom and combines, planned when the content draws in HDR (`engineCombos.hdr`),
+    /// in place of `bloomChain`; nil otherwise or without a shader toolchain.
+    var hdrChain: SceneHDRChain?
 }
 
 /// `scene.json` as the content was built from it, for the wallpaper instance's `SceneAnimationSet`

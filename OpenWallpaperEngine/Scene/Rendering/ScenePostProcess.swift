@@ -7,8 +7,9 @@ import simd
 ///
 /// Here the finished scene target is `_rt_FullFrameBuffer` (it isn't drawn to again). Step 5 is
 /// WE's LDR bloom (`SceneBloomChain`), gated like WE's by the scene's live `bloom` and the user's
-/// post-processing setting. The composite then puts the frame on the drawable at the user's
-/// placement with the app's own adjustments (`AppExtras`), which aren't WE's.
+/// post-processing setting; in a content drawn in HDR it is the HDR chain (`SceneHDRChain`), or
+/// `combine_srgb` while bloom doesn't run. The composite then puts the frame on the drawable at
+/// the user's placement with the app's own adjustments (`AppExtras`), which aren't WE's.
 final class ScenePostProcess {
     /// The scene's bloom this frame, scripts' and timelines' values included.
     struct Bloom: Equatable {
@@ -59,13 +60,31 @@ final class ScenePostProcess {
     /// The last frame's bloom, nil when it didn't run (tests, diagnostics).
     private(set) var lastBloom: BloomRecord?
 
+    /// One HDR frame's combine: the float frame, the sRGB output, the levels the bloom ran (nil
+    /// for `combine_srgb` alone) and its constants.
+    struct HDRRecord {
+        var frame: MTLTexture
+        var combined: MTLTexture
+        var levels: Int?
+        var constants: SceneHDRChain.Constants
+    }
+
+    /// The last HDR frame's combine, nil when the content isn't drawn in HDR or it didn't run.
+    private(set) var lastHDR: HDRRecord?
+
     private let compositePipeline: MTLRenderPipelineState
     /// The content's LDR bloom chain; nil without a shader toolchain.
     private var bloomChain: SceneBloomChain?
+    /// The content's HDR chain, when it draws in HDR (`SceneMetalContent.hdrChain`).
+    private var hdrChain: SceneHDRChain?
+    /// The content draws in HDR: float targets, `HDR=1`, the HDR chain (`SceneEngineCombos.hdr`).
+    private(set) var drawsHDR = false
     /// Frames bloomed so far: the chain's input changes every frame while its texture stays.
     private var bloomFrames: UInt64 = 0
-    /// The effect graph holds the chain's targets (released when bloom stops).
-    private var holdsBloomTargets = false
+    /// The chain whose targets the effect graph holds (released when it stops running).
+    private var heldChain: String?
+    /// The HDR combine's output as the composite reads it (`SceneHDRChain.encodedView`), by output.
+    private var encodedView: (output: ObjectIdentifier, view: MTLTexture)?
     /// The composite pass failed once already (it is logged once, not every frame).
     private var reportedEncodeFailure = false
 
@@ -84,12 +103,14 @@ final class ScenePostProcess {
     /// A new content (a new scene or a rebuild).
     func setContent(_ content: SceneMetalContent) {
         bloomChain = content.bloomChain
+        hdrChain = content.hdrChain
+        drawsHDR = content.engineCombos.hdr
     }
 
     /// Encodes everything from the scene target to the drawable. The caller presents and commits.
     func encode(_ frame: Frame) {
-        // Step 5. B2: in HDR the HDR chain and its combine take this place.
-        let finished = bloomed(frame) ?? frame.scene
+        // Step 5: the bloom and its combine.
+        let finished = (drawsHDR ? combinedHDR(frame) : bloomed(frame)) ?? frame.scene
         // Steps 6–7, WE's colour correction (`ccsimple`) and camera fade, would follow here; the
         // app draws neither yet.
         composite(finished, frame)
@@ -106,18 +127,23 @@ final class ScenePostProcess {
         bloom.strength * max(extras.bloom, 0)
     }
 
+    /// Makes `chain` (a state id, nil for none) the one whose targets the effect graph holds.
+    private func hold(_ chain: String?, in effects: EffectGraphRenderer) {
+        guard heldChain != chain else { return }
+        if let heldChain { effects.releaseLayer(heldChain) }
+        heldChain = chain
+    }
+
     /// The frame with WE's LDR bloom; nil when bloom doesn't run or its passes aren't ready.
     private func bloomed(_ frame: Frame) -> MTLTexture? {
         lastBloom = nil
+        lastHDR = nil
         guard let effects = frame.effects else { return nil }
         guard Self.runsBloom(frame.bloom, settings: frame.settings), let bloomChain else {
-            if holdsBloomTargets {
-                effects.releaseLayer(SceneBloomChain.stateID)
-                holdsBloomTargets = false
-            }
+            hold(nil, in: effects)
             return nil
         }
-        holdsBloomTargets = true
+        hold(SceneBloomChain.stateID, in: effects)
         bloomFrames &+= 1
         let strength = Self.bloomStrength(frame.bloom, extras: frame.extras)
         guard let bloomed = bloomChain.encode(on: frame.scene, strength: strength, threshold: frame.bloom.threshold,
@@ -127,6 +153,39 @@ final class ScenePostProcess {
         lastBloom = BloomRecord(frame: frame.scene, bloomed: bloomed, strength: strength,
                                 threshold: frame.bloom.threshold, tint: frame.bloom.tint)
         return bloomed
+    }
+
+    /// The levels WE's HDR bloom runs on `frame` this frame, or nil when bloom doesn't run and
+    /// the frame takes `combine_srgb` (`0x140180a41`, `0x140184058`).
+    static func hdrLevels(_ frame: Frame) -> Int? {
+        guard runsBloom(frame.bloom, settings: frame.settings) else { return nil }
+        return SceneHDRChain.runLevels(width: frame.scene.width, height: frame.scene.height,
+                                       iterations: frame.bloom.hdr.iterations)
+    }
+
+    /// A HDR frame through WE's HDR bloom and combine, or `combine_srgb` while bloom doesn't run, as
+    /// the composite reads it; nil when the passes aren't ready (the frame is composited as it is).
+    private func combinedHDR(_ frame: Frame) -> MTLTexture? {
+        lastBloom = nil
+        lastHDR = nil
+        guard let effects = frame.effects else { return nil }
+        guard let hdrChain else {
+            hold(nil, in: effects)
+            return nil
+        }
+        hold(SceneHDRChain.stateID, in: effects)
+        bloomFrames &+= 1
+        let levels = Self.hdrLevels(frame)
+        let constants = SceneHDRChain.Constants(frame.bloom.hdr, levels: levels ?? 1, tint: frame.bloom.tint,
+                                                strengthScale: max(frame.extras.bloom, 0))
+        guard let combined = hdrChain.encode(on: frame.scene, levels: levels, constants: constants, effects: effects,
+                                             builtins: frame.builtins, values: frame.values, frameIndex: bloomFrames,
+                                             commandBuffer: frame.commandBuffer) else { return nil }
+        lastHDR = HDRRecord(frame: frame.scene, combined: combined, levels: levels, constants: constants)
+        if encodedView?.output != ObjectIdentifier(combined) {
+            encodedView = SceneHDRChain.encodedView(of: combined).map { (ObjectIdentifier(combined), $0) }
+        }
+        return encodedView?.view
     }
 
     /// Step 8: `finished` on the drawable at the user's placement, with the app's adjustments.
