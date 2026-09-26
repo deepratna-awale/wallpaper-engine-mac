@@ -1,6 +1,6 @@
 # WE-authored values audit
 
-**Status: 2026-09-25.** Work queue item 2 in [`roadmap.md`](roadmap.md).
+**Status: 2026-09-26.** Work queue item 2 in [`roadmap.md`](roadmap.md).
 
 The rule: every default, threshold, range, step, option list, label and unit that Wallpaper Engine authors comes from WE's own data. We never invent them. The sources are:
 - effect and material json
@@ -33,6 +33,7 @@ Where WE authors nothing, we use WE's own default and cite where it comes from.
   - The linked slider links while x == y.
 - **`assets/scripts/jsclasses/baseclasses.js`**: WE's `createScriptProperties` and `_Internal.updateScriptProperties`.
 - **`locale/ui_en-us.json`**: WE's English text for the `ui_…` label keys.
+- **WE 2.8.0.42's editor on Windows** (the user's screenshots, 2026-09-26): §7.
 
 ## 1. Effect parameters (inspector) — fixed
 
@@ -46,7 +47,7 @@ Where WE authors nothing, we use WE's own default and cite where it comes from.
 | `SceneInspectorView` — slider step and decimals | continuous, 3 decimals | step 0.01 and 2 decimals; `int` uses step 1 and 0 decimals | fixed |
 | `SceneInspectorView` — `linked` vec2 | two independent sliders | a link toggle that starts linked while x == y and moves both together | fixed |
 | `SceneInspectorView` — `[COMBO]` with a `material` key | not shown | a checkbox, or a picker with the authored options in authored order; the choice is stored under `combo_<NAME>` and applied by `SceneEffectPlanBuilder.comboOverrides` | fixed |
-| `SceneInspectorView` — combos with `"type":"imageblending"` (`BLENDMODE`) and no `options` | — | WE fills the blend-mode list in its editor (`wallpaperui.exe`), not in the annotation | unknown: not shown until that list is extracted; the authored value still applies |
+| `SceneInspectorView` — combos with `"type":"imageblending"` (`BLENDMODE`) and no `options` | not shown | WE's editor list (`wallpaperui.exe` 0x140160040): 33 modes in its order and groups, §7.2 | fixed (`WEImageBlendModes`); an image layer's own `colorBlendMode` gets the same picker |
 | `SceneInspectorView` — a combo's `require` (for example `RIMLIGHTING` needs `LIGHTING=1`) | — | WE hides a combo whose requirements don't hold | fixed |
 | Labels | `ui_editor_properties_x` turned into words | WE's `locale/ui_en-us.json` (`WallpaperEngineLabels`), when an install is configured; the words are the fallback | fixed |
 
@@ -217,6 +218,65 @@ Particle systems now compile their initializers and operators into records the w
 
 **Camera:** particle systems now move with camera parallax and shake as every WE object does (their emitter's transform takes the layer's offset).
 
+## 7. WE 2.8.0.42's editor (ground truth)
+
+Checked against the editor itself (screenshots of WE 2.8.0.42 on Windows).
+
+**7.1 Rotation — fixed.**
+
+| Field | Editor | Ours | Verdict |
+|---|---|---|---|
+| `angles.z` = +30° | turns the object counter-clockwise | counter-clockwise since dc179e3 (WE's `Rz(z)·Ry(y)·Rx(x)`, 0x1401dd630) | confirmed |
+| `angles.x` = 30° (orthographic scene) | squashes the object vertically by cos 30°, no perspective | was ignored | fixed: `SceneAffineTransform` takes the x and y rows of WE's rotation without their z (+x → (cy·cz, cy·sz), +y → (sx·sy·cz − cx·sz, sx·sy·sz + cx·cz)) |
+| `angles.y` = 30° | squashes it horizontally by cos 30° | was ignored | fixed, as above |
+
+The tilt comes from the authored angles, user bindings, timelines and scripts (`SceneLocalTransform.tilt`). Tests: `SceneTransformTests` (the squashes, the counter-clockwise turn, and all three angles against WE's 3D rotation projected). Still open: a parent's tilt composes with its children as projected 2×2 matrices, not as WE's 3D matrices, so a child tilted back against a tilted parent doesn't straighten; a perspective scene is drawn with the same orthographic squash (no perspective camera yet).
+
+**7.2 Blend modes — fixed.** The editor lists 33, Normal the default: under "Native (fast)" Normal, Add; under "Emulated (slow)" Tint, Darken, Multiply, Color burn, Linear burn, Darker color, Lighten, Screen, Color dodge, Linear dodge, Lighter color, Overlay, Soft light, Hard light, Vivid light, Linear light, Pin light, Diffuse light, Hard mix, Difference, Exclusion, Subtract, Reflect, Glow, Phoenix, Average, Negation, Hue, Saturation, Color, Luminosity. `wallpaperui.exe` 0x140160040 fills that menu, pairing each `ui_editor_blending_*` key with its `BLENDMODE` value, and the values select the branches of `ApplyBlending` in `common_blending.h`:
+
+| Mode | Value | Mode | Value | Mode | Value |
+|---|---|---|---|---|---|
+| Normal | 0 | Screen | 7 | Hard mix | 17 |
+| Add | 31 (`A + B·opacity`) | Color dodge | 8 | Difference | 18 |
+| Tint | 30 | Linear dodge | 9 (`BlendAdd`) | Exclusion | 19 |
+| Darken | 1 | Lighter color | 10 (`max`) | Subtract | 20 |
+| Multiply | 2 | Overlay | 11 | Reflect | 21 |
+| Color burn | 3 | Soft light | 12 | Glow | 22 |
+| Linear burn | 4 (`BlendSubstract`) | Hard light | 13 | Phoenix | 23 |
+| Darker color | 5 (`min`) | Vivid light | 14 | Average | 24 |
+| Lighten | 6 | Linear light | 15 | Negation | 25 |
+| | | Pin light | 16 | Hue, Saturation, Color, Luminosity | 26…29 |
+| | | Diffuse light | 32 (`A + A·B`) | | |
+
+The inspector shows `imageblending` combos and an image layer's `colorBlendMode` as that list, with WE's labels (`locale/ui_en-us.json`, English text as the fallback) and groups; the layer's choice is saved with its edited object. Tests: `WEImageBlendModesTests`, `WEAuthoredValuesTests`.
+
+**7.3 User properties per display — fixed.** In WE the same wallpaper on two displays has independent user properties: its UI keeps them per monitor (`currentSelection.properties[selectedMonitor.location]`, `ui/dist/scripts/scripts.js`). WE's UI scripts have no setting named "sync properties": the closest is the layout, "Wallpaper per display" (0, independent properties) or "Clone single wallpaper" (2, one wallpaper and one set of properties on every display). Ours: each display has its own store, and Settings → General → "Sync properties across displays" (default **off**, WE's per-display behaviour) makes them share one. Displays whose properties are equal still share one running instance; different properties run separate instances, and a wallpaper still plays its sound once (from the instance on its audible display). Details in `architecture.md` ("Wallpaper instances"). Tests: `WallpaperPropertyScopeTests`.
+
+**7.4 A new particle system — no change.** The editor creates a system from WE's own template, `particles/example.json`. Those are template values the editor writes into the new system's json, not what `wallpaper64.exe` assumes for an absent field, so our parse defaults (§6) stay:
+
+| Field | Editor template | WE's parse default for an absent field (ours) |
+|---|---|---|
+| `maxcount` | 500 | none: 0 |
+| emitter | `sphererandom` | `sphererandom` |
+| `distancemin` … `distancemax` | 32 … 512 | 0 … 256 (2D) / 1 (3D) |
+| `directions` | 1 1 0 | 1 1 0 |
+| `rate` | 20 | 10 |
+| `speedmin` / `speedmax` | 0 | 0 |
+| `lifetimerandom` | 3 … 5 | 0 … 1 |
+| `colorrandom` | 255 255 255 … 255 255 255 (white) | 0 0 0 … 255 255 255 |
+| `sizerandom` (template, not in the screenshots) | 50 … 200 | 5 … 50 / 0.001 … 1 |
+| `velocityrandom` (template) | ±50 ±50 0 | ±32 ±32 0 / ±1 |
+| operators | `movement`, `alphafade` | — |
+| `alphafade` | fade in 0.5 (fade out absent: 0.5) | 0.5 / 0.5 |
+| material | `particle/halo.json`: additive | a material without `blending`: translucent |
+| overbright | 1 | `g_Overbright`'s annotation default, 1 |
+
+Test: `ParticleEditorTemplateTests` runs the template and gets the editor's values; `ParticleProgramTests` keeps the parse defaults.
+
+**7.5 Clamp UVs on import — no change needed.** WE's importer turns Clamp UVs on by default and writes it into the `.tex` (TEXI flags bit 2). The renderer reads that flag alone: a flagged `.tex` clamps, an unflagged one repeats, an image that isn't a `.tex` clamps, and the object's `clampuvs` can only add clamping (`ImageMaterialPlanBuilder.textureClamps`). Nothing assumes the opposite default. Test: `TexClampUVsDefaultTests`.
+
+**7.6 Light sliders — noted.** The editor's ranges: intensity 0…25, radius 0…30, falloff 0…4, cone 0…180 (degrees). Our inspector doesn't expose light properties (lights are read from scene.json only), so there is nothing to range yet; an inspector for lights should use these.
+
 ## Tests
 
 `OpenWallpaperEngineTests/WEAuthoredValuesTests.swift`:
@@ -234,3 +294,5 @@ Particle systems now compile their initializers and operators into records the w
   - `createScriptProperties` defaults and `scriptproperties` injection, run against WE's own `baseclasses.js`
 
 `OpenWallpaperEngineTests/ParticleProgramTests.swift` checks WE's particle defaults per element (2D and 3D), two operators of a kind, the oscillators' per-particle random, `hsvcolorrandom`'s hue steps, the remap default, movement in the object's units, sequences restarting each period and `starttime`. `ParticleSimulationParityTests` runs every operator and initializer kind on both simulations, several emitters and the low-frame-rate drag and half steps among them. `ParticleRendererOptionsTests` checks the orientations and the rope layout; `ParticleRemapControlPointTests` the remap's control point inputs and outputs and their write-back, on both simulations.
+
+The editor's ground truth (§7) is checked by `SceneTransformTests` (angles), `WEImageBlendModesTests` (the blend-mode list against `common_blending.h` and WE's labels), `WallpaperPropertyScopeTests` (per-display stores, instance grouping, sound once), `ParticleEditorTemplateTests` and `TexClampUVsDefaultTests`.
