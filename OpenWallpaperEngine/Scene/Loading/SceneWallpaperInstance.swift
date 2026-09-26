@@ -218,12 +218,14 @@ final class SceneWallpaperInstance {
         return SceneRenderSettings(settings, outputPixels: largest)
     }
 
-    /// Applies `settings` when they differ from the renderer's, rebuilding the content for them.
+    /// Applies `settings` when they differ from the renderer's, rebuilding the content only when
+    /// it is built for what changed (`SceneRenderSettings.contentKey`); the rest apply per frame.
     private func applyRenderSettings(_ settings: SceneRenderSettings) {
         guard let renderer, settings != renderer.renderSettings else { return }
+        let rebuild = settings.contentKey != renderer.renderSettings.contentKey
         renderer.renderSettings = settings
         viewModel.setRenderSettings(settings)
-        scheduleSceneUpdate(.rebuildContent)
+        if rebuild { scheduleSceneUpdate(.rebuildContent) }
     }
 
     private func observeChanges() {

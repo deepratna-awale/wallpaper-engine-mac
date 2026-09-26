@@ -212,8 +212,10 @@ class SceneWallpaperViewModel: ObservableObject {
         sceneLock.lock()
         defer { sceneLock.unlock() }
         guard settings != renderSettings else { return }
+        let rebuild = settings.contentKey != renderSettings.contentKey
         renderSettings = settings
-        bumpRevision()
+        // Settings applied per frame (reflection, the bloom gate, …) keep the content.
+        if rebuild { bumpRevision() }
     }
 
     // MARK: - Scene Loading
