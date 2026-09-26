@@ -23,20 +23,38 @@ struct ParticleState {
 
 struct ParticleParameters {
     uint4 counts;            // maximum, flags, seed, history limit
-    float4 emitterOrigin;    // `ParticleEmitterShape`: origin xyz, control point
-    float4 emitterDirections; // directions xyz, -cos(cone * pi)
-    float4 emitterMinimum;   // distance minimum xyz, speed minimum
-    float4 emitterMaximum;   // distance maximum xyz, speed maximum
-    float4 emitterSign;      // sign xyz
     float4 trail;            // history interval, trail length, rope subdivision, fades (1 alpha, 2 size)
     float4 trailLimits;      // `spritetrail` maxlength, minlength
     float4 spriteSheet;      // frames, columns, rows, duration
     float4 sprite;           // mode (0 sequence, 1 once, 2 random frame), sequence multiplier, opacity multiplier, refractive
-    uint4 instancing;        // link kind (0 none, `ParticleChildLink.Kind`), instances, -, instantaneous
+    uint4 instancing;        // link kind (0 none, `ParticleChildLink.Kind`), instances, emitters, -
     float4 link;             // probability
-    float4 emitterTiming;    // `ParticleEmitterTiming`: delay, duration, periodic duration min, max
-    float4 emitterPeriod;    // periodic delay min, max, periodic
     uint4 linking;           // linked, first control point, per parent instance
+};
+
+/// One emitter (`ParticleGPUEmitter`).
+struct EmitterParameters {
+    float4 origin;           // `ParticleEmitterShape`: origin xyz, control point
+    float4 directions;       // directions xyz, -cos(cone * pi)
+    float4 minimum;          // distance minimum xyz, speed minimum
+    float4 maximum;          // distance maximum xyz, speed maximum
+    float4 sign;             // sign xyz
+    float4 timing;           // `ParticleEmitterTiming`: delay, duration, periodic duration min, max
+    float4 period;           // periodic delay min, max, periodic
+    uint4 flags;             // box, applies sign, instantaneous
+};
+
+/// One emitter's part of the step (`ParticleGPUEmitterStep`).
+struct EmitterStep {
+    float4 rate;             // rate
+    uint4 control;           // burst, period limit (~0: none), starts a period, one per frame
+};
+
+/// One emitter's running state (`ParticleGPUEmitterState`), per slot.
+struct EmitterState {
+    float4 clock;            // `ParticleEmitterClock.state` (instances)
+    float4 carry;            // carried fraction
+    uint4 counts;            // period emitted (systems), first spawn, spawns, sequence restart
 };
 
 /// A collision shape in scene space (`ParticleCollisionPlacement`).
@@ -52,15 +70,14 @@ struct ParticleInstanceState {
     float4 place;       // translation xy, previous translation xy
     float4 source;      // source velocity xy, size, rotation
     float4 sourceColor; // source colour, alpha
-    float4 emission;    // source angular velocity, emission remainder
+    float4 emission;    // source angular velocity
     uint4 state;        // flags (`iActive`…), source serial, live particles, first spawn
-    uint4 spawn;        // spawned this step
-    float4 clock;       // `ParticleEmitterClock.state`
+    uint4 spawn;        // spawned this step, spawned before it, the spawn its sequence restarts from
 };
 
 struct ParticleFrame {
-    float4 time;             // delta, system time, emission rate, engine time
-    float4 misc;             // time of day, clears, burst
+    float4 time;             // delta, system time, damped step (`dragDeltaTime`), engine time
+    float4 misc;             // time of day, clears
     float4 scene;            // scene size xy, target size xy
     uint4 indices;           // frame index, material vertex count, render-var offset in floats (~0: none), draw kind
     float4 spaceLinear;      // the system's space in the scene: column 0 xy, column 1 xy
@@ -74,7 +91,7 @@ struct ParticleFrame {
     uint4 extra;             // control points that stay put in every instance, maximum, collisions, initializers | operators << 16
     float4 spawnScale;       // instance overrides: size, alpha, lifetime, speed
     float4 colorScale;       // instance overrides: tint times brightness
-    uint4 emission;          // period limit (~0: none), starts a period, one per frame
+    uint4 emission;          // substeps, emitters
     float4 drawLinear;       // the emitter's linear its particles are drawn through: column 0 xy, column 1 xy
 };
 
@@ -118,8 +135,8 @@ struct FallbackInstance {
 };
 
 // Flags (`ParticleGPUParameters.Flag`).
-constant uint kHistory = 1u << 0, kBoxEmitter = 1u << 1, kSpriteSheet = 1u << 2, kInstanced = 1u << 3;
-constant uint kWorldSpace = 1u << 4, kAppliesSign = 1u << 5;
+constant uint kHistory = 1u << 0, kSpriteSheet = 1u << 2, kInstanced = 1u << 3;
+constant uint kWorldSpace = 1u << 4;
 
 // Instance flags (`ParticleGPUInstance`).
 constant uint iActive = 1u << 0, iEmitting = 1u << 1, iFresh = 1u << 2, iClearing = 1u << 3;
@@ -134,7 +151,8 @@ constant uint hAddAngularVelocity = 1u << 11;
 constant uint lStatic = 1, lFollow = 2, lSpawn = 3, lDeath = 4;
 
 // Control words (`ParticleGPUSystem.Control`).
-constant uint cCount = 0, cEmit = 1, cTotal = 2, cSerial = 3, cRemainder = 4, cPeriodEmitted = 5, cTrailTotal = 6;
+// Particles that died aging since the system started (a rope's scrolling UVs).
+constant uint cCount = 0, cEmit = 1, cTotal = 2, cSerial = 3, cDied = 4, cTrailTotal = 6;
 constant uint cSerialBase = 7;
 constant uint cDispatch = 8, cMaterialDraw = 12, cFallbackDraw = 16, cEventTotal = 20;
 // Particles that died aging this step, the live particles after this step's spawns, the serial the
@@ -297,9 +315,10 @@ static uint groupExclusiveScan(uint value, uint lid, uint lane, uint simdIndex, 
 // MARK: - Emission
 
 /// `ParticleEmitterClock.rateLimit`, with `~0u` for no limit.
-static uint rateLimit(constant ParticleFrame &f, uint emitted) {
-    uint limit = f.emission.x == 0xFFFFFFFFu ? 0xFFFFFFFFu : (f.emission.x > emitted ? f.emission.x - emitted : 0u);
-    if (f.emission.z != 0) limit = min(limit, 1u);
+static uint rateLimit(EmitterStep step, uint emitted) {
+    const uint periodLimit = step.control.y;
+    uint limit = periodLimit == 0xFFFFFFFFu ? 0xFFFFFFFFu : (periodLimit > emitted ? periodLimit - emitted : 0u);
+    if (step.control.w != 0) limit = min(limit, 1u);
     return limit;
 }
 

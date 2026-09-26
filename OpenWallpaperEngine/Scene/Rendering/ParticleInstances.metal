@@ -67,23 +67,24 @@ static uint findSerial(device const ParticleState *particles, uint count, uint s
 }
 
 /// `ParticleEmitterClock.phaseLength`.
-static float phaseLength(uint phase, constant ParticleParameters &p, uint key) {
+static float phaseLength(uint phase, constant ParticleParameters &p, EmitterParameters e, uint key) {
     const bool emitting = phase % 2 == 0;
-    const float2 range = emitting ? p.emitterTiming.zw : p.emitterPeriod.xy;
+    const float2 range = emitting ? e.timing.zw : e.period.xy;
     return randomValue(range.x, range.y, p.counts.z + key * 0x9E3779B9u, phase, emitting ? sPeriodDuration : sPeriodDelay);
 }
 
 /// `ParticleEmitterClock.advance`: whether the rate emits (x), the burst goes out (y) and a
 /// period starts (z).
-static uint3 advanceClock(thread float4 &clock, float deltaTime, constant ParticleParameters &p, uint key) {
-    const float delay = p.emitterTiming.x, duration = p.emitterTiming.y;
-    const bool periodic = p.emitterPeriod.z > 0.5;
+static uint3 advanceClock(thread float4 &clock, float deltaTime, constant ParticleParameters &p, EmitterParameters e,
+                          uint key) {
+    const float delay = e.timing.x, duration = e.timing.y;
+    const bool periodic = e.period.z > 0.5;
     clock.x += deltaTime;
     const bool running = duration <= 0 || clock.x - delay < duration;
     if (clock.z == 0) {
         if (clock.x < delay) return uint3(0);
         clock.z = 1;
-        clock.y = periodic ? phaseLength(0, p, key) : 0;
+        clock.y = periodic ? phaseLength(0, p, e, key) : 0;
         clock.w = 0;
         return uint3(running ? 1 : 0, 1, 1);
     }
@@ -93,7 +94,7 @@ static uint3 advanceClock(thread float4 &clock, float deltaTime, constant Partic
         if (clock.y <= 0) {
             const uint phase = uint(clock.z);
             clock.z += 1;
-            clock.y = phaseLength(phase, p, key);
+            clock.y = phaseLength(phase, p, e, key);
             if (phase % 2 == 0) {
                 clock.w = 0;
                 step.z = 1;
@@ -105,19 +106,43 @@ static uint3 advanceClock(thread float4 &clock, float deltaTime, constant Partic
     return step;
 }
 
-/// `ParticleCPUSimulation.updateInstances`' emission for one instance.
+/// `ParticleCPUSimulation.updateInstances`' emission for one instance: every emitter on its own
+/// clock, each counting what the earlier ones spawned.
 static uint instanceEmission(thread ParticleInstanceState &instance, uint slot, constant ParticleParameters &p,
-                             constant ParticleFrame &f) {
+                             constant ParticleFrame &f, constant EmitterParameters *emitterParameters,
+                             constant EmitterStep *steps, device EmitterState *emitters) {
     // `ParticleCPUSimulation.clockKey`.
     const uint key = instance.state.y * 31u + slot + 1u;
-    const uint3 step = advanceClock(instance.clock, f.time.x, p, key);
-    float carry = instance.emission.y;
-    const uint2 spawned = emission(int(instance.state.z), int(f.extra.y), step.x ? f.time.z : 0.0f, f.time.x, carry,
-                                   step.y ? int(p.instancing.w) : 0, rateLimit(f, uint(instance.clock.w)));
-    instance.emission.y = carry;
-    instance.clock.w += float(spawned.y);
-    if (step.z) instance.spawn.z = instance.spawn.y;
-    return spawned.x + spawned.y;
+    const uint emitterCount = p.instancing.z;
+    uint live = instance.state.z;
+    uint spawnedHere = 0;
+    uint restart = instance.spawn.z;
+    for (uint e = 0; e < emitterCount; ++e) {
+        EmitterState state = emitters[e];
+        const EmitterParameters parameters = emitterParameters[e];
+        const EmitterStep step = steps[e];
+        // `ParticleEmitterState.clockKey`.
+        const uint3 clock = advanceClock(state.clock, f.time.x, p, parameters, key + e * 0x632BE5ABu);
+        float carry = state.carry.x;
+        const uint2 spawned = emission(int(live), int(f.extra.y), clock.x ? step.rate.x : 0.0f, f.time.x, carry,
+                                       clock.y ? int(parameters.flags.z) : 0, rateLimit(step, uint(state.clock.w)));
+        state.carry.x = carry;
+        state.clock.w += float(spawned.y);
+        if (clock.z) restart = instance.spawn.y + spawnedHere;
+        state.counts.y = spawnedHere;
+        state.counts.z = spawned.x + spawned.y;
+        state.counts.w = restart;
+        emitters[e] = state;
+        spawnedHere += state.counts.z;
+        live += state.counts.z;
+    }
+    instance.spawn.z = restart;
+    return spawnedHere;
+}
+
+/// Clears the emitter states of instance `slot` (a new instance's emitters start afresh).
+static void resetEmitters(device EmitterState *emitters, uint emitterCount) {
+    for (uint e = 0; e < emitterCount; ++e) emitters[e] = EmitterState{};
 }
 
 /// `ParticleCPUSimulation.updateInstances`, then the step's counters as `particleBegin` sets them.
@@ -130,15 +155,22 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
                                  device const ParticleState *parentParticles [[buffer(5)]],
                                  device const uint *parentControl [[buffer(6)]],
                                  device const uint *events [[buffer(7)]],
-                                 device const ParticleInstanceState *parentInstances [[buffer(8)]]) {
+                                 device const ParticleInstanceState *parentInstances [[buffer(8)]],
+                                 constant EmitterParameters *emitterParameters [[buffer(9)]],
+                                 constant EmitterStep *steps [[buffer(10)]],
+                                 device EmitterState *emitters [[buffer(11)]]) {
     const uint slots = p.instancing.y;
+    const uint emitterCount = p.instancing.z;
     const uint kind = p.instancing.x;
     uint count = control[cCount];
     const uint dead = control[cDead];
     uint emitted = 0;
     if (f.misc.y > 0.5) {
         count = 0;
-        for (uint slot = 0; slot < slots; ++slot) instances[slot] = ParticleInstanceState{};
+        for (uint slot = 0; slot < slots; ++slot) {
+            instances[slot] = ParticleInstanceState{};
+            resetEmitters(emitters + slot * emitterCount, emitterCount);
+        }
     } else {
         const uint parentCount = parentControl[cCount];
         for (uint slot = 0; slot < slots; ++slot) {
@@ -152,6 +184,7 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
                 if (source.state.x & iFresh) {
                     const uint live = instance.state.z;
                     instance = ParticleInstanceState{};
+                    resetEmitters(emitters + slot * emitterCount, emitterCount);
                     instance.state.x = iActive | iEmitting | iFresh;
                     instance.state.z = live;
                     instance.place = float4(source.place.xy, source.place.xy);
@@ -182,6 +215,7 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
             const uint state = instance.state.x;
             if ((state & iActive) && !(state & (iEmitting | iClearing | iFresh)) && instance.state.z == 0) {
                 instance = ParticleInstanceState{};
+                resetEmitters(emitters + slot * emitterCount, emitterCount);
             }
             instances[slot] = instance;
         }
@@ -198,14 +232,19 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
                 trackSource(instance, source);
                 instance.place.zw = instance.place.xy;
                 instances[slot] = instance;
+                resetEmitters(emitters + slot * emitterCount, emitterCount);
             }
         }
         for (uint slot = 0; slot < slots; ++slot) {
             ParticleInstanceState instance = instances[slot];
             instance.state.w = emitted;
             if ((instance.state.x & iActive) && (instance.state.x & iEmitting)) {
-                instance.spawn.x = instanceEmission(instance, slot, p, f);
+                instance.spawn.x = instanceEmission(instance, slot, p, f, emitterParameters, steps,
+                                                    emitters + slot * emitterCount);
                 emitted += instance.spawn.x;
+            } else {
+                // Spawns nothing: the emit step finds no emitter spawning in it.
+                for (uint e = 0; e < emitterCount; ++e) emitters[slot * emitterCount + e].counts.yz = uint2(0);
             }
             // Counted afresh by this step's simulation.
             instance.state.z = 0;
@@ -217,6 +256,7 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
     control[cEmit] = emitted;
     control[cTotal] = total;
     control[cLive] = total - min(f.misc.y > 0.5 ? 0u : dead, total);
+    control[cDied] = f.misc.y > 0.5 ? 0u : control[cDied] + dead;
     control[cDead] = 0;
     control[cSerialBase] = control[cSerial];
     control[cSerial] = control[cSerial] + emitted;

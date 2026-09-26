@@ -15,9 +15,6 @@ enum ParticleSystemBuilder {
                       materialPlan: ParticleMaterialPlan?, pixelUnits: Bool = true) -> SceneMetalParticleSystem {
         let renderer = particleSystem.renderer?.first
         let emitter = particleSystem.emitter?.first
-        if (particleSystem.emitter?.count ?? 0) > 1 {
-            OWELog.error(.scene, "Particle system \(particlePath): only its first of \(particleSystem.emitter?.count ?? 0) emitters runs")
-        }
         let defaults = ParticleDefaults(pixelUnits: pixelUnits)
         // Emitter rate: 10 a second (0x1401b8e59).
         let rate = Float(emitter?.rate ?? 10)
@@ -57,6 +54,12 @@ enum ParticleSystemBuilder {
             system.instantaneous = max(emitter.instantaneous ?? 0, 0)
             system.emitterTiming = ParticleEmitterTiming(emitter)
             system.rateAudio = ParticleAudioResponse(emitter)
+        }
+        // WE runs every emitter, each with its own rate, burst and timing (0x1402378a0).
+        system.extraEmitters = (particleSystem.emitter ?? []).dropFirst().map { authored in
+            ParticleEmitter(shape: emitterShape(authored, defaults: defaults), rate: max(Float(authored.rate ?? 10), 0),
+                            rateScript: authored.$rate.script, instantaneous: max(authored.instantaneous ?? 0, 0),
+                            timing: ParticleEmitterTiming(authored), audio: ParticleAudioResponse(authored))
         }
         system.controlPoints = controlPoints(particleSystem.controlpoint ?? [])
         system.program = ParticleProgram(

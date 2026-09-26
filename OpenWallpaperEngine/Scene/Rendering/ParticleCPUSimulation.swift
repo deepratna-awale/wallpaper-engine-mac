@@ -39,7 +39,6 @@ final class ParticleSystemRuntime {
     let fallbackTexture: MTLTexture
     let configuration: SceneMetalParticleSystem
     var particles: [Particle] = []
-    var emissionRemainder: Float = 0
     var elapsedTime: Float = 0
     /// Steps taken (`ParticleFrameInputs.frameIndex`).
     var frameIndex: UInt32 = 0
@@ -61,10 +60,10 @@ final class ParticleSystemRuntime {
     /// The emitter's scale, rotation and shear the particles are drawn through
     /// (`ParticleFrameInputs.drawLinear`), from the last step.
     var drawLinear = matrix_identity_float2x2
-    /// The emitter's timing (`ParticleEmitterTiming`) for a system that isn't instanced.
-    var emitterClock = ParticleEmitterClock()
-    /// What the rate emitted in the current period (`ParticleFrameInputs.periodLimit`), on the CPU.
-    var periodEmitted = 0
+    /// Each emitter's clock (`ParticleEmitterTiming`), carried fraction and what its rate emitted this
+    /// period (`ParticleFrameInputs.periodLimit`) for a system that isn't instanced; the CPU
+    /// simulation's counts.
+    var emitterStates: [ParticleEmitterState]
     /// The system this one is a child of (`SceneMetalParticleSystem.link`).
     weak var parent: ParticleSystemRuntime?
     /// An instanced system's instances (`ParticleChildLink`), on the CPU.
@@ -80,6 +79,7 @@ final class ParticleSystemRuntime {
         self.fallbackTexture = fallbackTexture ?? texture
         self.configuration = configuration
         self.seed = seed
+        emitterStates = Array(repeating: ParticleEmitterState(), count: configuration.emitters.count)
         if configuration.isInstanced {
             instances = Array(repeating: ParticleInstance(), count: max(configuration.link?.maximumInstances ?? 0, 0))
         }
@@ -87,6 +87,9 @@ final class ParticleSystemRuntime {
 
     /// Points each child at its parent (`SceneMetalParticleSystem.link`), in a scene's list of
     /// systems; a system that couldn't be prepared is nil and leaves its children without one.
+    /// The first emitter's carried fraction of a particle.
+    var emissionRemainder: Float { emitterStates.first?.remainder ?? 0 }
+
     static func linkFamilies(_ systems: [ParticleSystemRuntime?]) {
         for system in systems {
             guard let system, let parentIndex = system.configuration.link?.parentIndex,
@@ -143,8 +146,10 @@ enum ParticleCPUSimulation {
         system.diedThisStep.removeAll(keepingCapacity: true)
         if inputs.clears {
             system.particles.removeAll(keepingCapacity: true)
-            system.emissionRemainder = 0
-            system.periodEmitted = 0
+            for index in system.emitterStates.indices {
+                system.emitterStates[index].remainder = 0
+                system.emitterStates[index].periodEmitted = 0
+            }
             for index in system.instances.indices { system.instances[index] = ParticleInstance() }
             return
         }
@@ -165,34 +170,46 @@ enum ParticleCPUSimulation {
                     followInstance(&system.particles[index], instance: instance, inputs: inputs)
                 }
             }
-            for (index, instance) in system.instances.enumerated() where instance.spawnCount > 0 {
-                for k in 0..<instance.spawnCount {
-                    let sequence = SIMD2(instance.spawned &+ UInt32(k), instance.spawned &+ UInt32(k) &- instance.periodSpawned)
-                    system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: instanceInputs[index],
-                                                  instance: index, source: instance, sequence: sequence))
-                    system.nextSerial &+= 1
+            for (index, instance) in system.instances.enumerated() where instance.active {
+                // Each emitter's spawns in turn; a period restarts the instance's sequence from there.
+                var spawned = instance.spawned, periodSpawned = instance.periodSpawned
+                for (emitter, state) in instance.emitterStates.enumerated() {
+                    if state.startsPeriod { periodSpawned = spawned }
+                    for _ in 0..<state.spawnCount {
+                        system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: instanceInputs[index],
+                                                      emitter: emitter, instance: index, source: instance,
+                                                      sequence: SIMD2(spawned, spawned &- periodSpawned)))
+                        system.nextSerial &+= 1
+                        spawned &+= 1
+                    }
                 }
-                system.instances[index].spawned &+= UInt32(instance.spawnCount)
+                system.instances[index].spawned = spawned
+                system.instances[index].periodSpawned = periodSpawned
             }
         } else {
             if let motion = inputs.motion {
                 for index in system.particles.indices { follow(&system.particles[index], motion: motion) }
             }
-            if inputs.startsPeriod {
-                system.periodEmitted = 0
-                system.periodSerial = system.nextSerial
-            }
-            let limit = ParticleEmitterClock.rateLimit(periodLimit: inputs.periodLimit, emitted: system.periodEmitted,
-                                                       onePerFrame: inputs.onePerFrame)
-            let emitted = emission(liveCount: system.particles.count, maximum: inputs.maximum,
-                                   rate: inputs.emissionRate, deltaTime: inputs.deltaTime,
-                                   remainder: &system.emissionRemainder, burst: inputs.burst, rateLimit: limit)
-            system.periodEmitted += emitted.rate
-            for _ in 0..<(emitted.burst + emitted.rate) {
-                let serial = system.nextSerial
-                system.particles.append(spawn(serial: serial, system: system, inputs: inputs,
-                                              sequence: SIMD2(serial, serial &- system.periodSerial)))
-                system.nextSerial &+= 1
+            // Every emitter in turn, each counting what the earlier ones spawned (0x1402378a0).
+            for (index, emitter) in inputs.emitters.enumerated() where index < system.emitterStates.count {
+                if emitter.startsPeriod {
+                    system.emitterStates[index].periodEmitted = 0
+                    system.periodSerial = system.nextSerial
+                }
+                let limit = ParticleEmitterClock.rateLimit(periodLimit: emitter.periodLimit,
+                                                           emitted: system.emitterStates[index].periodEmitted,
+                                                           onePerFrame: emitter.onePerFrame)
+                let emitted = emission(liveCount: system.particles.count, maximum: inputs.maximum,
+                                       rate: emitter.rate, deltaTime: inputs.deltaTime,
+                                       remainder: &system.emitterStates[index].remainder, burst: emitter.burst,
+                                       rateLimit: limit)
+                system.emitterStates[index].periodEmitted += emitted.rate
+                for _ in 0..<(emitted.burst + emitted.rate) {
+                    let serial = system.nextSerial
+                    system.particles.append(spawn(serial: serial, system: system, inputs: inputs, emitter: index,
+                                                  sequence: SIMD2(serial, serial &- system.periodSerial)))
+                    system.nextSerial &+= 1
+                }
             }
         }
         let neighbors = ParticleProgramCPU.Neighbors(positions: system.particles.map(\.position),
@@ -241,6 +258,7 @@ enum ParticleCPUSimulation {
                         source: ParticleInstance?) -> ParticleProgramContext {
         var context = ParticleProgramContext()
         context.deltaTime = inputs.deltaTime
+        context.dragDeltaTime = inputs.dragDeltaTime
         context.engineTime = inputs.engineTime
         context.systemTime = inputs.elapsedTime
         context.timeOfDay = inputs.timeOfDay
@@ -261,8 +279,8 @@ enum ParticleCPUSimulation {
 
     /// A new particle: the emitter's shape, WE's base values and every initializer
     /// (0x14023b340: lifetime 1, size 0.5, the instance colour and alpha).
-    static func spawn(serial: UInt32, system: ParticleSystemRuntime, inputs: ParticleFrameInputs, instance: Int = 0,
-                      source: ParticleInstance? = nil, sequence: SIMD2<UInt32>) -> Particle {
+    static func spawn(serial: UInt32, system: ParticleSystemRuntime, inputs: ParticleFrameInputs, emitter: Int = 0,
+                      instance: Int = 0, source: ParticleInstance? = nil, sequence: SIMD2<UInt32>) -> Particle {
         let configuration = system.configuration
         var context = context(system, inputs: inputs, serial: serial, source: source)
         context.sequenceIndex = sequence.x
@@ -272,7 +290,8 @@ enum ParticleCPUSimulation {
         state.baseSize = 0.5
         state.baseAlpha = inputs.spawnScale.y
         state.baseColor = inputs.colorScale
-        let emitted = ParticleProgramCPU.emit(configuration.emitter, context: context)
+        let shape = emitter == 0 ? configuration.emitter : configuration.extraEmitters[emitter - 1].shape
+        let emitted = ParticleProgramCPU.emit(shape, context: context)
         state.position = emitted.position
         state.velocity = emitted.velocity
         ParticleProgramCPU.runInitializers(inputs.initializers, on: &state, context: context)
@@ -292,7 +311,7 @@ enum ParticleCPUSimulation {
     static func advance(_ particle: inout Particle, index: Int, system: ParticleSystemRuntime, inputs: ParticleFrameInputs,
                         source: ParticleInstance?, neighbors: ParticleProgramCPU.Neighbors) {
         let configuration = system.configuration
-        let context = context(system, inputs: inputs, serial: particle.serial, source: source)
+        var context = context(system, inputs: inputs, serial: particle.serial, source: source)
         var state = ParticleProgramState()
         state.position = inputs.toSpace * (particle.position - inputs.space.translation)
         state.velocity = inputs.toSpace * particle.velocity
@@ -303,8 +322,16 @@ enum ParticleCPUSimulation {
         state.baseColor = SIMD3(particle.baseColor.x, particle.baseColor.y, particle.baseColor.z)
         state.rotation = particle.rotation
         state.angularVelocity = particle.angularVelocity
-        let dies = ParticleProgramCPU.runOperators(inputs.operators, on: &state, context: context, index: index,
-                                                   neighbors: neighbors)
+        // At a frame-rate limit of 20 or less WE runs the operators twice, in half steps
+        // (`ParticleFrameInputs.substeps`); the neighbours stay the step's.
+        let substeps = inputs.substeps
+        context.deltaTime /= Float(substeps)
+        context.dragDeltaTime /= Float(substeps)
+        var dies = false
+        for _ in 0..<substeps {
+            if ParticleProgramCPU.runOperators(inputs.operators, on: &state, context: context, index: index,
+                                               neighbors: neighbors) { dies = true }
+        }
         particle.position = inputs.space.apply(state.position)
         particle.velocity = inputs.space.linear * state.velocity
         particle.lifetime = state.lifetime

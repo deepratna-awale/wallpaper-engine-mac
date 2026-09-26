@@ -27,6 +27,9 @@ struct ParticleProgramState {
 /// own random value.
 struct ParticleProgramContext {
     var deltaTime: Float = 0
+    /// The step damped at low frame rates (`ParticleFrameInputs.dragDeltaTime`): drag and the field
+    /// operators' time step.
+    var dragDeltaTime: Float = 0
     var engineTime: Float = 0
     var systemTime: Float = 0
     var timeOfDay: Float = 0

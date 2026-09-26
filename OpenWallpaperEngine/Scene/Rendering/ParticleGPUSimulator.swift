@@ -110,6 +110,7 @@ final class ParticleGPUSimulator {
         var frame = ParticleGPUFrame(request.inputs, sceneSize: sceneSize, targetSize: targetSize, kind: request.kind,
                                      materialVertexCount: request.materialVertexCount,
                                      renderVarOffset: request.renderVar?.offset)
+        frame.emission.y = UInt32(gpu.emitterCount)
         let frameLength = MemoryLayout<ParticleGPUFrame>.stride
         let control = gpu.control
         // Buffers a system without trails never touches still need a binding.
@@ -148,12 +149,14 @@ final class ParticleGPUSimulator {
 
         if request.system.configuration.isInstanced {
             guard let parent = request.system.parent?.gpu else { return }
-            encodeInstanceStep(request.system, gpu: gpu, parent: parent, frame: &frame, encoder: encoder)
+            encodeInstanceStep(request.system, inputs: request.inputs, gpu: gpu, parent: parent, frame: &frame, encoder: encoder)
         } else {
             encoder.setComputePipelineState(begin)
             encoder.setBuffer(control, offset: 0, index: 0)
             encoder.setBuffer(gpu.parameters, offset: 0, index: 1)
             encoder.setBytes(&frame, length: frameLength, index: 2)
+            bindEmitterSteps(request.inputs, count: gpu.emitterCount, index: 3, encoder: encoder)
+            encoder.setBuffer(gpu.emitterStates, offset: 0, index: 4)
             encoder.dispatchThreads(single, threadsPerThreadgroup: single)
         }
 
@@ -165,6 +168,8 @@ final class ParticleGPUSimulator {
         encoder.setBuffer(instances, offset: 0, index: 4)
         encoder.setBuffer(linked, offset: 0, index: 5)
         bindProgram(request.inputs, index: 6, fallback: control, encoder: encoder)
+        encoder.setBuffer(gpu.emitterParameters, offset: 0, index: 7)
+        encoder.setBuffer(gpu.emitterStates, offset: 0, index: 8)
         perParticle()
 
         encoder.setComputePipelineState(simulate)
@@ -257,6 +262,13 @@ final class ParticleGPUSimulator {
         }
     }
 
+    /// The step's emitters (`ParticleGPUEmitterStep`) at `index`: `count`, the system's.
+    private func bindEmitterSteps(_ inputs: ParticleFrameInputs, count: Int, index: Int, encoder: MTLComputeCommandEncoder) {
+        var steps = inputs.emitters.prefix(count).map(ParticleGPUEmitterStep.init)
+        while steps.count < max(count, 1) { steps.append(ParticleGPUEmitterStep(ParticleEmitterStep())) }
+        steps.withUnsafeBytes { encoder.setBytes($0.baseAddress!, length: $0.count, index: index) }
+    }
+
     /// Prefix sums of `values` (`countControl[count]` of them) into `offsets` and `blockSums`, the
     /// total into `totals[total]` (`countControl` by default).
     private func scan(_ values: MTLBuffer, count: Int, into total: Int, offsets: MTLBuffer, blockSums: MTLBuffer,
@@ -282,7 +294,8 @@ final class ParticleGPUSimulator {
 
     /// An instanced system's `particleBegin`: its parent's events (event children), then its
     /// instances and emission (`ParticleInstances.metal`).
-    private func encodeInstanceStep(_ system: ParticleSystemRuntime, gpu: ParticleGPUSystem, parent: ParticleGPUSystem,
+    private func encodeInstanceStep(_ system: ParticleSystemRuntime, inputs: ParticleFrameInputs, gpu: ParticleGPUSystem,
+                                    parent: ParticleGPUSystem,
                                     frame: inout ParticleGPUFrame, encoder: MTLComputeCommandEncoder) {
         guard let instances = gpu.instances, let parentStepped = parent.stepped, let parentParticles = parent.particles,
               let parentAlive = parent.alive else { return }
@@ -320,6 +333,9 @@ final class ParticleGPUSimulator {
         encoder.setBuffer(parent.control, offset: 0, index: 6)
         encoder.setBuffer(gpu.events ?? gpu.control, offset: 0, index: 7)
         encoder.setBuffer(parent.instances ?? gpu.control, offset: 0, index: 8)
+        encoder.setBuffer(gpu.emitterParameters, offset: 0, index: 9)
+        bindEmitterSteps(inputs, count: gpu.emitterCount, index: 10, encoder: encoder)
+        encoder.setBuffer(gpu.emitterStates, offset: 0, index: 11)
         let single = MTLSize(width: 1, height: 1, depth: 1)
         encoder.dispatchThreads(single, threadsPerThreadgroup: single)
     }

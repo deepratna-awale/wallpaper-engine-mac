@@ -30,6 +30,7 @@ struct ProgramState {
 /// `ParticleProgramContext`.
 struct ProgramContext {
     float deltaTime, engineTime, systemTime, timeOfDay;
+    float dragDeltaTime;
     uint seed, serial;
     float random;
     float2 points[8], previousPoints[8];
@@ -291,32 +292,32 @@ static float3 signedVector(float3 v, float3 sign) {
 }
 
 /// `ParticleProgramCPU.emit`.
-static void emitParticle(constant ParticleParameters &p, thread const ProgramContext &c, thread float2 &position,
+static void emitParticle(EmitterParameters e, thread const ProgramContext &c, thread float2 &position,
                          thread float2 &velocity) {
     const uint seed = c.seed, serial = c.serial;
-    const float3 directions = p.emitterDirections.xyz;
+    const float3 directions = e.directions.xyz;
     float3 offset;
-    if (p.counts.y & kBoxEmitter) {
+    if (e.flags.x != 0) {
         const float3 a = (float3(unitRandom(seed, serial, sSpawnAngle), unitRandom(seed, serial, sSpawnHeight),
-                                 unitRandom(seed, serial, sSpawnRadius)) * 2 - 1) * p.emitterMaximum.xyz;
-        const float3 span = p.emitterMaximum.xyz - p.emitterMinimum.xyz;
-        const float3 magnitude = p.emitterMinimum.xyz + abs(a) / max(abs(p.emitterMaximum.xyz), float3(FLT_MIN)) * span;
+                                 unitRandom(seed, serial, sSpawnRadius)) * 2 - 1) * e.maximum.xyz;
+        const float3 span = e.maximum.xyz - e.minimum.xyz;
+        const float3 magnitude = e.minimum.xyz + abs(a) / max(abs(e.maximum.xyz), float3(FLT_MIN)) * span;
         offset = sign(a) * magnitude;
-        if (p.counts.y & kAppliesSign) offset = signedVector(offset, p.emitterSign.xyz);
+        if (e.flags.y != 0) offset = signedVector(offset, e.sign.xyz);
     } else {
         const float phi = 2 * M_PI_F * unitRandom(seed, serial, sSpawnAngle);
-        const float floorValue = p.emitterDirections.w;
+        const float floorValue = e.directions.w;
         const float u = floorValue + unitRandom(seed, serial, sSpawnHeight) * (1 - floorValue);
         const float s = sqrt(max(1 - u * u, 0.0f));
         const float k = pow(unitRandom(seed, serial, sSpawnRadius), 1.0f / 3.0f);
         const float3 v = float3(k * u, k * sin(phi) * s, k * cos(phi) * s) * directions;
         const float vLength = length(v);
         float3 direction = vLength > 0 ? v / vLength : float3(0);
-        if (p.counts.y & kAppliesSign) direction = signedVector(direction, p.emitterSign.xyz);
-        offset = (p.emitterMinimum.x + vLength * (p.emitterMaximum.x - p.emitterMinimum.x)) * direction;
+        if (e.flags.y != 0) direction = signedVector(direction, e.sign.xyz);
+        offset = (e.minimum.x + vLength * (e.maximum.x - e.minimum.x)) * direction;
     }
     const float2 turned = c.emitterLinear * offset.xy;
-    position = programPoint(c.points, uint(p.emitterOrigin.w)) + p.emitterOrigin.xy + turned;
+    position = programPoint(c.points, uint(e.origin.w)) + e.origin.xy + turned;
     float2 heading = turned;
     if (length_squared(float3(turned, offset.z)) < 0.0001f) {
         const float3 fallback = (float3(unitRandom(seed, serial, sFallbackX), unitRandom(seed, serial, sFallbackY),
@@ -324,7 +325,7 @@ static void emitParticle(constant ParticleParameters &p, thread const ProgramCon
         heading = c.emitterLinear * fallback.xy;
     }
     const float headingLength = length(heading);
-    const float speed = p.emitterMinimum.w + unitRandom(seed, serial, sEmitterSpeed) * (p.emitterMaximum.w - p.emitterMinimum.w);
+    const float speed = e.minimum.w + unitRandom(seed, serial, sEmitterSpeed) * (e.maximum.w - e.minimum.w);
     velocity = headingLength > 0 ? heading / headingLength * speed : float2(0);
 }
 
@@ -504,7 +505,7 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
         case oMovement: {
             float2 gravity = record.a.xy;
             if ((flags & 1u) && !c.worldSpace) gravity = c.toSpace * gravity;
-            const float damping = 1 - min(record.a.w * dt, 1.0f);
+            const float damping = 1 - min(record.a.w * c.dragDeltaTime, 1.0f);
             const float2 velocity = p.velocity + gravity * dt;
             p.previous = p.position;
             p.position += velocity * dt;
@@ -512,7 +513,7 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
             break;
         }
         case oAngularMovement: {
-            const float damping = min(record.a.w * dt, 1.0f);
+            const float damping = min(record.a.w * c.dragDeltaTime, 1.0f);
             const float spin = p.angularVelocity + blend * record.a.z * dt;
             p.rotation += blend * dt * spin;
             p.angularVelocity = spin * (1 - blend * damping);
@@ -562,7 +563,7 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
             const float distance = length(offset);
             const float scale = record.b.x, threshold = record.b.y;
             if (distance > FLT_MIN && distance < threshold) {
-                float force = (1 - distance / threshold) * scale * dt * blend;
+                float force = (1 - distance / threshold) * scale * c.dragDeltaTime * blend;
                 if ((flags & 2u) && distance < force) force = distance;
                 p.velocity -= offset / distance * force;
             }
@@ -614,7 +615,7 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
             const float phase = r * (record.c.y - record.c.x) + c.engineTime * record.b.w;
             const float3 point = float3(p.position.x + phase, p.position.y + phase, phase) * record.b.x;
             const float speed = (record.b.y + r * (record.b.z - record.b.y)) * record.e.w * blend;
-            const float push = dt * speed;
+            const float push = c.dragDeltaTime * speed;
             p.velocity.x += simplex3(point.x, point.y, point.z) * record.a.x * push;
             p.velocity.y += simplex3(point.z, point.x, point.y) * record.a.y * push;
             break;
@@ -630,7 +631,7 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
                 const float span = record.c.y - record.c.x;
                 const float t = saturateValue((distance - record.c.x) * (span == 0 ? 1.0f : 1 / span));
                 const float speed = (record.c.z + t * (record.c.w - record.c.z)) * record.e.w;
-                p.velocity += (cross(normal, axis) * speed * dt).xy;
+                p.velocity += (cross(normal, axis) * speed * c.dragDeltaTime).xy;
             }
             break;
         }
@@ -659,7 +660,7 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
                     t = saturateValue((distance - record.b.x) * (span == 0 ? 1.0f : 1 / span));
                 }
                 const float speed = (record.b.z + t * (record.b.w - record.b.z)) * record.e.w;
-                p.velocity += ((cross(normal, axis) * speed * dt + pull * ahead) * blend).xy;
+                p.velocity += ((cross(normal, axis) * speed * c.dragDeltaTime + pull * ahead) * blend).xy;
             }
             break;
         }
@@ -687,7 +688,7 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
                     neighbored += 1;
                 }
             }
-            const float weight = float(slices) * dt;
+            const float weight = float(slices) * c.dragDeltaTime;
             float2 change = float2(0);
             if (separated > 0) change += record.b.x * weight / separated * separation;
             if (neighbored > 0) {

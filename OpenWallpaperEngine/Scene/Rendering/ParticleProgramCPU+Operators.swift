@@ -66,13 +66,14 @@ extension ParticleProgramCPU {
 
     // MARK: - Movement
 
-    /// `movement` (0x14023fdc9): v' = v + g·Δt, p += v'·Δt, v = v'·(1 − min(drag·Δt, 1)). Flag 1
-    /// gives gravity in the scene rather than the system's space (0x14023fde2).
+    /// `movement` (0x14023fdc9): v' = v + g·Δt, p += v'·Δt, v = v'·(1 − min(drag·Δt', 1)), Δt' the
+    /// damped step (`ParticleFrameInputs.dragDeltaTime`). Flag 1 gives gravity in the scene rather
+    /// than the system's space (0x14023fde2).
     static func movement(_ record: ParticleProgramOp, _ p: inout ParticleProgramState, _ context: ParticleProgramContext) {
         var gravity = SIMD2(record.a.x, record.a.y)
         if record.header.y & 1 != 0, !context.worldSpace { gravity = context.toSpace * gravity }
         let dt = context.deltaTime
-        let damping = 1 - min(record.a.w * dt, 1)
+        let damping = 1 - min(record.a.w * context.dragDeltaTime, 1)
         let velocity = p.velocity + gravity * dt
         p.previous = p.position
         p.position += velocity * dt
@@ -83,7 +84,7 @@ extension ParticleProgramCPU {
     static func angularMovement(_ record: ParticleProgramOp, _ p: inout ParticleProgramState,
                                 _ context: ParticleProgramContext, blend: Float) {
         let dt = context.deltaTime
-        let damping = min(record.a.w * dt, 1)
+        let damping = min(record.a.w * context.dragDeltaTime, 1)
         let spin = p.angularVelocity + blend * record.a.z * dt
         p.rotation += blend * dt * spin
         p.angularVelocity = spin * (1 - blend * damping)
@@ -147,7 +148,7 @@ extension ParticleProgramCPU {
         let distance = simd_length(offset)
         let scale = record.b.x, threshold = record.b.y
         if distance > Float.leastNormalMagnitude, distance < threshold {
-            var force = (1 - distance / threshold) * scale * context.deltaTime * blend
+            var force = (1 - distance / threshold) * scale * context.dragDeltaTime * blend
             if record.header.y & 2 != 0, distance < force { force = distance }
             p.velocity -= offset / distance * force
         }
@@ -215,7 +216,7 @@ extension ParticleProgramCPU {
         let scale = record.b.x
         let point = SIMD3(p.position.x + phase, p.position.y + phase, phase) * scale
         let speed = (record.b.y + r * (record.b.z - record.b.y)) * record.e.w * blend
-        let push = context.deltaTime * speed
+        let push = context.dragDeltaTime * speed
         p.velocity.x += ParticleNoise.simplex3(point.x, point.y, point.z) * record.a.x * push
         p.velocity.y += ParticleNoise.simplex3(point.z, point.x, point.y) * record.a.y * push
     }
@@ -233,7 +234,7 @@ extension ParticleProgramCPU {
         let span = record.c.y - record.c.x
         let t = saturate((distance - record.c.x) * (span == 0 ? 1 : 1 / span))
         let speed = (record.c.z + t * (record.c.w - record.c.z)) * record.e.w
-        let push = cross(normal, axis) * speed * context.deltaTime
+        let push = cross(normal, axis) * speed * context.dragDeltaTime
         p.velocity += SIMD2(push.x, push.y)
     }
 
@@ -275,7 +276,7 @@ extension ParticleProgramCPU {
             t = saturate((distance - record.b.x) * (span == 0 ? 1 : 1 / span))
         }
         let speed = (record.b.z + t * (record.b.w - record.b.z)) * record.e.w
-        let push = (cross(normal, axis) * speed * dt + pull * ahead) * blend
+        let push = (cross(normal, axis) * speed * context.dragDeltaTime + pull * ahead) * blend
         p.velocity += SIMD2(push.x, push.y)
     }
 
@@ -306,7 +307,7 @@ extension ParticleProgramCPU {
                 neighbored += 1
             }
         }
-        let weight = Float(slices) * context.deltaTime
+        let weight = Float(slices) * context.dragDeltaTime
         var change = SIMD2<Float>.zero
         if separated > 0 { change += record.b.x * weight / separated * separation }
         if neighbored > 0 {

@@ -69,19 +69,35 @@ extension ParticleCPUSimulation {
                 system.instances[slot] = instance
             }
         }
-        for index in system.instances.indices where system.instances[index].active && system.instances[index].emitting {
+        let emitters = configuration.emitters
+        for index in system.instances.indices where system.instances[index].active {
             var instance = system.instances[index]
-            let step = instance.clock.advance(inputs.deltaTime, timing: configuration.emitterTiming, seed: system.seed,
-                                              key: clockKey(instance, slot: index))
-            let limit = ParticleEmitterClock.rateLimit(periodLimit: inputs.periodLimit, emitted: Int(instance.clock.state.w),
-                                                       onePerFrame: inputs.onePerFrame)
-            let emitted = emission(liveCount: instance.live, maximum: inputs.maximum,
-                                   rate: step.emits ? inputs.emissionRate : 0, deltaTime: inputs.deltaTime,
-                                   remainder: &instance.remainder,
-                                   burst: step.bursts ? configuration.instantaneous : 0, rateLimit: limit)
-            instance.clock.state.w += Float(emitted.rate)
-            instance.spawnCount = emitted.burst + emitted.rate
-            if step.startsPeriod { instance.periodSpawned = instance.spawned }
+            if instance.emitterStates.count < emitters.count {
+                instance.emitterStates += Array(repeating: ParticleEmitterState(),
+                                                count: emitters.count - instance.emitterStates.count)
+            }
+            // Each emitter on its own clock, counting what the earlier ones spawned (0x1402378a0).
+            var live = instance.live
+            for (emitter, timing) in emitters.map(\.timing).enumerated() {
+                instance.emitterStates[emitter].spawnCount = 0
+                instance.emitterStates[emitter].startsPeriod = false
+                guard instance.emitting, emitter < inputs.emitters.count else { continue }
+                let settings = inputs.emitters[emitter]
+                var state = instance.emitterStates[emitter]
+                let key = ParticleEmitterState.clockKey(clockKey(instance, slot: index), emitter: emitter)
+                let step = state.clock.advance(inputs.deltaTime, timing: timing, seed: system.seed, key: key)
+                let limit = ParticleEmitterClock.rateLimit(periodLimit: settings.periodLimit, emitted: Int(state.clock.state.w),
+                                                           onePerFrame: settings.onePerFrame)
+                let emitted = emission(liveCount: live, maximum: inputs.maximum, rate: step.emits ? settings.rate : 0,
+                                       deltaTime: inputs.deltaTime, remainder: &state.remainder,
+                                       burst: step.bursts ? settings.instantaneous : 0, rateLimit: limit)
+                state.clock.state.w += Float(emitted.rate)
+                state.spawnCount = emitted.burst + emitted.rate
+                state.startsPeriod = step.startsPeriod
+                live += state.spawnCount
+                instance.emitterStates[emitter] = state
+            }
+            instance.spawnCount = live - instance.live
             system.instances[index] = instance
         }
     }

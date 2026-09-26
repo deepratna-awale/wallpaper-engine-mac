@@ -117,3 +117,20 @@ struct ParticleEmitterClock: Equatable {
         return limit
     }
 }
+
+/// One emitter's running state: its clock, the fraction of a particle its rate carries into the next
+/// step and what the rate emitted this period. WE keeps these per emitter record
+/// (`wallpaper64.exe` 0x1402379aa…0x140237b74: carry at +0x24, the period's count at +0x3c), so
+/// every emitter of a system counts on its own.
+struct ParticleEmitterState: Equatable {
+    var clock = ParticleEmitterClock()
+    var remainder: Float = 0
+    var periodEmitted = 0
+    /// Spawned this step and whether a period started (an instance's, `ParticleInstance`).
+    var spawnCount = 0
+    var startsPeriod = false
+
+    /// The key naming emitter `emitter`'s random periods, from the key of the system's (or the
+    /// instance's) first emitter.
+    static func clockKey(_ base: UInt32, emitter: Int) -> UInt32 { base &+ UInt32(emitter) &* 0x632B_E5AB }
+}

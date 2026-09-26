@@ -22,7 +22,16 @@ struct ParticleFrameInputs {
     var timeOfDay: Float = 0
     /// Steps taken, this one included.
     var frameIndex: UInt32 = 0
-    var emissionRate: Float = 0
+    /// Each emitter's part of the step, in the order WE runs them (0x1402378a0); the first is
+    /// `emissionRate`, `burst`, `startsPeriod`, `periodLimit` and `onePerFrame`.
+    var emitters = [ParticleEmitterStep()]
+    /// The engine's frame time: the last frame's length in seconds (`wallpaper64.exe`
+    /// [engine+0x14c], which SceneScript reads as `engine.frametime`). WE damps drag and the
+    /// field operators below 40 frames a second by it (`dragFactor`).
+    var frameTime: Float = 0
+    /// The frame-rate limit setting (WE's `fps`, [engine+0x148], copied from the settings' `fps` at
+    /// 0x1401114f1). At 1…20 the operators run twice, in half steps (`substeps`).
+    var frameRateLimit = 0
     /// The most particles the system (each instance, when instanced) may hold: the authored
     /// maximum times the `count` override.
     var maximum = 0
@@ -34,16 +43,48 @@ struct ParticleFrameInputs {
     var collisions: [ParticleCollisionPlacement] = []
     /// The system emits nothing and shows nothing this frame: every particle is removed.
     var clears = false
-    /// Particles emitted at once this step on top of the rate: the emitter's `instantaneous`
-    /// burst when it starts or starts a period (`ParticleEmitterClock`).
-    var burst = 0
-    /// A period of a periodic emitter starts this step: the per-period count restarts.
-    var startsPeriod = false
-    /// The most the rate emits in one period (`ParticleEmitterTiming.periodLimit`), for the system
-    /// or each instance; nil without a limit.
-    var periodLimit: Int?
-    /// The rate emits at most one particle a step.
-    var onePerFrame = false
+
+    /// The first emitter's rate this step (`emitters[0]`).
+    var emissionRate: Float {
+        get { emitters[0].rate }
+        set { emitters[0].rate = newValue }
+    }
+    /// The first emitter's burst: particles emitted at once this step on top of the rate, its
+    /// `instantaneous` burst when it starts or starts a period (`ParticleEmitterClock`).
+    var burst: Int {
+        get { emitters[0].burst }
+        set { emitters[0].burst = newValue }
+    }
+    /// A period of the first emitter starts this step: its per-period count restarts.
+    var startsPeriod: Bool {
+        get { emitters[0].startsPeriod }
+        set { emitters[0].startsPeriod = newValue }
+    }
+    /// The most the first emitter's rate emits in one period; nil without a limit.
+    var periodLimit: Int? {
+        get { emitters[0].periodLimit }
+        set { emitters[0].periodLimit = newValue }
+    }
+    /// The first emitter's rate emits at most one particle a step.
+    var onePerFrame: Bool {
+        get { emitters[0].onePerFrame }
+        set { emitters[0].onePerFrame = newValue }
+    }
+
+    /// The operators' time step for drag and the field operators: the step times
+    /// `pow(min(0.025 / frame time, 1), 0.7)` (`wallpaper64.exe` 0x140237724…0x14023775f). It passes
+    /// to the operator VM next to the step (0x14023fbc0: [rbp+0x5f0]); `movement` and
+    /// `angularmovement` damp by it, and `controlpointattract`, `turbulence`, `vortex`, `vortex_v2`'s
+    /// spin and `boids` push by it (their handlers read it, 0x14024155b, 0x1402429cb, 0x1402432b9,
+    /// 0x140243449, 0x1402441b5). The same as the step at 40 frames a second or more.
+    var dragDeltaTime: Float {
+        // A frame time of 0 (no frame yet) divides to infinity and keeps the factor 1.
+        deltaTime * pow(min(0.025 / frameTime, 1), 0.7)
+    }
+
+    /// How many times the operators run this step: twice, each with half the step and half
+    /// `dragDeltaTime`, when the frame-rate limit is 1…20 (0x140237764…0x140237793); once otherwise.
+    var substeps: Int { (1...20).contains(frameRateLimit) ? 2 : 1 }
 
     /// The system's space in the scene: the emitter's transform, identity for a `worldspace`
     /// system (which simulates in the scene).
@@ -88,12 +129,16 @@ struct ParticleFrameInputs {
     /// world transform this frame; nil keeps the authored one.
     static func advance(_ system: ParticleSystemRuntime, deltaTime: Float, cursor: SIMD2<Float>,
                         emitter: SceneAffineTransform? = nil, values: SceneValueContext? = nil,
-                        audio: AudioSpectrumSnapshot = .silent) -> ParticleFrameInputs {
+                        audio: AudioSpectrumSnapshot = .silent, frameTime: Float? = nil,
+                        frameRateLimit: Int = 0) -> ParticleFrameInputs {
         let configuration = system.configuration
         system.elapsedTime += deltaTime
         system.frameIndex &+= 1
         var inputs = ParticleFrameInputs()
         inputs.deltaTime = deltaTime
+        // A step of its own (the tests, WE's pre-simulation) is its frame.
+        inputs.frameTime = frameTime ?? deltaTime
+        inputs.frameRateLimit = frameRateLimit
         inputs.elapsedTime = system.elapsedTime
         inputs.engineTime = values.map { Float($0.time) } ?? system.elapsedTime
         inputs.frameIndex = system.frameIndex
@@ -103,28 +148,39 @@ struct ParticleFrameInputs {
         let time = Double(system.elapsedTime)
         let context = values ?? LiveSceneValueContext(time: time, scriptTime: time)
         let overrides = inputs.applyOverrides(configuration, values: context)
-        let rate = configuration.emissionRate * overrides.rate
-        inputs.emissionRate = configuration.emissionRateScript.map {
-            AudioReactiveScriptEngine.shared.evaluate($0, fallback: rate, time: time)
-        } ?? rate
-        // Without a rate a system only shows its burst, if it has one.
-        let idle = inputs.emissionRate <= 0.0001 && configuration.instantaneous <= 0
+        let emitters = configuration.emitters
+        inputs.emitters = emitters.map { emitter in
+            var step = ParticleEmitterStep()
+            let rate = emitter.rate * overrides.rate
+            step.rate = emitter.rateScript.map {
+                AudioReactiveScriptEngine.shared.evaluate($0, fallback: rate, time: time)
+            } ?? rate
+            step.instantaneous = max(emitter.instantaneous, 0)
+            step.periodLimit = emitter.timing.periodLimit(countScale: overrides.count)
+            step.onePerFrame = emitter.timing.onePerFrame
+            return step
+        }
+        // Without a rate a system only shows its bursts, if it has any.
+        let idle = inputs.emitters.allSatisfy { $0.rate <= 0.0001 && $0.instantaneous <= 0 }
         if idle || configuration.opacityMultiplier <= 0.0001 {
             inputs.clears = true
             return inputs
         }
-        let timing = configuration.emitterTiming
-        inputs.periodLimit = timing.periodLimit(countScale: overrides.count)
-        inputs.onePerFrame = timing.onePerFrame
-        // An instanced system times each instance instead (`ParticleCPUSimulation.updateInstances`).
-        if !configuration.isInstanced {
-            let step = system.emitterClock.advance(deltaTime, timing: timing, seed: system.seed, key: 0)
-            inputs.burst = step.bursts ? max(configuration.instantaneous, 0) : 0
-            inputs.startsPeriod = step.startsPeriod
-            if !step.emits { inputs.emissionRate = 0 }
+        if system.emitterStates.count < emitters.count {
+            system.emitterStates += Array(repeating: ParticleEmitterState(), count: emitters.count - system.emitterStates.count)
         }
-        // Silence stops an audio-responsive emitter without clearing what it emitted.
-        if let response = configuration.rateAudio { inputs.emissionRate *= response.response(audio) }
+        for (index, emitter) in emitters.enumerated() {
+            // An instanced system times each instance instead (`ParticleCPUSimulation.updateInstances`).
+            if !configuration.isInstanced {
+                let key = ParticleEmitterState.clockKey(0, emitter: index)
+                let step = system.emitterStates[index].clock.advance(deltaTime, timing: emitter.timing, seed: system.seed, key: key)
+                inputs.emitters[index].burst = step.bursts ? inputs.emitters[index].instantaneous : 0
+                inputs.emitters[index].startsPeriod = step.startsPeriod
+                if !step.emits { inputs.emitters[index].rate = 0 }
+            }
+            // Silence stops an audio-responsive emitter without clearing what it emitted.
+            if let response = emitter.audio { inputs.emitters[index].rate *= response.response(audio) }
+        }
         inputs.space = configuration.worldSpace ? .identity : world
         inputs.emitterLinear = configuration.worldSpace ? world.linear : matrix_identity_float2x2
         if configuration.worldSpace {
@@ -261,4 +317,22 @@ struct ParticleFrameInputs {
         inputs.collisions = collisions.map { $0.moved(by: translation) }
         return inputs
     }
+}
+
+/// One emitter's part of a step (`ParticleFrameInputs.emitters`).
+struct ParticleEmitterStep: Equatable {
+    /// Particles a second, scripts, overrides, audio and the emitter's clock applied.
+    var rate: Float = 0
+    /// Particles emitted at once this step on top of the rate: the emitter's `instantaneous`
+    /// burst when it starts or starts a period (`ParticleEmitterClock`).
+    var burst = 0
+    /// The emitter's `instantaneous`, which an instanced system's instances burst on their own clock.
+    var instantaneous = 0
+    /// A period of a periodic emitter starts this step: its per-period count restarts.
+    var startsPeriod = false
+    /// The most the rate emits in one period (`ParticleEmitterTiming.periodLimit`), for the system
+    /// or each instance; nil without a limit.
+    var periodLimit: Int?
+    /// The rate emits at most one particle a step.
+    var onePerFrame = false
 }

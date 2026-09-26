@@ -6,7 +6,7 @@ import Metal
 final class ParticleGPUSystem {
     /// Word indices into `control` (`ParticleSimulation.metal`'s `c…` constants).
     enum Control {
-        static let count = 0, emitted = 1, total = 2, serial = 3, remainder = 4, periodEmitted = 5, trailTotal = 6
+        static let count = 0, emitted = 1, total = 2, serial = 3, died = 4, trailTotal = 6
         static let dispatchOffset = 8 * 4
         /// `MTLDrawPrimitivesIndirectArguments` for the material draw and the built-in draw.
         static let materialDrawOffset = 12 * 4
@@ -17,6 +17,11 @@ final class ParticleGPUSystem {
     }
 
     let parameters: MTLBuffer
+    /// The system's emitters (`ParticleGPUEmitter`), in order.
+    let emitterParameters: MTLBuffer
+    /// Each emitter's running state (`ParticleGPUEmitterState`), `slots` × emitters of them.
+    let emitterStates: MTLBuffer
+    let emitterCount: Int
     /// Counters and indirect arguments; shared so tests and metrics can read the count.
     let control: MTLBuffer
     let historyLimit: Int
@@ -62,10 +67,22 @@ final class ParticleGPUSystem {
 
     init?(device: MTLDevice, configuration: SceneMetalParticleSystem, seed: UInt32) {
         var values = ParticleGPUParameters(configuration, seed: seed)
+        let emitters = configuration.emitters.map(ParticleGPUEmitter.init)
+        let slotCount = configuration.isInstanced ? max(configuration.link?.maximumInstances ?? 0, 1) : 1
         guard let parameters = device.makeBuffer(bytes: &values, length: MemoryLayout<ParticleGPUParameters>.stride,
                                                  options: .storageModeShared),
-              let control = device.makeBuffer(length: Control.words * 4, options: .storageModeShared) else { return nil }
+              let control = device.makeBuffer(length: Control.words * 4, options: .storageModeShared),
+              let emitterParameters = device.makeBuffer(bytes: emitters, length: emitters.count * MemoryLayout<ParticleGPUEmitter>.stride,
+                                                        options: .storageModeShared),
+              let emitterStates = device.makeBuffer(length: slotCount * emitters.count * MemoryLayout<ParticleGPUEmitterState>.stride,
+                                                    options: .storageModeShared) else { return nil }
         memset(control.contents(), 0, control.length)
+        memset(emitterStates.contents(), 0, emitterStates.length)
+        emitterParameters.label = "Particle emitters"
+        emitterStates.label = "Particle emitter states"
+        self.emitterParameters = emitterParameters
+        self.emitterStates = emitterStates
+        emitterCount = emitters.count
         self.device = device
         self.parameters = parameters
         self.control = control
@@ -110,8 +127,11 @@ final class ParticleGPUSystem {
         // A step holds last step's particles (the ones that die aging are compacted away at its
         // end) and its spawns. The carried remainder is below 1 at the start of a step, so it
         // spawns at most ⌊rate·Δt⌋ + 1 particles plus its burst.
-        let spawns = Double(max(inputs.emissionRate, 0)) * Double(inputs.deltaTime)
-        let stepSpawns = Int(min(spawns.rounded(.down) + 1 + Double(max(inputs.burst, 0)), Double(maximumCount)))
+        // Each emitter carries its own remainder.
+        let spawns = inputs.emitters.reduce(0.0) { total, emitter in
+            total + (Double(max(emitter.rate, 0)) * Double(inputs.deltaTime)).rounded(.down) + 1 + Double(max(emitter.burst, 0))
+        }
+        let stepSpawns = Int(min(spawns, Double(maximumCount)))
         let held = upperBound
         if inputs.clears {
             upperBound = 0

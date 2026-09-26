@@ -338,6 +338,39 @@ final class ParticleChildrenTests: XCTestCase {
         }
     }
 
+    /// Each instance runs every emitter of the child, each on its own clock (WE's dripping-water
+    /// droplets have two).
+    func testChildInstancesRunEveryEmitterTheSameOnTheGPU() throws {
+        var drops = ParticleTestSystem()
+        drops.emissionRate = 40
+        drops.maximum = 40
+        drops.lifetime = 0.3...0.6
+        var second = ParticleEmitter(rate: 70)
+        second.instantaneous = 3
+        second.shape.distanceMaximum = SIMD3(repeating: 10)
+        second.timing.periodic = true
+        second.timing.periodDuration = 0.1...0.2
+        second.timing.periodDelay = 0.05...0.1
+        second.timing.maximumPerPeriod = 5
+        drops.extraEmitters = [second]
+        var sequence = ParticleInitializer(.mapSequenceAroundControlPoint, flags: 2, a: SIMD4(0.125, 0, 1, 0))
+        sequence.sequenceCount = 8
+        drops.initializers = [sequence]
+        let links: [(ParticleTestSystem.Linked, Int)] = [(drops.link(.follow, instances: 6, probability: 1), 0)]
+        let cpu = try Family(root: rocketTestSystem(), children: links)
+        let gpu = try Family(root: rocketTestSystem(), children: links)
+        cpu.stepCPU(frames: 90, root: translation(SIMD2(500, 300)))
+        try gpu.stepGPU(frames: 90, root: translation(SIMD2(500, 300)))
+        let expected = cpu.runtimes[1].particles
+        let actual = gpu.simulator.snapshot(gpu.runtimes[1], queue: gpu.queue)
+        XCTAssertGreaterThan(expected.count, 20)
+        XCTAssertEqual(actual.map(\.identity.x), expected.map(\.serial), "the same particles")
+        XCTAssertEqual(actual.map { Int($0.trail.z) }, expected.map(\.instance))
+        for (a, e) in zip(actual, expected) {
+            XCTAssertLessThan(simd_distance(SIMD2(a.positionVelocity.x, a.positionVelocity.y), e.position), 0.05)
+        }
+    }
+
     /// WE's thunderbolt: each spawner instance flies one particle off the bolt, and a static child of
     /// it draws a beam from the instance to that particle through its control point 1 (link flag 1,
     /// start index 1).

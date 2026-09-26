@@ -493,11 +493,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             let base = particleInstances.count
             let emitter = emitterWorld(system.configuration, time: time, motion: motion)
             // `starttime`: the system's first frame comes after WE's pre-simulation.
+            // WE's engine frame time and frame-rate limit steer drag and the operators' half steps
+            // (`ParticleFrameInputs.dragDeltaTime`, `substeps`); the pre-simulation runs in this frame.
             let prewarm = ParticlePrewarm.steps(system).map {
-                ParticleFrameInputs.advance(system, deltaTime: $0, cursor: cursor, emitter: emitter, audio: effectFrame.audio)
+                ParticleFrameInputs.advance(system, deltaTime: $0, cursor: cursor, emitter: emitter, audio: effectFrame.audio,
+                                            frameTime: Float(clock.delta), frameRateLimit: view.preferredFramesPerSecond)
             }
             let inputs = ParticleFrameInputs.advance(system, deltaTime: Float(clock.delta), cursor: cursor,
-                                                     emitter: emitter, audio: effectFrame.audio)
+                                                     emitter: emitter, audio: effectFrame.audio, frameTime: Float(clock.delta),
+                                                     frameRateLimit: view.preferredFramesPerSecond)
             if particleSimulator != nil {
                 // The GPU steps the system and writes whichever records it is drawn from.
                 let rendererName = system.configuration.rendererName

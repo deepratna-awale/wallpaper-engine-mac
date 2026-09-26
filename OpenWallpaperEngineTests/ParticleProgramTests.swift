@@ -227,4 +227,79 @@ final class ParticleProgramTests: XCTestCase {
         XCTAssertEqual(ParticlePrewarm.steps(startTime: 1, maximum: 500), Array(repeating: 0.2, count: 5))
         XCTAssertEqual(ParticlePrewarm.steps(startTime: 0, maximum: 100), [])
     }
+
+    // MARK: - Emitters
+
+    /// WE runs every emitter of a system (wallpaper64.exe 0x1402378a0), each with its own rate,
+    /// shape, control point and clock.
+    func testEveryEmitterOfASystemRuns() throws {
+        let json = #"""
+        {"maxcount": 500, "emitter": [
+            {"name": "sphererandom", "rate": 30, "distancemax": 0},
+            {"name": "boxrandom", "rate": 50, "controlpoint": 1, "distancemax": "0 0 0", "instantaneous": 5}],
+         "controlpoint": [{"id": 0}, {"id": 1, "offset": "300 0 0"}],
+         "initializer": [{"name": "lifetimerandom", "min": 100, "max": 100}]}
+        """#
+        let particles: WEParticleSystem = try decode(json)
+        let object: WESceneObject = try decode(#"{"id": 1, "name": "p", "particle": "p.json"}"#)
+        let configuration = ParticleSystemBuilder.build(
+            "p.json", particleSystem: particles, object: object, world: .identity, overrides: SceneParticleOverrides(),
+            sceneSize: SIMD2(1000, 1000), source: .image(NSImage()), spriteSheet: nil, material: WEMaterial(),
+            materialPlan: nil)
+        XCTAssertEqual(configuration.emitters.count, 2)
+        XCTAssertEqual(configuration.extraEmitters[0].rate, 50)
+        XCTAssertEqual(configuration.extraEmitters[0].instantaneous, 5)
+        XCTAssertEqual(configuration.extraEmitters[0].shape.kind, .box)
+        XCTAssertEqual(configuration.extraEmitters[0].shape.controlPoint, 1)
+        let runtime = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: 3)
+        for _ in 0..<60 {
+            ParticleCPUSimulation.step(runtime, inputs: ParticleFrameInputs.advance(runtime, deltaTime: 1 / 60, cursor: .zero))
+        }
+        let atOrigin = runtime.particles.filter { simd_length($0.position) < 1 }.count
+        let atPoint = runtime.particles.filter { simd_distance($0.position, SIMD2(300, 0)) < 1 }.count
+        XCTAssertEqual(atOrigin, 30, "the first emitter's rate")
+        // The burst comes out of the emitter's own carry (0x140237a06): 5 at once, then 45 by its rate.
+        XCTAssertEqual(atPoint, 50, "the second's rate and burst, on its control point")
+        XCTAssertEqual(runtime.particles.count, 80)
+    }
+
+    // MARK: - Frame rate
+
+    /// WE damps drag (and the field operators' step) by `pow(min(0.025 / frame time, 1), 0.7)` and
+    /// runs the operators in two half steps at a frame-rate limit of 1…20 (0x140237724…0x140237793).
+    func testDragFollowsWEsFrameTimeAndHalfSteps() {
+        var inputs = ParticleFrameInputs()
+        inputs.deltaTime = 1 / 60
+        inputs.frameTime = 1 / 60
+        XCTAssertEqual(inputs.dragDeltaTime, 1 / 60, accuracy: 1e-7, "40 frames a second or more: the step")
+        inputs.frameTime = 1 / 30
+        XCTAssertEqual(inputs.dragDeltaTime, 1 / 60 * pow(0.75, 0.7), accuracy: 1e-7)
+        inputs.frameTime = 0
+        XCTAssertEqual(inputs.dragDeltaTime, 1 / 60, accuracy: 1e-7, "no frame yet")
+        XCTAssertEqual(inputs.substeps, 1)
+        inputs.frameRateLimit = 20
+        XCTAssertEqual(inputs.substeps, 2)
+        inputs.frameRateLimit = 21
+        XCTAssertEqual(inputs.substeps, 1)
+
+        var system = ParticleTestSystem()
+        system.emissionRate = 0
+        system.instantaneous = 1
+        system.spawnExtent = .zero
+        system.minimumVelocity = SIMD2(100, 0)
+        system.maximumVelocity = SIMD2(100, 0)
+        system.lifetime = 10...10
+        system.spins = false
+        system.drag = 2
+        func velocity(frameTime: Float, limit: Int) -> Float {
+            let runtime = ParticleSystemRuntime(texture: texture, configuration: system.configuration, seed: 1)
+            ParticleCPUSimulation.step(runtime, inputs: ParticleFrameInputs.advance(
+                runtime, deltaTime: 0.1, cursor: .zero, frameTime: frameTime, frameRateLimit: limit))
+            return runtime.particles[0].velocity.x
+        }
+        XCTAssertEqual(velocity(frameTime: 0.1, limit: 60), 100 * (1 - 2 * 0.1 * pow(0.25, 0.7)), accuracy: 1e-3)
+        let half = 2 * 0.05 * pow(Float(0.25), 0.7)
+        XCTAssertEqual(velocity(frameTime: 0.1, limit: 10), 100 * (1 - half) * (1 - half), accuracy: 1e-3,
+                       "two half steps")
+    }
 }

@@ -72,6 +72,11 @@ struct SceneMetalParticleSystem {
     var keepsOwnColors = false
     /// The emitter's audio response, on its rate.
     var rateAudio: ParticleAudioResponse? = nil
+    /// The emitters after the first, in authored order. WE runs every emitter of a system, each
+    /// with its own rate, burst and timing (`wallpaper64.exe` 0x1402378a0 walks the emitter records);
+    /// the fields above (`emitter`, `emissionRate`, `instantaneous`, `emitterTiming`, `rateAudio`) are
+    /// the first's.
+    var extraEmitters: [ParticleEmitter] = []
     /// The system has event children, which read its spawns and deaths.
     var hasEventChildren = false
     /// `starttime`: seconds WE simulates before the first frame.
@@ -80,6 +85,12 @@ struct SceneMetalParticleSystem {
     /// Runs as instances (`ParticleChildLink`).
     var isInstanced: Bool { link?.instanced == true }
 
+    /// Every emitter, the first included, in the order WE runs them.
+    var emitters: [ParticleEmitter] {
+        [ParticleEmitter(shape: emitter, rate: emissionRate, rateScript: emissionRateScript,
+                         instantaneous: instantaneous, timing: emitterTiming, audio: rateAudio)] + extraEmitters
+    }
+
     /// The emitter's authored world transform.
     var authoredWorld: SceneAffineTransform {
         SceneAffineTransform(linear: emitterLinear, translation: origin)
@@ -87,6 +98,17 @@ struct SceneMetalParticleSystem {
 
     /// Whether the program has an operator of `kind`.
     func has(_ kind: ParticleOperatorKind) -> Bool { program.operators.contains { $0.kind == kind } }
+}
+
+/// One emitter of a system: its shape, rate, `instantaneous` burst, timing and audio response.
+struct ParticleEmitter {
+    var shape = ParticleEmitterShape()
+    /// Particles a second (WE's default 10, 0x1401b8e59).
+    var rate: Float = 10
+    var rateScript: String?
+    var instantaneous = 0
+    var timing = ParticleEmitterTiming()
+    var audio: ParticleAudioResponse?
 }
 
 /// An emitter's shape and launch speed (`sphererandom`, `boxrandom`), in the system's space.

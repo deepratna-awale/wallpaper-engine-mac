@@ -37,41 +37,64 @@ kernel void particleAge(device ParticleState *particles [[buffer(0)]],
     }
 }
 
-/// Emission count and the frame's dispatch size (`ParticleCPUSimulation.step`'s emission).
+/// Emission counts and the frame's dispatch size (`ParticleCPUSimulation.step`'s emission): every
+/// emitter in turn, each counting what the earlier ones spawned (`wallpaper64.exe` 0x1402378a0).
 kernel void particleBegin(device uint *control [[buffer(0)]],
                           constant ParticleParameters &p [[buffer(1)]],
-                          constant ParticleFrame &f [[buffer(2)]]) {
+                          constant ParticleFrame &f [[buffer(2)]],
+                          constant EmitterStep *steps [[buffer(3)]],
+                          device EmitterState *emitters [[buffer(4)]]) {
     uint count = control[cCount];
     const uint dead = control[cDead];
-    device float *remainder = (device float *)(control + cRemainder);
+    const uint emitterCount = f.emission.y;
     uint emitted = 0;
     if (f.misc.y > 0.5) {
         count = 0;
-        *remainder = 0;
-        control[cPeriodEmitted] = 0;
-    } else {
-        if (f.emission.y != 0) {
-            control[cPeriodEmitted] = 0;
-            control[cPeriodSerial] = control[cSerial];
+        for (uint e = 0; e < emitterCount; ++e) {
+            emitters[e].carry.x = 0;
+            emitters[e].counts = uint4(0);
         }
-        float carry = *remainder;
-        const uint2 spawned = emission(int(count - min(dead, count)), int(f.extra.y), f.time.z, f.time.x, carry,
-                                       int(f.misc.z), rateLimit(f, control[cPeriodEmitted]));
-        *remainder = carry;
-        control[cPeriodEmitted] += spawned.y;
-        emitted = spawned.x + spawned.y;
+    } else {
+        const uint live = count - min(dead, count);
+        for (uint e = 0; e < emitterCount; ++e) {
+            const EmitterStep step = steps[e];
+            EmitterState state = emitters[e];
+            if (step.control.z != 0) {
+                state.counts.x = 0;
+                control[cPeriodSerial] = control[cSerial] + emitted;
+            }
+            float carry = state.carry.x;
+            const uint2 spawned = emission(int(live + emitted), int(f.extra.y), step.rate.x, f.time.x, carry,
+                                           int(step.control.x), rateLimit(step, state.counts.x));
+            state.carry.x = carry;
+            state.counts.x += spawned.y;
+            state.counts.y = emitted;
+            state.counts.z = spawned.x + spawned.y;
+            state.counts.w = control[cPeriodSerial];
+            emitters[e] = state;
+            emitted += state.counts.z;
+        }
     }
     const uint total = count + emitted;
     control[cCount] = count;
     control[cEmit] = emitted;
     control[cTotal] = total;
     control[cLive] = total - min(f.misc.y > 0.5 ? 0u : dead, total);
+    control[cDied] = f.misc.y > 0.5 ? 0u : control[cDied] + dead;
     control[cDead] = 0;
     control[cSerialBase] = control[cSerial];
     control[cSerial] = control[cSerial] + emitted;
     control[cDispatch] = max((total + kGroup - 1) / kGroup, 1u);
     control[cDispatch + 1] = 1;
     control[cDispatch + 2] = 1;
+}
+
+/// The emitter of spawn `index` among `emitters` (their first spawn and count, `counts.yz`).
+static uint spawningEmitter(device const EmitterState *emitters, uint count, uint index) {
+    for (uint e = 0; e + 1 < count; ++e) {
+        if (index < emitters[e].counts.y + emitters[e].counts.z) return e;
+    }
+    return count > 0 ? count - 1 : 0;
 }
 
 /// The frame's control points for one instance (`ParticleFrameInputs.placed(at:previous:)`,
@@ -104,6 +127,7 @@ static void placeProgramPoints(thread ProgramContext &c, constant ParticleParame
 static ProgramContext programContext(constant ParticleParameters &p, constant ParticleFrame &f, uint serial) {
     ProgramContext c;
     c.deltaTime = f.time.x;
+    c.dragDeltaTime = f.time.z;
     c.engineTime = f.time.w;
     c.systemTime = f.time.y;
     c.timeOfDay = f.misc.x;
@@ -124,7 +148,7 @@ static ProgramContext programContext(constant ParticleParameters &p, constant Pa
 
 /// `ParticleCPUSimulation.spawn`.
 static ParticleState spawn(uint serial, constant ParticleParameters &p, constant ParticleFrame &f,
-                           constant ProgramOp *program, thread ProgramContext &c) {
+                           constant ProgramOp *program, thread ProgramContext &c, EmitterParameters emitter) {
     ProgramState state;
     state.age = 0;
     state.lifetime = 1;
@@ -136,7 +160,7 @@ static ParticleState spawn(uint serial, constant ParticleParameters &p, constant
     state.angularVelocity = 0;
     state.color = float3(1);
     state.baseColor = f.colorScale.xyz;
-    emitParticle(p, c, state.position, state.velocity);
+    emitParticle(emitter, c, state.position, state.velocity);
     state.previous = state.position;
     runInitializers(program, f.extra.w & 0xFFFFu, state, c);
     const float size = state.baseSize * f.motionExtras.x;
@@ -170,9 +194,12 @@ kernel void particleEmit(device ParticleState *particles [[buffer(0)]],
                          device const ParticleInstanceState *instances [[buffer(4)]],
                          device const LinkedPoints *linked [[buffer(5)]],
                          constant ProgramOp *program [[buffer(6)]],
+                         constant EmitterParameters *emitterParameters [[buffer(7)]],
+                         device const EmitterState *emitters [[buffer(8)]],
                          uint gid [[thread_position_in_grid]]) {
     if (gid >= control[cEmit]) return;
     const uint serial = control[cSerialBase] + gid;
+    const uint emitterCount = p.instancing.z;
     ProgramContext c = programContext(p, f, serial);
     ParticleState particle;
     if (p.counts.y & kInstanced) {
@@ -181,16 +208,20 @@ kernel void particleEmit(device ParticleState *particles [[buffer(0)]],
         placeProgramPoints(c, p, f, source.place.xy, source.place.zw, true, p.linking.x != 0 ? linked[instance] : LinkedPoints{});
         c.hasSource = true;
         c.source = source;
-        const uint index = source.spawn.y + (gid - source.state.w);
+        const uint local = gid - source.state.w;
+        device const EmitterState *own = emitters + instance * emitterCount;
+        const uint e = spawningEmitter(own, emitterCount, local);
+        const uint index = source.spawn.y + local;
         c.sequenceIndex = index;
-        c.sequenceRestartIndex = index - source.spawn.z;
-        particle = spawn(serial, p, f, program, c);
+        c.sequenceRestartIndex = index - own[e].counts.w;
+        particle = spawn(serial, p, f, program, c, emitterParameters[e]);
         particle.trail.z = float(instance);
     } else {
         placeProgramPoints(c, p, f, float2(0), float2(0), true, p.linking.x != 0 ? linked[0] : LinkedPoints{});
+        const uint e = spawningEmitter(emitters, emitterCount, gid);
         c.sequenceIndex = serial;
-        c.sequenceRestartIndex = serial - control[cPeriodSerial];
-        particle = spawn(serial, p, f, program, c);
+        c.sequenceRestartIndex = serial - emitters[e].counts.w;
+        particle = spawn(serial, p, f, program, c, emitterParameters[e]);
     }
     particles[control[cCount] + gid] = particle;
 }
@@ -321,8 +352,16 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
     state.angularVelocity = particle.alphaRotation.w;
     state.color = particle.color.xyz;
     state.baseColor = particle.baseColor.xyz;
-    const bool dies = runOperators(program + (f.extra.w & 0xFFFFu), f.extra.w >> 16, state, c, collisions, f.extra.z, shift,
-                                   particles, total, gid, control[cLive], f.indices.x, alive, aged);
+    // `ParticleFrameInputs.substeps`: at a frame-rate limit of 20 or less the operators run twice,
+    // in half steps; the neighbours stay the step's.
+    const uint substeps = max(f.emission.x, 1u);
+    c.deltaTime /= float(substeps);
+    c.dragDeltaTime /= float(substeps);
+    bool dies = false;
+    for (uint substep = 0; substep < substeps; ++substep) {
+        dies = runOperators(program + (f.extra.w & 0xFFFFu), f.extra.w >> 16, state, c, collisions, f.extra.z, shift,
+                            particles, total, gid, control[cLive], f.indices.x, alive, aged) || dies;
+    }
     const float2 position = c.space * state.position + c.origin;
     particle.positionVelocity = float4(position, c.space * state.velocity);
     particle.life = float4(dies ? state.lifetime : particle.life.x, state.lifetime, state.size, particle.life.w);

@@ -14,9 +14,9 @@ struct ParticleInstance {
     var sourceSerial: UInt32 = 0
     var translation = SIMD2<Float>.zero
     var previousTranslation = SIMD2<Float>.zero
-    var remainder: Float = 0
-    /// Its emitter's timing, from when the instance was made (`ParticleEmitterClock`).
-    var clock = ParticleEmitterClock()
+    /// Each emitter's timing from when the instance was made, carried fraction and this step's
+    /// spawns (`ParticleEmitterState`).
+    var emitterStates: [ParticleEmitterState] = []
     /// Its particles alive after the last step.
     var live = 0
     /// Spawned this step.

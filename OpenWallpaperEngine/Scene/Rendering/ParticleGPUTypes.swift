@@ -33,14 +33,12 @@ struct ParticleGPUInstance {
     var source: SIMD4<Float>
     /// Source colour and alpha.
     var sourceColor: SIMD4<Float>
-    /// Source angular velocity, emission remainder.
+    /// Source angular velocity.
     var emission: SIMD4<Float>
     /// Flags, source serial, live particles, first spawn.
     var state: SIMD4<UInt32>
-    /// Spawned this step.
+    /// Spawned this step, spawned before it, the spawn its sequence restarts from.
     var spawn: SIMD4<UInt32>
-    /// `ParticleEmitterClock.state`.
-    var clock: SIMD4<Float>
 
     var flags: Flag { Flag(rawValue: state.x) }
 }
@@ -83,9 +81,9 @@ enum ParticleGPUDrawKind: UInt32 {
 
 /// Per-frame inputs of one system's GPU step (`ParticleFrameInputs`).
 struct ParticleGPUFrame {
-    /// Delta, system time, emission rate, engine time.
+    /// Delta, system time, the damped step (`ParticleFrameInputs.dragDeltaTime`), engine time.
     var time: SIMD4<Float>
-    /// Time of day, clears, burst, -.
+    /// Time of day, clears, -, -.
     var misc: SIMD4<Float>
     /// Scene size xy, render target size xy (the built-in draw's pixels).
     var scene: SIMD4<Float>
@@ -119,7 +117,7 @@ struct ParticleGPUFrame {
     var spawnScale: SIMD4<Float>
     /// `ParticleFrameInputs.colorScale`.
     var colorScale: SIMD4<Float>
-    /// `ParticleFrameInputs.periodLimit` (`noLimit`: none), starts a period, one per frame.
+    /// `ParticleFrameInputs.substeps`, emitters (`ParticleGPUEmitterStep`), -, -.
     var emission: SIMD4<UInt32>
     /// `ParticleFrameInputs.drawLinear`, column 0 xy, column 1 xy.
     var drawLinear: SIMD4<Float>
@@ -129,8 +127,8 @@ struct ParticleGPUFrame {
 
     init(_ inputs: ParticleFrameInputs, sceneSize: SIMD2<Float>, targetSize: SIMD2<Float>, kind: ParticleGPUDrawKind,
          materialVertexCount: Int, renderVarOffset: Int?) {
-        time = SIMD4(inputs.deltaTime, inputs.elapsedTime, inputs.emissionRate, inputs.engineTime)
-        misc = SIMD4(inputs.timeOfDay, inputs.clears ? 1 : 0, Float(inputs.burst), 0)
+        time = SIMD4(inputs.deltaTime, inputs.elapsedTime, inputs.dragDeltaTime, inputs.engineTime)
+        misc = SIMD4(inputs.timeOfDay, inputs.clears ? 1 : 0, 0, 0)
         scene = SIMD4(sceneSize.x, sceneSize.y, targetSize.x, targetSize.y)
         indices = SIMD4(inputs.frameIndex, UInt32(materialVertexCount),
                         renderVarOffset.map { UInt32($0 / 4) } ?? Self.noRenderVar, kind.rawValue)
@@ -157,8 +155,7 @@ struct ParticleGPUFrame {
                       UInt32(inputs.initializers.count) | UInt32(inputs.operators.count) << 16)
         spawnScale = inputs.spawnScale
         colorScale = SIMD4(inputs.colorScale, 1)
-        emission = SIMD4(inputs.periodLimit.map { UInt32(clamping: $0) } ?? Self.noLimit,
-                         inputs.startsPeriod ? 1 : 0, inputs.onePerFrame ? 1 : 0, 0)
+        emission = SIMD4(UInt32(inputs.substeps), UInt32(inputs.emitters.count), 0, 0)
     }
 
     static func columns(_ matrix: simd_float2x2) -> SIMD4<Float> {
@@ -170,35 +167,21 @@ struct ParticleGPUFrame {
 struct ParticleGPUParameters {
     struct Flag: OptionSet {
         let rawValue: UInt32
-        static let history = Flag(rawValue: 1 << 0), boxEmitter = Flag(rawValue: 1 << 1)
+        static let history = Flag(rawValue: 1 << 0)
         static let spriteSheet = Flag(rawValue: 1 << 2), instanced = Flag(rawValue: 1 << 3)
-        static let worldSpace = Flag(rawValue: 1 << 4), appliesSign = Flag(rawValue: 1 << 5)
+        static let worldSpace = Flag(rawValue: 1 << 4)
     }
 
     var counts = SIMD4<UInt32>.zero
-    /// The emitter (`ParticleEmitterShape`): origin xyz, control point.
-    var emitterOrigin = SIMD4<Float>.zero
-    /// Directions xyz, −cos(cone·π).
-    var emitterDirections = SIMD4<Float>.zero
-    /// Distance minimum xyz, speed minimum.
-    var emitterMinimum = SIMD4<Float>.zero
-    /// Distance maximum xyz, speed maximum.
-    var emitterMaximum = SIMD4<Float>.zero
-    /// Sign xyz.
-    var emitterSign = SIMD4<Float>.zero
     var trail = SIMD4<Float>.zero
     /// `spritetrail` maxlength, minlength.
     var trailLimits = SIMD4<Float>.zero
     var spriteSheet = SIMD4<Float>.zero
     var sprite = SIMD4<Float>.zero
-    /// Link kind (0: none), instances, -, instantaneous.
+    /// Link kind (0: none), instances, emitters (`ParticleGPUEmitter`), -.
     var instancing = SIMD4<UInt32>.zero
     /// Probability.
     var link = SIMD4<Float>.zero
-    /// `ParticleEmitterTiming` for instances: delay, duration, periodic duration minimum and
-    /// maximum; periodic delay minimum and maximum, periodic.
-    var emitterTiming = SIMD4<Float>.zero
-    var emitterPeriod = SIMD4<Float>.zero
     /// Linked (1), first control point, per parent instance (1).
     var linking = SIMD4<UInt32>.zero
 
@@ -209,14 +192,6 @@ struct ParticleGPUParameters {
         var flags: Flag = []
         let historyLimit = max(c.trailSegments, 1)
         if c.rendererName == "ropetrail" { flags.insert(.history) }
-        let emitter = c.emitter
-        if emitter.kind == .box { flags.insert(.boxEmitter) }
-        if emitter.appliesSign { flags.insert(.appliesSign) }
-        emitterOrigin = SIMD4(emitter.origin, Float(emitter.controlPoint))
-        emitterDirections = SIMD4(emitter.directions, -cos(emitter.cone * .pi))
-        emitterMinimum = SIMD4(emitter.distanceMinimum, emitter.speed.x)
-        emitterMaximum = SIMD4(emitter.distanceMaximum, emitter.speed.y)
-        emitterSign = SIMD4(emitter.sign, 0)
         let fades: Float = (c.fadeTrailAlpha ? 1 : 0) + (c.fadeTrailSize ? 2 : 0)
         trail = SIMD4(max(c.trailLength, 0.001) / Float(historyLimit), c.trailLength, Float(max(c.ropeSubdivision, 1)), fades)
         trailLimits = SIMD4(c.trailLengthLimits.x, c.trailLengthLimits.y, 0, 0)
@@ -236,16 +211,72 @@ struct ParticleGPUParameters {
         if c.worldSpace { flags.insert(.worldSpace) }
         if let link = c.link, link.instanced {
             flags.insert(.instanced)
-            instancing = SIMD4(link.kind.rawValue, UInt32(clamping: link.maximumInstances), 0,
-                               UInt32(clamping: max(c.instantaneous, 0)))
+            instancing = SIMD4(link.kind.rawValue, UInt32(clamping: link.maximumInstances), 0, 0)
             self.link = SIMD4(link.probability, 0, 0, 0)
         }
-        let timing = c.emitterTiming
-        emitterTiming = SIMD4(timing.delay, timing.duration, timing.periodDuration.lowerBound, timing.periodDuration.upperBound)
-        emitterPeriod = SIMD4(timing.periodDelay.lowerBound, timing.periodDelay.upperBound, timing.periodic ? 1 : 0, 0)
+        instancing.z = UInt32(c.emitters.count)
         if let link = c.link, let start = link.controlPointStart {
             linking = SIMD4(1, UInt32(clamping: start), link.kind == .static && link.instanced ? 1 : 0, 0)
         }
         counts = SIMD4(UInt32(clamping: c.maximumParticleCount), flags.rawValue, seed, UInt32(historyLimit))
     }
+}
+
+/// One emitter of a system on the GPU (`ParticleEmitter`); a system's emitters are a buffer of them.
+struct ParticleGPUEmitter {
+    /// Origin xyz, control point.
+    var origin: SIMD4<Float>
+    /// Directions xyz, −cos(cone·π).
+    var directions: SIMD4<Float>
+    /// Distance minimum xyz, speed minimum.
+    var minimum: SIMD4<Float>
+    /// Distance maximum xyz, speed maximum.
+    var maximum: SIMD4<Float>
+    /// Sign xyz.
+    var sign: SIMD4<Float>
+    /// `ParticleEmitterTiming` (an instance's clock): delay, duration, periodic duration minimum
+    /// and maximum; periodic delay minimum and maximum, periodic, -.
+    var timing: SIMD4<Float>
+    var period: SIMD4<Float>
+    /// Box (1), applies its sign (1), `instantaneous`, -.
+    var flags: SIMD4<UInt32>
+
+    init(_ emitter: ParticleEmitter) {
+        let shape = emitter.shape
+        origin = SIMD4(shape.origin, Float(shape.controlPoint))
+        directions = SIMD4(shape.directions, -cos(shape.cone * .pi))
+        minimum = SIMD4(shape.distanceMinimum, shape.speed.x)
+        maximum = SIMD4(shape.distanceMaximum, shape.speed.y)
+        sign = SIMD4(shape.sign, 0)
+        let timing = emitter.timing
+        self.timing = SIMD4(timing.delay, timing.duration, timing.periodDuration.lowerBound, timing.periodDuration.upperBound)
+        period = SIMD4(timing.periodDelay.lowerBound, timing.periodDelay.upperBound, timing.periodic ? 1 : 0, 0)
+        flags = SIMD4(shape.kind == .box ? 1 : 0, shape.appliesSign ? 1 : 0, UInt32(clamping: max(emitter.instantaneous, 0)), 0)
+    }
+}
+
+/// One emitter's part of a GPU step (`ParticleEmitterStep`).
+struct ParticleGPUEmitterStep {
+    /// Rate, -, -, -.
+    var rate: SIMD4<Float>
+    /// Burst, period limit (`ParticleGPUFrame.noLimit`: none), starts a period, one per frame.
+    var control: SIMD4<UInt32>
+
+    init(_ step: ParticleEmitterStep) {
+        rate = SIMD4(step.rate, 0, 0, 0)
+        control = SIMD4(UInt32(clamping: max(step.burst, 0)), step.periodLimit.map { UInt32(clamping: $0) } ?? ParticleGPUFrame.noLimit,
+                        step.startsPeriod ? 1 : 0, step.onePerFrame ? 1 : 0)
+    }
+}
+
+/// One emitter's running state on the GPU (`ParticleEmitterState`), for the system or one of its
+/// instances: `slots × emitters` of them.
+struct ParticleGPUEmitterState {
+    /// `ParticleEmitterClock.state` (an instance's).
+    var clock: SIMD4<Float>
+    /// Carried fraction, -, -, -.
+    var carry: SIMD4<Float>
+    /// What the rate emitted this period (a system's), this step's first spawn and spawns (among the
+    /// system's or the instance's), the spawn index its sequence restarts from.
+    var counts: SIMD4<UInt32>
 }
