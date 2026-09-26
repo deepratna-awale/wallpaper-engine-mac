@@ -69,15 +69,23 @@ struct NumericSliderInput<Value: BinaryFloatingPoint>: View where Value.Stride: 
         value = Value(clamped / displayScale)
     }
 
+    /// Rounds `raw` to the nearest multiple of `step` counted from the range's lower bound,
+    /// clamped to the range; without a step the value passes through.
+    static func snapped(_ raw: Value, in range: ClosedRange<Value>, step: Value.Stride?) -> Value {
+        guard let step, step > 0 else { return raw }
+        let steps = (range.lowerBound.distance(to: raw) / step).rounded()
+        return min(max(range.lowerBound.advanced(by: steps * step), range.lowerBound), range.upperBound)
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            Group {
-                if let step {
-                    Slider(value: $value, in: range, step: step)
-                } else {
-                    Slider(value: $value, in: range)
-                }
-            }
+            // `Slider(value:in:step:)` draws an AppKit tick mark per step under the track, and a
+            // fine step (0.1 over 0–2, 1 over 0–120) packs them into a solid line. The slider stays
+            // continuous and the binding snaps instead, like WE's own sliders.
+            Slider(value: Binding(
+                get: { value },
+                set: { value = Self.snapped($0, in: range, step: step) }
+            ), in: range)
             .frame(width: sliderWidth)
             .onTapGesture(count: 2) { value = defaultValue }
 
