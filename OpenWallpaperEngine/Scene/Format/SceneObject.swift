@@ -123,8 +123,9 @@ struct WESceneObject: Decodable {
         pointsize = values[.pointsize]?.literalDouble
         horizontalalign = try? c.decodeIfPresent(String.self, forKey: .horizontalalign)
         verticalalign = try? c.decodeIfPresent(String.self, forKey: .verticalalign)
-        padding = (try? c.decodeIfPresent(String.self, forKey: .padding))
-            ?? (try? c.decodeIfPresent(Double.self, forKey: .padding)).map { String($0) } ?? nil
+        let paddingText: String? = try? c.decodeIfPresent(String.self, forKey: .padding)
+        let paddingNumber: Double? = try? c.decodeIfPresent(Double.self, forKey: .padding)
+        padding = paddingText ?? paddingNumber.map { String($0) }
         maxwidth = try? c.decodeIfPresent(Double.self, forKey: .maxwidth)
         maxrows = try? c.decodeIfPresent(Int.self, forKey: .maxrows)
         limitwidth = try? c.decodeIfPresent(Bool.self, forKey: .limitwidth)

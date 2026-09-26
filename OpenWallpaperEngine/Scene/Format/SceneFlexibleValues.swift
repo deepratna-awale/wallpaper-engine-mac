@@ -14,8 +14,9 @@ struct WEFlexibleDouble: Codable {
 
     init(from decoder: Decoder) throws {
         if let keyed = try? decoder.container(keyedBy: CodingKeys.self) {
-            wrappedValue = (try? keyed.decodeIfPresent(Double.self, forKey: .value))
-                ?? (try? keyed.decodeIfPresent(String.self, forKey: .value)).flatMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+            let number: Double? = try? keyed.decodeIfPresent(Double.self, forKey: .value)
+            let text: String? = try? keyed.decodeIfPresent(String.self, forKey: .value)
+            wrappedValue = number ?? text.flatMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
         } else {
             let container = try decoder.singleValueContainer()
             if let number = try? container.decode(Double.self) {
