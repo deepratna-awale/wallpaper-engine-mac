@@ -551,6 +551,9 @@ class SceneWallpaperViewModel: ObservableObject {
             content.motions = objectMotions(scene.objects, besides: layers, sceneSize: sceneSize, context: valueContext)
             content.visibility = visibility
             content.objectIDs = scene.objects.map { $0.id ?? -1 }
+            content.spatial = SceneSpatialContentBuilder(
+                readFile: { self.assetData(named: $0, wallpaperDir: wallpaperDir) },
+                wallpaperName: wallpaperDir.lastPathComponent).build(scene, context: valueContext)
             content.scripts = scriptContent(wallpaperDir: wallpaperDir, sceneSize: sceneSize)
             content.timelines = loadedDocument.map {
                 SceneTimelineSource(wallpaperID: loadedProjectId ?? Self.localWallpaperID(wallpaperDir),

@@ -166,6 +166,9 @@ struct SceneMetalContent {
     /// transform moves, so what hangs below them follows.
     var motions: [String: SceneObjectMotion] = [:]
     var camera = SceneCameraEffects()
+    /// The projection, camera settings, camera layers and paths, model objects and draw-order mode
+    /// of WE's 3D runtime (`SceneSpatialContentBuilder`; docs/models-plan.md § Seams).
+    var spatial = SceneSpatialContent()
     /// `general.clearcolor`, resolved against the user properties: the scene target's clear colour.
     var clearColor = SceneGeneralDefaults.clearColor
     /// The wallpaper instance's key in the user-property store (its directory path).

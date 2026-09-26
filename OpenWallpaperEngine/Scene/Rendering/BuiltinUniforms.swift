@@ -29,6 +29,8 @@ struct BuiltinFrameContext {
     var viewUp: SIMD3<Float> = SIMD3(0, 1, 0)
     var viewRight: SIMD3<Float> = SIMD3(1, 0, 0)
     var viewForward: SIMD3<Float> = SIMD3(0, 0, -1)
+    /// This frame's scene camera (`SceneFrameCamera`); `eyePosition` and `viewForward` are its.
+    var camera = SceneFrameCamera()
     var audio: AudioSpectrumSnapshot = .silent
     /// `g_TextureReductionScale`: WE's texture reduction, 1 or 2 (`TextureReduction`).
     var textureReductionScale: Float = 1

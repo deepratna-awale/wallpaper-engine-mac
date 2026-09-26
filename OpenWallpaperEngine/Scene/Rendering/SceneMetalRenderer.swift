@@ -198,6 +198,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
     /// The scene's lighting settings and light objects (`SceneMetalContent.lighting`).
     private var lighting = SceneLightingContent()
+    /// Where each frame's camera comes from (`SceneCameraRigs.make(for:)`).
+    private var cameraRig: any SceneCameraRig = SceneLayerPassCameraRig(camera: SceneVolumetricsCamera())
     /// The user's quality settings (post-processing, reflection, shadows, volumetrics); the view sets them.
     var renderSettings = SceneRenderSettings()
     private var sceneRenderTarget: MTLTexture?
@@ -414,6 +416,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.sharedFrame = nil
                 self.bloom = content.bloom
                 self.lighting = content.lighting
+                self.cameraRig = SceneCameraRigs.make(for: content)
                 for stage in self.frameStages { stage.setContent(content) }
                 self.postProcess.setContent(content)
                 self.particleSystems = preparedParticleSystems
@@ -806,8 +809,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.parallax = parallaxEnabled ? cameraParallax.shaderPosition(sceneSize: sceneSize) : SIMD2(0.5, 0.5)
         // WE's camera eye and forward (ctx+0x68, ctx+0x160); the renderer keeps the camera still
         // and moves the objects by the shake instead (`SceneFrameLightingInput.cameraShake`).
-        effectFrame.eyePosition = lighting.camera.eye
-        effectFrame.viewForward = lighting.camera.forward
+        effectFrame.camera = cameraRig.frameCamera(SceneCameraRigInput(
+            sceneSize: sceneSize, aspect: sceneSize.x / max(sceneSize.y, 1), time: sceneTime,
+            deltaTime: Float(clock.delta)))
+        effectFrame.eyePosition = effectFrame.camera.eye
+        effectFrame.viewForward = effectFrame.camera.forward
         effectFrame.lighting = frameLighting(eye: effectFrame.eyePosition, forward: effectFrame.viewForward,
                                              shake: motion.shake)
         drawProbe?.record(lighting: effectFrame.lighting)
