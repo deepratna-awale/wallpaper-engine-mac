@@ -46,6 +46,15 @@ final class ScenePostProcess {
         /// This frame's built-in inputs and bound values, for those passes.
         var builtins = BuiltinFrameContext()
         var values: SceneValueContext = LiveSceneValueContext()
+        /// How much larger full detail would draw `scene` (`GSSceneDetail.matchDisplay` on a
+        /// display smaller than the scene): the bloom steps in texels of that size and runs its
+        /// levels, so it spans the same part of the frame as at full detail.
+        var fullDetailScale: Float = 1
+
+        /// The size the bloom's texel steps and HDR levels are counted in.
+        var bloomReferenceSize: SIMD2<Float> {
+            (SIMD2(Float(scene.width), Float(scene.height)) * max(fullDetailScale, 1)).rounded(.toNearestOrAwayFromZero)
+        }
     }
 
     /// One frame's bloom: what went in, what came out and the constants of pass 1.
@@ -149,6 +158,7 @@ final class ScenePostProcess {
         guard let bloomed = bloomChain.encode(on: frame.scene, strength: strength, threshold: frame.bloom.threshold,
                                               tint: frame.bloom.tint, effects: effects, builtins: frame.builtins,
                                               values: frame.values, frameIndex: bloomFrames,
+                                              referenceSize: frame.bloomReferenceSize,
                                               commandBuffer: frame.commandBuffer) else { return nil }
         lastBloom = BloomRecord(frame: frame.scene, bloomed: bloomed, strength: strength,
                                 threshold: frame.bloom.threshold, tint: frame.bloom.tint)
@@ -159,7 +169,8 @@ final class ScenePostProcess {
     /// the frame takes `combine_srgb` (`0x140180a41`, `0x140184058`).
     static func hdrLevels(_ frame: Frame) -> Int? {
         guard runsBloom(frame.bloom, settings: frame.settings) else { return nil }
-        return SceneHDRChain.runLevels(width: frame.scene.width, height: frame.scene.height,
+        let reference = frame.bloomReferenceSize
+        return SceneHDRChain.runLevels(width: Int(reference.x), height: Int(reference.y),
                                        iterations: frame.bloom.hdr.iterations)
     }
 
@@ -180,6 +191,7 @@ final class ScenePostProcess {
                                                 strengthScale: max(frame.extras.bloom, 0))
         guard let combined = hdrChain.encode(on: frame.scene, levels: levels, constants: constants, effects: effects,
                                              builtins: frame.builtins, values: frame.values, frameIndex: bloomFrames,
+                                             referenceSize: frame.bloomReferenceSize,
                                              commandBuffer: frame.commandBuffer) else { return nil }
         lastHDR = HDRRecord(frame: frame.scene, combined: combined, levels: levels, constants: constants)
         if encodedView?.output != ObjectIdentifier(combined) {

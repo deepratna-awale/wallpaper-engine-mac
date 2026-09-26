@@ -78,16 +78,18 @@ struct SceneBloomChain {
 
     /// Encodes the chain on `frame` (`_rt_FullFrameBuffer`) and returns the combined frame, an RGBA8
     /// texture of its size; nil while a pass's pipeline is still compiling or one failed.
+    /// `referenceSize` is the frame's size at full detail (`ScenePostProcess.Frame.bloomReferenceSize`;
+    /// the frame's own when nil), whose texels the passes step in.
     func encode(on frame: MTLTexture, strength: Float, threshold: Float, tint: SIMD3<Float>,
                 effects: EffectGraphRenderer, builtins: BuiltinFrameContext, values: SceneValueContext,
-                frameIndex: UInt64, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+                frameIndex: UInt64, referenceSize: SIMD2<Float>? = nil, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         var context = EffectGraphRenderer.Context(
             frame: builtins, values: values,
             // The util materials of the chain sample no asset.
             assetTexture: { _, _ in nil },
             sceneSnapshot: frame, layerColor: SIMD3(repeating: 1), layerAlpha: 1)
         context.inputVersion = frameIndex
-        context.texelSizeReference = SIMD2(Float(frame.width), Float(frame.height))
+        context.texelSizeReference = referenceSize ?? SIMD2(Float(frame.width), Float(frame.height))
         context.constantWrites = [plan.effectIndex: Self.constants(strength: strength, threshold: threshold, tint: tint)]
         return effects.apply([plan], to: frame, layerID: Self.stateID, context: context, commandBuffer: commandBuffer)
     }

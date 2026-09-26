@@ -84,6 +84,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var memoryPressure: SceneMemoryPressure?
     /// Runs authored effects through Wallpaper Engine's own shaders.
     private lazy var effectGraph = EffectGraphRenderer(device: device)
+    /// How much larger full detail would draw this frame's scene target (1 unless the scene is
+    /// matched to a display smaller than it, `GSSceneDetail.matchDisplay`): the size effects on
+    /// scene regions and text, and the bloom, stand for.
+    private var fullDetailScale: Float = 1
     /// Draws particle systems through their WE material.
     private lazy var particleMaterials = ParticleMaterialRenderer(device: device)
     /// Draws image layers through their own WE material.
@@ -693,7 +697,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         drawablePixelsPerPoint = viewports[0].pixelsPerPoint
         // The largest target any display needs, so each shows the scene at its own density.
         let renderDrawable = SceneRenderResolution.drawableSize(viewports, resolution: renderSettings.renderResolution)
-        renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize, drawableSize: renderDrawable)
+        renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize, drawableSize: renderDrawable,
+                                                                  matchDisplay: renderSettings.sceneDetail == .matchDisplay)
+        // A scene matched to a smaller display is drawn below full detail: what its buffers stand for.
+        fullDetailScale = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize, drawableSize: renderDrawable)
+            / renderPixelsPerUnit
         // A content drawn in HDR draws into RGBA16F (docs/lighting-plan.md §2.6).
         guard let sceneTexture = sceneRenderTarget(pixelFormat: postProcess.drawsHDR ? .rgba16Float : destination.pixelFormat),
               let commandBuffer = commandQueue.makeCommandBuffer(),
@@ -1048,7 +1056,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             placement: layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
                                     placement: destination.placement),
             bloom: liveBloom(), extras: appExtras(), settings: renderSettings,
-            effects: effectGraph, builtins: effectFrame, values: timelines.values))
+            effects: effectGraph, builtins: effectFrame, values: timelines.values, fullDetailScale: fullDetailScale))
 
         if let drawable = destination.drawable {
             commandBuffer.present(drawable)
@@ -1433,9 +1441,34 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         context.hiddenEffects = scripted.hidden
         context.constantWrites = scripted.writes
         context.scriptRevision = scripted.revision
+        if renderSettings.sceneDetail == .matchDisplay {
+            context.footprint = effectFootprint(entry, draw: draw, input: input)
+            // Scene regions and text are drawn at the scene target's density, below full detail
+            // when the target is matched to a smaller display.
+            if context.footprint == nil, fullDetailScale > 1 {
+                let standIn = (SIMD2(Float(input.width), Float(input.height)) * fullDetailScale).rounded(.toNearestOrAwayFromZero)
+                context.inputStandInSize = SIMD2(Int(standIn.x), Int(standIn.y))
+            }
+        }
         return effectGraph.apply(entry.layer.weEffects, to: prelit(entry, draw: draw, input: input, snapshot: snapshot,
                                                                    frame: frame, commandBuffer: commandBuffer) ?? input,
                                  layerID: entry.layer.id, context: context, commandBuffer: commandBuffer)
+    }
+
+    /// The on-screen size, in scene-target pixels, of the whole image a layer's effects run on
+    /// (`SceneEffectDetail`): its quad at the target's density, over the part of the image the quad
+    /// shows (a padded `.tex` or a sprite frame shows part of it). Nil where the effects already run
+    /// at the display's density or their input isn't the layer's image: scene-input layers (the
+    /// scene under them, resampled at the target's density), text (rasterised at it), videos and
+    /// perspective layers.
+    private func effectFootprint(_ entry: PreparedLayer, draw: LayerDraw, input: MTLTexture) -> SIMD2<Float>? {
+        let layer = entry.layer
+        guard !layer.sceneInput, layer.text == nil, !layer.perspective, let frame = entry.frames.first,
+              frame.texture.width == input.width, frame.texture.height == input.height else { return nil }
+        if case .video = layer.source { return nil }
+        let shown = SIMD2(simd_length(frame.uvAxisX), simd_length(frame.uvAxisY))
+        guard shown.x > 0, shown.y > 0 else { return nil }
+        return draw.quad.extent * renderPixelsPerUnit / shown
     }
 
     /// A lit or reflective layer's image as its effects start from it: lit by its material's

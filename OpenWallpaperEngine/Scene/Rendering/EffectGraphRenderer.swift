@@ -18,6 +18,8 @@ final class EffectGraphRenderer {
     private let assetSamplers: [UInt32: MTLSamplerState]
     /// Uniform blocks over 4 KB. Render thread only (see `SceneUniformArena`).
     let uniformArena: SceneUniformArena
+    /// Chains drawn at their layer's on-screen size (`Context.footprint`); nil without its shaders.
+    private lazy var detail = SceneEffectDetail(device: device)
 
     /// Pipelines compile off the render thread: a cold Metal compile costs tens of milliseconds
     /// per variant, which would otherwise stall frames. Guarded by `pipelineLock`.
@@ -47,6 +49,11 @@ final class EffectGraphRenderer {
         var pingA: MTLTexture?
         var pingB: MTLTexture?
         var fbos: [[String: MTLTexture]] = []
+        /// The size each target stands for when the chain is drawn below its size
+        /// (`Context.inputStandInSize`), which the chain's built-ins report. Empty otherwise.
+        var standInSizes: [ObjectIdentifier: SIMD2<Float>] = [:]
+        /// The size the chain's buffers stand for (the input's, or `Context.inputStandInSize`).
+        var standInSize = SIMD2<Int>(0, 0)
         var programs: [[UniformProgram?]] = []
         /// Last output of a chain that doesn't change over time, and what produced it.
         var staticOutput: (key: StaticChainKey, output: MTLTexture)?
@@ -151,6 +158,7 @@ final class EffectGraphRenderer {
 
     /// Drops per-layer state, e.g. when the scene changes. Compiled pipelines are kept.
     func releaseTargets() {
+        detail?.releaseAll()
         layers.removeAll()
         spareTargets.removeAll()
         spareOrder.removeAll()
@@ -179,6 +187,7 @@ final class EffectGraphRenderer {
     /// layer, so a compile still in flight for this layer's chain just lands in the cache.
     /// Call on the render thread, like `apply`.
     func releaseLayer(_ stateId: String) {
+        detail?.releaseLayer(stateId)
         guard let state = layers.removeValue(forKey: stateId) else { return }
         recycleTargets(state)
     }
@@ -227,13 +236,35 @@ final class EffectGraphRenderer {
         /// chain's (one effect, `SceneHDRChain`).
         var passRenderVars: [Int: [Int: SIMD4<Float>]] = [:]
 
+        /// The input's on-screen size in pixels when the scene's detail matches the display
+        /// (`SceneEffectDetail`); nil draws the chain at the input's size, as WE does. A smaller
+        /// footprint runs the chain on a copy of the input scaled down to it, whose built-ins
+        /// (`g_TextureNResolution`, `g_TexelSize`) report the sizes at the input's size, so every
+        /// texel-sized step spans the same part of the image: the result is the full-size chain's,
+        /// sampled at the smaller size.
+        var footprint: SIMD2<Float>? = nil
+        /// The size the input stands for when it was drawn below full detail already (a scene
+        /// region or text at a scene target matched to a smaller display); nil for its own. Its
+        /// built-ins report it, as for `footprint`.
+        var inputStandInSize: SIMD2<Int>? = nil
+
         var targetFormats: TargetFormats { TargetFormats(frameBuffer: frameBufferFormat, output: outputFormat ?? frameBufferFormat) }
     }
 
     /// Runs `effects` on `input` and returns the processed image, or nil when nothing rendered —
     /// including while the chain's pipelines are still compiling (the layer then draws plain).
-    func apply(_ effects: [SceneEffectPlan], to input: MTLTexture, layerID: String,
+    func apply(_ effects: [SceneEffectPlan], to image: MTLTexture, layerID: String,
                context: Context, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        var input = image
+        var standIn = context.inputStandInSize ?? SIMD2(image.width, image.height)
+        if let footprint = context.footprint, let detail {
+            let detailed = detail.input(for: image, version: context.inputVersion, layerID: layerID,
+                                        footprint: footprint, commandBuffer: commandBuffer)
+            input = detailed.texture
+            standIn = detailed.standIn ?? standIn
+        } else {
+            detail?.releaseLayer(layerID)
+        }
         let width = input.width
         let height = input.height
         let state: LayerState
@@ -254,11 +285,11 @@ final class EffectGraphRenderer {
             state.programs = effects.map { effect in
                 effect.passes.map { pass in pass.variant.map { UniformProgram(layout: $0.uniforms, constants: pass.constants) } }
             }
-            allocateTargets(state, effects: effects, width: width, height: height)
+            allocateTargets(state, effects: effects, width: width, height: height, standIn: standIn)
             state.ready = true
-        } else if state.width != width || state.height != height {
+        } else if state.width != width || state.height != height || state.standInSize != standIn {
             recycleTargets(state)
-            allocateTargets(state, effects: effects, width: width, height: height)
+            allocateTargets(state, effects: effects, width: width, height: height, standIn: standIn)
         }
 
         var dynamicValues: [Float] = []
@@ -319,6 +350,7 @@ final class EffectGraphRenderer {
                     reusable = reusable && program.isReusable && !pass.readsSceneSnapshot && !pass.readsMipMappedFrameBuffer
                     encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
                            current: current, previous: previous, fbos: fbos, context: context,
+                           standIn: StandIn(input: input, inputSize: standIn, targets: state.standInSizes),
                            scriptWrites: context.constantWrites[effect.effectIndex] ?? [],
                            commandBuffer: commandBuffer)
                     didRender = true
@@ -450,10 +482,24 @@ final class EffectGraphRenderer {
 
     // MARK: - Passes
 
+    /// The sizes a chain's textures stand for (`Context.inputStandInSize`).
+    private struct StandIn {
+        let input: MTLTexture
+        let inputSize: SIMD2<Int>
+        let targets: [ObjectIdentifier: SIMD2<Float>]
+
+        /// The size `texture` reports to the built-ins; nil for its own.
+        func size(of texture: MTLTexture) -> SIMD2<Float>? {
+            if texture === input { return SIMD2(Float(inputSize.x), Float(inputSize.y)) }
+            return targets[ObjectIdentifier(texture)]
+        }
+    }
+
     private func encode(_ pass: SceneEffectPassPlan, pipeline: MTLRenderPipelineState, program: UniformProgram,
                         variant: TranslatedShaderVariant, output: MTLTexture,
                         current: MTLTexture, previous: MTLTexture, fbos: [String: MTLTexture],
-                        context: Context, scriptWrites: [SceneScriptConstantWrite], commandBuffer: MTLCommandBuffer) {
+                        context: Context, standIn: StandIn, scriptWrites: [SceneScriptConstantWrite],
+                        commandBuffer: MTLCommandBuffer) {
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = output
         // Blended passes composite over what's already there; others overwrite every pixel.
@@ -494,6 +540,10 @@ final class EffectGraphRenderer {
             encoder.setVertexSamplerState(sampler, index: slot)
             if program.needsTextureInfo {
                 var info = Self.textureInfo(for: texture, contentSize: contentSize)
+                if let size = standIn.size(of: texture) {
+                    info.allocatedSize = size
+                    info.contentSize = size
+                }
                 info.spriteRotation = sprite?.rotation
                 info.spriteTranslation = sprite?.translation
                 textureInfo[slot] = info
@@ -502,7 +552,8 @@ final class EffectGraphRenderer {
 
         if program.size > 0 {
             var passContext = BuiltinPassContext(
-                targetSize: context.texelSizeReference ?? SIMD2<Float>(Float(output.width), Float(output.height)))
+                targetSize: context.texelSizeReference ?? standIn.size(of: output)
+                    ?? SIMD2<Float>(Float(output.width), Float(output.height)))
             passContext.textures = textureInfo
             passContext.color = context.layerColor
             passContext.alpha = context.layerAlpha
@@ -564,20 +615,34 @@ final class EffectGraphRenderer {
                                   spriteTranslation: nil, mipCount: texture.mipmapLevelCount)
     }
 
-    private func allocateTargets(_ state: LayerState, effects: [SceneEffectPlan], width: Int, height: Int) {
+    private func allocateTargets(_ state: LayerState, effects: [SceneEffectPlan], width: Int, height: Int,
+                                 standIn: SIMD2<Int>? = nil) {
         state.width = width
         state.height = height
         state.staticOutput = nil
+        let standIn = standIn ?? SIMD2(width, height)
+        state.standInSize = standIn
+        state.standInSizes = [:]
+        let drawnSmaller = standIn != SIMD2(width, height)
+        func remember(_ texture: MTLTexture?, standsFor size: SIMD2<Int>) {
+            guard drawnSmaller, let texture else { return }
+            state.standInSizes[ObjectIdentifier(texture)] = SIMD2(Float(size.x), Float(size.y))
+        }
         state.pingA = target(width: width, height: height, format: state.targetFormats.output)
         state.pingB = target(width: width, height: height, format: state.targetFormats.output)
+        remember(state.pingA, standsFor: standIn)
+        remember(state.pingB, standsFor: standIn)
         state.fbos = effects.map { effect in
             Dictionary(effect.fbos.compactMap { fbo -> (String, MTLTexture)? in
                 let size = Self.fboSize(fbo, width: width, height: height)
                 let format = Self.pixelFormat(fbo.format, frameBuffer: state.targetFormats.frameBuffer)
-                return target(width: size.x, height: size.y, format: format).map { (fbo.name, $0) }
+                let texture = target(width: size.x, height: size.y, format: format)
+                remember(texture, standsFor: Self.fboSize(fbo, width: standIn.x, height: standIn.y))
+                return texture.map { (fbo.name, $0) }
             }, uniquingKeysWith: { a, _ in a })
         }
     }
+
 
     /// Hands a layer's targets to the spare list. Contents don't matter: every pass either
     /// overwrites its target or (blended) runs after one that did.

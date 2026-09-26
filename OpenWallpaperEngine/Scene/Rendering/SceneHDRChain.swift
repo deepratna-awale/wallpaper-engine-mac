@@ -209,11 +209,13 @@ struct SceneHDRChain {
     /// Encodes the chain on `frame` (`_rt_FullFrameBuffer`, RGBA16F) with `constants` for
     /// `levels` levels, or `combine_srgb` alone when `levels` is nil; returns the combined frame,
     /// an sRGB texture of its size, or nil while a pass's pipeline is still compiling or one failed.
+    /// `referenceSize` is the frame's size at full detail (`ScenePostProcess.Frame.bloomReferenceSize`;
+    /// the frame's own when nil), whose texels the passes step in.
     func encode(on frame: MTLTexture, levels: Int?, constants: Constants,
                 effects: EffectGraphRenderer, builtins: BuiltinFrameContext, values: SceneValueContext,
-                frameIndex: UInt64, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+                frameIndex: UInt64, referenceSize: SIMD2<Float>? = nil, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         let plan = plan(levels: levels)
-        let size = SIMD2(Float(frame.width), Float(frame.height))
+        let size = referenceSize ?? SIMD2(Float(frame.width), Float(frame.height))
         var context = EffectGraphRenderer.Context(
             frame: builtins, values: values,
             // The util materials of the chain sample no asset.

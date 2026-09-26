@@ -76,6 +76,15 @@ enum GSRenderResolution: String, CaseIterable, Identifiable, Codable {
     case native, desktop
 }
 
+/// How much detail a scene is drawn with (`SceneDetail`). `full` draws as WE does: the scene
+/// target never below its authored size, and effects at their layer's texture size. `matchDisplay`
+/// draws no more than the display shows: the scene target at most the display's size, and each
+/// layer's effects at most its on-screen size.
+enum GSSceneDetail: String, CaseIterable, Identifiable, Codable {
+    var id: Self { self }
+    case matchDisplay, full
+}
+
 enum GSAppearance: String, CaseIterable, Identifiable, Codable {
     var id: Self { self }
     case light, dark, followSystem
@@ -121,6 +130,8 @@ struct GlobalSettings: Codable, Equatable {
     var textureResolution = GSTextureResolutionQuality.automatic
     /// The scene target's pixels per display point (`GSRenderResolution`).
     var renderResolution = GSRenderResolution.native
+    /// The scene's detail (`GSSceneDetail`); drawing no more than the display shows is the default.
+    var sceneDetail = GSSceneDetail.matchDisplay
     /// WE's `reflection` setting (default on): the screen-space reflection copy.
     var reflections = true
     /// WE's `shadows` setting; medium is WE's default.
@@ -171,7 +182,7 @@ struct GlobalSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case otherApplicationFocused, otherApplicationFullscreen, otherApplicationPlayingAudio, displayAsleep
         case laptopOnBattery, antiAliasing, textureResolution, shadows, volumetrics, fps, particleBudget
-        case renderResolution
+        case renderResolution, sceneDetail
         case postProcessing = "postProcessingQuality"
         case reflections = "reflection"
         case autoStart, safeMode, language, adjustMenuBarTint, appearance, audioOutput
@@ -202,6 +213,7 @@ extension GlobalSettings {
         read(.postProcessing, &postProcessing)
         read(.textureResolution, &textureResolution)
         read(.renderResolution, &renderResolution)
+        read(.sceneDetail, &sceneDetail)
         read(.reflections, &reflections)
         read(.shadows, &shadows)
         read(.volumetrics, &volumetrics)

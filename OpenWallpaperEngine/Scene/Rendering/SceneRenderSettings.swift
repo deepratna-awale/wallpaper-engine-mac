@@ -16,6 +16,8 @@ struct SceneRenderSettings: Equatable {
     var textureReduction = 1
     /// The scene target's pixels per display point.
     var renderResolution = GSRenderResolution.native
+    /// Draw as WE does (`full`, what a settings-less renderer does) or no more than the display shows.
+    var sceneDetail = GSSceneDetail.full
 
     init() {}
 
@@ -26,6 +28,7 @@ struct SceneRenderSettings: Equatable {
         volumetrics = settings.volumetrics
         particleBudget = settings.particleBudget
         renderResolution = settings.renderResolution
+        sceneDetail = settings.sceneDetail
     }
 
     /// `settings` with the texture reduction WE's `resolution` setting gives on displays whose
