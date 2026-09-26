@@ -205,6 +205,9 @@ final class EffectGraphRenderer {
         var constantWrites: [Int: [SceneScriptConstantWrite]] = [:]
         /// Bumped whenever `hiddenEffects` or `constantWrites` change.
         var scriptRevision = 0
+        /// The size `g_TexelSize` is one over in every pass; nil uses each pass's target. WE's
+        /// bloom passes step in texels of the full frame whatever their target (`SceneBloomChain`).
+        var texelSizeReference: SIMD2<Float>? = nil
     }
 
     /// Runs `effects` on `input` and returns the processed image, or nil when nothing rendered —
@@ -473,7 +476,8 @@ final class EffectGraphRenderer {
         }
 
         if program.size > 0 {
-            var passContext = BuiltinPassContext(targetSize: SIMD2<Float>(Float(output.width), Float(output.height)))
+            var passContext = BuiltinPassContext(
+                targetSize: context.texelSizeReference ?? SIMD2<Float>(Float(output.width), Float(output.height)))
             passContext.textures = textureInfo
             passContext.color = context.layerColor
             passContext.alpha = context.layerAlpha
