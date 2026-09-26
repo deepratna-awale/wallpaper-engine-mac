@@ -58,7 +58,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Unblended resample of a texture through per-vertex UVs (`sceneRegion`).
     private let copyPipeline: MTLRenderPipelineState
     /// Everything after the scene pass, up to the drawable (bloom and the composite).
-    private let postProcess: ScenePostProcess
+    let postProcess: ScenePostProcess
     /// WE's work on the finished frame before its bloom (`SceneFrameStages`).
     private let frameStages: [SceneFrameStage]
     /// The stage that keeps `_rt_MipMappedFrameBuffer` (internal for tests and diagnostics), and
@@ -358,6 +358,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.bloom = content.bloom
                 self.lighting = content.lighting
                 for stage in self.frameStages { stage.setContent(content) }
+                self.postProcess.setContent(content)
                 self.particleSystems = preparedParticleSystems
                 self.transforms = content.transforms
                 self.objectMotions = content.motions
@@ -939,7 +940,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             scene: sceneTexture, output: descriptor, commandBuffer: commandBuffer,
             placement: layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
                                     placement: placement),
-            bloom: liveBloom(), extras: appExtras(), settings: renderSettings))
+            bloom: liveBloom(), extras: appExtras(), settings: renderSettings,
+            effects: effectGraph, builtins: effectFrame, values: timelines.values))
 
         commandBuffer.present(drawable)
         commandBuffer.commit()

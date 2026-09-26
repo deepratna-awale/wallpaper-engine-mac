@@ -182,20 +182,6 @@ fragment float4 sceneFragment(VertexOut input [[stage_in]], texture2d<float> tex
     }
     color.rgb = pow(max(color.rgb, 0.0), float3(1.0 / max(layer.colorEffects.y, 0.001)));
     color.rgb *= max(layer.effects.x, 0.0);
-    if (layer.effects.w > 0.0001) {
-        // Blur the bright-pass over a small neighborhood so bloom actually glows/spreads instead of just self-brightening.
-        const float2 bloomStep = float2(0.0035, 0.0035);
-        float3 brightAccum = float3(0.0);
-        for (int dx = -1; dx <= 1; ++dx) {
-            for (int dy = -1; dy <= 1; ++dy) {
-                const float2 sampleCoordinate = coordinate + float2(float(dx), float(dy)) * bloomStep;
-                const float3 sampleColor = texture.sample(linearSampler, sampleCoordinate).rgb;
-                brightAccum += max(sampleColor - layer.colorEffects.w, 0.0);
-            }
-        }
-        brightAccum /= 9.0;
-        color.rgb += brightAccum * layer.effects.w * layer.bloomTint.rgb;
-    }
     // Straight alpha, as WE's translucent and additive blends expect: opacity scales alpha only,
     // and the blend applies it to the colour once.
     return float4(color.rgb * layer.color.rgb, color.a * layer.opacity * layer.color.a);

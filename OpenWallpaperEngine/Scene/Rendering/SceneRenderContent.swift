@@ -174,6 +174,9 @@ struct SceneMetalContent {
     var lighting = SceneLightingContent()
     /// The combos WE's engine sets on every material of this content (`SceneEngineCombos`).
     var engineCombos = SceneEngineCombos()
+    /// WE's LDR bloom passes, planned with the content's engine combos; nil without a shader
+    /// toolchain. Planned for every scene: a script or user property can turn `bloom` on.
+    var bloomChain: SceneBloomChain?
 }
 
 /// `scene.json` as the content was built from it, for the wallpaper instance's `SceneAnimationSet`

@@ -543,6 +543,7 @@ class SceneWallpaperViewModel: ObservableObject {
             content.sounds = soundBuilder(wallpaperDir: wallpaperDir).sounds(in: scene.objects, context: valueContext)
             content.lighting = SceneLightingContent(settings: lighting, lights: Self.lights(in: scene.objects, context: valueContext))
             content.engineCombos = sceneEngineCombos
+            content.bloomChain = bloomChain(wallpaperDir: wallpaperDir)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
@@ -1037,6 +1038,24 @@ class SceneWallpaperViewModel: ObservableObject {
             return nil
         }
     }()
+
+    /// WE's LDR bloom passes (`SceneBloomChain`); nil, logged, when they can't be planned.
+    private func bloomChain(wallpaperDir: URL) -> SceneBloomChain? {
+        guard let translator = Self.effectTranslator else { return nil }
+        let builder = SceneEffectPlanBuilder(
+            translator: translator,
+            readFile: { [weak self] path in self?.assetData(named: path, wallpaperDir: wallpaperDir) },
+            loadTexture: { [weak self] name, materialPath in
+                self?.loadMetalTexture(named: name, materialDir: materialPath, wallpaperDir: wallpaperDir)
+            },
+            sceneEngineCombos: sceneEngineCombos)
+        do {
+            return try SceneBloomChain.build(with: builder)
+        } catch {
+            OWELog.error(.scene, "WE's bloom can't be planned; the scene draws without it: \(error)")
+            return nil
+        }
+    }
 
     /// Plans each visible effect for Wallpaper Engine's own shaders. An effect that can't be
     /// planned (no toolchain, sources missing) is left out, with the reason logged.
