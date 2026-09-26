@@ -109,9 +109,13 @@ struct SceneVolumetricsPlan {
                 continue
             }
             let combos = Self.combos(for: object.light, quality: quality, shadowQuality: shadowQuality)
-            let cookie = try object.light.cookie.map { name -> (key: String, source: SceneMetalTextureSource) in
-                guard let source = builder.loadTexture(name, frontMaterial) else { throw BuildError.missing("cookie \(name)") }
-                return ("\(frontMaterial)|\(name)", source)
+            var cookie: (key: String, source: SceneMetalTextureSource)?
+            if let name = object.light.cookie {
+                guard let found = Self.cookie(named: name, builder: builder) else {
+                    skipped.append((object.id, "its cookie \(name) and WE's default \(SceneLightDefaults.cookie) are missing"))
+                    continue
+                }
+                cookie = found
             }
             planned.append(Light(id: object.id, light: object.light,
                                  back: try resolver.pass(backMaterial),
@@ -124,6 +128,18 @@ struct SceneVolumetricsPlan {
                                     blurH: blurs ? try resolver.pass(blurHMaterial) : nil,
                                     blurV: blurs ? try resolver.pass(blurVMaterial) : nil,
                                     combine: try resolver.pass(combineMaterial), camera: camera)
+    }
+
+    /// A cookie light's texture: the one it names, else WE's default (0x14025d19f…0x14025d1cd
+    /// loads `cookie/flashlight1` when the named one didn't load); nil when neither loads. WE
+    /// would draw that light with no texture bound, which a `COOKIE` pass multiplies to nothing,
+    /// so the light is skipped, not the whole plan.
+    static func cookie(named name: String,
+                       builder: SceneEffectPlanBuilder) -> (key: String, source: SceneMetalTextureSource)? {
+        for candidate in [name, SceneLightDefaults.cookie] {
+            if let source = builder.loadTexture(candidate, frontMaterial) { return ("\(frontMaterial)|\(candidate)", source) }
+        }
+        return nil
     }
 
     /// Reads WE's util materials and translates their shaders.

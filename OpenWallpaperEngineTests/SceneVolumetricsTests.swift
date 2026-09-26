@@ -141,6 +141,27 @@ final class SceneVolumetricsTests: XCTestCase {
         XCTAssertEqual(off.lights[0].front.variant.combos["COOKIE"], 1)
     }
 
+    /// LF4: a cookie that doesn't load falls back to WE's default (0x14025d1b7), per light; one
+    /// whose default is missing too is skipped alone, and the other lights still draw.
+    func testAMissingCookieFallsBackPerLight() throws {
+        var missing = Self.spot(cookie: true)
+        missing.cookie = "cookie/missing"
+        let fallback = try XCTUnwrap(plan([Self.object("1", missing), Self.object("2", Self.spot())], .medium))
+        XCTAssertEqual(fallback.lights.map(\.id), ["1", "2"])
+        XCTAssertEqual(fallback.lights[0].cookie?.key, "\(SceneVolumetricsPlan.frontMaterial)|\(SceneLightDefaults.cookie)")
+
+        let root = ShaderVariantTests.weAssets
+        let noCookies = SceneEffectPlanBuilder(
+            translator: builder.translator,
+            readFile: { FileManager.default.contents(atPath: root.appending(path: $0).path) },
+            loadTexture: { _, _ in nil })
+        let plan = try XCTUnwrap(try SceneVolumetricsPlan.build(
+            lights: [Self.object("1", missing), Self.object("2", Self.spot())], camera: Self.camera,
+            settings: Self.settings(.medium), builder: noCookies))
+        XCTAssertEqual(plan.lights.map(\.id), ["2"], "the other light still draws")
+        XCTAssertEqual(plan.skipped.map(\.id), ["1"])
+    }
+
     /// The cookie is the light's `cookie` key, read with `usecookie`, WE's default when it names none.
     func testTheCookieIsTheLightsCookieKey() throws {
         func light(_ json: String) throws -> SceneLight {
