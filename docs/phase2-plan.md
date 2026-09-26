@@ -141,7 +141,7 @@ Alpha writes are off on the final pass (LWE).
 **Util layers**
 - `composelayer` and `projectlayer` are passthrough: the base "image" is the scene under the layer's footprint, sampled through `v_ScreenCoord`. Without visible effects such a layer isn't drawn.
 - `fullscreenlayer` makes the layer the size of the scene.
-- `solidlayer` is a flat colour (`color`, `alpha`) at the layer size, or the scene size when the size is 0.
+- `solidlayer` is a flat colour (`color`, `alpha`) at the layer size, or the scene size when it has none. A size of 0 is an empty quad that draws nothing.
 
 **Textures** (via TEXParser)
 - Formats: RGBA8888, DXT1/3/5, RG88, R8, and embedded PNG/JPG.
