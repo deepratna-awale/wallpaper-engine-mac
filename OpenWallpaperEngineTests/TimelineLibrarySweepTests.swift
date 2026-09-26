@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import OpenWallpaperEngine
 
@@ -6,11 +7,14 @@ import XCTest
 /// `Tests/Fixtures/Timeline/library-expected.json` (`Scripts/timeline-reference.py library`), to
 /// the fixture's tolerance.
 ///
-/// The library is re-read here, so a wallpaper that changed or appeared fails: a timeline the
-/// expectations don't list, one they list that is gone, or a shape the model doesn't know (an
-/// option or keyframe key outside the known set, a mode other than loop, mirror or single). Then
-/// rerun the script. Skipped when the library is absent (CI); `OWE_LIBRARY` (paths separated by
-/// ':') replaces the two default roots.
+/// The library is re-read here. An item the fixture covers as it is now must match it exactly: a
+/// timeline it lists that is gone, or one it doesn't list, fails. An item that appeared or changed
+/// since (`TimelineLibraryExpectations`) is checked against the script run now, and is skipped
+/// with a note when no python3 runs it; one that left the library is skipped. Every timeline's
+/// shape must be one the model knows (no option or keyframe key outside the known set, a mode of
+/// loop, mirror or single). The attachment lists what the fixture didn't cover: rerun the script to
+/// refresh it. Skipped when the library is absent (CI); `OWE_LIBRARY` (paths separated by ':')
+/// replaces the two default roots.
 final class TimelineLibrarySweepTests: XCTestCase {
     static var roots: [URL] {
         let paths = ProcessInfo.processInfo.environment["OWE_LIBRARY"].map { $0.split(separator: ":").map(String.init) }
@@ -23,6 +27,8 @@ final class TimelineLibrarySweepTests: XCTestCase {
     struct Found {
         var item: String
         var file: String
+        /// The SHA-256 of the file (the package entry's bytes for one in a `.pkg`).
+        var digest: String
         var path: [String]
         var holder: [String: SceneJSON]
         var animation: SceneJSON
@@ -36,31 +42,24 @@ final class TimelineLibrarySweepTests: XCTestCase {
     func testEveryLibraryTimelineMatchesTheReferenceModel() throws {
         let roots = Self.roots.filter { FileManager.default.fileExists(atPath: $0.path) }
         try XCTSkipIf(roots.isEmpty, "wallpaper library not present")
-        let expectations = try TimelineOracle.load(Fixtures.url("Timeline/library-expected.json"))
-        let tolerance = try TimelineOracle.float(XCTUnwrap(expectations[oracle: "tolerance"]))
-
         var scannedItems = Set<String>()
         let found = try Self.findTimelines(roots: roots, scannedItems: &scannedItems)
         for timeline in found {
             let problems = Self.shapeProblems(timeline.animation)
             XCTAssertTrue(problems.isEmpty, "\(timeline.id): shape the reference model doesn't cover: \(problems)")
         }
+        let expectations = try TimelineLibraryExpectations(found: found, scannedItems: scannedItems, roots: roots)
+        LibraryReport.attach("Timeline library: beyond library-expected.json", expectations.notes)
         let groups = Self.linkGroups(found)
         var byID: [String: [Found]] = [:]
         for group in groups { byID[Self.groupID(group)] = group }
 
-        var matched = Set<String>(), timelines = 0, runs = 0
-        for entry in try XCTUnwrap(expectations[oracle: "groups"]?.oracleArray) {
-            let item = entry[oracle: "item"]?.oracleString ?? ""
-            let file = entry[oracle: "file"]?.oracleString ?? ""
-            let paths = (entry[oracle: "paths"]?.oracleArray ?? []).compactMap(\.oracleString)
-            let id = "\(item) \(file) \(paths.joined(separator: " + "))"
-            guard scannedItems.contains(item) else { continue }
+        var timelines = 0, runs = 0
+        for (id, entry) in expectations.groups.sorted(by: { $0.key < $1.key }) {
             guard let group = byID[id] else {
-                XCTFail("\(id): expected, but the library no longer has this timeline group; rerun Scripts/timeline-reference.py library")
+                XCTFail("\(id): expected, but the library doesn't have this timeline group")
                 continue
             }
-            matched.insert(id)
             let components = try (entry[oracle: "components"]?.oracleArray ?? []).map(TimelineOracle.int)
             let members = zip(group, components).map { timeline, width in
                 TimelineOracle.Member(key: timeline.key, value: timeline.holder["value"], components: width,
@@ -70,7 +69,7 @@ final class TimelineLibrarySweepTests: XCTestCase {
             for run in try TimelineOracle.runs(entry[oracle: "runs"]) {
                 runs += 1
                 do {
-                    if let mismatch = try TimelineOracle.check(run, members: members, tolerance: tolerance) {
+                    if let mismatch = try TimelineOracle.check(run, members: members, tolerance: expectations.tolerance) {
                         XCTFail("\(id): \(mismatch)")
                     }
                 } catch {
@@ -78,8 +77,9 @@ final class TimelineLibrarySweepTests: XCTestCase {
                 }
             }
         }
-        for id in byID.keys.sorted() where !matched.contains(id) {
-            XCTFail("\(id): not in library-expected.json; rerun Scripts/timeline-reference.py library")
+        for (id, group) in byID.sorted(by: { $0.key < $1.key })
+        where expectations.groups[id] == nil && expectations.checks(group[0].item) {
+            XCTFail("\(id): found, but the reference model's expectations don't list it")
         }
         print("TimelineLibrarySweep: \(found.count) timelines in \(groups.count) clock groups, "
               + "\(timelines) compared over \(runs) runs")
@@ -134,12 +134,13 @@ final class TimelineLibrarySweepTests: XCTestCase {
         if body.starts(with: [0xEF, 0xBB, 0xBF]) { body = body.dropFirst(3) }
         // A file that isn't JSON isn't a scene document: the script skips it too.
         guard let document = try? JSONDecoder().decode(SceneJSON.self, from: body) else { return [] }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         var found: [Found] = []
         func walk(_ node: SceneJSON, _ path: [String]) {
             switch node {
             case .object(let object):
                 if let animation = object["animation"], isTimeline(animation) {
-                    found.append(Found(item: item, file: file, path: path, holder: object, animation: animation))
+                    found.append(Found(item: item, file: file, digest: digest, path: path, holder: object, animation: animation))
                 }
                 for (key, value) in object { walk(value, path + [key]) }
             case .array(let array):
@@ -179,7 +180,7 @@ final class TimelineLibrarySweepTests: XCTestCase {
     }
 
     /// The group's identity as the expectations write it: owner path, then the children's paths.
-    private static func groupID(_ group: [Found]) -> String {
+    static func groupID(_ group: [Found]) -> String {
         "\(group[0].item) \(group[0].file) \(group.map { $0.path.joined(separator: "/") }.joined(separator: " + "))"
     }
 

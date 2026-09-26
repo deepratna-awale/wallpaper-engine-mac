@@ -2,13 +2,17 @@
 """Reference model of Wallpaper Engine's timeline animations, and the generator of the test oracle.
 
     ./Scripts/timeline-reference.py fixture  [--out DIR]   # Tests/Fixtures/Timeline/cases.json
-    ./Scripts/timeline-reference.py library  [--out DIR]   # Tests/Fixtures/Timeline/library-expected.json
+    ./Scripts/timeline-reference.py library  [--out DIR] [--items ID,...]
+                                                           # Tests/Fixtures/Timeline/library-expected.json
     ./Scripts/timeline-reference.py all      [--out DIR]   # both
     ./Scripts/timeline-reference.py survey                 # list the library's animations
 
 Both generators read the library (`fixture` needs it for the library cases it copies; its synthetic
 cases need nothing). The roots are the Steam workshop folder and OpenWallpaperStorage, in that
-order; `OWE_LIBRARY` (paths separated by ':') replaces them. Plain Python 3, no packages.
+order; `OWE_LIBRARY` (paths separated by ':') replaces them. `library --items` keeps only those
+items (TimelineLibrarySweepTests runs it at test time for items the committed file doesn't cover).
+Each library group carries the SHA-256 of the file it was read from, so the test can tell a file
+that changed since the fixture from a model regression. Plain Python 3, no packages.
 
 WHAT IT MODELS (docs/timeline-plan.md §2, from wallpaper64.exe of 2026-09)
 
@@ -48,6 +52,7 @@ KNOWN GAPS OF THE MODEL (no library case; see the plan's open questions)
 """
 
 import argparse
+import hashlib
 import math
 import os
 import re
@@ -591,18 +596,18 @@ def read_pkg(path):
     return [(name, data[offset + start:offset + start + length]) for name, start, length in entries]
 
 
-def library_files():
+def library_files(items=None):
     """Yields (item, file, name, bytes). Per item: `.pkg` entries first, then loose files, both in
     sorted order; a (item, name) already seen, in this root or an earlier one, is skipped. `name`
     is the entry name in a package and the item-relative path of a loose file; `file` is the
-    item-relative path, with `::entry` for package entries."""
+    item-relative path, with `::entry` for package entries. `items`, when given, keeps only those."""
     seen = set()
     for root in library_roots():
         if not os.path.isdir(root):
             continue
         for item in sorted(os.listdir(root)):
             base = os.path.join(root, item)
-            if not os.path.isdir(base):
+            if not os.path.isdir(base) or (items is not None and item not in items):
                 continue
             files = sorted(os.path.relpath(os.path.join(d, f), base)
                            for d, _, names in os.walk(base) for f in names)
@@ -628,28 +633,29 @@ def is_timeline(value):
     return isinstance(value, dict) and ("options" in value or any(("c%d" % i) in value for i in range(4)))
 
 
-def find_animations():
-    """Every timeline in the library's JSON files: {item, file, path, holder, animation}."""
+def find_animations(items=None):
+    """Every timeline in the library's JSON files: {item, file, sha256, path, holder, animation}."""
     found = []
 
-    def walk(node, path, item, file):
+    def walk(node, path, item, file, digest):
         if isinstance(node, dict):
             if is_timeline(node.get("animation")):
-                found.append(dict(item=item, file=file, path=path, holder=node, animation=node["animation"]))
+                found.append(dict(item=item, file=file, sha256=digest, path=path, holder=node,
+                                  animation=node["animation"]))
             for key, value in node.items():
-                walk(value, path + [str(key)], item, file)
+                walk(value, path + [str(key)], item, file, digest)
         elif isinstance(node, list):
             for index, value in enumerate(node):
-                walk(value, path + [str(index)], item, file)
+                walk(value, path + [str(index)], item, file, digest)
 
-    for item, file, name, blob in library_files():
+    for item, file, name, blob in library_files(items):
         if not name.endswith(".json"):
             continue
         try:
             document = json.loads(blob.decode("utf-8-sig"))
         except (UnicodeDecodeError, ValueError):
             continue
-        walk(document, [], item, file)
+        walk(document, [], item, file, hashlib.sha256(blob).hexdigest())
     return found
 
 
@@ -960,9 +966,9 @@ def make_fixture(out):
 LIBRARY_RUNS = ("load-60", "play-jitter", "controls")
 
 
-def make_library(out):
-    animations = find_animations()
-    if not animations:
+def make_library(out, items=None):
+    animations = find_animations(items)
+    if not animations and items is None:
         sys.exit("no library found (roots: %s)" % library_roots())
     entries = []
     for group in link_groups(animations):
@@ -976,13 +982,14 @@ def make_library(out):
         runs = [r for r in standard_runs(owner.clock.duration, owner.clock.frame_duration, owner.clock.length)
                 if r[0] in LIBRARY_RUNS]
         case = timeline_case(None, None, None, members, runs, max_records=32)
-        entries.append(dict(item=group[0]["item"], file=group[0]["file"],
+        entries.append(dict(item=group[0]["item"], file=group[0]["file"], sha256=group[0]["sha256"],
                             paths=["/".join(r["path"]) for r in group],
                             components=[m[2] for m in members],
                             runs=case["runs"]))
     fixture = dict(
         about="Every timeline of the library under the reference model, from Scripts/timeline-reference.py "
-              "library. Keyed by item, file and JSON path; the test re-reads the animations from the library. "
+              "library. Keyed by item, file and JSON path, with the SHA-256 of that file; the test re-reads the "
+              "animations from the library. "
               "Do not edit by hand.",
         tolerance=1e-5,
         roots=[os.path.basename(r) for r in library_roots()],
@@ -1010,11 +1017,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("command", choices=["fixture", "library", "all", "survey"])
     parser.add_argument("--out", default=DEFAULT_OUT)
+    parser.add_argument("--items", help="library: comma-separated item ids to keep")
     args = parser.parse_args()
     if args.command in ("fixture", "all"):
         make_fixture(args.out)
     if args.command in ("library", "all"):
-        make_library(args.out)
+        make_library(args.out, set(filter(None, args.items.split(","))) if args.items else None)
     if args.command == "survey":
         survey()
 

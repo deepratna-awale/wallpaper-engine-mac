@@ -7,8 +7,9 @@ import MetalKit
 /// What each frame drew (`SceneDrawProbe`) is checked against the timelines:
 ///
 /// - Every timeline's drawn value (a layer's `alpha`, `origin`, `scale`, `angles.z`; a material
-///   constant's uniform) equals the reference model's (`Timeline/library-expected.json`, the
-///   `load-60` run) at its record ticks while its clock follows that run, and the set's own value
+///   constant's uniform) equals the reference model's (`TimelineLibraryExpectations`: the
+///   `load-60` run of `Timeline/library-expected.json`, or of the script run now for an item that
+///   changed since) at its record ticks while its clock follows that run, and the set's own value
 ///   once a script moved the clock. A field a script owns that frame is the script's, not checked.
 /// - Every sprite layer draws its texture's shared clock (a reference clock stepped whenever the
 ///   texture is drawn) or its script's override, and its frame changes.
@@ -42,13 +43,14 @@ final class TimelineLibraryRenderTests: XCTestCase {
     func testEveryAnimatedLibrarySceneDrawsItsTimelines() throws {
         let items = try TimelineLibraryScenes.items()
         try XCTSkipIf(items.isEmpty, "wallpaper library not present")
-        let expectations = try TimelineOracle.load(Fixtures.url("Timeline/library-expected.json"))
-        let tolerance = try TimelineOracle.float(XCTUnwrap(expectations[oracle: "tolerance"]))
-        let groups = expectations[oracle: "groups"]?.oracleArray ?? []
+        let roots = TimelineLibrarySweepTests.roots.filter { FileManager.default.fileExists(atPath: $0.path) }
+        var scannedItems = Set<String>()
+        let found = try TimelineLibrarySweepTests.findTimelines(roots: roots, scannedItems: &scannedItems)
+        let expectations = try TimelineLibraryExpectations(found: found, scannedItems: scannedItems, roots: roots)
+        LibraryReport.attach("Timeline library: beyond library-expected.json", expectations.notes)
         var report = "wallpaper\tsites vs model\tsites vs set\tscript-owned\tnot drawn\tsprite layers\tp50 ms\tp99 ms\tmax ms\n"
         for item in items {
-            let result = try sweep(item, groups: groups.filter { $0[oracle: "item"]?.oracleString == item.id },
-                                   tolerance: tolerance)
+            let result = try sweep(item, groups: expectations.groups(of: item.id), tolerance: expectations.tolerance)
             report += result.row + "\n"
         }
         print("Timeline library render sweep (\(Self.frames) frames at 60 Hz):\n\(report)")
