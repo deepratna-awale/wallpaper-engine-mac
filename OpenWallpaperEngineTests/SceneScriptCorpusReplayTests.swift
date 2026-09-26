@@ -40,6 +40,9 @@ final class SceneScriptCorpusReplayTests: XCTestCase {
         ExpectedFailure(key: "7d3bc214624c", check: .change,
                         reason: "3546971487's scriptproperties clamp the scale to [2.7, 2.8] and the spectrum average stays "
                             + "below 2.7: constant in WE too"),
+        ExpectedFailure(key: "a1b1d7b1a839", check: .change,
+                        reason: "3187908708's asset (the same script as 7d3bc214624c) saves its scriptproperties in the "
+                            + "old array form, which clamps the scale to [2.7, 2.8]: constant in WE too"),
         ExpectedFailure(key: "11844b104b6a", check: .change,
                         reason: "3677897732/3803728810 bind it to a constant authored as 0, which it multiplies by the "
                             + "audio level: constant in WE too"),

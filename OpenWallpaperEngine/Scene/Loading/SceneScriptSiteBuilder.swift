@@ -145,13 +145,33 @@ struct SceneScriptSiteBuilder {
         return SceneScriptSite(instance: instance, property: property, objectID: object?.id, objectIndex: object?.index)
     }
 
+    /// `scriptproperties` as name → entry. Older WE editors saved an array of `{key, value, …}`
+    /// rows (e.g. 2176097362) instead of an object.
+    static func scriptPropertyEntries(_ value: SceneJSON?) -> [String: SceneJSON] {
+        switch value {
+        case .object(let entries)?:
+            return entries
+        case .array(let rows)?:
+            var entries: [String: SceneJSON] = [:]
+            for row in rows {
+                guard case .object(let fields) = row, case .string(let key)? = fields["key"],
+                      let entry = fields["value"] else { continue }
+                entries[key] = entry
+            }
+            return entries
+        default:
+            return [:]
+        }
+    }
+
     /// `scriptproperties` as the JSON WE's `_Internal.updateScriptProperties` parses: literals as
     /// authored (colours stay `"r g b"` text; the script's `Vec3` default converts them), user-bound
     /// entries (`{"user", "value"}`, possibly nested) as the user property's current value, else
     /// their innermost literal. Nil when there are none.
     private func resolveScriptProperties(_ value: SceneJSON?,
                                          users: inout [String: SceneScriptUserReference]) -> String? {
-        guard case .object(let entries)? = value, !entries.isEmpty else { return nil }
+        let entries = Self.scriptPropertyEntries(value)
+        guard !entries.isEmpty else { return nil }
         var resolved: [String: Any] = [:]
         for (key, entry) in entries {
             if let (literal, user) = resolveScriptProperty(entry) {

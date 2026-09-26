@@ -62,7 +62,8 @@ indirect enum SceneValueSource: Equatable {
             source = .literal(.zero)
         }
 
-        if let raw = dictionary["user"] {
+        // WE's editor writes `"user": null` on values that aren't bound; that means no binding.
+        if let raw = dictionary["user"], !(raw is NSNull) {
             if let name = raw as? String {
                 source = .user(name: name, condition: nil, fallback: source)
             } else if let user = raw as? [String: Any], let name = user["name"] as? String {
@@ -95,10 +96,23 @@ indirect enum SceneValueSource: Equatable {
                 OWELog.error(.scene, "SceneValueSource: 'script' is not a string")
                 return nil
             }
-            let properties = SceneScriptProperties(json: dictionary["scriptproperties"] as? [String: Any] ?? [:])
+            let properties = SceneScriptProperties(json: Self.scriptPropertyValues(dictionary["scriptproperties"]))
             source = .script(source: script, properties: properties, fallback: source)
         }
         self = source
+    }
+
+    /// `scriptproperties` as name → value. Older WE editors saved it as an array of
+    /// `{key, value, …}` rows (e.g. 2176097362); newer ones as an object.
+    static func scriptPropertyValues(_ raw: Any?) -> [String: Any] {
+        if let object = raw as? [String: Any] { return object }
+        guard let rows = raw as? [[String: Any]] else { return [:] }
+        var values: [String: Any] = [:]
+        for row in rows {
+            guard let key = row["key"] as? String, let value = row["value"] else { continue }
+            values[key] = value
+        }
+        return values
     }
 
     /// This source with its timeline bound to `site` (an animated constant's owner and key).
