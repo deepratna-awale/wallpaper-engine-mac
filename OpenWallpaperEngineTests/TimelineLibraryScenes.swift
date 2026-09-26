@@ -4,7 +4,7 @@ import XCTest
 /// The library's scenes that animate (docs/timeline-plan.md T6): every scene item with a property
 /// timeline (`Timeline/library-expected.json`) or an animated `.tex` (`Library/texs-frames.json`),
 /// found in the library roots (`TimelineLibrarySweepTests.roots`). Empty when the library is
-/// absent (CI).
+/// absent (CI). `OWE_TIMELINE_ITEMS` (ids separated by ',') keeps only those items.
 enum TimelineLibraryScenes {
     struct Item {
         var id: String
@@ -21,6 +21,9 @@ enum TimelineLibraryScenes {
         struct Texture: Decodable { let item: String }
         for texture in try JSONDecoder().decode([Texture].self, from: Fixtures.data("Library/texs-frames.json")) {
             ids.insert(texture.item)
+        }
+        if let only = ProcessInfo.processInfo.environment["OWE_TIMELINE_ITEMS"] {
+            ids.formIntersection(only.split(separator: ",").map(String.init))
         }
         var items: [Item] = []
         for id in ids.sorted() {
