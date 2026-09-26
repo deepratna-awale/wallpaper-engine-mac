@@ -220,4 +220,11 @@ final class ParticleProgramTests: XCTestCase {
         XCTAssertEqual(positions(flags: 32), [0, 25, 50, 0, 25, 50])
         XCTAssertEqual(positions(flags: 0), [0, 25, 50, 75, 100, 0])
     }
+
+    /// `starttime` pre-simulates in WE's steps (wallpaper64.exe 0x14022f2e0).
+    func testStartTimePresimulatesInWEsSteps() {
+        XCTAssertEqual(ParticlePrewarm.steps(startTime: 1, maximum: 100), Array(repeating: 0.05, count: 20))
+        XCTAssertEqual(ParticlePrewarm.steps(startTime: 1, maximum: 500), Array(repeating: 0.2, count: 5))
+        XCTAssertEqual(ParticlePrewarm.steps(startTime: 0, maximum: 100), [])
+    }
 }

@@ -491,23 +491,33 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let particleSignpost = OWESignpost.begin(OWESignpost.render, "updateParticles")
         for system in orderedSystems {
             let base = particleInstances.count
+            let emitter = emitterWorld(system.configuration, time: time, motion: motion)
+            // `starttime`: the system's first frame comes after WE's pre-simulation.
+            let prewarm = ParticlePrewarm.steps(system).map {
+                ParticleFrameInputs.advance(system, deltaTime: $0, cursor: cursor, emitter: emitter, audio: effectFrame.audio)
+            }
             let inputs = ParticleFrameInputs.advance(system, deltaTime: Float(clock.delta), cursor: cursor,
-                                                     emitter: emitterWorld(system.configuration, time: time, motion: motion),
-                                                     audio: effectFrame.audio)
+                                                     emitter: emitter, audio: effectFrame.audio)
             if particleSimulator != nil {
                 // The GPU steps the system and writes whichever records it is drawn from.
                 let rendererName = system.configuration.rendererName
                 if let simulated = particleMaterials?.prepareSimulated(system, pixelFormat: sceneTexture.pixelFormat) {
-                    particleRequests.append(.init(system: system, inputs: inputs,
-                                                  kind: .material(simulated.format, rendererName: rendererName),
+                    let kind = ParticleGPUDrawKind.material(simulated.format, rendererName: rendererName)
+                    for step in prewarm {
+                        particleRequests.append(.init(system: system, inputs: step, kind: kind, materialVertexCount: simulated.vertexCount))
+                    }
+                    particleRequests.append(.init(system: system, inputs: inputs, kind: kind,
                                                   materialVertexCount: simulated.vertexCount, renderVar: simulated.renderVar))
                     particleBatches.append((system, base, 0, true, true))
                 } else {
-                    particleRequests.append(.init(system: system, inputs: inputs, kind: .fallback(rendererName: rendererName)))
+                    let kind = ParticleGPUDrawKind.fallback(rendererName: rendererName)
+                    for step in prewarm { particleRequests.append(.init(system: system, inputs: step, kind: kind)) }
+                    particleRequests.append(.init(system: system, inputs: inputs, kind: kind))
                     particleBatches.append((system, base, 0, false, true))
                 }
                 continue
             }
+            for step in prewarm { ParticleCPUSimulation.step(system, inputs: step) }
             ParticleCPUSimulation.step(system, inputs: inputs)
             if particleMaterials?.prepare(system, pixelFormat: sceneTexture.pixelFormat,
                                           opacity: { [unowned self] in self.particleOpacity($0, in: system) }) == true {
