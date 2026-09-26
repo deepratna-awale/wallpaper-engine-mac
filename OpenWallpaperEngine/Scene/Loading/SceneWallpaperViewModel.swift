@@ -568,6 +568,8 @@ class SceneWallpaperViewModel: ObservableObject {
             } else {
                 content.bloomChain = engineChain("WE's bloom", wallpaperDir: wallpaperDir, SceneBloomChain.build)
             }
+            content.colorCorrection = engineChain("WE's colour correction", wallpaperDir: wallpaperDir,
+                                                  SceneColorCorrection.build)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content

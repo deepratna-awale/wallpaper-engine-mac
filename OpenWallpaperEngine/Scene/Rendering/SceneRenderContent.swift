@@ -192,6 +192,9 @@ struct SceneMetalContent {
     /// WE's HDR bloom and combines, planned when the content draws in HDR (`engineCombos.hdr`),
     /// in place of `bloomChain`; nil otherwise or without a shader toolchain.
     var hdrChain: SceneHDRChain?
+    /// WE's colour correction (`ccsimple`) for the user's image filter and colour options; nil
+    /// without a shader toolchain.
+    var colorCorrection: SceneColorCorrection?
 }
 
 /// `scene.json` as the content was built from it, for the wallpaper instance's `SceneAnimationSet`

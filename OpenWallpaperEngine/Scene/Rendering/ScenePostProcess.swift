@@ -8,8 +8,10 @@ import simd
 /// Here the finished scene target is `_rt_FullFrameBuffer` (it isn't drawn to again). Step 5 is
 /// WE's LDR bloom (`SceneBloomChain`), gated like WE's by the scene's live `bloom` and the user's
 /// post-processing setting; in a content drawn in HDR it is the HDR chain (`SceneHDRChain`), or
-/// `combine_srgb` while bloom doesn't run. The composite then puts the frame on the drawable at
-/// the user's placement with the app's own adjustments (`AppExtras`), which aren't WE's.
+/// `combine_srgb` while bloom doesn't run. Step 6 is WE's colour correction (`SceneColorCorrection`)
+/// when the user's image filter or colour options aren't identity. The composite then puts the
+/// frame on the drawable at the user's placement with the app's own adjustments (`AppExtras`),
+/// which aren't WE's.
 final class ScenePostProcess {
     /// The scene's bloom this frame, scripts' and timelines' values included.
     struct Bloom: Equatable {
@@ -41,6 +43,8 @@ final class ScenePostProcess {
         var bloom: Bloom
         var extras: AppExtras
         var settings: SceneRenderSettings
+        /// The wallpaper's image filter and colour options (WE's `wcc_*`/`wec_*` properties).
+        var colorCorrection = SceneColorCorrectionSettings()
         /// Runs WE's post-processing passes; nil puts the frame on the drawable without them.
         var effects: EffectGraphRenderer?
         /// This frame's built-in inputs and bound values, for those passes.
@@ -81,11 +85,20 @@ final class ScenePostProcess {
     /// The last HDR frame's combine, nil when the content isn't drawn in HDR or it didn't run.
     private(set) var lastHDR: HDRRecord?
 
+    /// The last frame's colour correction: what went in and what came out; nil when it didn't run.
+    private(set) var lastColorCorrection: (frame: MTLTexture, corrected: MTLTexture)?
+
     private let compositePipeline: MTLRenderPipelineState
     /// The content's LDR bloom chain; nil without a shader toolchain.
     private var bloomChain: SceneBloomChain?
     /// The content's HDR chain, when it draws in HDR (`SceneMetalContent.hdrChain`).
     private var hdrChain: SceneHDRChain?
+    /// WE's colour correction pass; nil without a shader toolchain.
+    private var colorCorrection: SceneColorCorrection?
+    /// The colour correction's targets are held by the effect graph.
+    private var holdsColorCorrection = false
+    /// Frames corrected so far: its input changes every frame while the texture stays.
+    private var correctedFrames: UInt64 = 0
     /// The content draws in HDR: float targets, `HDR=1`, the HDR chain (`SceneEngineCombos.hdr`).
     private(set) var drawsHDR = false
     /// Frames bloomed so far: the chain's input changes every frame while its texture stays.
@@ -113,11 +126,13 @@ final class ScenePostProcess {
     func setContent(_ content: SceneMetalContent) {
         bloomChain = content.bloomChain
         hdrChain = content.hdrChain
+        colorCorrection = content.colorCorrection
         drawsHDR = content.engineCombos.hdr
         // The last frame's textures (a full-size float frame and combine at worst) go with it.
         encodedView = nil
         lastBloom = nil
         lastHDR = nil
+        lastColorCorrection = nil
     }
 
     /// Whether the HDR combine's output view is held (tests: it mustn't outlive HDR content).
@@ -126,9 +141,10 @@ final class ScenePostProcess {
     /// Encodes everything from the scene target to the drawable. The caller presents and commits.
     func encode(_ frame: Frame) {
         // Step 5: the bloom and its combine.
-        let finished = (drawsHDR ? combinedHDR(frame) : bloomed(frame)) ?? frame.scene
-        // Steps 6–7, WE's colour correction (`ccsimple`) and camera fade, would follow here; the
-        // app draws neither yet.
+        let combined = (drawsHDR ? combinedHDR(frame) : bloomed(frame)) ?? frame.scene
+        // Step 6: WE's colour correction. Step 7, the camera fade, isn't drawn yet: WE makes it
+        // only for scenes with camera paths (0x140181bae).
+        let finished = colorCorrected(combined, frame) ?? combined
         composite(finished, frame)
     }
 
@@ -206,6 +222,28 @@ final class ScenePostProcess {
             encodedView = SceneHDRChain.encodedView(of: combined).map { (ObjectIdentifier(combined), $0) }
         }
         return encodedView?.view
+    }
+
+    /// Step 6: `frame` through WE's `ccsimple`, or nil when the settings are identity (WE makes no
+    /// pass) or it isn't ready. A HDR frame is corrected as the composite shows it.
+    private func colorCorrected(_ combined: MTLTexture, _ frame: Frame) -> MTLTexture? {
+        lastColorCorrection = nil
+        guard let effects = frame.effects else { return nil }
+        guard !frame.colorCorrection.isIdentity, let colorCorrection else {
+            if holdsColorCorrection {
+                effects.releaseLayer(SceneColorCorrection.stateID)
+                holdsColorCorrection = false
+            }
+            return nil
+        }
+        holdsColorCorrection = true
+        correctedFrames &+= 1
+        guard let corrected = colorCorrection.encode(on: combined, settings: frame.colorCorrection, effects: effects,
+                                                     builtins: frame.builtins, values: frame.values,
+                                                     frameIndex: correctedFrames,
+                                                     commandBuffer: frame.commandBuffer) else { return nil }
+        lastColorCorrection = (combined, corrected)
+        return corrected
     }
 
     /// Step 8: `finished` on the drawable at the user's placement, with the app's adjustments.

@@ -1103,6 +1103,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             placement: layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
                                     placement: destination.placement),
             bloom: liveBloom(), extras: appExtras(), settings: renderSettings,
+            colorCorrection: colorCorrection(),
             effects: effectGraph, builtins: effectFrame, values: timelines.values, fullDetailScale: fullDetailScale))
 
         if let drawable = destination.drawable {
@@ -1147,6 +1148,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                           saturation: services.userPropertyValue("_owe_saturation", fallback: 1),
                                           hue: services.userPropertyValue("_owe_hue", fallback: 0),
                                           blur: services.userPropertyValue("_owe_blur", fallback: 1))
+    }
+
+    /// WE's image filter and colour options, from this wallpaper's user properties.
+    private func colorCorrection() -> SceneColorCorrectionSettings {
+        let services = WallpaperServices.shared
+        return SceneColorCorrectionSettings { services.userPropertyString($0.rawValue) }
     }
 
     /// This frame's lighting (`SceneFrameLighting`), from the objects' live transforms and

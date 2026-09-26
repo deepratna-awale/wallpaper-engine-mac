@@ -62,6 +62,9 @@ enum SceneChangeImpact: Int, Comparable {
             return key.hasSuffix("_enabled") ? .rebuildContent : .none
         }
 
+        // WE's image filter and colour options are read by the post-processing every frame.
+        if WEColorCorrectionProperty.contains(key) { return .none }
+
         switch key {
         case "_owe_hue", "_owe_saturation", "_owe_bloom", "_owe_blur", "_owe_speed":
             return .none
