@@ -51,6 +51,45 @@ final class ParticleSimulationPerformanceTests: XCTestCase {
         print("Particle simulation cost per frame (median):\n" + report.joined(separator: "\n"))
     }
 
+    /// Many small systems, as most wallpapers have: the GPU step's fixed cost per system and the CPU
+    /// encode per system (inputs and encode), minimum over the frames (the least disturbed by other
+    /// work on the machine).
+    func testManySmallSystemsCost() throws {
+        var report: [String] = []
+        for systemCount in [1, 10, 30] {
+            var system = typical(50)
+            system.emissionRate = 100
+            system.lifetime = 0.4...0.6
+            let runtimes = (0..<systemCount).map {
+                ParticleSystemRuntime(texture: texture, configuration: system.configuration, seed: UInt32($0))
+            }
+            var gpuTimes: [Double] = [], encodeTimes: [Double] = [], inputTimes: [Double] = []
+            for frame in 0..<90 {
+                let start = CACurrentMediaTime()
+                let requests = runtimes.map {
+                    ParticleGPUSimulator.Request(system: $0, inputs: ParticleFrameInputs.advance($0, deltaTime: 1 / 60, cursor: .zero),
+                                                 kind: .sprite, materialVertexCount: 6)
+                }
+                let inputsDone = CACurrentMediaTime()
+                let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
+                simulator.encode(requests, sceneSize: SIMD2(1920, 1080), targetSize: SIMD2(1920, 1080), commandBuffer: commandBuffer)
+                commandBuffer.commit()
+                let encode = CACurrentMediaTime() - start
+                commandBuffer.waitUntilCompleted()
+                guard frame >= 30 else { continue }
+                gpuTimes.append((commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1000)
+                encodeTimes.append(encode * 1000 / Double(systemCount))
+                inputTimes.append((inputsDone - start) * 1000 / Double(systemCount))
+            }
+            XCTAssertLessThan(gpuTimes.min() ?? 0, 100)
+            func median(_ values: [Double]) -> Double { values.sorted()[values.count / 2] }
+            report.append(String(format: "%2d systems: GPU min %.3f ms (%.4f a system) | CPU a system min %.4f median %.4f ms (inputs %.4f)",
+                                 systemCount, gpuTimes.min() ?? 0, (gpuTimes.min() ?? 0) / Double(systemCount),
+                                 encodeTimes.min() ?? 0, median(encodeTimes), median(inputTimes)))
+        }
+        print("Particle systems cost per frame:\n" + report.joined(separator: "\n"))
+    }
+
     private func measure(_ label: String, _ system: ParticleTestSystem, count: Int, frames: Int = 30) throws -> String {
         let configuration = system.configuration
         let cpu = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: 1)

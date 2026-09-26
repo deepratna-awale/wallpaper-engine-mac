@@ -79,4 +79,63 @@ final class ParticleMaterialPerformanceTests: XCTestCase {
         }
         print("Rope trail cost (2 000 segments, 1920×1080): " + report.joined(separator: "; "))
     }
+
+    /// The CPU cost of a GPU-simulated system's material draw a frame (`prepareSimulated` and
+    /// `draw`): its uniforms and bindings. Prints the median; the bound only catches a pathology.
+    func testMaterialDrawEncodeCost() throws {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let queue = try XCTUnwrap(device.makeCommandQueue())
+        let renderer = try XCTUnwrap(ParticleMaterialRenderer(device: device))
+        let simulator = try ParticleGPUSimulator(device: device)
+        let roots = [Fixtures.url("Particles"), ShaderVariantTests.weAssets]
+        let builder = ParticleMaterialPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: nil),
+            readFile: { path in roots.lazy.compactMap { FileManager.default.contents(atPath: $0.appending(path: path).path) }.first },
+            loadTexture: { _, _ in nil })
+        let plan = try builder.build(materialPath: "materials/solid.json",
+                                     renderer: try JSONDecoder().decode(WEParticleRenderer.self, from: Data(#"{"name":"sprite"}"#.utf8)),
+                                     flags: 0, baseTexture: .image(NSImage()), spriteSheet: nil)
+        XCTAssertTrue(renderer.waitUntilCompiled(plan, pixelFormat: .bgra8Unorm))
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: .texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: 4, height: 4, mipmapped: false)))
+        let target = try XCTUnwrap(device.makeTexture(descriptor: {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: 1920, height: 1080,
+                                                                      mipmapped: false)
+            descriptor.usage = [.renderTarget]
+            descriptor.storageMode = .private
+            return descriptor
+        }()))
+        var configuration = ParticleTestSystem().configuration
+        configuration.material = plan
+        let system = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: 1)
+        var times: [Double] = []
+        for frame in 0..<200 {
+            let buffer = try XCTUnwrap(queue.makeCommandBuffer())
+            let start = CACurrentMediaTime()
+            let simulated = try XCTUnwrap(renderer.prepareSimulated(system, pixelFormat: .bgra8Unorm))
+            let prepared = CACurrentMediaTime() - start
+            simulator.encode([.init(system: system, inputs: ParticleFrameInputs.advance(system, deltaTime: 1 / 60, cursor: .zero),
+                                    kind: .material(simulated.format, rendererName: "sprite"),
+                                    materialVertexCount: simulated.vertexCount, renderVar: simulated.renderVar)],
+                             sceneSize: SIMD2(1920, 1080), targetSize: SIMD2(1920, 1080), commandBuffer: buffer)
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = target
+            pass.colorAttachments[0].loadAction = .clear
+            pass.colorAttachments[0].storeAction = .store
+            let encoder = try XCTUnwrap(buffer.makeRenderCommandEncoder(descriptor: pass))
+            let drawStart = CACurrentMediaTime()
+            renderer.draw(system, encoder: encoder, commandBuffer: buffer, context: .init(
+                sceneSize: SIMD2(1920, 1080), frame: BuiltinFrameContext(), values: ParticleMaterialRenderTests.NoValues(),
+                assetTexture: { _, _ in nil }))
+            let drawn = CACurrentMediaTime() - drawStart
+            encoder.endEncoding()
+            buffer.commit()
+            buffer.waitUntilCompleted()
+            XCTAssertNil(buffer.error)
+            if frame >= 20 { times.append((prepared + drawn) * 1000) }
+        }
+        let median = times.sorted()[times.count / 2]
+        print(String(format: "Particle material draw encode: median %.4f ms, least %.4f ms a system", median, times.min() ?? 0))
+        XCTAssertLessThan(median, 5)
+    }
 }
