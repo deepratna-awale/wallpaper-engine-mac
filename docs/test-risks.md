@@ -1402,29 +1402,29 @@ The scenes used below:
 | # | Sev | Owner | Risk |
 |---|-----|-------|------|
 | LR1 | Critical | A4 | A prelit layer behind a static effect chain keeps its first frame's lighting and reflection (**confirmed**, LF1) |
-| LR2 | High | A2 | Light fields and the out-of-plane transform are frozen at load: scripted `intensity`, `color`, `radius`, `origin.z` (**confirmed**, LF2) |
+| LR2 | High | A2 | Light fields and the out-of-plane transform are frozen at load: scripted `intensity`, `color`, `radius`, `origin.z` (**fixed**, LF2) |
 | LR3 | High | A3 | The `angles.z` sign flip: every consumer that doesn't go through `SceneAffineTransform` |
-| LR4 | High | A2, D1 | A light's tilt order (`Rz·Ry·Rx` vs `Rx·Ry·Rz`) for lights turned on x/y and z |
-| LR5 | High | A4, B2 | Prelit image is RGBA8 in HDR: overbright is clipped before effects and bloom (**confirmed**, LF3) |
+| LR4 | High | A2, D1 | A light's tilt order (`Rz·Ry·Rx` vs `Rx·Ry·Rz`) for lights turned on x/y and z (**settled** against WE's frames: ours, `Rz·Ry·Rx`) |
+| LR5 | High | A4, B2 | Prelit image is RGBA8 in HDR: overbright is clipped before effects and bloom (**fixed**, LF3) |
 | LR6 | High | B1, EP | Bloom radius and HDR level count follow the scene target's size (Match display, Texture Resolution, desktop resolution, two displays) |
-| LR7 | High | B1, B2 | Bloom gates and live values: user-bound and scripted `bloom`, timelines on strength, `bloomhdr*` not live, `_owe_bloom` |
+| LR7 | High | B1, B2 | Bloom gates and live values: user-bound and scripted `bloom`, timelines on strength, `bloomhdr*` not live (**fixed**), `_owe_bloom` |
 | LR8 | High | B2 | HDR float targets through every stage |
 | LR9 | High | all | Cost at 5K (5120×2880), HDR and reflection on |
 | LR10 | High | all | Memory: full-size float targets, unused ping targets, targets kept after leaving HDR |
-| LR11 | Medium | A4 | A prelit layer whose chain renders nothing draws **unlit** (**confirmed by reading**, LF5) |
-| LR12 | Medium | A2, D1 | Lights (and volumetrics) don't move with camera parallax or shake; the layers they light do |
+| LR11 | Medium | A4 | A prelit layer whose chain renders nothing draws **unlit** (**fixed**, LF5) |
+| LR12 | Medium | A2, D1 | Lights (and volumetrics) don't move with camera parallax or shake; the layers they light do (**fixed** for shake; parallax doesn't move lights in WE either) |
 | LR13 | Medium | A2 | Light packing: overflowing groups, budgets, legacy slot collisions, sort ties |
 | LR14 | Medium | A2, A3 | Lights under animated or scripted parents, hidden ancestors, lights created or re-parented by scripts |
 | LR15 | Medium | A3, A4 | Lit layers and colour, alpha, brightness, blend modes, puppets and sprite sheets |
 | LR16 | Medium | A3 | PBR mask flag bits: component combos taken from `.tex` flags |
-| LR17 | Medium | A1 | `SCENE_ORTHO`/`HDR`/`LIGHTS_*` in every cache key: key churn and recompiles |
-| LR18 | Medium | C1 | `_rt_MipMappedFrameBuffer` is a frame late: new targets, resizes and content swaps |
-| LR19 | Medium | C1, ST | Reflections off, on again, and the rebuild every settings change causes |
+| LR17 | Medium | A1 | `SCENE_ORTHO`/`HDR`/`LIGHTS_*` in every cache key: key churn and recompiles (**fixed**, LF8) |
+| LR18 | Medium | C1 | `_rt_MipMappedFrameBuffer` is a frame late: new targets, resizes and content swaps (content swaps **fixed**, LF9) |
+| LR19 | Medium | C1, ST | Reflections off, on again, and the rebuild every settings change causes (**fixed**: no rebuild) |
 | LR20 | Medium | D1 | Volumetric draw order: the stage runs after every object |
-| LR21 | Medium | D1 | Volumetrics under camera shake, parallax and script cameras (**confirmed by reading**, LF6) |
-| LR22 | Medium | D1 | One missing cookie drops every volumetric light (**confirmed by reading**, LF4); shadow casters show only with shadows off |
+| LR21 | Medium | D1 | Volumetrics under camera shake, parallax and script cameras (shake **fixed**, LF6; script cameras open) |
+| LR22 | Medium | D1 | One missing cookie drops every volumetric light (**fixed**, LF4); shadow casters show only with shadows off |
 | LR23 | Medium | all | Two displays sharing one instance |
-| LR24 | Medium | ST, all | Settings changed live: every change rebuilds the content |
+| LR24 | Medium | ST, all | Settings changed live: every change rebuilds the content (**fixed** for the per-frame settings) |
 | LR25 | Medium | A1, A3 | Cookie spots under `LightingV1`: `_alias_lightCookie` and the zero `g_LFeature_*` projections |
 | LR26 | Low | A2 | Per-frame lighting cost when a scene has no lights |
 
@@ -1755,3 +1755,26 @@ The lighting suites pass at HEAD: 108 tests in `SceneLightPackerTests`, `SceneTr
 - **Tiny targets:** they never reach 0×0.
 
 **Aside (uncommitted, EP).** The working tree's `SceneMetalRenderer.swift` prints on every frame (`print("TEMPVIEW", …)`) and for every layer with effects under Match display (`print("TEMPDETAIL", …)`). These must not be committed.
+
+## Fixes (lighting)
+
+Status: 2026-09-26. Each fix has a regression test that fails without it.
+
+| Finding | Commit | What changed | Test |
+|---|---|---|---|
+| LF2 (LR2) | `c1a9d70` | Light fields and the out-of-plane transform are read every frame: a script's value, then the field's timeline, then the built one (`SceneLightObject.live`). `intensity`, `radius`, `exponent`, `innercone`, `outercone` and `controlpoint` are object-table fields only a bound script sets (`ILayer` has no light members). The volumetrics read the same live light. | `LitLayerLibraryTests.testKnightsScriptedLegacyLightFlickersAndMovesInDepth` (the Knight's `g_LightsColorRadius[0]` flickers and `g_LightsPosition[0].z` follows its script), `SceneLightLiveValuesTests`, `SceneScriptBindingTests.testALightFieldBindsWithoutBeingAMember` |
+| B2 leftover (LR7) | `69f9530` | `bloomhdr*` are scene-buffer fields a bound script sets (not `IScene` members), and the post-process reads them per frame: a script's, a timeline's, the content's. | `SceneHDRRenderTests.testATimelineOnBloomHDRStrengthDrivesTheChain`, `SceneScriptBindingTests.testHDRBloomFieldsBindToTheSceneWithoutBeingMembers` |
+| LF3 (LR5) | `961c6f4` | The prepass draws into the frame-buffer format: RGBA16F in HDR. | `ImageMaterialPrelightingTests.testAnHDRPrepassKeepsTheOverbright` |
+| LF4 (LR22) | `f6e3f5e` | A cookie that doesn't load falls back to `cookie/flashlight1`, as WE does (0x14025d19f…0x14025d1cd); a light with neither is skipped alone. | `SceneVolumetricsTests.testAMissingCookieFallsBackPerLight` |
+| LF5 (LR11) | `81c80ef` | A prelit layer whose chain renders nothing draws that frame's prelit image. | `ImageMaterialPrelightingTests.testALayerWhoseEffectsAreHiddenStillDrawsLit` |
+| LR4 | `c7278b4` | Settled, no change: WE 2.8.0.42's frames of Hinata give a mean of 15.4 over x 300–700, y 0–400 with volumetrics disabled and 40.2/40.4/40.3 at low/medium/high. Ours are 15.3 and 40.3/40.5/40.4 with `Rz·Ry·Rx`, and about 50 with `Rx·Ry·Rz`. The quality tiers don't change the brightness, as in WE. | `VolumetricsLibraryTests.testHinatasWedgeMatchesWE` |
+| LF6, LF10 (LR12, LR21) | `26ecb1d` | The binary's object loop (0x14018b062…0x14018b14e) translates only the draws' model matrices by parallax. The packer reads the world matrices (0x1401850a0) and the volumetrics the camera (ctx+0x930, eye ctx+0x68), and neither takes parallax. Shake moves WE's eye and centre (0x140199580). The renderer keeps the camera still and moves every object by −shake, so the lights (packed and volumetric) now move by it too, and not by parallax: a lit layer slides under its lights with parallax, as in WE. `g_EyePosition` and the packer's forward are the scene camera's every frame; an orthographic camera is WE's reset one (eye 0, looking down −z, 0x14018866b). | `SceneLightCameraTests`, `VolumetricsLibraryTests.testHinatasVolumeFollowsTheCameraShake` |
+| LF7 (LR10), not the graph part | `74ae6bf` | A new content drops the HDR combine's output view and the last frame's bloom records; an LDR frame drops the view. HDR contents no longer plan the LDR chain. | `SceneHDRRenderTests.testTheHDROutputGoesWithTheHDRContent`, `testHDROnlyWithUltra` |
+| LF9 (LR18) | `6e14c4c` | A new content makes `_rt_MipMappedFrameBuffer` again: its first frame reads transparent black, not the last content's frame. | `SceneMipMappedFrameBufferTests.testANewContentDoesntReflectTheLastOne` |
+| LF8 (LR17) | `ac618e7` | Variants are keyed and translated on the combos their stages (includes inlined) or the prelude name, plus `LIGHTING`/`LIGHTS_*` under `#require LightingV1`. The MSL is unchanged (the corpus hash holds). | `ShaderVariantCacheTests.testCombosTheShaderDoesntNameStayOutOfTheKey` |
+| LR19, LR24 | `591e5a8` | Only what a content is built for rebuilds it (`SceneRenderSettings.contentKey`: HDR, shadows, volumetrics, particle budget, texture reduction). Reflection, the bloom gate, render resolution and scene detail apply per frame. | `SceneRenderSettingsContentTests` |
+
+Not done, with the evidence:
+- **`ccsimple`** (step 6): WE loads it with `COL` and/or `LUT` only when the user's colour correction differs from identity (0x1401826a2…0x1401826f3: the parameters at ctx+0x3110…0x3120, a `lut/<name>` at +0x3128 with its strength at +0x3148 > 0). At the defaults no pass is made, which is what the app draws. Where WE's UI sets those values wasn't traced, so the app's `_owe_saturation`/`_owe_hue` extras stay its own.
+- **The camera fade** (`fade.json`, step 7) is loaded only when `camerafade` is on **and** the scene has camera paths (0x140181bae…0x140181bda). The library has no camera paths, and the app doesn't play them, so nothing is missing.
+- **Script cameras** (`setCameraTransforms`) aren't read by the renderer at all yet (layers included), so the volumetrics don't follow them either.
