@@ -47,6 +47,8 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
     private var animatedConstants: [(site: SceneAnimationSite, objectID: Int, effect: Int, material: Int,
                                      range: SceneScriptObjectStore.PoolRange)] = []
     private var animationTargetsValid = false
+    /// The set's frame the animation slots were last published for (`animationFrame`).
+    private var publishedAnimationFrame: UInt64 = 0
     /// The image and text layers in draw order, for the cursor pass; rebuilt with the order.
     private var hitTestable: [SceneScriptCursorLayer.TableEntry] = []
     private var hitTestableValid = false
@@ -225,6 +227,7 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
     private func publishAnimations(_ input: SceneScriptFrameInput) {
         guard let store = model?.store else { return }
         refreshAnimationTargets(store)
+        publishedAnimationFrame = input.animationFrame
         typealias Layout = SceneScriptObjectStore.AnimationLayout
         typealias Flags = SceneScriptObjectStore.AnimationFlags
         let buffer = store.animations
@@ -358,13 +361,14 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
                 if flags & Flags.paused != 0 { clock.insert(.paused) }
                 if flags & Flags.finished != 0 { clock.insert(.finished) }
                 if flags & Flags.backwards != 0 { clock.insert(.reversed) }
-                events.append(.animation(site, time: buffer[slot, Layout.time], flags: clock, rate: buffer[slot, Layout.rate]))
+                events.append(.animation(site, time: buffer[slot, Layout.time], flags: clock, rate: buffer[slot, Layout.rate],
+                                         frame: publishedAnimationFrame))
             case .texture(let id):
                 let control = SceneTextureAnimationControl(
                     rate: buffer[slot, Layout.rate], frame: SceneTimelineClock.convertTruncating(buffer[slot, Layout.frame]),
                     time: buffer[slot, Layout.time], playing: buffer[slot, Layout.playing] != 0,
                     overridden: flags & Flags.overridden != 0)
-                events.append(.textureAnimation(id: id, control))
+                events.append(.textureAnimation(id: id, control, frame: publishedAnimationFrame))
             }
         }
     }

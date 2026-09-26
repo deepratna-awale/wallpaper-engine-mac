@@ -182,7 +182,8 @@ final class SceneTextureAnimationClockTests: XCTestCase {
         for _ in 0..<200 {
             tick += 1
             control.setRate(control.currentFrame(shared: shared) == 30 ? 0 : 5, shared: shared)
-            _ = control.drawnFrame(shared: shared, tick: tick, delta: 1.0 / 60)
+            shared.advance(tick: tick, delta: 1.0 / 60)
+            control.advance(delta: 1.0 / 60, frameTimes: shared.frameTimes)
         }
         XCTAssertEqual(control.currentFrame(shared: shared), 30)
         XCTAssertNotEqual(shared.frame, 30, "the shared clock went on for the texture's other users")

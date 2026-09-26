@@ -421,10 +421,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 pendingEmits[String(id), default: 0] += count ?? 1
             case .sound(let id, let playback):
                 sounds.perform(playback, on: id)
-            case let .animation(site, time, flags, rate):
-                timelines.restore(site, time: time, flags: flags, rate: rate)
-            case .textureAnimation(let id, let control):
-                timelines.restoreTexture(control, object: id)
+            case let .animation(site, time, flags, rate, frame):
+                timelines.restore(site, time: time, flags: flags, rate: rate, seenAt: frame)
+            case let .textureAnimation(id, control, frame):
+                timelines.restoreTexture(control, object: id, seenAt: frame)
             }
         }
         if !removed.isEmpty {

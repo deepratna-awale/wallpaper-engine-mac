@@ -77,14 +77,6 @@ struct SceneTextureAnimationControl: Equatable {
         SceneTextureAnimationClock.step(frame: &frame, time: &time, delta: delta * rate, frameTimes: frameTimes)
     }
 
-    /// The frame the layer draws this engine frame: advances the shared clock (once per `tick`)
-    /// and, when in control, this override; returns the override's frame or the shared one.
-    mutating func drawnFrame(shared: SceneTextureAnimationClock, tick: UInt64, delta: Float) -> Int32 {
-        shared.advance(tick: tick, delta: delta)
-        advance(delta: delta, frameTimes: shared.frameTimes)
-        return currentFrame(shared: shared)
-    }
-
     private mutating func take(_ shared: SceneTextureAnimationClock) {
         frame = shared.frame
         time = shared.time

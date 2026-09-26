@@ -208,7 +208,8 @@ final class SceneScriptAnimationObjectTests: XCTestCase {
 
         mutating func draw(delta: Float) {
             tick += 1
-            _ = control.drawnFrame(shared: shared, tick: tick, delta: delta)
+            shared.advance(tick: tick, delta: delta)
+            control.advance(delta: delta, frameTimes: shared.frameTimes)
         }
     }
 

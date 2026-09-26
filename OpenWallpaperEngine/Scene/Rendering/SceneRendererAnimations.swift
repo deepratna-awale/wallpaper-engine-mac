@@ -56,14 +56,21 @@ final class SceneRendererAnimations {
         refreshAnimatedObjects()
     }
 
-    /// What a script frame's `IAnimation` calls left of a timeline's clock.
-    func restore(_ site: SceneAnimationSite, time: Float, flags: SceneTimelineClock.Flags, rate: Float) {
-        set?.restore(site, time: time, flags: flags, rate: rate)
+    /// What a script frame's `IAnimation` calls left of a timeline's clock, in the script frame
+    /// that saw the set's frame `seenAt`. A script frame that overran the draw's wait comes back
+    /// after later advances: the set replays them, and this frame draws the replayed value.
+    func restore(_ site: SceneAnimationSite, time: Float, flags: SceneTimelineClock.Flags, rate: Float, seenAt: UInt64) {
+        guard let set, set.restore(site, time: time, flags: flags, rate: rate, seenAt: seenAt) else { return }
+        // Unchanged unless the restore replayed advances; restores are rare, so read them all.
+        readObjects()
     }
 
-    /// What a script frame's `ITextureAnimation` calls left of layer `id`'s override.
-    func restoreTexture(_ control: SceneTextureAnimationControl, object id: Int) {
-        set?.textures.restore(control, object: id)
+    /// What a script frame's `ITextureAnimation` calls left of layer `id`'s override, in the
+    /// script frame that saw the set's frame `seenAt`.
+    func restoreTexture(_ control: SceneTextureAnimationControl, object id: Int, seenAt: UInt64) {
+        guard let set else { return }
+        set.textures.restore(control, object: id, replaying: set.deltas(since: seenAt))
+        spriteFrames[id] = nil
     }
 
     /// An animated texture's layer shares its texture's clock (§2.7), frame times in sheet order.
@@ -113,8 +120,9 @@ final class SceneRendererAnimations {
         position[key].map { objectAnimations[$0] }
     }
 
-    /// The sprite frame layer `id` draws this frame, taken once per frame (a script's override
-    /// advances each time it is asked). `delta` is the engine frame time.
+    /// The sprite frame layer `id` draws this frame: drawing binds the texture, which advances its
+    /// shared clock once per frame (§2.7); a layer a script controls draws its override, which
+    /// the set advanced with the frame. `delta` is the engine frame time.
     func spriteFrame(object id: Int, delta: Float) -> Int32 {
         if let drawn = spriteFrames[id] { return drawn }
         let frame = set?.drawnTextureFrame(object: id, delta: delta) ?? 0
@@ -126,6 +134,7 @@ final class SceneRendererAnimations {
     /// state and the events the advance crossed.
     func describe(into input: inout SceneScriptFrameInput, events: [SceneAnimationEvent]) {
         guard let set else { return }
+        input.animationFrame = set.frameCounter
         input.animationEvents = events
         input.animations.reserveCapacity(set.sites.count)
         for (index, site) in set.sites.enumerated() { input.animations[site] = set.state(at: index) }

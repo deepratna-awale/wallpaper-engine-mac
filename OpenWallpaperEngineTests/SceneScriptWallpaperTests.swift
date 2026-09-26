@@ -140,7 +140,7 @@ final class SceneScriptWallpaperTests: XCTestCase {
         XCTAssertEqual(try shared(wallpaper, "before"), 3, "getFrame() is the set's frame")
         XCTAssertEqual(try shared(wallpaper, "playing"), 1)
         let restores = events.compactMap { event -> (SceneAnimationSite, Float, SceneTimelineClock.Flags, Float)? in
-            guard case let .animation(site, time, flags, rate) = event else { return nil }
+            guard case let .animation(site, time, flags, rate, _) = event else { return nil }
             return (site, time, flags, rate)
         }
         XCTAssertEqual(restores.count, 1, "\(events)")

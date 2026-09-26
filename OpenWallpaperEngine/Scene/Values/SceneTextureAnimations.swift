@@ -4,8 +4,11 @@ import Foundation
 /// `SceneTextureAnimationClock` per animated texture, however many layers draw it, and each image
 /// layer's `ITextureAnimation` override (`SceneTextureAnimationControl`).
 ///
-/// A texture only moves when something draws it (`drawnFrame`), at most one step per engine frame.
-/// Confined to the thread that owns the wallpaper's `SceneAnimationSet`.
+/// A texture's shared clock moves when something draws it (`drawnFrame`: WE advances it when a
+/// material binds the texture), at most one step per engine frame. A layer's override moves with
+/// the engine frame (`advanceOverrides`), drawn or not: WE steps it in the image layer's update
+/// (`0x1401fdf90` → `0x1402063c1`), on both paths of that function, not in the draw (test-risks
+/// TF5, TL8). Confined to the thread that owns the wallpaper's `SceneAnimationSet`.
 final class SceneTextureAnimations {
     /// An `ITextureAnimation` call on a layer.
     enum Control: Equatable {
@@ -50,14 +53,22 @@ final class SceneTextureAnimations {
 
     var objectIDs: [Int] { Array(layers.keys) }
 
-    /// The sprite frame object `id` draws this engine frame (`tick`): advances the texture's shared
-    /// clock once per tick and the layer's override when a script controls it. `delta` is the
-    /// engine frame time; a script's `rate` scales only the override.
+    /// The sprite frame object `id` draws this engine frame (`tick`): binding the texture advances
+    /// its shared clock once per tick; a layer a script controls draws its override. `delta` is
+    /// the engine frame time.
     func drawnFrame(object id: Int, tick: UInt64, delta: Float) -> Int32? {
-        guard var layer = layers[id], let shared = clocks[layer.texture] else { return nil }
-        let frame = layer.control.drawnFrame(shared: shared, tick: tick, delta: delta)
-        layers[id] = layer
-        return frame
+        guard let layer = layers[id], let shared = clocks[layer.texture] else { return nil }
+        shared.advance(tick: tick, delta: delta)
+        return layer.control.currentFrame(shared: shared)
+    }
+
+    /// One engine frame of every layer's override, by `delta` × its `rate` while a script controls
+    /// it and it plays; hidden layers too.
+    func advanceOverrides(delta: Float) {
+        for index in layers.values.indices {
+            guard let shared = clocks[layers.values[index].texture] else { continue }
+            layers.values[index].control.advance(delta: delta, frameTimes: shared.frameTimes)
+        }
     }
 
     /// Applies a script call the way WE's wrapper does. False for an unknown layer.
@@ -77,11 +88,16 @@ final class SceneTextureAnimations {
     }
 
     /// Replaces a layer's override with what the script left (the JS side applies the same rules
-    /// during the script frame; the host reads the dirty slot back afterwards).
+    /// during the script frame; the host reads the dirty slot back afterwards), then steps it by
+    /// the engine frames that went by since the script saw it (`replaying`, oldest first).
     @discardableResult
-    func restore(_ control: SceneTextureAnimationControl, object id: Int) -> Bool {
-        guard layers[id] != nil else { return false }
-        layers[id]?.control = control
+    func restore(_ control: SceneTextureAnimationControl, object id: Int, replaying deltas: [Float] = []) -> Bool {
+        guard var layer = layers[id] else { return false }
+        layer.control = control
+        if let shared = clocks[layer.texture] {
+            for delta in deltas { layer.control.advance(delta: delta, frameTimes: shared.frameTimes) }
+        }
+        layers[id] = layer
         return true
     }
 

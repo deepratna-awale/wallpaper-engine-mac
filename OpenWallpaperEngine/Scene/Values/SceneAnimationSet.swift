@@ -37,6 +37,12 @@ final class SceneAnimationSet {
     private var indices: [SceneAnimationSite: Int] = [:]
     /// Every animated site, in registration (evaluation) order: `index(of:)` counts in it.
     private(set) var sites: [SceneAnimationSite] = []
+    /// The last `replayedFrames` deltas, by frame counter modulo their count (`deltas(since:)`).
+    private var recentDeltas = [Float](repeating: 0, count: SceneAnimationSet.replayedFrames)
+    /// Events a replayed advance (`restore`) crossed, handed out with the next frame's.
+    private var replayedEvents: [SceneAnimationEvent] = []
+    /// How many frames late a script frame's calls can come back and still be replayed.
+    static let replayedFrames = 8
     /// Sites whose value wasn't finite, reported once.
     private var reportedNonFinite = Set<SceneAnimationSite>()
     /// Counts `advance(by:)` calls: WE's engine frame counter (`[engine+0x144]`).
@@ -119,7 +125,10 @@ final class SceneAnimationSet {
     @discardableResult
     func advance(by delta: Float) -> SceneAnimationFrame {
         frameCounter &+= 1
-        var frame = SceneAnimationFrame()
+        recentDeltas[Int(frameCounter % UInt64(Self.replayedFrames))] = delta
+        var frame = SceneAnimationFrame(events: replayedEvents)
+        replayedEvents.removeAll()
+        textures.advanceOverrides(delta: delta)
         for index in entries.indices {
             let owner = entries[index].parent ?? index
             if entries[owner].advanced != frameCounter {
@@ -236,21 +245,53 @@ final class SceneAnimationSet {
     /// Takes the state a script frame left (the JS side applies WE's rules to the animation buffer
     /// in call order; the host reads a dirty slot back afterwards): the clock's time, its run-time
     /// bits (`paused`, `finished`, `reversed`; the mode bits are kept) and the rate.
+    ///
+    /// `seenAt` is the frame counter the script frame saw. A script frame that overran the draw's
+    /// wait comes back after later advances; those are replayed on the restored clock (by their
+    /// deltas × the restored rate, their events handed out with the next frame's) and the site
+    /// and the children on its clock are sampled again, so the calls act as if they had come
+    /// back in time and no advance is lost. False when the site isn't animated.
     @discardableResult
-    func restore(_ site: SceneAnimationSite, time: Float, flags: SceneTimelineClock.Flags, rate: Float) -> Bool {
+    func restore(_ site: SceneAnimationSite, time: Float, flags: SceneTimelineClock.Flags, rate: Float,
+                 seenAt: UInt64? = nil) -> Bool {
         guard let index = indices[site] else { return false }
         let runtime: SceneTimelineClock.Flags = [.paused, .finished, .reversed]
         entries[index].timeline.clock.time = time
         entries[index].timeline.clock.flags = entries[index].timeline.clock.flags.subtracting(runtime)
             .union(flags.intersection(runtime))
         entries[index].rate = rate
+        // A linked child's own clock never moves (§2.5): nothing to replay.
+        guard let seenAt, entries[index].parent == nil else { return true }
+        let missed = deltas(since: seenAt)
+        guard !missed.isEmpty else { return true }
+        for delta in missed {
+            for event in entries[index].timeline.clock.advance(by: delta * rate) {
+                replayedEvents.append(SceneAnimationEvent(site: site, name: event.name, frame: event.frame))
+            }
+        }
+        for other in entries.indices where other == index || entries[other].parent == index { sample(other) }
         return true
+    }
+
+    /// The deltas of the advances after frame `frame`, oldest first: at most `replayedFrames`
+    /// (a script frame later than that loses the older ones, logged).
+    func deltas(since frame: UInt64) -> [Float] {
+        guard frameCounter > frame else { return [] }
+        let missed = frameCounter - frame
+        if missed > UInt64(Self.replayedFrames) {
+            OWELog.debug(.scene, "\(wallpaperID): script calls came back \(missed) frames late; replaying the last \(Self.replayedFrames)")
+        }
+        let count = Int(min(missed, UInt64(Self.replayedFrames)))
+        return ((frameCounter - UInt64(count) + 1)...frameCounter).map {
+            recentDeltas[Int($0 % UInt64(Self.replayedFrames))]
+        }
     }
 
     // MARK: - Textures
 
-    /// The sprite frame layer `id` draws this frame: its texture's shared clock (once per
-    /// `advance(by:)`) or the script's override. `delta` is the engine frame time.
+    /// The sprite frame layer `id` draws this frame: its texture's shared clock (advanced once per
+    /// `advance(by:)` by whichever layer draws it first) or the script's override (advanced by
+    /// `advance(by:)`). `delta` is the engine frame time.
     func drawnTextureFrame(object id: Int, delta: Float) -> Int32? {
         textures.drawnFrame(object: id, tick: frameCounter, delta: delta)
     }

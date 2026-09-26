@@ -165,10 +165,12 @@ enum SceneScriptRenderEvent {
     case emit(id: Int, count: Int?)
     /// `ISoundLayer.play()`, `pause()`, `stop()`.
     case sound(id: Int, SceneScriptObjectCommand.Playback)
-    /// What a script's `IAnimation` calls left of a timeline's clock (`SceneAnimationSet.restore`):
-    /// applied before the next advance. An event, not state, so a frame's calls are never lost to
-    /// a later frame's.
-    case animation(SceneAnimationSite, time: Float, flags: SceneTimelineClock.Flags, rate: Float)
-    /// What a script's `ITextureAnimation` calls left of layer `id`'s override.
-    case textureAnimation(id: Int, SceneTextureAnimationControl)
+    /// What a script's `IAnimation` calls left of a timeline's clock (`SceneAnimationSet.restore`),
+    /// in the script frame that saw the set's frame `frame` (`SceneScriptFrameInput.animationFrame`).
+    /// An event, not state, so a frame's calls are never lost to a later frame's; the set replays
+    /// the advances made since `frame`, so a script frame that overran the draw loses none.
+    case animation(SceneAnimationSite, time: Float, flags: SceneTimelineClock.Flags, rate: Float, frame: UInt64)
+    /// What a script's `ITextureAnimation` calls left of layer `id`'s override, in the script
+    /// frame that saw the set's frame `frame`.
+    case textureAnimation(id: Int, SceneTextureAnimationControl, frame: UInt64)
 }

@@ -25,6 +25,9 @@ struct SceneScriptFrameInput {
     var animationEvents: [SceneAnimationEvent] = []
     /// Every timeline's `IAnimation` state after this frame's advance, by site.
     var animations: [SceneAnimationSite: SceneAnimationState] = [:]
+    /// The set's frame counter after this frame's advance (`SceneAnimationSet.frameCounter`): the
+    /// calls a script frame makes come back tagged with it.
+    var animationFrame: UInt64 = 0
     /// Every image layer's `ITextureAnimation` state (its override and the shared clock), by id.
     var textureAnimations: [Int: SceneTextureAnimations.State] = [:]
 }
