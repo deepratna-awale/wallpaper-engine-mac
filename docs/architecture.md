@@ -1,0 +1,106 @@
+# Architecture
+
+Open Wallpaper Engine for macOS plays Wallpaper Engine (WE) wallpapers: **scene**, **video** and **web**. The `application` type is out of scope. The goal is to run *any* WE wallpaper, including arbitrary Workshop scenes with custom effects, shaders and SceneScripts. So the scene engine implements WE's actual formats and semantics, not per-wallpaper approximations.
+
+This document describes the target structure and the rules for what goes where. [`docs/reorg-plan.md`](reorg-plan.md) lists the steps from today's layout to this one. [`docs/progress-snapshot.md`](progress-snapshot.md) records how complete each feature is.
+
+## Big picture
+
+```
+┌──────────────────────── App shell (SwiftUI/AppKit) ────────────────────────┐
+│ App/  Library/  Workshop/  Settings/  UI/            (views + view models) │
+└───────────────┬───────────────────────────────┬────────────────────────────┘
+                │ WEWallpaper                    │
+      ┌─────────▼─────────┐  ┌─────────────┐  ┌──▼──────────┐
+      │ Scene/  (engine)  │  │ Video/      │  │ Web/        │
+      │  Format  → Values │  │ AVPlayer +  │  │ WKWebView + │
+      │  Shaders → Render │  │ music sync  │  │ WE web API  │
+      │  Scripting, Audio │  └──────┬──────┘  └─────────────┘
+      └─────────┬─────────┘         │
+                └──────────┬────────┘
+                    ┌──────▼──────┐
+                    │ Audio/      │  system capture (ScreenCaptureKit), per-item taps
+                    └─────────────┘
+Core/  logging, diagnostics, settings store, asset locations: usable by everything above
+```
+
+**Dependency direction:** arrows only point down. Code in `Scene/` must never import or reference anything in `UI/`, `Library/`, `Settings/` views or `AppDelegate`. Code in `Core/` depends on nothing else in the app.
+
+## Modules
+
+These are folders in the app target today. The scene engine (`Scene/`, `Audio/`, `Core/`) is meant to become a local Swift package (`Packages/WEScene`) during Phase 2, so it can be unit-tested and run headless. Keeping the dependency rules now is what makes that extraction a move rather than a rewrite.
+
+### `Core/`: shared infrastructure
+
+- **Logging and diagnostics:** `OWELog`, signposts and frame metrics.
+- **Settings:** the global settings model and store.
+- The **WE assets location**.
+- The **Objective-C exception catcher**.
+- It must not reference UI, view models or `AppDelegate`.
+
+### `Scene/`: the WE scene engine
+
+| Area | Responsibility | Examples |
+|---|---|---|
+| `Scene/Format/` | Decode WE files into plain Swift models. It does no rendering and has no side effects. | `scene.json`, `project.json` scene properties, `effect.json`, materials, models, particles, `.pkg`, `.tex` |
+| `Scene/Values/` | *(Phase 4)* Resolve every dynamic value the same way: literal, `{"user":…}`, `{"user":{"name","condition"}}`, `{"script":…}`, `{"animation":…}`. | `SceneValue<T>` |
+| `Scene/Shaders/` | GLSL → SPIR-V → MSL translation, reflection, the translation cache and the effect catalog. | `SceneShaderTranslator`, `SceneDynamicEffectCatalog` |
+| `Scene/Rendering/` | Metal: layers, the effect pass graph, render targets, text, particles and the camera. | `SceneMetalRenderer`, `SceneShaders.metal` |
+| `Scene/Scripting/` | The SceneScript runtime (JavaScriptCore), one per wallpaper instance on its own thread, and the WE JS API surface as extensions; `Host/` ties a runtime to the renderer (docs/scenescript-plan.md). | `SceneScriptRuntime`, `SceneScriptWallpaper`, `SceneScriptSceneMirror` |
+| `Scene/Loading/` | Turns a wallpaper into render content: loads, resolves and builds. | `SceneWallpaperViewModel` (to be split) |
+| `Scene/UI/` | Scene-specific SwiftUI: the inspector and user properties. These are the **only** scene files allowed to import SwiftUI views. | `SceneInspectorView`, `SceneUserPropertiesView`, `SceneHelp` |
+
+### `Audio/`
+
+- System audio capture (ScreenCaptureKit) with a restart lifecycle.
+- Per-player taps (`AudioLevelTap`).
+- Spectrum and waveform snapshots.
+- One producer, many consumers: scene shaders, SceneScript `registerAudioBuffers`, video music sync.
+
+### `Video/` and `Web/`
+
+- Each holds its player, view, view model and type-specific features: video music sync, and the web wallpaper property/audio bridge.
+
+### `Library/`, `Workshop/`, `Settings/`, `UI/`, `App/`
+
+- **`Library/`:** app-shell features. It holds the wallpaper library model and the import paths (`WEProject`, `WallpaperDirectory`, zip/pkg import).
+  - Installed lists what WE lists (`InstalledLibrary`): items whose project.json `type` is scene, video, web or application. Asset items (`"category": "Asset"`, no `type`) and items downloaded only as another wallpaper's dependency (`WorkshopDependencyIndex`, a hidden file in the library folder) stay on disk, where `WorkshopAssetResolver` finds them, but aren't listed. Downloading such an item yourself makes it yours and lists it.
+  - Deleting a wallpaper removes the dependency-only items nothing left in the library references (`WorkshopDependencyCleanup`, logged). WE leaves required items to Steam, where the user can still see and unsubscribe them; here they are hidden, so keeping them would leave them on disk with no way to remove them.
+- **`Workshop/`:** steamcmd and the Workshop API. Steam secrets live in the keychain (`Core/Keychain`, `SteamCredentials`): the Web API key and the steamcmd account name. The password and Steam Guard code are piped to steamcmd on stdin and never stored; steamcmd keeps its own login token. The API key goes in the `x-webapi-key` header, never a URL.
+  - Every download lands in the Wallpaper Storage folder as `<storage>/<id>` (`WorkshopItemInstaller`): steamcmd's `force_install_dir` is a hidden `.owe-steamcmd` folder inside it, the finished item is renamed into place and the staging folder deleted. A preview the user applies moves from the preview cache into storage the same way (copied into a hidden folder there, then renamed). A storage folder on a disconnected volume fails the download with that reason; nothing falls back to another folder. steamcmd runs through `SteamCmdRunning`, so tests use a fake.
+- **`Settings/`:** settings pages.
+- **`UI/`:** the main window and shared components.
+- **`App/`:** the entry point, `AppDelegate`, windows and menus.
+- Each view model lives next to its view.
+
+### `Resources/`
+
+- `Assets.xcassets`, `Localizable.xcstrings`, media.
+- The vendored WE runtime assets live outside the app folder in `Vendor/we-assets/` (repo root). They're a **folder reference**, copied into the app as `Resources/we-assets` and never compiled.
+
+## Scene data flow
+
+1. **Load.** `Scene/Format` decodes `project.json`, `scene.json` (from disk or the `.pkg`), then models, materials, effects and textures (`.tex`).
+2. **Resolve.** `Scene/Values` binds user properties (per wallpaper), scripts and animations to typed values. Nothing downstream reads raw JSON or string-keyed dictionaries.
+3. **Build.** `Scene/Loading` produces render content: an ordered layer list in authored object order. Each layer carries its full parent transform, its effect pass graph (from `effect.json` passes, `fbos`, `bind`, `target` and combos) and its text, particle and sound state.
+4. **Render.** `Scene/Rendering` executes the pass graph each frame through translated WE shaders. Uniforms come from reflection, plus built-ins such as `g_Time`, resolutions, pointer and audio spectrum, plus resolved constants.
+5. **Script.** `Scene/Scripting` runs once per frame in one context per wallpaper instance, on its own thread. Layer objects read and write a shared object table; the renderer feeds it each object's drawn values before the frame and draws what scripts wrote after it (`SceneRendererScripts`).
+
+## Wallpaper instances
+
+A wallpaper runs **once**, however many displays show it with the same user properties.
+
+- **The registry.** `WallpaperInstanceRegistry` (`Core/`) holds the running instances, keyed by `WallpaperInstanceKey` (the wallpaper's folder, file and type, and the user-property store it runs with). It belongs to the `WallpaperViewModel` whose displays show them (`sceneInstances`, `videoInstances`), so the Workshop preview window runs its own. Each display holds its instance through a `WallpaperInstanceLease`; the instance stops when no display holds it, one main-queue turn after the last release, so a display that is rebuilt (screens changed) takes hold again first and the wallpaper keeps running. `WallpaperView` keys a display's view by its instance key (`WallpaperViewModel.instanceKeys`), so a display switched to another wallpaper, or to other properties, splits off into that instance.
+- **User properties per display.** As in WE, the same wallpaper on two displays has independent user properties (`WallpaperPropertyScope`): each display has its own store (`SceneUserProperties.<identity>.display.<id>`, started from the shared `SceneUserProperties.<identity>`). Settings → General → "Sync properties across displays" (off by default, WE's "Wallpaper per display") makes every display use the shared store. `WallpaperPropertyGroups` regroups the displays when a wallpaper, the setting or saved properties change: displays of a wallpaper whose stores are equal share one instance (the first display's store), a display whose properties differ runs its own. The sidebar and the inspector edit the selected displays' stores (`WallpaperPropertyTargets`); the running store of an instance is `WallpaperPropertyScope.runtimeKey`. AVKit videos have no properties and keep one player per video.
+- **Scenes** (and videos on the Metal path): `SceneWallpaperInstance` owns the loader, one `SceneMetalRenderer` (scripts, particles, timelines, effect graph, sound layers) and the observers. Each display is a `SceneWallpaperPresenter` with its own `MTKView`. With one display the renderer draws straight onto it. With several, the display with the highest frame rate drives (`SceneFrameSchedule`; another takes over if it stops drawing): `renderShared` renders the frame once, at the largest scene target any display needs (`SceneViewport`), through the post-process onto a finished frame; every display then `present(in:)`s it with its own size and placement, one copy pass. The cursor is read from the display it is on, through that display's placement.
+- **AVKit videos:** one `VideoWallpaperViewModel` (one decoding player, one audio player) per video; each display's `AVPlayerView` shows the shared player.
+- **Web:** a `WKWebView` can't be in two windows, so each display keeps its page. Only the page on the wallpaper's audible display plays sound; the others are muted (`WebPageAudio`).
+- **Sound** (`WallpaperAudioRouting`): each running wallpaper plays its sound once; a web wallpaper's from its audible display (the main display when it shows it, else the lowest display id), and a wallpaper running as several instances (different properties) from the instance on that display. Different wallpapers on different displays each play theirs. Settings → Audio Output silences all of them; volume and mute (the status menu) apply to all.
+- **The watchdog** gets one frame time per rendered frame of an instance, not one per display.
+
+## Invariants
+
+- **WE semantics, not approximations.** Wallpaper Engine's shaders and effect definitions are the reference. Hand-written "native" effects and name/regex heuristics are technical debt to delete, not a pattern to extend (see [`CONTRIBUTING.md`](../CONTRIBUTING.md)).
+- **Per-wallpaper state.** State belongs to a wallpaper *instance* (one per wallpaper and set of user properties, shared by the displays showing it), never to a process-wide singleton.
+- **Loud failure.** A shader that fails to build, a layer that can't be decoded, or a script that throws is logged once, with the wallpaper, layer and reason.
+- **Honest caches.** Everything derived from inputs (shader translations, `.metallib`s, parsed scenes) is keyed on its inputs *and* the version of the code that produced it.

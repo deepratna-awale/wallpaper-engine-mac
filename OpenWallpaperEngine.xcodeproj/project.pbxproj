@@ -1,0 +1,557 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		4923DF96305D13130038BE65 /* MetalFX.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4923DF94305D13130038BE65 /* MetalFX.framework */; };
+		4923DF97305D13130038BE65 /* MetalKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 4923DF95305D13130038BE65 /* MetalKit.framework */; };
+		EE1000000000000000000403 /* we-assets in Resources */ = {isa = PBXBuildFile; fileRef = EE1000000000000000000404 /* we-assets */; };
+		AA1B2C3D4E5F600200ABCD05 /* SpriteKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */; };
+		EE3000000000000000000001 /* ShaderToolchain in Frameworks */ = {isa = PBXBuildFile; productRef = EE3000000000000000000002 /* ShaderToolchain */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		4923DF94305D13130038BE65 /* MetalFX.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalFX.framework; path = System/Library/Frameworks/MetalFX.framework; sourceTree = SDKROOT; };
+		4923DF95305D13130038BE65 /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
+		5E1670732A88EBEF00D1B199 /* change-signing-certificate.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "change-signing-certificate.png"; sourceTree = "<group>"; };
+		5E1670742A88ED8400D1B199 /* import-menu.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "import-menu.png"; sourceTree = "<group>"; };
+		5E1670752A88EDF000D1B199 /* import-panel.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "import-panel.png"; sourceTree = "<group>"; };
+		5E5460C62A83026D00655D85 /* wallpaper-with-windows.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "wallpaper-with-windows.png"; sourceTree = "<group>"; };
+		5E5460C72A83027400655D85 /* wallpaper.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = wallpaper.png; sourceTree = "<group>"; };
+		5E6091F12A83E85D00D4C36C /* AUTHORS.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = AUTHORS.md; sourceTree = "<group>"; };
+		5EC47E762A2DB2E600120CCC /* Open Wallpaper Engine.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Open Wallpaper Engine.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		EE1000000000000000000404 /* we-assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = "Vendor/we-assets"; sourceTree = "<group>"; };
+		5EF4C24A2A4C9871009831E5 /* CNAME */ = {isa = PBXFileReference; lastKnownFileType = text; path = CNAME; sourceTree = "<group>"; };
+		5EF4C24B2A4C9872009831E5 /* LICENSE */ = {isa = PBXFileReference; lastKnownFileType = text; path = LICENSE; sourceTree = "<group>"; };
+		5EF4C24C2A4C98FA009831E5 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SpriteKit.framework; path = System/Library/Frameworks/SpriteKit.framework; sourceTree = SDKROOT; };
+		B4AD1D0F2AA24E8200471AC8 /* .gitignore */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitignore; sourceTree = "<group>"; };
+		EE2000000000000000000003 /* OpenWallpaperEngineTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = OpenWallpaperEngineTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		EE10000000000000000FE001 /* Exceptions for "OpenWallpaperEngine" folder in "OpenWallpaperEngine" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"OpenWallpaperEngine-Bridging-Header.h",
+				OpenWallpaperEngine.entitlements,
+				Core/ObjCExceptionCatcher.h,
+			);
+			target = 5EC47E752A2DB2E600120CCC /* OpenWallpaperEngine */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
+/* Begin PBXFileSystemSynchronizedRootGroup section */
+		5EC47E782A2DB2E600120CCC /* OpenWallpaperEngine */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EE10000000000000000FE001 /* Exceptions for "OpenWallpaperEngine" folder in "OpenWallpaperEngine" target */,
+			);
+			path = OpenWallpaperEngine;
+			sourceTree = "<group>";
+		};
+		EE2000000000000000000002 /* OpenWallpaperEngineTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = OpenWallpaperEngineTests;
+			sourceTree = "<group>";
+		};
+/* End PBXFileSystemSynchronizedRootGroup section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		5EC47E732A2DB2E600120CCC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				4923DF97305D13130038BE65 /* MetalKit.framework in Frameworks */,
+				4923DF96305D13130038BE65 /* MetalFX.framework in Frameworks */,
+				AA1B2C3D4E5F600200ABCD05 /* SpriteKit.framework in Frameworks */,
+				EE3000000000000000000001 /* ShaderToolchain in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE2000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		4923DF93305D13130038BE65 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				4923DF94305D13130038BE65 /* MetalFX.framework */,
+				4923DF95305D13130038BE65 /* MetalKit.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		5EC47E6D2A2DB2E600120CCC = {
+			isa = PBXGroup;
+			children = (
+				B4AD1D0F2AA24E8200471AC8 /* .gitignore */,
+				5E6091F12A83E85D00D4C36C /* AUTHORS.md */,
+				5EF4C24A2A4C9871009831E5 /* CNAME */,
+				5EF4C24B2A4C9872009831E5 /* LICENSE */,
+				5EF4C24C2A4C98FA009831E5 /* README.md */,
+				5EEE8D5D2A7501C800DCE41A /* resources */,
+				5EC47E782A2DB2E600120CCC /* OpenWallpaperEngine */,
+				EE1000000000000000000404 /* we-assets */,
+				EE2000000000000000000002 /* OpenWallpaperEngineTests */,
+				5EC47E772A2DB2E600120CCC /* Products */,
+				AA1B2C3D4E5F600100ABCD05 /* SpriteKit.framework */,
+				4923DF93305D13130038BE65 /* Frameworks */,
+			);
+			sourceTree = "<group>";
+		};
+		5EC47E772A2DB2E600120CCC /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5EC47E762A2DB2E600120CCC /* Open Wallpaper Engine.app */,
+				EE2000000000000000000003 /* OpenWallpaperEngineTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		5EEE8D5D2A7501C800DCE41A /* resources */ = {
+			isa = PBXGroup;
+			children = (
+				5E5460C72A83027400655D85 /* wallpaper.png */,
+				5E5460C62A83026D00655D85 /* wallpaper-with-windows.png */,
+				5E1670732A88EBEF00D1B199 /* change-signing-certificate.png */,
+				5E1670742A88ED8400D1B199 /* import-menu.png */,
+				5E1670752A88EDF000D1B199 /* import-panel.png */,
+			);
+			path = resources;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5EC47E752A2DB2E600120CCC /* OpenWallpaperEngine */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5EC47EA02A2DB2E700120CCC /* Build configuration list for PBXNativeTarget "OpenWallpaperEngine" */;
+			buildPhases = (
+				5EC47E722A2DB2E600120CCC /* Sources */,
+				5EC47E732A2DB2E600120CCC /* Frameworks */,
+				5EC47E742A2DB2E600120CCC /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				5EC47E782A2DB2E600120CCC /* OpenWallpaperEngine */,
+			);
+			name = OpenWallpaperEngine;
+			packageProductDependencies = (
+				EE3000000000000000000002 /* ShaderToolchain */,
+			);
+			productName = OpenWallpaperEngine;
+			productReference = 5EC47E762A2DB2E600120CCC /* Open Wallpaper Engine.app */;
+			productType = "com.apple.product-type.application";
+		};
+		EE2000000000000000000001 /* OpenWallpaperEngineTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EE2000000000000000000009 /* Build configuration list for PBXNativeTarget "OpenWallpaperEngineTests" */;
+			buildPhases = (
+				EE2000000000000000000004 /* Sources */,
+				EE2000000000000000000005 /* Frameworks */,
+				EE2000000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				EE2000000000000000000007 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				EE2000000000000000000002 /* OpenWallpaperEngineTests */,
+			);
+			name = OpenWallpaperEngineTests;
+			productName = OpenWallpaperEngineTests;
+			productReference = EE2000000000000000000003 /* OpenWallpaperEngineTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXContainerItemProxy section */
+		EE2000000000000000000008 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5EC47E6E2A2DB2E600120CCC /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5EC47E752A2DB2E600120CCC;
+			remoteInfo = OpenWallpaperEngine;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		EE2000000000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5EC47E752A2DB2E600120CCC /* OpenWallpaperEngine */;
+			targetProxy = EE2000000000000000000008 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXProject section */
+		5EC47E6E2A2DB2E600120CCC /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1430;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					5EC47E752A2DB2E600120CCC = {
+						CreatedOnToolsVersion = 14.3.1;
+					};
+				};
+			};
+			buildConfigurationList = 5EC47E712A2DB2E600120CCC /* Build configuration list for PBXProject "OpenWallpaperEngine" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				"zh-Hans",
+			);
+			packageReferences = (
+				EE3000000000000000000003 /* XCLocalSwiftPackageReference "Vendor/ShaderToolchain" */,
+			);
+			preferredProjectObjectVersion = 77;
+			mainGroup = 5EC47E6D2A2DB2E600120CCC;
+			productRefGroup = 5EC47E772A2DB2E600120CCC /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				5EC47E752A2DB2E600120CCC /* OpenWallpaperEngine */,
+				EE2000000000000000000001 /* OpenWallpaperEngineTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */		5EC47E742A2DB2E600120CCC /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				EE1000000000000000000403 /* we-assets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE2000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		5EC47E722A2DB2E600120CCC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EE2000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		5EC47E9E2A2DB2E700120CCC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = 35BWY46G6T;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		5EC47E9F2A2DB2E700120CCC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = 35BWY46G6T;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 13.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = NO;
+				SDKROOT = macosx;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+			};
+			name = Release;
+		};
+		5EC47EA12A2DB2E700120CCC /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = OpenWallpaperEngine/OpenWallpaperEngine.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_ASSET_PATHS = "\"OpenWallpaperEngine/Preview Content\"";
+				DEVELOPMENT_TEAM = C33D7BSFGS;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "OpenWallpaperEngine-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Open Wallpaper Engine";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = NO;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.8.1;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.winddog.wallpaper-engine";
+				PRODUCT_MODULE_NAME = OpenWallpaperEngine;
+				PRODUCT_NAME = "Open Wallpaper Engine";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "OpenWallpaperEngine/OpenWallpaperEngine-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		5EC47EA22A2DB2E700120CCC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				CODE_SIGN_ENTITLEMENTS = OpenWallpaperEngine/OpenWallpaperEngine.entitlements;
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "-";
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEAD_CODE_STRIPPING = YES;
+				DEVELOPMENT_ASSET_PATHS = "\"OpenWallpaperEngine/Preview Content\"";
+				DEVELOPMENT_TEAM = C33D7BSFGS;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "OpenWallpaperEngine-Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Open Wallpaper Engine";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
+				INFOPLIST_KEY_LSUIElement = NO;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.8.1;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.winddog.wallpaper-engine";
+				PRODUCT_MODULE_NAME = OpenWallpaperEngine;
+				PRODUCT_NAME = "Open Wallpaper Engine";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = "OpenWallpaperEngine/OpenWallpaperEngine-Bridging-Header.h";
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		EE200000000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = C33D7BSFGS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.winddog.wallpaper-engine.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Open Wallpaper Engine.app/Contents/MacOS/Open Wallpaper Engine";
+			};
+			name = Debug;
+		};
+		EE200000000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = C33D7BSFGS;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.winddog.wallpaper-engine.tests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Open Wallpaper Engine.app/Contents/MacOS/Open Wallpaper Engine";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		5EC47E712A2DB2E600120CCC /* Build configuration list for PBXProject "OpenWallpaperEngine" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EC47E9E2A2DB2E700120CCC /* Debug */,
+				5EC47E9F2A2DB2E700120CCC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5EC47EA02A2DB2E700120CCC /* Build configuration list for PBXNativeTarget "OpenWallpaperEngine" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5EC47EA12A2DB2E700120CCC /* Debug */,
+				5EC47EA22A2DB2E700120CCC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EE2000000000000000000009 /* Build configuration list for PBXNativeTarget "OpenWallpaperEngineTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EE200000000000000000000A /* Debug */,
+				EE200000000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+/* Begin XCLocalSwiftPackageReference section */
+		EE3000000000000000000003 /* XCLocalSwiftPackageReference "Vendor/ShaderToolchain" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Vendor/ShaderToolchain;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		EE3000000000000000000002 /* ShaderToolchain */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = ShaderToolchain;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 5EC47E6E2A2DB2E600120CCC /* Project object */;
+}

@@ -1,0 +1,850 @@
+//
+//  WallpaperViewModel.swift
+//  Open Wallpaper Engine
+//
+//  Created by Haren on 2023/8/14.
+//
+
+import SwiftUI
+import AVKit
+
+private extension Array {
+    subscript(safe index: Index) -> Element? {
+        indices.contains(index) ? self[index] : nil
+    }
+}
+
+/// Provide Wallpaper Database for WallpaperView and ContentView etc.
+@MainActor
+class WallpaperViewModel: ObservableObject {
+    private let persistsWallpapers: Bool
+
+    @Published var nextCurrentWallpaper: WEWallpaper =
+    WEWallpaper(using: .invalid, where: Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!) {
+        willSet {
+            guard confirmApply?(newValue) ?? true else { return }
+            if ["web", "application"].contains(newValue.project.type) {
+                if let trustedWallpapers = UserDefaults.standard.array(forKey: "TrustedWallpapers") as? [String],
+                   trustedWallpapers.contains(newValue.wallpaperDirectory.path(percentEncoded: false)) {
+                    self.setWallpaper(newValue, for: selectedScreenIds)
+                } else {
+                    AppDelegate.shared.contentViewModel.warningUnsafeWallpaperModal(which: newValue)
+                }
+            } else {
+                self.setWallpaper(newValue, for: selectedScreenIds)
+            }
+        }
+    }
+
+    /// Per-screen wallpaper assignments, keyed by CGDirectDisplayID as String.
+    @Published var wallpapers: [String: WEWallpaper] = [:] {
+        didSet {
+            if persistsWallpapers {
+                saveWallpapers()
+            }
+            refreshInstanceKeys()
+        }
+    }
+
+    /// Screens where wallpaper display is enabled.
+    @Published var enabledScreens: Set<String> = [] {
+        didSet {
+            UserDefaults.standard.set(Array(enabledScreens), forKey: "EnabledScreens")
+        }
+    }
+
+    /// The screen currently selected in the UI for configuration.
+    @Published var selectedScreenId: String = ""
+
+    /// Screens selected for the next wallpaper assignment.
+    @Published var selectedScreenIds: Set<String> = []
+
+    /// Wallpaper currently inspected in the sidebar or preview window.
+    @Published var inspectedWallpaper: WEWallpaper?
+    @Published var inspectedWorkshopItem: WorkshopItem?
+    @Published var inspectedAuthor: SteamPlayer?
+    /// Guards against firing a second Steam request for a lookup already in progress.
+    private var inFlightWorkshopId: String?
+
+    @Published var wallpaperPlacement: WallpaperPlacement = .fill {
+        didSet {
+            UserDefaults.standard.set(wallpaperPlacement.rawValue, forKey: "WallpaperPlacement")
+        }
+    }
+
+    static let defaultWallpaper = WEWallpaper(using: .invalid, where: Bundle.main.url(forResource: "WallpaperNotFound", withExtension: "mp4")!)
+
+    // MARK: - Recent wallpapers
+
+    private static let maxRecents = 10
+    private static let recentsKey = "RecentWallpapers"
+
+    @Published var recentWallpapers: [WEWallpaper] = []
+
+    @Published var playlists: [WallpaperPlaylist] = [] {
+        didSet { savePlaylists() }
+    }
+    @Published var activePlaylistID: UUID? {
+        didSet { savePlaylistSettings(); restartPlaylistTimer() }
+    }
+    @Published var playlistShuffle = false {
+        didSet { savePlaylistSettings() }
+    }
+    @Published var playlistRepeats = true {
+        didSet { savePlaylistSettings() }
+    }
+    @Published var playlistEnabled = false {
+        didSet { savePlaylistSettings(); restartPlaylistTimer() }
+    }
+
+    private var playlistTimer: Timer?
+
+    /// Holds the playlist still after safe restart stopped a wallpaper; the setting is untouched.
+    var isPlaylistSuspended = false {
+        didSet { restartPlaylistTimer() }
+    }
+    /// Asked before a wallpaper is applied; returning false cancels it. Set by `SafeRestart`.
+    var confirmApply: ((WEWallpaper) -> Bool)?
+    /// Set by `SafeRestart`: whether a wallpaper is flagged, so auto-advance can pass it over.
+    var isFlaggedBySafeRestart: ((WEWallpaper) -> Bool)?
+    /// Moves a Workshop preview being applied into the storage folder and returns it there; nil
+    /// when the wallpaper isn't a preview. Set by the app delegate.
+    var keepWorkshopPreview: ((WEWallpaper) throws -> WEWallpaper?)?
+    /// Receives wallpaper frame times. Set by `SafeRestart`.
+    var renderWatchdog: RenderWatchdog?
+    /// The scenes (and Metal videos) running on this model's displays, one per wallpaper however
+    /// many displays show it (docs/architecture.md "Wallpaper instances").
+    let sceneInstances = WallpaperInstanceRegistry<WallpaperInstanceKey, SceneWallpaperInstance>(teardown: { $0.shutdown() })
+    /// The AVKit videos running on this model's displays, one player per video.
+    let videoInstances = WallpaperInstanceRegistry<WallpaperInstanceKey, VideoWallpaperViewModel>(teardown: { $0.stop() })
+    private var playlistIndex = 0
+
+    private func loadRecents() {
+        guard let data = UserDefaults.standard.data(forKey: Self.recentsKey),
+              let saved = try? JSONDecoder().decode([WEWallpaper].self, from: data) else { return }
+        recentWallpapers = saved.filter { $0.project != .invalid }
+    }
+
+    private func saveRecents() {
+        if let data = try? JSONEncoder().encode(recentWallpapers) {
+            UserDefaults.standard.set(data, forKey: Self.recentsKey)
+        }
+    }
+
+    func addToRecents(_ wallpaper: WEWallpaper) {
+        guard wallpaper.project != .invalid else { return }
+        recentWallpapers.removeAll { $0.wallpaperDirectory == wallpaper.wallpaperDirectory }
+        recentWallpapers.insert(wallpaper, at: 0)
+        if recentWallpapers.count > Self.maxRecents {
+            recentWallpapers = Array(recentWallpapers.prefix(Self.maxRecents))
+        }
+        saveRecents()
+    }
+
+    // MARK: - Wallpaper access
+
+    /// Convenience: wallpaper for the currently selected screen in the UI.
+    var currentWallpaper: WEWallpaper {
+        get {
+            wallpapers[selectedScreenId] ?? Self.defaultWallpaper
+        }
+        set {
+            setWallpaper(newValue, for: selectedScreenIds)
+        }
+    }
+
+    var displayedWallpaper: WEWallpaper {
+        inspectedWallpaper ?? currentWallpaper
+    }
+
+    func inspect(_ wallpaper: WEWallpaper) {
+        var wallpaper = wallpaper
+        wallpaper.project.applyTaggedContentRating()
+        // A tile tap inspects twice (once via selectWallpaper, once from the tile itself). Clearing
+        // and refetching on the second call raced the first request, and Steam rejected the
+        // duplicate, so the metadata stayed empty until a later visit read it from cache.
+        let isSameWallpaper = inspectedWallpaper?.wallpaperDirectory == wallpaper.wallpaperDirectory
+        inspectedWallpaper = wallpaper
+        if !isSameWallpaper {
+            inspectedWorkshopItem = nil
+            inspectedAuthor = nil
+        }
+
+        let projectWorkshopId = wallpaper.project.workshopid?.rawValue
+        let folderWorkshopId = wallpaper.wallpaperDirectory.lastPathComponent
+        let workshopId = (projectWorkshopId?.allSatisfy(\.isNumber) == true ? projectWorkshopId : nil)
+            ?? (folderWorkshopId.allSatisfy(\.isNumber) ? folderWorkshopId : nil)
+        guard let workshopId else { return }
+        guard inFlightWorkshopId != workshopId else { return }
+
+        if let cachedItem = WorkshopMetadataStore.shared.item(for: workshopId) {
+            inspectedWorkshopItem = cachedItem
+            if let creatorId = cachedItem.creatorId,
+               let cachedAuthor = SteamPlayerStore.shared.player(for: creatorId) {
+                inspectedAuthor = cachedAuthor
+                return
+            }
+        } else if isSameWallpaper, inspectedWorkshopItem != nil {
+            return
+        }
+        inFlightWorkshopId = workshopId
+        Task { [weak self] in
+            defer { self?.inFlightWorkshopId = nil }
+            let fetched = try? await WorkshopAPIService().getItemDetails(workshopIds: [workshopId]).first
+            guard let self else { return }
+            guard let item = fetched ?? WorkshopMetadataStore.shared.item(for: workshopId) else { return }
+            guard self.displayedWallpaper.wallpaperDirectory.lastPathComponent == folderWorkshopId else { return }
+            self.inspectedWorkshopItem = item
+            if let creatorId = item.creatorId,
+               let author = try? await WorkshopAPIService().getPlayerSummary(steamId: creatorId) {
+                guard self.displayedWallpaper.wallpaperDirectory.lastPathComponent == folderWorkshopId else { return }
+                self.inspectedAuthor = author
+            }
+        }
+    }
+
+    func applyInspectedWallpaper() {
+        let wallpaper: WEWallpaper
+        do {
+            wallpaper = try keepWorkshopPreview?(displayedWallpaper) ?? displayedWallpaper
+        } catch {
+            // Applying it from the preview cache would lose it at the next cache trim.
+            OWELog.error(.workshop, "Can't keep Workshop preview \(displayedWallpaper.wallpaperDirectory.lastPathComponent): \(error)")
+            NSAlert(error: error).runModal()
+            return
+        }
+        inspectedWallpaper = wallpaper
+        nextCurrentWallpaper = wallpaper
+    }
+
+    func relocateWallpapers(from sourceDirectory: URL, to destinationDirectory: URL) {
+        func relocated(_ wallpaper: WEWallpaper) -> WEWallpaper {
+            let path = wallpaper.wallpaperDirectory.standardizedFileURL.path
+            let sourcePath = sourceDirectory.standardizedFileURL.path + "/"
+            guard path.hasPrefix(sourcePath) else { return wallpaper }
+            let suffix = String(path.dropFirst(sourcePath.count))
+            return WEWallpaper(using: wallpaper.project, where: destinationDirectory.appending(path: suffix))
+        }
+
+        wallpapers = wallpapers.mapValues(relocated)
+        recentWallpapers = recentWallpapers.map(relocated)
+        inspectedWallpaper = inspectedWallpaper.map(relocated)
+        saveRecents()
+    }
+
+    /// Get wallpaper for a specific screen.
+    func wallpaper(for screenId: String) -> WEWallpaper {
+        wallpapers[screenId] ?? Self.defaultWallpaper
+    }
+
+    /// Set wallpaper for a specific screen.
+    func setWallpaper(_ wallpaper: WEWallpaper, for screenId: String) {
+        wallpapers[screenId] = wallpaper
+        addToRecents(wallpaper)
+    }
+
+    func setWallpaper(_ wallpaper: WEWallpaper, for screenIds: Set<String>) {
+        for screenId in screenIds {
+            wallpapers[screenId] = wallpaper
+        }
+        addToRecents(wallpaper)
+    }
+
+    var activePlaylist: WallpaperPlaylist? {
+        playlists.first { $0.id == activePlaylistID }
+    }
+
+    func createPlaylist(named name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let playlist = WallpaperPlaylist(name: trimmed)
+        playlists.append(playlist)
+        activePlaylistID = playlist.id
+    }
+
+    @discardableResult
+    func createPlaylist(named name: String, wallpapers: [WEWallpaper]) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let playlist = WallpaperPlaylist(name: trimmed,
+                                          items: wallpapers
+                                            .filter { $0.project != .invalid }
+                                            .map { WallpaperPlaylistItem(wallpaper: $0) })
+        playlists.append(playlist)
+        activePlaylistID = playlist.id
+        return true
+    }
+
+    func addToPlaylist(_ wallpapers: [WEWallpaper], playlistID: UUID) {
+        for wallpaper in wallpapers { addToPlaylist(wallpaper, playlistID: playlistID) }
+    }
+
+    func deletePlaylist(_ playlist: WallpaperPlaylist) {
+        playlists.removeAll { $0.id == playlist.id }
+        if activePlaylistID == playlist.id { activePlaylistID = playlists.first?.id }
+    }
+
+    func addToPlaylist(_ wallpaper: WEWallpaper, playlistID: UUID? = nil) {
+        guard wallpaper.project != .invalid,
+              let id = playlistID ?? activePlaylistID,
+              let index = playlists.firstIndex(where: { $0.id == id }),
+              !playlists[index].items.contains(where: { $0.wallpaper.wallpaperDirectory == wallpaper.wallpaperDirectory }) else { return }
+        playlists[index].items.append(WallpaperPlaylistItem(wallpaper: wallpaper))
+    }
+
+    func removeFromPlaylist(itemID: UUID, playlistID: UUID? = nil) {
+        guard let id = playlistID ?? activePlaylistID,
+              let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+        playlists[index].items.removeAll { $0.id == itemID }
+    }
+
+    func movePlaylistItem(itemID: UUID, offset: Int, playlistID: UUID? = nil) {
+        guard let id = playlistID ?? activePlaylistID,
+              let playlistIndex = playlists.firstIndex(where: { $0.id == id }),
+              let itemIndex = playlists[playlistIndex].items.firstIndex(where: { $0.id == itemID }) else { return }
+        let destination = itemIndex + offset
+        guard playlists[playlistIndex].items.indices.contains(destination) else { return }
+        playlists[playlistIndex].items.swapAt(itemIndex, destination)
+    }
+
+    func setPlaylistItemDuration(_ duration: TimeInterval, itemID: UUID, playlistID: UUID? = nil) {
+          guard let id = playlistID ?? activePlaylistID,
+              let playlistIndex = playlists.firstIndex(where: { $0.id == id }) else { return }
+          playlists[playlistIndex].duration = max(duration, 1)
+        restartPlaylistTimer()
+    }
+
+        func setPlaylistDuration(_ duration: TimeInterval, playlistID: UUID? = nil) {
+          guard let id = playlistID ?? activePlaylistID,
+              let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+          playlists[index].duration = max(duration, 1)
+          restartPlaylistTimer()
+        }
+
+        func setPlaylistChangeWhenVideoEnds(_ enabled: Bool, playlistID: UUID? = nil) {
+          guard let id = playlistID ?? activePlaylistID,
+              let index = playlists.firstIndex(where: { $0.id == id }) else { return }
+          playlists[index].changeWhenVideoEnds = enabled
+          restartPlaylistTimer()
+        }
+
+        func advancePlaylistIfVideoEnds(_ wallpaper: WEWallpaper) {
+          guard let playlist = activePlaylist, playlist.changeWhenVideoEnds,
+              playlist.items.indices.contains(playlistIndex),
+              playlist.items[playlistIndex].wallpaper.wallpaperDirectory == wallpaper.wallpaperDirectory else { return }
+          advancePlaylistAutomatically()
+        }
+
+    func importVideoWallpaper(from url: URL) {
+        let fileManager = FileManager.default
+        let baseName = url.deletingPathExtension().lastPathComponent
+        var destination = fileManager.wallpapersDirectory.appending(path: baseName)
+        var suffix = 2
+        while fileManager.fileExists(atPath: destination.path) {
+            destination = fileManager.wallpapersDirectory.appending(path: "\(baseName) \(suffix)")
+            suffix += 1
+        }
+        let fileName = url.lastPathComponent
+        let project = WEProject(file: fileName, preview: "preview.jpg", title: baseName, type: "video")
+        let generator = AVAssetImageGenerator(asset: AVAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: CMTime(seconds: 0, preferredTimescale: 600))]) { [weak self] _, cgImage, _, _, _ in
+            guard let cgImage,
+                  let previewData = NSBitmapImageRep(cgImage: cgImage).representation(using: .jpeg, properties: [:]) else { return }
+            DispatchQueue.main.async {
+                do {
+                    try fileManager.createDirectory(at: destination, withIntermediateDirectories: true)
+                    try fileManager.copyItem(at: url, to: destination.appending(path: fileName))
+                    try previewData.write(to: destination.appending(path: "preview.jpg"), options: .atomic)
+                    try JSONEncoder().encode(project).write(to: destination.appending(path: "project.json"), options: .atomic)
+                } catch {
+                    OWELog.error(.importer, "Failed to import video: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    func addRemoteWallpaper(from url: URL) {
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+        let pathExtension = url.pathExtension.lowercased()
+        let imageExtensions = ["jpg", "jpeg", "png", "gif", "webp", "heic"]
+        let videoExtensions = ["mp4", "mov", "m4v", "webm"]
+        if imageExtensions.contains(pathExtension) {
+            importImageAsScene(from: url)
+            return
+        }
+        guard videoExtensions.contains(pathExtension) else { return }
+        importRemoteVideo(from: url)
+    }
+
+    /// Remote videos used to live only in memory, so the library — which lists folders on disk —
+    /// never showed a tile for them. They now get a real wallpaper folder whose project.json keeps
+    /// the absolute URL as its file.
+    private func importRemoteVideo(from url: URL) {
+        let fileManager = FileManager.default
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let title = baseName.isEmpty ? (url.host ?? "Remote Video") : baseName
+        var destination = fileManager.wallpapersDirectory.appending(path: title)
+        var suffix = 2
+        while fileManager.fileExists(atPath: destination.path) {
+            destination = fileManager.wallpapersDirectory.appending(path: "\(title) \(suffix)")
+            suffix += 1
+        }
+        let finalDestination = destination
+        let project = WEProject(file: url.absoluteString, preview: "preview.jpg", title: title, type: "remote-video")
+        do {
+            try fileManager.createDirectory(at: finalDestination, withIntermediateDirectories: true)
+            try JSONEncoder().encode(project)
+                .write(to: finalDestination.appending(path: "project.json"), options: .atomic)
+        } catch {
+            OWELog.error(.importer, "Failed to add remote video: \(error.localizedDescription)")
+            return
+        }
+        let wallpaper = WEWallpaper(using: project, where: finalDestination)
+        setWallpaper(wallpaper, for: selectedScreenIds)
+        inspect(wallpaper)
+
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+        generator.appliesPreferredTrackTransform = true
+        generator.generateCGImagesAsynchronously(forTimes: [NSValue(time: CMTime(seconds: 0, preferredTimescale: 600))]) { _, cgImage, _, _, _ in
+            guard let cgImage,
+                  let previewData = NSBitmapImageRep(cgImage: cgImage).representation(using: .jpeg, properties: [:]) else { return }
+            try? previewData.write(to: finalDestination.appending(path: "preview.jpg"), options: .atomic)
+        }
+    }
+
+    /// Downloads the image and writes a minimal Wallpaper Engine scene around it, so it renders
+    /// through the normal scene pipeline and the whole effect stack applies to it.
+    private func importImageAsScene(from url: URL) {
+        let fileManager = FileManager.default
+        let baseName = url.deletingPathExtension().lastPathComponent
+        let title = baseName.isEmpty ? (url.host ?? "Image Wallpaper") : baseName
+        var destination = fileManager.wallpapersDirectory.appending(path: title)
+        var suffix = 2
+        while fileManager.fileExists(atPath: destination.path) {
+            destination = fileManager.wallpapersDirectory.appending(path: "\(title) \(suffix)")
+            suffix += 1
+        }
+        let finalDestination = destination
+
+        Task { [weak self] in
+            guard let (data, _) = try? await URLSession.shared.data(from: url),
+                  let image = NSImage(data: data), image.size.width > 0 else {
+                OWELog.error(.importer, "Could not download image at \(url.absoluteString)")
+                return
+            }
+            // The scene texture loader looks for materials/<name>.<ext>, so the bytes are stored
+            // under the name the generated material references.
+            let textureExtension = ["png", "jpg", "jpeg", "gif"].contains(url.pathExtension.lowercased())
+                ? url.pathExtension.lowercased()
+                : "png"
+            let textureData = textureExtension == "png"
+                ? (NSBitmapImageRep(data: data)?.representation(using: .png, properties: [:]) ?? data)
+                : data
+            let width = Int(image.size.width)
+            let height = Int(image.size.height)
+
+            let scene: [String: Any] = [
+                "camera": [:],
+                "general": [
+                    "clearcolor": "0 0 0",
+                    "orthogonalprojection": ["width": width, "height": height]
+                ],
+                "objects": [[
+                    "id": 0,
+                    "name": "Image",
+                    "image": "models/image.json",
+                    "origin": "\(width / 2) \(height / 2) 0",
+                    "scale": "1 1 1",
+                    "angles": "0 0 0",
+                    "size": "\(width) \(height)",
+                    "visible": true
+                ]]
+            ]
+            let model: [String: Any] = ["material": "materials/image.json"]
+            let material: [String: Any] = ["passes": [["textures": ["image"]]]]
+
+            do {
+                try fileManager.createDirectory(at: finalDestination.appending(path: "models"), withIntermediateDirectories: true)
+                try fileManager.createDirectory(at: finalDestination.appending(path: "materials"), withIntermediateDirectories: true)
+                try textureData.write(to: finalDestination.appending(path: "materials/image.\(textureExtension)"), options: .atomic)
+                try JSONSerialization.data(withJSONObject: scene)
+                    .write(to: finalDestination.appending(path: "scene.json"), options: .atomic)
+                try JSONSerialization.data(withJSONObject: model)
+                    .write(to: finalDestination.appending(path: "models/image.json"), options: .atomic)
+                try JSONSerialization.data(withJSONObject: material)
+                    .write(to: finalDestination.appending(path: "materials/image.json"), options: .atomic)
+                if let preview = NSBitmapImageRep(data: data)?.representation(using: .jpeg, properties: [:]) {
+                    try preview.write(to: finalDestination.appending(path: "preview.jpg"), options: .atomic)
+                }
+                let project = WEProject(file: "scene.json", preview: "preview.jpg", title: title, type: "scene")
+                try JSONEncoder().encode(project)
+                    .write(to: finalDestination.appending(path: "project.json"), options: .atomic)
+
+                guard let self else { return }
+                let wallpaper = WEWallpaper(using: project, where: finalDestination)
+                self.setWallpaper(wallpaper, for: self.selectedScreenIds)
+                self.inspect(wallpaper)
+            } catch {
+                OWELog.error(.importer, "Failed to build image scene: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    func setContentRating(_ rating: String, for wallpaper: WEWallpaper) {
+        guard wallpaper.project.workshopid == nil else { return }
+        var updated = wallpaper
+        updated.project.contentrating = rating
+        if let data = try? JSONEncoder().encode(updated.project) {
+            try? data.write(to: updated.wallpaperDirectory.appending(path: "project.json"), options: .atomic)
+        }
+        for key in wallpapers.keys where wallpapers[key]?.wallpaperDirectory == updated.wallpaperDirectory {
+            wallpapers[key] = updated
+        }
+        inspect(updated)
+    }
+
+    func nextPlaylistWallpaper() {
+        advancePlaylist(skippingFlagged: false)
+    }
+
+    /// Timer and video-end advances. Nobody is there to confirm a wallpaper safe restart
+    /// flagged, so those are passed over instead of asking.
+    private func advancePlaylistAutomatically() {
+        advancePlaylist(skippingFlagged: true)
+    }
+
+    private func advancePlaylist(skippingFlagged: Bool) {
+        guard let playlist = activePlaylist, !playlist.items.isEmpty else { return }
+        let isFlagged = isFlaggedBySafeRestart
+        let next = playlist.nextIndex(after: playlistIndex, shuffle: playlistShuffle, repeats: playlistRepeats) { index in
+            let wallpaper = playlist.items[index].wallpaper
+            guard skippingFlagged, isFlagged?(wallpaper) == true else { return false }
+            OWELog.info(.app, "Playlist skips \"\(wallpaper.project.title)\": flagged by safe restart")
+            return true
+        }
+        guard let next else {
+            if playlistRepeats {
+                OWELog.info(.app, "Playlist \"\(playlist.name)\" has nothing left to show: every item is flagged by safe restart")
+            } else {
+                playlistEnabled = false
+            }
+            return
+        }
+        playlistIndex = next
+        setWallpaper(playlist.items[playlistIndex].wallpaper, for: selectedScreenIds)
+        restartPlaylistTimer()
+    }
+
+    func previousPlaylistWallpaper() {
+        guard let playlist = activePlaylist, !playlist.items.isEmpty else { return }
+        playlistIndex = (playlistIndex - 1 + playlist.items.count) % playlist.items.count
+        setWallpaper(playlist.items[playlistIndex].wallpaper, for: selectedScreenIds)
+        restartPlaylistTimer()
+    }
+
+    private func restartPlaylistTimer() {
+        playlistTimer?.invalidate()
+        playlistTimer = nil
+          guard persistsWallpapers, playlistEnabled, !isPlaylistSuspended, let playlist = activePlaylist,
+              let item = playlist.items[safe: playlistIndex] else { return }
+          let type = item.wallpaper.project.type.lowercased()
+          if playlist.changeWhenVideoEnds && (type == "video" || type == "remote-video") { return }
+          playlistTimer = Timer.scheduledTimer(withTimeInterval: playlist.duration, repeats: false) { [weak self] _ in
+            self?.advancePlaylistAutomatically()
+        }
+    }
+
+    private func savePlaylists() {
+        guard let data = try? JSONEncoder().encode(playlists) else { return }
+        UserDefaults.standard.set(data, forKey: "WallpaperPlaylists")
+    }
+
+    private func savePlaylistSettings() {
+        UserDefaults.standard.set(activePlaylistID?.uuidString, forKey: "ActiveWallpaperPlaylist")
+        UserDefaults.standard.set(playlistShuffle, forKey: "WallpaperPlaylistShuffle")
+        UserDefaults.standard.set(playlistRepeats, forKey: "WallpaperPlaylistRepeats")
+        UserDefaults.standard.set(playlistEnabled, forKey: "WallpaperPlaylistEnabled")
+    }
+
+    func selectScreen(_ screenId: String, extendingSelection: Bool) {
+        if extendingSelection {
+            if selectedScreenIds.contains(screenId) {
+                selectedScreenIds.remove(screenId)
+            } else {
+                selectedScreenIds.insert(screenId)
+            }
+        } else {
+            selectedScreenIds = [screenId]
+        }
+        selectedScreenId = screenId
+    }
+
+    func isScreenEnabled(_ screenId: String) -> Bool {
+        enabledScreens.contains(screenId)
+    }
+
+    /// The app's "Audio Output" setting; off silences every wallpaper. Set by the app delegate.
+    @Published var audioOutputEnabled = true
+
+    /// Whether a running wallpaper instance (scene, video) plays its sound: each plays it once,
+    /// however many displays show it (`WallpaperAudioRouting`).
+    var playsInstanceAudio: Bool { audioOutputEnabled }
+
+    /// Whether the instance `key` plays its wallpaper's sound: a wallpaper plays once, so when its
+    /// displays run it as several instances (different properties), only the instance on its
+    /// audible display does (`WallpaperAudioRouting.audibleInstance`).
+    func playsAudio(for key: WallpaperInstanceKey) -> Bool {
+        guard audioOutputEnabled else { return false }
+        guard persistsWallpapers else { return true }
+        let audible = WallpaperAudioRouting.audibleInstance(
+            of: key.wallpaper, instanceKeys: instanceKeys, enabledScreens: enabledScreens,
+            mainScreen: NSScreen.main.map(Self.screenId(for:)))
+        return audible.map { $0 == key } ?? true
+    }
+
+    // MARK: - User properties per display
+
+    /// "Sync properties across displays" (Settings → General); set by the app delegate.
+    @Published var syncsPropertiesAcrossDisplays = GlobalSettings().syncPropertiesAcrossDisplays {
+        didSet { if oldValue != syncsPropertiesAcrossDisplays { refreshInstanceKeys() } }
+    }
+
+    /// Each display's running instance: its wallpaper and the user properties it runs with
+    /// (`WallpaperPropertyGroups`). Refreshed when a display's wallpaper, the sync setting or saved
+    /// properties change; `WallpaperView` keys a display's view by it.
+    @Published private(set) var instanceKeys: [String: WallpaperInstanceKey] = [:]
+    private var settingsIdentities: [String: WallpaperSettingsIdentity] = [:]
+    private var propertiesSavedObserver: NSObjectProtocol?
+
+    /// The instance `screenId` shows.
+    func instanceKey(for screenId: String) -> WallpaperInstanceKey {
+        instanceKeys[screenId] ?? WallpaperInstanceKey(wallpaper(for: screenId))
+    }
+
+    /// Whose properties editing `screenId`'s wallpaper changes: the shared store while synced
+    /// (and in the Workshop preview, which has no real display), else the display's own.
+    func propertyScope(for screenId: String) -> WallpaperPropertyScope {
+        syncsPropertiesAcrossDisplays || !persistsWallpapers ? .shared : .display(screenId)
+    }
+
+    /// The scopes an edit of `wallpaper`'s properties in the sidebar or inspector goes to: the
+    /// selected display's, then those of the other selected displays showing it. The first is shown.
+    func editedPropertyScopes(of wallpaper: WEWallpaper) -> [WallpaperPropertyScope] {
+        let others = selectedScreenIds.sorted().filter {
+            $0 != selectedScreenId && self.wallpaper(for: $0).wallpaperDirectory == wallpaper.wallpaperDirectory
+        }
+        var scopes: [WallpaperPropertyScope] = []
+        for screen in [selectedScreenId] + others where !screen.isEmpty {
+            let scope = propertyScope(for: screen)
+            if !scopes.contains(scope) { scopes.append(scope) }
+        }
+        return scopes.isEmpty ? [.shared] : scopes
+    }
+
+    /// Regroups the displays by their properties. Each display showing a wallpaper with properties
+    /// unsynced gets its own store, started from the shared one (`WallpaperSettingsIdentity.seed`).
+    func refreshInstanceKeys() {
+        let synced = syncsPropertiesAcrossDisplays || !persistsWallpapers
+        let assignments = wallpapers.mapValues { WallpaperInstanceKey($0) }
+        let keys = WallpaperPropertyGroups.instanceKeys(assignments: assignments, synced: synced) { [self] key, scope in
+            guard let identity = settingsIdentity(directory: key.directory) else { return [:] }
+            identity.seed(scope)
+            return identity.stored(.userProperties, scope: scope) as? [String: String] ?? [:]
+        }
+        if keys != instanceKeys { instanceKeys = keys }
+    }
+
+    /// The settings identity of the wallpaper in `directory`, resolved once; nil for a folder
+    /// without a project.json (the placeholder), which has no properties.
+    private func settingsIdentity(directory: String) -> WallpaperSettingsIdentity? {
+        if let identity = settingsIdentities[directory] { return identity }
+        let url = URL(fileURLWithPath: directory, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: url.appending(path: "project.json").path) else { return nil }
+        let identity = WallpaperSettingsIdentity.resolve(directory: url)
+        settingsIdentities[directory] = identity
+        return identity
+    }
+
+    /// Whether `screenId`'s view of its wallpaper plays the sound, for wallpapers that keep a view
+    /// per display (web): only the one on the wallpaper's audible display does.
+    func shouldPlayAudio(on screenId: String) -> Bool {
+        guard audioOutputEnabled else { return false }
+        guard persistsWallpapers else { return true }
+        let key = WallpaperInstanceKey(wallpaper(for: screenId))
+        let audible = WallpaperAudioRouting.audibleScreen(
+            of: key, assignments: wallpapers.mapValues { WallpaperInstanceKey($0) },
+            enabledScreens: enabledScreens, mainScreen: NSScreen.main.map(Self.screenId(for:)))
+        return audible == screenId
+    }
+
+    func toggleScreen(_ screenId: String) {
+        if enabledScreens.contains(screenId) {
+            enabledScreens.remove(screenId)
+        } else {
+            enabledScreens.insert(screenId)
+        }
+        AppDelegate.shared.rebuildWallpaperWindows()
+    }
+
+    /// Remove a wallpaper from all screens (e.g., when unsubscribing).
+    func removeWallpaperFromAllScreens(directory: URL) {
+        for (key, wp) in wallpapers {
+            if wp.wallpaperDirectory == directory {
+                wallpapers[key] = Self.defaultWallpaper
+            }
+        }
+    }
+
+    var lastPlayRate: Float = 1.0
+    @Published public var playRate: Float = 1.0 {
+        willSet {
+            guard persistsWallpapers else { return }
+            if newValue == 0.0 {
+                for (index, item) in AppDelegate.shared.statusItem.menu!.items.enumerated() {
+                    if item.title == "Pause" {
+                        AppDelegate.shared.statusItem.menu!.items[index] =
+                            .init(title: "Resume", systemImage: "play.fill", action: #selector(AppDelegate.shared.resume), keyEquivalent: "")
+                    }
+                }
+            } else {
+                for (index, item) in AppDelegate.shared.statusItem.menu!.items.enumerated() {
+                    if item.title == "Resume" {
+                        AppDelegate.shared.statusItem.menu!.items[index] =
+                            .init(title: "Pause", systemImage: "pause.fill", action: #selector(AppDelegate.shared.pause), keyEquivalent: "")
+                    }
+                }
+            }
+        }
+        didSet {
+            self.lastPlayRate = oldValue
+            if arePlaybackRatesLinked {
+                audioPlayRate = playRate
+            }
+        }
+    }
+
+    @Published var audioPlayRate: Float = 1.0
+    @Published var arePlaybackRatesLinked = true {
+        didSet {
+            if arePlaybackRatesLinked {
+                audioPlayRate = playRate
+            }
+        }
+    }
+
+    var lastPlayVolume: Float = 1.0
+    @Published public var playVolume: Float = 1.0 {
+        willSet {
+            guard persistsWallpapers else { return }
+            if newValue == 0.0 {
+                for (index, item) in AppDelegate.shared.statusItem.menu!.items.enumerated() {
+                    if item.title == "Mute" {
+                        AppDelegate.shared.statusItem.menu!.items[index] =
+                            .init(title: String(localized: "Unmute"), systemImage: "speaker.fill", action: #selector(AppDelegate.shared.unmute), keyEquivalent: "")
+                    }
+                }
+            } else {
+                for (index, item) in AppDelegate.shared.statusItem.menu!.items.enumerated() {
+                    if item.title == "Unmute" {
+                        AppDelegate.shared.statusItem.menu!.items[index] =
+                            .init(title: String(localized: "Mute"), systemImage: "speaker.slash.fill", action: #selector(AppDelegate.shared.mute), keyEquivalent: "")
+                    }
+                }
+            }
+        }
+        didSet {
+            self.lastPlayVolume = oldValue
+        }
+    }
+
+    init(persistsWallpapers: Bool = true) {
+        self.persistsWallpapers = persistsWallpapers
+        if let storedPlacement = UserDefaults.standard.string(forKey: "WallpaperPlacement"),
+           let placement = WallpaperPlacement(rawValue: storedPlacement) {
+            wallpaperPlacement = placement
+        }
+        propertiesSavedObserver = NotificationCenter.default.addObserver(
+            forName: .wallpaperPropertiesDidSave, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshInstanceKeys() }
+        }
+        guard persistsWallpapers else {
+            self.selectedScreenId = "preview"
+            self.selectedScreenIds = [selectedScreenId]
+            refreshInstanceKeys()
+            return
+        }
+
+        if let data = UserDefaults.standard.data(forKey: "WallpaperPlaylists"),
+           let saved = try? JSONDecoder().decode([WallpaperPlaylist].self, from: data) {
+            self.playlists = saved
+        }
+        if let value = UserDefaults.standard.string(forKey: "ActiveWallpaperPlaylist") {
+            self.activePlaylistID = UUID(uuidString: value)
+        }
+        if self.activePlaylistID == nil {
+            self.activePlaylistID = self.playlists.first?.id
+        }
+        self.playlistShuffle = UserDefaults.standard.bool(forKey: "WallpaperPlaylistShuffle")
+        self.playlistRepeats = UserDefaults.standard.object(forKey: "WallpaperPlaylistRepeats") == nil
+            ? true : UserDefaults.standard.bool(forKey: "WallpaperPlaylistRepeats")
+        self.playlistEnabled = UserDefaults.standard.bool(forKey: "WallpaperPlaylistEnabled")
+
+        // Load per-screen wallpapers
+        if let data = UserDefaults.standard.data(forKey: "ScreenWallpapers"),
+           let saved = try? JSONDecoder().decode([String: WEWallpaper].self, from: data) {
+            // Filter out any compound keys (screenId_spaceId) from previous per-space experiment
+            self.wallpapers = saved.filter { !$0.key.contains("_") }
+        }
+        // Migrate legacy single wallpaper
+        else if let json = UserDefaults.standard.data(forKey: "CurrentWallpaper"),
+                let wallpaper = try? JSONDecoder().decode(WEWallpaper.self, from: json) {
+            let mainId = Self.mainScreenId()
+            self.wallpapers = [mainId: wallpaper]
+        }
+
+        // Load enabled screens (default: all connected screens enabled)
+        if let saved = UserDefaults.standard.array(forKey: "EnabledScreens") as? [String] {
+            self.enabledScreens = Set(saved)
+        } else {
+            self.enabledScreens = Set(NSScreen.screens.map { Self.screenId(for: $0) })
+        }
+
+        // Default the active screen to main while assigning wallpapers to all desktops.
+        self.selectedScreenId = Self.mainScreenId()
+        self.selectedScreenIds = Set(NSScreen.screens.map { Self.screenId(for: $0) })
+
+        // Load recent wallpapers
+        loadRecents()
+        restartPlaylistTimer()
+        refreshInstanceKeys()
+    }
+
+    // MARK: - Screen ID helpers
+
+    static func screenId(for screen: NSScreen) -> String {
+        let displayId = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? CGDirectDisplayID ?? 0
+        return String(displayId)
+    }
+
+    static func mainScreenId() -> String {
+        guard let main = NSScreen.main else { return "0" }
+        return screenId(for: main)
+    }
+
+    static func screenName(for screen: NSScreen) -> String {
+        screen.localizedName
+    }
+
+    // MARK: - Persistence
+
+    private func saveWallpapers() {
+        if let data = try? JSONEncoder().encode(wallpapers) {
+            UserDefaults.standard.set(data, forKey: "ScreenWallpapers")
+        }
+        // Keep legacy key updated for backward compat
+        if let data = try? JSONEncoder().encode(currentWallpaper) {
+            UserDefaults.standard.set(data, forKey: "CurrentWallpaper")
+        }
+    }
+}

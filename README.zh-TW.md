@@ -59,7 +59,7 @@ Open Wallpaper Engine（修補版）
 Cmd+點擊選取多個桌布，右鍵選擇批次取消訂閱。
 
 ### 桌布儲存隔離
-桌布現在儲存在 `~/Documents/Open Wallpaper Engine/`，不再使用原始 Documents 目錄，避免克隆專案時出現「error」桌布。
+桌布現在儲存在 `~/Documents/OpenWallpaperEngine/`，不再使用原始 Documents 目錄，避免克隆專案時出現「error」桌布。
 
 ## 修補內容
 
@@ -114,7 +114,7 @@ Cmd+點擊選取多個桌布，右鍵選擇批次取消訂閱。
 ```sh
 git clone https://github.com/unayung/wallpaper-engine-mac
 cd wallpaper-engine-mac
-open "Open Wallpaper Engine.xcodeproj"
+open "OpenWallpaperEngine.xcodeproj"
 ```
 
 在 Xcode 中，將簽署憑證更改為您自己的或選擇「Sign to Run Locally」，然後按 `Cmd + R` 建置並執行。
@@ -132,7 +132,7 @@ open "Open Wallpaper Engine.xcodeproj"
 
 - **資料夾：** 檔案 > 從資料夾匯入——選擇包含 `project.json` 的桌布資料夾
 - **Zip：** 檔案 > 匯入 或拖放包含桌布套件的 `.zip` 檔案
-- **手動：** 直接將桌布資料夾複製到 `~/Documents/Open Wallpaper Engine/`
+- **手動：** 直接將桌布資料夾複製到 `~/Documents/OpenWallpaperEngine/`
 
 ## 變更的檔案（相對上游）
 
@@ -146,10 +146,10 @@ open "Open Wallpaper Engine.xcodeproj"
 - `Services/SceneParsers/PKGParser.swift` — PKGV 封存解析器
 - `Services/SceneParsers/TEXParser.swift` — TEXV 紋理解析器
 - `Services/SceneParsers/SceneModels.swift` — Scene JSON 資料模型
-- `Services/SceneWallpaperViewModel.swift` — 場景載入與 SpriteKit 渲染
-- `Services/SteamCmdService.swift` — steamcmd 偵測、登入與創意工坊下載
-- `Services/WorkshopAPIService.swift` — Steam Web API 客戶端
-- `Services/WorkshopViewModel.swift` — 創意工坊瀏覽器狀態管理
-- `Services/WallpaperDirectory.swift` — 集中式桌布儲存路徑
-- `Services/ZipImporter.swift` — Zip 檔案解壓與匯入
+- `Scene/Loading/SceneWallpaperViewModel.swift` — 場景載入（供 Metal 渲染器使用）
+- `Workshop/SteamCmdService.swift` — steamcmd 偵測、登入與創意工坊下載
+- `Workshop/WorkshopAPIService.swift` — Steam Web API 客戶端
+- `Workshop/WorkshopViewModel.swift` — 創意工坊瀏覽器狀態管理
+- `Library/WallpaperDirectory.swift` — 集中式桌布儲存路徑
+- `Library/Import/ZipImporter.swift` — Zip 檔案解壓與匯入
 - `ContentView/Components/WorkshopView.swift` — 創意工坊瀏覽器 UI

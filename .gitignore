@@ -7,6 +7,10 @@ xcuserdata/
 build/
 DerivedData/
 
+## Stray compiler/profiler output
+*.profraw
+*.spv
+
 ## OS junk
 .DS_Store
 Thumbs.db

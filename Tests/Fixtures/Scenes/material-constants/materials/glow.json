@@ -1,0 +1,15 @@
+{
+	"passes" : [
+		{
+			"blending" : "translucent",
+			"shader" : "bloomblur",
+			"constantshadervalues" : {
+				"brightness" : 3,
+				"blur" : 2,
+				"strength" : 1.5,
+				"threshold" : 0.2,
+				"exposure" : 1
+			}
+		}
+	]
+}

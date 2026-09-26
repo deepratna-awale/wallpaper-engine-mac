@@ -1,0 +1,209 @@
+name: Release
+
+# Builds, signs, notarizes and publishes the app.
+#
+# Required repository secrets:
+#   BUILD_CERTIFICATE_BASE64  Developer ID Application .p12, base64 encoded
+#                             (base64 -i cert.p12 | pbcopy)
+#   P12_PASSWORD              password used when exporting that .p12
+#   KEYCHAIN_PASSWORD         any throwaway string; secures the temporary keychain
+#   DEVELOPMENT_TEAM          10-character Apple Team ID
+#   APPLE_ID                  Apple ID email used for notarization
+#   APPLE_APP_PASSWORD        app-specific password from appleid.apple.com
+#   USER_PAT                  PAT used to publish the release
+#
+# Trigger by pushing a tag (git tag v0.9.0 && git push origin v0.9.0) or manually.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.9.0)"
+        required: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 60
+    env:
+      SCHEME: "OpenWallpaperEngine"
+      PROJECT: "OpenWallpaperEngine.xcodeproj"
+      APP_NAME: "Open Wallpaper Engine"
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7.0.1
+
+      - name: Use the supported Xcode
+        # The same Xcode as CI (the oldest the project supports), so a release builds what CI tested.
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app || { echo "::error::Xcode 16.4 not on the runner"; exit 1; }
+          xcodebuild -version
+
+      - name: Import signing certificate
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/app-signing.keychain-db"
+
+          echo -n "$BUILD_CERTIFICATE_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$P12_PASSWORD" -A \
+            -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          # Let codesign use the key without an interactive prompt.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH" >/dev/null
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain
+
+          rm -f "$CERT_PATH"
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+
+      - name: Resolve version
+        id: version
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Archive
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          set -euo pipefail
+          xcodebuild archive \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -destination "generic/platform=macOS" \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="Developer ID Application" \
+            DEVELOPMENT_TEAM="$DEVELOPMENT_TEAM" \
+            OTHER_CODE_SIGN_FLAGS="--timestamp"
+
+      - name: Export signed app
+        env:
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key><string>developer-id</string>
+            <key>teamID</key><string>$DEVELOPMENT_TEAM</string>
+            <key>signingStyle</key><string>manual</string>
+            <key>destination</key><string>export</string>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/app.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -exportPath "$RUNNER_TEMP/export"
+
+      - name: Verify bundle before notarizing
+        # Shaders compile with glslang/SPIRV-Cross linked into the app, and the WE assets are
+        # bundled: the app must need nothing from Homebrew or a Wallpaper Engine install.
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/export/$APP_NAME.app"
+          BINARY="$APP/Contents/MacOS/$APP_NAME"
+
+          test ! -e "$APP/Contents/Resources/shader-tools" \
+            || { echo "::error::stale shader-tools in the bundle"; exit 1; }
+          test -f "$APP/Contents/Resources/we-assets/shaders/common.h" \
+            || { echo "::error::bundled WE assets missing"; exit 1; }
+
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          codesign -dv --verbose=4 "$APP" 2>&1 | tee "$RUNNER_TEMP/codesign.txt"
+          grep -q "Authority=Developer ID Application" "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::not Developer ID signed"; exit 1; }
+          grep -Eq "flags=.*runtime" "$RUNNER_TEMP/codesign.txt" \
+            || { echo "::error::hardened runtime is off"; exit 1; }
+
+          # Only system libraries: nothing from Homebrew or elsewhere.
+          # (A universal binary lists each architecture under a "<path> (architecture …):" line.)
+          if otool -L "$BINARY" | grep -v ':$' | awk '{print $1}' \
+               | grep -Ev '^(/usr/lib/|/System/Library/)'; then
+            echo "::error::the app links a non-system library"; exit 1
+          fi
+          # No executables besides the app's own.
+          extra=$(find "$APP/Contents" -type f -perm -u+x ! -path "$BINARY" -print)
+          test -z "$extra" || { echo "::error::unexpected executables: $extra"; exit 1; }
+
+      - name: Notarize and staple
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          DEVELOPMENT_TEAM: ${{ secrets.DEVELOPMENT_TEAM }}
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/export/$APP_NAME.app"
+          ZIP="$RUNNER_TEMP/notarize.zip"
+
+          ditto -c -k --keepParent "$APP" "$ZIP"
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_PASSWORD" \
+            --team-id "$DEVELOPMENT_TEAM" \
+            --wait
+
+          # Staple the app itself, then repackage; a zip cannot hold the ticket.
+          xcrun stapler staple "$APP"
+          xcrun stapler validate "$APP"
+
+      - name: Package release archive
+        id: package
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/export/$APP_NAME.app"
+          OUT="$RUNNER_TEMP/OpenWallpaperEngine-${{ steps.version.outputs.version }}.zip"
+          ditto -c -k --keepParent "$APP" "$OUT"
+          echo "path=$OUT" >> "$GITHUB_OUTPUT"
+          shasum -a 256 "$OUT" | tee "$OUT.sha256"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: OpenWallpaperEngine-${{ steps.version.outputs.version }}
+          path: |
+            ${{ steps.package.outputs.path }}
+            ${{ steps.package.outputs.path }}.sha256
+          if-no-files-found: error
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3.0.3
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            ${{ steps.package.outputs.path }}
+            ${{ steps.package.outputs.path }}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.USER_PAT }}
+
+      - name: Clean up keychain
+        if: always()
+        run: security delete-keychain "$RUNNER_TEMP/app-signing.keychain-db" || true

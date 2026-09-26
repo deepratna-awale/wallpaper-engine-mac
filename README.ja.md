@@ -59,7 +59,7 @@ Open Wallpaper Engine（パッチ版）
 Cmd+クリックで複数の壁紙を選択し、右クリックで一括サブスクライブ解除。
 
 ### 壁紙ストレージの分離
-壁紙は `~/Documents/Open Wallpaper Engine/` に保存されるようになり、Documents ディレクトリを直接使用しなくなりました。リポジトリをクローンした際の「error」壁紙を防止します。
+壁紙は `~/Documents/OpenWallpaperEngine/` に保存されるようになり、Documents ディレクトリを直接使用しなくなりました。リポジトリをクローンした際の「error」壁紙を防止します。
 
 ## パッチ内容
 
@@ -114,7 +114,7 @@ WebGL ベースの壁紙は `WKWebView` がローカルファイルアクセス�
 ```sh
 git clone https://github.com/unayung/wallpaper-engine-mac
 cd wallpaper-engine-mac
-open "Open Wallpaper Engine.xcodeproj"
+open "OpenWallpaperEngine.xcodeproj"
 ```
 
 Xcode で署名証明書を自分のものに変更するか「Sign to Run Locally」を選択し、`Cmd + R` でビルド・実行します。
@@ -132,7 +132,7 @@ Xcode で署名証明書を自分のものに変更するか「Sign to Run Local
 
 - **フォルダ：** ファイル > フォルダからインポート — `project.json` を含む壁紙フォルダを選択
 - **Zip：** ファイル > インポート またはドラッグ＆ドロップで `.zip` ファイルを読み込み
-- **手動：** 壁紙フォルダを `~/Documents/Open Wallpaper Engine/` に直接コピー
+- **手動：** 壁紙フォルダを `~/Documents/OpenWallpaperEngine/` に直接コピー
 
 ## 変更ファイル（上流との差分）
 
@@ -146,10 +146,10 @@ Xcode で署名証明書を自分のものに変更するか「Sign to Run Local
 - `Services/SceneParsers/PKGParser.swift` — PKGV アーカイブパーサー
 - `Services/SceneParsers/TEXParser.swift` — TEXV テクスチャパーサー
 - `Services/SceneParsers/SceneModels.swift` — Scene JSON データモデル
-- `Services/SceneWallpaperViewModel.swift` — シーン読み込みと SpriteKit レンダリング
-- `Services/SteamCmdService.swift` — steamcmd 検出、ログイン、Workshop ダウンロード
-- `Services/WorkshopAPIService.swift` — Steam Web API クライアント
-- `Services/WorkshopViewModel.swift` — Workshop ブラウザ状態管理
-- `Services/WallpaperDirectory.swift` — 集中壁紙ストレージパス
-- `Services/ZipImporter.swift` — Zip ファイル解凍とインポート
+- `Scene/Loading/SceneWallpaperViewModel.swift` — シーン読み込み（Metal レンダラー用）
+- `Workshop/SteamCmdService.swift` — steamcmd 検出、ログイン、Workshop ダウンロード
+- `Workshop/WorkshopAPIService.swift` — Steam Web API クライアント
+- `Workshop/WorkshopViewModel.swift` — Workshop ブラウザ状態管理
+- `Library/WallpaperDirectory.swift` — 集中壁紙ストレージパス
+- `Library/Import/ZipImporter.swift` — Zip ファイル解凍とインポート
 - `ContentView/Components/WorkshopView.swift` — Workshop ブラウザ UI
