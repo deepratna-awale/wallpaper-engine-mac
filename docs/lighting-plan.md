@@ -1,6 +1,6 @@
 # Lighting, reflections, bloom and HDR: evidence and plan
 
-**Status: 2026-09-26. Research only; nothing below is implemented yet.** This covers roadmap area 5 (lighting and reflections) and the image-material part of area 1 item 3 that area 5 needs: 3 library image layers fall back to our native draw because their materials set `LIGHTING`/`REFLECTION`. It sets out:
+**Status: 2026-09-26. L0 (format, values, settings and seams) is done; the seams are in §4.4. Nothing draws differently yet.** This covers roadmap area 5 (lighting and reflections) and the image-material part of area 1 item 3 that area 5 needs: 3 library image layers fall back to our native draw because their materials set `LIGHTING`/`REFLECTION`. It sets out:
 
 - WE's format for lights and the `general` lighting, bloom and HDR settings, with a survey of the library;
 - how `wallpaper64.exe` collects lights, generates `#require LightingV1`, reflects, blooms, tone-maps and shadows;
@@ -38,9 +38,9 @@ A light is a scene object with the usual `origin`, `angles`, `scale`, `parent`, 
 
 | Key | Type (offset) | WE default | Meaning |
 |---|---|---|---|
-| `light` | enum (0x2c0) | legacy `point` | `lpoint`=0, `lspot`=1, `ltube`=2, `ldirectional`=3; `point`=5 is the **legacy** type (4 fixed slots, §2.2). No other names exist. |
+| `light` | enum (0x2c0) | legacy `point` | `lpoint`=0, `lspot`=1, `ltube`=2, `ldirectional`=3; `point`=5 is the **legacy** type (4 fixed slots, §2.2). No other names exist. An unknown name is taken to leave the constructor's 5 [?: the enum setter wasn't traced]; we log it. A `null` `light` is no light, as for `sound`. |
 | `color` | vec3 (0x2cc) | 0 0 0 | |
-| `intensity` | float (0x2e4) | 0 [?] | multiplies the colour (premultiplied) |
+| `intensity` | float (0x2e4) | 0 (the constructor zeroes 0x2e0…0x2e7 at 0x14019047f) | multiplies the colour (premultiplied) |
 | `radius` | float (0x2e8) | 1 | falloff `saturate(1 − d/radius)^exponent` |
 | `exponent` | float (0x2ec) | 2 | |
 | `innercone`, `outercone` | float (0x2f0, 0x2f4) | 20, 30 | half-angles in degrees; the shader gets their cosines |
@@ -56,8 +56,8 @@ A light points along its **local +X** axis. The world matrix is row-major, and r
 
 | Key | WE default (scene constructor offset) | Notes |
 |---|---|---|
-| `ambientcolor`, `skylightcolor` | constructor (0,0,0) [?] (0x368, 0x374). Every library scene authors both, mostly 0.3 grey. | Copied into the frame context at load (0x140187e4a) and on change (0x1401863f0). Model shaders mix them by `N.y·0.5+0.5`; `genericimage4` uses the ambient colour alone. |
-| `lightconfig` | absent | `{"point":n,"spot":n,"tube":n,"directional":n,"spotshadow":n,"spotcookie":n,"spotshadowcookie":n,"directionalshadow":n,"pointshadow":n}`. **It is the light budget.** Without it, new-style lights have no effect (§2.2). |
+| `ambientcolor`, `skylightcolor` | constructor (0,0,0) (0x368…0x37c, zeroed at 0x140186f68…0x140186f7d). Every library scene authors both, mostly 0.3 grey. | Copied into the frame context at load (0x140187e4a) and on change (0x1401863f0). Model shaders mix them by `N.y·0.5+0.5`; `genericimage4` uses the ambient colour alone. |
+| `lightconfig` | absent | `{"point":n,"spot":n,"tube":n,"directional":n,"spotshadow":n,"spotcookie":n,"spotshadowcookie":n,"directionalshadow":n,"pointshadow":n}`. **It is the light budget.** Without it, new-style lights have no effect (§2.2). Each count is its integer masked to the field width (4 bits base, 2 bits subset: 20 → 4); a value that isn't a number is skipped. |
 | `bloom` | false (scene flag 0x2) | |
 | `bloomstrength`, `bloomthreshold` | 2.0 (0x3bc), 0.65 (0x3c0) | LDR bloom |
 | `bloomtint` | 1 1 1 (0x3d8) | both chains |
@@ -176,7 +176,7 @@ No particle material turns on lighting. 17 passes in 9 scenes set `LIGHTING` and
   - 4-bit `point`, `spot`, `tube` and `directional`;
   - 2-bit `spotshadow`, `spotcookie`, `spotshadowcookie`, `directionalshadow` and `pointshadow`.
 
-  The base counts include their shadow and cookie subsets. With the user's shadows disabled, `spotshadowcookie` folds into `spotcookie` and the other shadow counts drop to 0. **Without `lightconfig`, the per-frame packer returns early (`0x140190cab`) and every `LIGHTS_*` combo is 0 [C].**
+  The word is point bits 0–3, spot 4–7, tube 8–11, directional 12–15, spotshadow 16–17, spotcookie 18–19, spotshadowcookie 20–21, directionalshadow 22–23, pointshadow 24–25. The base counts include their shadow and cookie subsets. With the user's shadows disabled (0x140187c39), `spotshadowcookie` is OR-ed (bitwise, not added) into `spotcookie`'s bits and the other shadow counts drop to 0. **Without `lightconfig`, the per-frame packer returns early (`0x140190cab`) and every `LIGHTS_*` combo is 0 [C].**
 - **Per frame** (`0x140190c80`, called at `0x14018031a`):
   1. Sort all lights (`0x140186990`, comparator `0x14019f490`): by type ascending; then by cookie/shadow flags descending (shadow+cookie, cookie, shadow, none); then by `dot(position, cameraForward)` ascending (ctx+0x160 [L]).
   2. Walk the sorted list and drop any light past its type's budget. Sub-group overflow isn't checked: WE trusts `lightconfig`.
@@ -391,7 +391,7 @@ Most-used first: **B1 (bloom, 24 scenes)** and **A1–A3 (lighting)** are the cr
 
 ### 4.3 Work packages
 
-**L0 — Format, values and seams (one agent, first, small).**
+**L0 — Format, values and seams (one agent, first, small). Done; what landed is in §4.4.**
 - **Files:** new `Scene/Format/SceneLight.swift` (`WESceneLight`: kind enum with legacy `point`, every field of §1.1 with WE's defaults, bound values through `SceneRawValue`); `Scene/Format/SceneObject.swift` (the `light` key); `Scene/Format/SceneDocument.swift` and `Scene/Format/SceneValueFields.swift` (`hdr`, `bloomhdr*`, `lightconfig` as `WELightConfig`); `Scene/Values/SceneGeneralSettings.swift` (the HDR defaults of §1.2; `SceneBloomSettings` gains the HDR fields).
 - **Seams, with no output change:**
   - new `Scene/Shaders/SceneEngineCombos.swift`: a value type {hdr, sceneOrtho, lightBudget, shadowQuality, cookie} and one function that turns it into combos, threaded through `ImageMaterialPlan`, `SceneEffectPlan` and `ParticleMaterialPlanBuilder`. For now it returns nothing, so there is no revision bump.
@@ -403,7 +403,7 @@ Most-used first: **B1 (bloom, 24 scenes)** and **A1–A3 (lighting)** are the cr
   - `WEAuthoredValuesTests`: the HDR defaults.
 
 **A1 — The LightingV1 generator and light combos.**
-- **Files:** new `Scene/Shaders/LightingV1Require.swift`, a port of `re-lights/lightingv1_gen.py` (strings verbatim from `lightingv1_fragments.txt`, the cascade quirk included); `Shaders/ShaderSource.swift` (`stubRequires` → the generator, given the variant's combos; an unknown `#require` stays a logged comment); the `lightBudget` → `LIGHTS_*`, `LIGHTS_SHADOW_MAPPING*` and `LIGHTS_COOKIE` mapping in `SceneEngineCombos.swift`. Bump the revision.
+- **Files:** new `Scene/Shaders/LightingV1Require.swift`, a port of `re-lights/lightingv1_gen.py` (strings verbatim from `lightingv1_fragments.txt`, the cascade quirk included); `Shaders/ShaderSource.swift` (`stubRequires` → the generator, given the variant's combos; an unknown `#require` stays a logged comment); the `lightBudget` → `LIGHTS_*`, `LIGHTS_SHADOW_MAPPING*` and `LIGHTS_COOKIE` mapping, and `SCENE_ORTHO`, in `SceneEngineCombos+Lighting.swift` (§4.4). Bump the revision.
 - **Tests:**
   - A text oracle: our output equals `lightingv1_gen.py`'s for a matrix of budgets (0/1/4/15 per type, with shadow and cookie subsets). Check the Python outputs in as fixtures.
   - `genericimage4`, `generic4`, `genericparticle` and the fluid-simulation combine translate and build pipelines under each budget.
@@ -428,8 +428,8 @@ Most-used first: **B1 (bloom, 24 scenes)** and **A1–A3 (lighting)** are the cr
 - **Tests:** witcher's two layers and Lofi Cafe draw through WE's path with no fallback. With ambient 1 1 1 and no `lightconfig`, witcher's first layer matches today's unlit output within 1/255. A fixture layer with an effect and a light matches the direct path where the effect is the identity.
 
 **B1 — WE's LDR bloom chain.**
-- **Files:** new `Scene/Rendering/SceneBloomChain.swift` (the 4 passes of §2.6 run from `materials/util` through the effect-pass machinery, with RGBA8 targets from `SceneRenderTargetPool`); `ScenePostProcess.swift` (`_rt_FullFrameBuffer` ← the frame, bloom, combine; then the existing colour/fade steps in WE's order); `Rendering/SceneShaders.metal`, `SceneComposite.swift` and the composite section of `SceneMetalRenderer.swift` (delete the 3×3 bloom and `userBloom × 1.2`; `_owe_bloom` multiplies strength); a typed `postprocessing` setting in `Settings/PerformancePage.swift` and the settings store (disabled, enabled, ultra, displayhdr).
-  - The default is a decision for the user, because WE's UI default is unknown [?]; "enabled" keeps today's behaviour.
+- **Files:** new `Scene/Rendering/SceneBloomChain.swift` (the 4 passes of §2.6 run from `materials/util` through the effect-pass machinery, with RGBA8 targets from `SceneRenderTargetPool`); `ScenePostProcess.swift` (`_rt_FullFrameBuffer` ← the frame, bloom, combine; then the existing colour/fade steps in WE's order); `Rendering/SceneShaders.metal`, `SceneComposite.swift` and the composite section of `SceneMetalRenderer.swift` (delete the 3×3 bloom and `userBloom × 1.2`; `_owe_bloom` multiplies strength); the typed `postprocessing` setting is in place since L0 (§4.4): B1 only reads `ScenePostProcess.Frame.settings.postProcessing.allowsBloom`.
+  - The app's default is "enabled", which keeps today's behaviour. WE's own UI default is unknown [?] (§5.1); the user can change the setting under *Settings → Performance → Post-Processing*.
   - `g_TexelSize` = 1 / render size.
 - **Tests:**
   - A Python and Swift reference of the 4 passes on synthetic frames (an impulse, a step, a gradient); the rendered chain matches it within 2/255.
@@ -439,7 +439,7 @@ Most-used first: **B1 (bloom, 24 scenes)** and **A1–A3 (lighting)** are the cr
   - Compare before and after to confirm that non-bloom scenes are unchanged.
 
 **B2 — HDR.**
-- **Files:** new `Scene/Rendering/SceneHDRChain.swift` (§2.6 HDR: up to 8 RGBA16F levels, the constants, D0/Di/Uk with bicubic, `combine_hdr_upsample`/`combine_dhdr_upsample`/`combine_srgb`); `ScenePostProcess.swift`; the scene-target format in `SceneMetalRenderer.swift` (RGBA16F when HDR is on); the HDR field of `SceneEngineCombos.swift` (`HDR=1` everywhere; bump the revision); effect FBO and ping-pong formats in `EffectGraphRenderer.swift` (the frame-buffer class follows the scene format).
+- **Files:** new `Scene/Rendering/SceneHDRChain.swift` (§2.6 HDR: up to 8 RGBA16F levels, the constants, D0/Di/Uk with bicubic, `combine_hdr_upsample`/`combine_dhdr_upsample`/`combine_srgb`); `ScenePostProcess.swift`; the scene-target format in `SceneMetalRenderer.swift` (RGBA16F when HDR is on); `SceneEngineCombos+HDR.swift` (`HDR=1` everywhere; bump the revision; §4.4); effect FBO and ping-pong formats in `EffectGraphRenderer.swift` (the frame-buffer class follows the scene format).
 - **Output on macOS:** "ultra" writes linear values, so the final pass goes to an sRGB drawable view (`bgra8Unorm_srgb`) with `RV.x` = 1. "displayhdr" uses an `rgba16Float` `CAMetalLayer` with `wantsExtendedDynamicRangeContent` and a linear extended colour space, with `RV.x` = 1 and `RV.y` from the screen's EDR headroom. RV is our choice here [?], so name it in test-risks.
 - **Tests:**
   - A reference of the mip chain (levels, strength normalisation, soft knee) on synthetic float frames.
@@ -467,12 +467,61 @@ Most-used first: **B1 (bloom, 24 scenes)** and **A1–A3 (lighting)** are the cr
 - Adversarial fixtures: a budget exceeded, 5 legacy points, a light without `lightconfig`, a script moving a tube's `controlpoint`, bloom toggled by a user property mid-run.
 - New "needs WE ground truth" entries in `docs/test-risks.md`: One piece girls, Hinata, the 2B HDR scene, and one plain bloom scene, captured at `postprocessing` ultra and enabled.
 
+### 4.4 Seams (landed with L0)
+
+L0 decoded the format and added the files, types and hook points below without changing what is drawn: the engine combos are empty, nothing is packed, no uniform reads the frame lighting, and the composite is the old one. A1, A2, B1, C1 and D1 can now start in parallel, and A3, A4 and B2 as their prerequisites land. Each file below has one owner.
+
+**Decoded and resolved.** L0 owns these; the other packages read them and don't edit them.
+
+| What | Where |
+|---|---|
+| `WESceneObject.light: WESceneLight?`: the kind (`WELightKind`, with WE's raw values) and every field of §1.1 as a `SceneRawValue`, keyed by `SceneLightValueField` | `Scene/Format/SceneLight.swift`, `SceneObject.swift`, `SceneValueFields.swift` |
+| `WESceneGeneral.lightconfig: WELightConfig?`, with masked counts and `withShadowsDisabled` | `Scene/Format/SceneLightConfig.swift`, `SceneDocument.swift` |
+| `hdr` and `bloomhdr*` as bindable `general` fields | `SceneValueFields.swift` |
+| `SceneLight(_:in:)`: the fields resolved against the user properties, defaulting to `SceneLightDefaults` (the constructor's values) | `Scene/Values/SceneLightValues.swift` |
+| `SceneBloomSettings.hdr: SceneHDRBloomSettings` and `SceneLightingSettings` (ambient, skylight, `lightConfig`), with their defaults in `SceneGeneralDefaults` | `Scene/Values/SceneGeneralSettings.swift`, `Rendering/SceneRenderContent.swift` |
+| `SceneMetalContent.lighting: SceneLightingContent` (the settings, plus every `SceneLightObject` in scene order: object id, authored light and resolved light) and `SceneMetalContent.engineCombos`. Light objects aren't layers. Their transforms are in `content.transforms` and `content.motions`, like any other object's. | `SceneWallpaperViewModel.lights(in:context:)` |
+
+**User settings.** L0 added all of these, so no later package needs to touch the settings store.
+- `GlobalSettings` has WE's four quality settings:
+  - `postProcessing`: disabled, enabled, **ultra** or **displayhdr**; default "enabled".
+  - `reflections`: default on, as in WE.
+  - `shadows` and `volumetrics`: `GSLightingQuality`, disabled…ultra = 0…4; default medium.
+- Post-processing and reflection are stored under new keys (`postProcessingQuality`, `reflection`). The old keys hold values saved while the settings had no effect, when post-processing defaulted to "disabled".
+- Settings now decode key by key, so adding a key no longer resets every setting.
+- The engine sees them as `SceneRenderSettings` (`Rendering/SceneRenderSettings.swift`, with `allowsBloom` and `allowsHDR`):
+  - `SceneMetalRenderer.renderSettings` is read per frame;
+  - `SceneWallpaperViewModel.setRenderSettings` rebuilds the content;
+  - `SceneWallpaperView` passes them in and follows changes.
+- UI: *Settings → Performance* already has Post-Processing (disabled, enabled, ultra) and Reflections. In `Settings/PerformancePage.swift`, B2 adds a "Display HDR" entry and D1 a volumetrics picker. Each touches only its own control.
+
+**Hook points and their owners.**
+
+| Seam | File (owner) | How it is called now | What the owner adds |
+|---|---|---|---|
+| Engine combos | `Scene/Shaders/SceneEngineCombos.swift` (L0). `SceneEngineCombos(bloom:lighting:orthographic:settings:)` sets `hdr` (bloom, hdr and ultra or displayhdr), `sceneOrtho`, `lightBudget` (folded when shadows are off) and `shadowQuality`. | `SceneWallpaperViewModel.metalContent` makes one per content build and passes it to every `ImageMaterialPlanBuilder`, `SceneEffectPlanBuilder` and `ParticleMaterialPlanBuilder` (`sceneEngineCombos`). They lay `applied(to:)` over the resolved combos. | — |
+| Light combos | `SceneEngineCombos+Lighting.swift` (**A1**): `lightingCombos(for:)` returns `[:]` | called from `combos(for:)` | `LIGHTS_*`, `LIGHTS_SHADOW_MAPPING*` and `LIGHTS_COOKIE` when `material["LIGHTING"]` ≠ 0, plus `SCENE_ORTHO`; bump the revision |
+| HDR combo | `SceneEngineCombos+HDR.swift` (**B2**): `hdrCombos(for:)` returns `[:]` | called from `combos(for:)` | `HDR=1` when `hdr` is set; bump the revision |
+| Frame lighting | `Scene/Rendering/SceneFrameLighting.swift` (**A2**). `SceneFrameLighting.frame(_:input:)` returns the ambient and skylight colours (a script's `thisScene.ambientcolor` or `skylightcolor` wins) and an empty `arrays`. | `SceneMetalRenderer` calls it once per frame, after scripts and timelines, and stores the result in `BuiltinFrameContext.lighting`. `SceneFrameLightingInput` provides each object's live world transform (`world(id)`, with parents, scripts and timelines applied), `isVisible(id)`, the scripts' scene colours, the eye and the view forward. | New `SceneLightPacker.swift`; fill `arrays` by uniform name. In `BuiltinUniforms.swift` (**A2**), read `frame.lighting` for `g_LightAmbientColor`, `g_LightSkylightColor`, the `g_L*` and the `g_Lights*` arrays, and delete `BuiltinFrameContext.ambient`/`skylight` (the invented 0.2/0.3). |
+| Post-process | `Scene/Rendering/ScenePostProcess.swift` (**B1**, then **B2**). `encode(Frame)` draws the old composite, and `compositeUniform` holds the old bloom math. It owns the composite pipeline. | `SceneMetalRenderer` calls it after the scene pass and the frame stages. `Frame` holds the scene target, the drawable's pass, the placement uniform, `Bloom` (live values: scripts, then timelines, then the content; `hdr` included), `AppExtras` (`_owe_bloom`, `_owe_saturation`, `_owe_hue`, `_owe_blur`) and `settings`. | B1: `_rt_FullFrameBuffer`, `SceneBloomChain.swift` and the combine; honour `allowsBloom`; make `_owe_bloom` a strength multiplier; then the composite. Delete `sceneFragment`'s 3×3 bloom (`SceneShaders.metal`, `SceneComposite.swift`). B2: `SceneHDRChain.swift` and the float scene target in `SceneMetalRenderer.swift` and `EffectGraphRenderer.swift`. |
+| Frame stages | `Scene/Rendering/SceneFrameStage.swift`: `protocol SceneFrameStage` (`encode(SceneFrameStageContext)`, `setContent`) and `SceneFrameStages.make(device:)`, which returns `[]` | `SceneMetalRenderer` runs the stages in order between the scene pass and the post-process. Each gets the scene target, the command buffer, the scene size, the frame's `BuiltinFrameContext` (lighting included) and the settings, and `setContent` on every content change. | **C1** adds the `_rt_MipMappedFrameBuffer` copy as the first stage and **D1** adds `SceneVolumetrics` as the second: one line each in `make`, the only line they share. Otherwise D1 owns the file and may extend the context. |
+| Lit image materials | `Loading/ImageMaterialPlan.swift`, `Rendering/ImageMaterialUniforms.swift`, `ImageMaterialRenderer.swift` (**A3**) | unchanged: `LIGHTING` and `REFLECTION` are still refused | see A3 in §4.3 |
+| Prelighting | `Loading/SceneWallpaperViewModel.swift` (the image-layer build) and `Rendering/EffectGraphRenderer.swift` (**A4**; in the latter, after B2's format change) | — | see A4 in §4.3 |
+| Reflection copy | `SceneSnapshotTracker.swift`, `SceneRenderTargetPool.swift` (**C1**); the setting is `renderSettings.reflection` | — | see C1 in §4.3, run as a frame stage |
+
+**Tests that pin the seams:**
+- `SceneLightDecodeTests`: each light type from the survey objects in `Tests/Fixtures/Scenes/lights`, WE's defaults, bindings, `lightconfig` masking and folding, and the HDR and lighting settings.
+- `LightingLibraryDecodeTests`: the library decodes to 106 scenes, 4 tube, 3 lpoint, 3 legacy point and 1 spot light, 3 `lightconfig`s, 5 `hdr: true` and 70 scenes with `bloomhdr*`.
+- `SceneLightingSeamTests`: no combos, no arrays, and the lights in the built content; `ScenePostProcessTests`: the old composite uniform. Each owner replaces its "nothing yet" assertions as it fills its seam.
+- `QualitySettingsTests`: the settings' defaults and the migration of saved settings.
+- `WEAuthoredValuesTests.testGeneralDefaultsAreWEs`: the HDR and colour defaults.
+
 ## 5. Open points (all need the binary or WE ground truth)
 
-1. The default for `postprocessing` in WE's settings UI (the engine writes "disabled" when the key is missing).
+1. The default for `postprocessing` in WE's settings UI (the engine writes "disabled" when the key is missing). The app defaults to "enabled" (today's look) and the user can change it; revisit once WE's UI default is known. The default of the `volumetrics` setting is also unconfirmed: the app takes shadows' "medium".
 2. `g_TexelSize` for the bloom passes (inferred as 1 / render size) and the device values of `g_RenderVar0` for the HDR combine.
 3. Whether `vt+0x8` on `_rt_FullFrameBuffer` is a frame copy (strongly implied), and what `[scene+0x158]` is.
 4. `_rt_MipMappedFrameBuffer`'s mip count in LDR (reported as 1, which would disable roughness blur) and `g_Texture3MipMapInfo`.
 5. The prelighting pass order for lit layers with effects (`0x140209540`).
-6. The cookie texture's source key, and the default `intensity` when the key is missing.
+6. The cookie texture's source key. (The default `intensity` is 0: §1.1.)
 7. The shadow atlas depth format and the exact cascade fit.
