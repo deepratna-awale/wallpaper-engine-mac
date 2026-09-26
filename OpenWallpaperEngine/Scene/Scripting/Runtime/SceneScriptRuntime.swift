@@ -136,6 +136,8 @@ final class SceneScriptRuntime {
             }
         }
         registerPreludeModules(prelude.modules)
+        // Every extension has set its hooks: from now on nothing can replace them (S28).
+        rt.invokeMethod("seal", withArguments: [])
     }
 
     /// `destroy()` callbacks run on the runtime's thread even when the last reference goes away

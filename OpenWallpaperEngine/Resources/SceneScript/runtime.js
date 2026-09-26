@@ -257,6 +257,19 @@
         return drained;
     };
 
+    // Native→JS entries in progress (`load`, `frame`, `teardown`); the global `__rt` is hidden
+    // while any runs.
+    let entries = 0;
+
+    function entry(body, args) {
+        entries += 1;
+        try {
+            return body.apply(undefined, args);
+        } finally {
+            entries -= 1;
+        }
+    }
+
     // MARK: load (plan §4.4)
 
     function evaluate(record) {
@@ -298,6 +311,10 @@
     // that WE never sends it to scripts created at runtime, which see the current values through
     // `engine.userProperties` instead.
     rt.load = function (userProperties, generalSettings) {
+        return entry(load, [userProperties, generalSettings]);
+    };
+
+    function load(userProperties, generalSettings) {
         if (rt.halted) return rt.errors.length;
         const records = rt.records;
         const converted = convertUserProperties(userProperties);
@@ -337,7 +354,7 @@
         }
         rt.loadedOnce = true;
         return rt.errors.length;
-    };
+    }
 
     // MARK: frame (plan §4.4)
 
@@ -441,6 +458,10 @@
     // WE's frame (§1.9 P1): input and property events, media events, timeline animations and
     // `animationEvent`, then the engine tick (audio buffers, timers), then every `update`.
     rt.frame = function (dt, events) {
+        return entry(frame, [dt, events]);
+    };
+
+    function frame(dt, events) {
         if (rt.halted) return rt.errors.length;
         rt.frameIndex += 1;
         rt.deltaTime = dt;
@@ -458,11 +479,15 @@
         runPhase('deferred', dt);
         rt.destroyPending();
         return rt.errors.length;
-    };
+    }
 
     // Every script's `destroy()`, in order, then no records. A `destroy()` that removes another
     // script changes nothing here: every record gets exactly one `destroy()`.
     rt.teardown = function () {
+        return entry(teardown, []);
+    };
+
+    function teardown() {
         const records = rt.records.slice();
         for (let i = 0; i < records.length && !rt.halted; i++) {
             const record = records[i];
@@ -473,7 +498,7 @@
         rt.records = [];
         rt.byId.clear();
         return rt.errors.length;
-    };
+    }
 
     // Called by the native side after the watchdog terminated script code: stops all script code
     // for good, like WE's engine-wide flag, and returns the id that was running.
@@ -482,6 +507,8 @@
         rt.halted = true;
         rt.current = null;
         rt.phase = 'idle';
+        // A terminated entry never ran its `finally`.
+        entries = 0;
         return id;
     };
 
@@ -522,6 +549,25 @@
         rt.ring.strings = [];
     };
 
+    // MARK: reach (test-risks S28)
+
+    // Once every extension is installed: no hook or runtime function can be replaced any more,
+    // by a script that got hold of `__rt` or by anything else.
+    rt.seal = function () {
+        Object.freeze(rt.hooks);
+        Object.keys(rt).forEach(function (key) {
+            if (typeof rt[key] === 'function') Object.defineProperty(rt, key, { writable: false, configurable: false });
+        });
+    };
+
     if (global.shared === undefined) global.shared = {};
-    Object.defineProperty(global, '__rt', { value: rt, enumerable: false, writable: false, configurable: false });
+    // Runtime and extension files capture `__rt` when they are evaluated. Scripts must not reach
+    // it: the global reads as undefined while a native entry (load, frame, teardown) or any script
+    // code runs, and a compiled module's own scope shadows the name (SceneScriptModuleTransformer).
+    // So script code, or runtime code calling a builtin a script replaced, never sees the records,
+    // hooks or ring. The native side and tests read it between entries.
+    Object.defineProperty(global, '__rt', {
+        get: function () { return entries === 0 && rt.current === null ? rt : undefined; },
+        enumerable: false, configurable: false,
+    });
 })(this);

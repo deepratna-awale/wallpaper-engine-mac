@@ -5,7 +5,7 @@ import Foundation
 ///
 /// ```js
 /// (function (__rt, __scope) { 'use strict'; const thisLayer = …, thisObject = …; <imports>
-///   return Object.freeze(Object.setPrototypeOf((function () { <source, imports and `export` blanked>
+///   return Object.freeze(Object.setPrototypeOf((function (__rt) { <source, imports and `export` blanked>
 /// ;return { get "update"() { return update; }, … }; })(), null)); })
 /// ```
 ///
@@ -15,6 +15,9 @@ import Foundation
 ///   and the imports, so a script's top-level names can shadow WE's globals, as in a module.
 /// - Imports are resolved before the body runs, in source order (`__scope.require`). A missing
 ///   named import throws V8's SyntaxError when the module is evaluated.
+/// - The source's own scope has a parameter `__rt` that is always undefined, so a script can't
+///   name the runtime object the factory receives (test-risks S28); the global `__rt` hides itself
+///   while script code runs (runtime.js).
 /// - The exports object is a frozen, prototype-less namespace with one getter per export, keys
 ///   sorted like a module namespace: `export let` stays live and nothing but the exported names is
 ///   visible (WE calls only exported callbacks).
@@ -48,7 +51,7 @@ struct SceneScriptModuleTransformer: SceneScriptModuleCompiling {
                     + "const \(binding.local) = \(module)[\(key)]; "
             }
         }
-        return header + "return Object.freeze(Object.setPrototypeOf((function () { "
+        return header + "return Object.freeze(Object.setPrototypeOf((function (__rt) { "
     }
 
     private static func footer(_ exports: [SceneScriptModuleLayout.Export]) -> String {
