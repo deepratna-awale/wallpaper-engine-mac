@@ -4,15 +4,8 @@ import XCTest
 private struct MockValueContext: SceneValueContext {
     var properties: [String: String] = [:]
     var time: Double = 0
-    /// Returns `current * scriptScale` for every script.
-    var scriptScale: Float?
 
     func userProperty(_ name: String) -> String? { properties[name] }
-
-    func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? {
-        guard let scriptScale else { return nil }
-        return ShaderValue(components: current.components.map { $0 * scriptScale })
-    }
 }
 
 final class SceneValueTests: XCTestCase {
@@ -74,13 +67,14 @@ final class SceneValueTests: XCTestCase {
         XCTAssertEqual(try value(stringCondition, MockValueContext(properties: ["style": "neon"])).components, [1])
     }
 
-    func testScriptGetsCurrentValue() throws {
+    /// A scripted value resolves to what its script starts from: the wallpaper's SceneScript
+    /// runtime runs the script, and the renderer draws what it wrote (docs/scenescript-plan.md WP11).
+    func testScriptedValueResolvesToItsStartingValue() throws {
         let json: [String: Any] = ["script": "export function update(v) { return v * 2; }", "value": "1 2",
                                    "scriptproperties": ["speed": 3]]
         guard case let .script(_, properties, _) = try source(json) else { return XCTFail("expected script") }
         XCTAssertEqual(properties.dictionary["speed"] as? Int, 3)
-        XCTAssertEqual(try value(json, MockValueContext(scriptScale: 2)).components, [2, 4])
-        XCTAssertEqual(try value(json).components, [1, 2], "a script without result keeps the current value")
+        XCTAssertEqual(try value(json).components, [1, 2])
     }
 
     func testAnimation() throws {

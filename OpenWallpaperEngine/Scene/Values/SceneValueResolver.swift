@@ -21,9 +21,10 @@ enum SceneValueResolver {
             OWELog.debug(.scene, "SceneValueResolver: user property '\(name)' = '\(property)' is not numeric; using fallback")
             return resolve(fallback, in: context)
 
-        case let .script(source, properties, fallback):
-            let current = resolve(fallback, in: context)
-            return context.evaluateScript(source, properties: properties, current: current) ?? current
+        case let .script(_, _, fallback):
+            // The script runs in the wallpaper's SceneScript runtime, which owns the value from its
+            // first write (the renderer reads it from the object table); this is the value it starts from.
+            return resolve(fallback, in: context)
 
         case let .animation(animation, _):
             return animation.value(at: context.time)

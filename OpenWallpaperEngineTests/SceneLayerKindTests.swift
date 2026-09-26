@@ -86,7 +86,6 @@ final class SceneLayerKindTests: XCTestCase {
         XCTAssertEqual(layer.effects.blur, 0)
         XCTAssertEqual(layer.effects.bloom, 0)
         XCTAssertEqual(layer.effects.exposure, 0)
-        XCTAssertTrue(layer.effects.scripts.isEmpty)
     }
 
     /// WE's objects default `parallaxDepth` to 1 1 and its writer leaves defaults out: a layer

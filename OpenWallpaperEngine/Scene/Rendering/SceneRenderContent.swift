@@ -48,25 +48,17 @@ struct SceneMetalLayer {
     let position: SIMD2<Float>
     let size: SIMD2<Float>
     let scale: SIMD2<Float>
-    let scaleScript: String?
     let scaleAnimation: WEVectorKeyframeAnimation?
     let opacity: Float
-    let opacityScript: String?
     let opacityAnimation: WEKeyframeAnimation?
     let brightness: Float
-    let brightnessScript: String?
     let color: SIMD4<Float>
-    let colorScript: String?
     let text: SceneMetalText?
     let parallaxDepth: SIMD3<Float>
     let perspective: Bool
-    let positionScript: String?
-    let positionScriptProperties: [String: String]
     let positionAnimation: WEVectorKeyframeAnimation?
-    let sizeScript: String?
     let sizeAnimation: WEVectorKeyframeAnimation?
     let rotation: Float
-    let rotationScript: String?
     let rotationAnimation: WEVectorKeyframeAnimation?
     let effects: SceneMaterialEffects
     /// Set for video layers so the picture can pulse with the music the way the AVKit path does.
@@ -110,8 +102,6 @@ struct VideoMusicSyncVisuals {
 
 struct SceneMetalText {
     let value: String
-    let script: String?
-    let scriptProperties: [String: String]
     let font: String?
     let pointSize: CGFloat
     let horizontalAlignment: String?
@@ -140,14 +130,13 @@ struct SceneMaterialEffects {
     let transformAngle: Float
     let transformOffset: SIMD2<Float>
     let transformScale: SIMD2<Float>
-    let scripts: [String: String]
 
     /// No adjustment. A layer's material constants reach WE's own shader (`ImageMaterialPlan`);
     /// they are never guessed into these native adjustments by name.
     static let identity = SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                                exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                                transformAngle: 0, transformOffset: .zero,
-                                               transformScale: SIMD2<Float>(repeating: 1), scripts: [:])
+                                               transformScale: SIMD2<Float>(repeating: 1))
 }
 
 struct SceneBloomSettings {
@@ -161,7 +150,6 @@ struct SceneMetalContent {
     let size: SIMD2<Float>
     let layers: [SceneMetalLayer]
     let particleSystems: [SceneMetalParticleSystem]
-    let sceneScript: String?
     let bloom: SceneBloomSettings
     /// Every object's parent and authored transform; layer positions are relative to their parent.
     var transforms: SceneTransformHierarchy = .empty
@@ -169,6 +157,13 @@ struct SceneMetalContent {
     /// transform moves, so what hangs below them follows.
     var motions: [String: SceneObjectMotion] = [:]
     var camera = SceneCameraEffects()
-    /// The wallpaper instance's key in the script engine's user-property store (its directory path).
+    /// The wallpaper instance's key in the user-property store (its directory path).
     var wallpaperKey = ""
+    /// Every object's own `visible` before scripts (authored, user-bound or the app's toggle), by
+    /// id. Hidden objects are built anyway: scripts can show them (plan §4.3).
+    var visibility: [String: Bool] = [:]
+    /// The id of each object of scene.json, in scene order.
+    var objectIDs: [Int] = []
+    /// The scene's SceneScripts; nil when it has none.
+    var scripts: SceneScriptSceneContent?
 }

@@ -5,7 +5,6 @@ private struct PropertyContext: SceneValueContext {
     var properties: [String: String] = [:]
     var time: Double = 0
     func userProperty(_ name: String) -> String? { properties[name] }
-    func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? { nil }
 }
 
 /// Bound values follow the user properties they're bound to.
@@ -51,16 +50,14 @@ final class SceneBindingResolutionTests: XCTestCase {
         let bindings = SceneLayerBindings(object: object, builtWith: built)
         // A layer as built: its position includes a parent offset of (10, 10).
         let layer = SceneMetalLayer(id: "1", name: "Tinted", source: .image(NSImage()), position: SIMD2(110, 210),
-                                    size: SIMD2(200, 200), scale: SIMD2(0.2, 0.2), scaleScript: nil, scaleAnimation: nil,
-                                    opacity: 1, opacityScript: nil, opacityAnimation: nil, brightness: 1.5, brightnessScript: nil,
-                                    color: SIMD4(1, 0.5, 0.25, 1), colorScript: nil, text: nil, parallaxDepth: .zero,
-                                    perspective: false, positionScript: nil, positionScriptProperties: [:],
-                                    positionAnimation: nil, sizeScript: nil, sizeAnimation: nil, rotation: 0.5,
-                                    rotationScript: nil, rotationAnimation: nil,
+                                    size: SIMD2(200, 200), scale: SIMD2(0.2, 0.2), scaleAnimation: nil,
+                                    opacity: 1, opacityAnimation: nil, brightness: 1.5, color: SIMD4(1, 0.5, 0.25, 1), text: nil, parallaxDepth: .zero,
+                                    perspective: false, positionAnimation: nil, sizeAnimation: nil, rotation: 0.5,
+                                    rotationAnimation: nil,
                                     effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0,
                                                                   exposure: 0, gamma: 1, hue: 0, bloomThreshold: 0.7,
                                                                   transformAngle: 0, transformOffset: .zero,
-                                                                  transformScale: SIMD2(1, 1), scripts: [:]))
+                                                                  transformScale: SIMD2(1, 1)))
         XCTAssertEqual(bindings.baseValues(for: layer, in: built), SceneLayerBaseValues(layer))
 
         var changed = built

@@ -141,10 +141,11 @@ struct ParticleFrameInputs {
     var toSpace: simd_float2x2 { space.inverse?.linear ?? matrix_identity_float2x2 }
 
     /// Advances `system`'s clock and evaluates this step's inputs. `emitter` is the emitter's
-    /// world transform this frame; nil keeps the authored one.
+    /// world transform this frame; nil keeps the authored one. `scripted` is what the wallpaper's
+    /// scripts wrote into the system's `instanceoverride`.
     static func advance(_ system: ParticleSystemRuntime, deltaTime: Float, cursor: SIMD2<Float>,
                         emitter: SceneAffineTransform? = nil, values: SceneValueContext? = nil,
-                        audio: AudioSpectrumSnapshot = .silent, frameTime: Float? = nil,
+                        scripted: SceneScriptInstanceOverrides? = nil, audio: AudioSpectrumSnapshot = .silent, frameTime: Float? = nil,
                         frameRateLimit: Int = 0) -> ParticleFrameInputs {
         let configuration = system.configuration
         system.elapsedTime += deltaTime
@@ -161,15 +162,12 @@ struct ParticleFrameInputs {
         let world = emitter ?? childEmitter(system) ?? configuration.authoredWorld
         inputs.motion = motion(of: system, to: world)
         let time = Double(system.elapsedTime)
-        let context = values ?? LiveSceneValueContext(time: time, scriptTime: time)
-        let overrides = inputs.applyOverrides(configuration, values: context)
+        let context = values ?? LiveSceneValueContext(time: time)
+        let overrides = inputs.applyOverrides(configuration, values: context, scripted: scripted)
         let emitters = configuration.emitters
         inputs.emitters = emitters.map { emitter in
             var step = ParticleEmitterStep()
-            let rate = emitter.rate * overrides.rate
-            step.rate = emitter.rateScript.map {
-                AudioReactiveScriptEngine.shared.evaluate($0, fallback: rate, time: time)
-            } ?? rate
+            step.rate = emitter.rate * overrides.rate
             step.instantaneous = max(emitter.instantaneous, 0)
             step.periodLimit = emitter.timing.periodLimit(countScale: overrides.count)
             step.onePerFrame = emitter.timing.onePerFrame
@@ -216,16 +214,16 @@ struct ParticleFrameInputs {
         inputs.ropeLifetimeScale = inputs.spawnScale.z
         system.ropeFrame = SIMD3(inputs.ropeRateScale, inputs.ropeLifetimeScale, Float(frameRateLimit))
         inputs.placeControlPoints(system, world: world, cursor: cursor, overrides: overrides)
-        inputs.encodeProgram(system, time: time, audio: audio, countScale: overrides.count)
+        inputs.encodeProgram(system, audio: audio, countScale: overrides.count)
         return inputs
     }
 
     /// The system's instance overrides this frame, less the parts its flags switch off; bound to
-    /// user properties, they resolve again.
-    private mutating func applyOverrides(_ configuration: SceneMetalParticleSystem,
-                                         values: SceneValueContext) -> SceneParticleOverrides {
+    /// user properties, they resolve again, and scripts' values replace them.
+    private mutating func applyOverrides(_ configuration: SceneMetalParticleSystem, values: SceneValueContext,
+                                         scripted: SceneScriptInstanceOverrides?) -> SceneParticleOverrides {
         let authored = configuration.liveOverrides.map { SceneParticleOverrides($0, in: values) } ?? configuration.overrides
-        let overrides = authored.ignoring(configuration.ignoredOverrides)
+        let overrides = (scripted?.applied(to: authored) ?? authored).ignoring(configuration.ignoredOverrides)
         maximum = max(Int((Float(configuration.maximumParticleCount) * overrides.count).rounded()), 0)
         // Negative multipliers would invert the ranges; WE treats them as 0.
         spawnScale = SIMD4(overrides.size, max(overrides.alpha, 0), max(overrides.lifetime, 0), overrides.speed)
@@ -301,23 +299,14 @@ struct ParticleFrameInputs {
         }
     }
 
-    /// This step's records: each with its scripts evaluated, its audio response and, for the
-    /// `mapsequence…` initializers, the `count` override applied to their step.
-    private mutating func encodeProgram(_ system: ParticleSystemRuntime, time: Double, audio: AudioSpectrumSnapshot,
+    /// This step's records: each with its audio response and, for the `mapsequence…`
+    /// initializers, the `count` override applied to their step.
+    private mutating func encodeProgram(_ system: ParticleSystemRuntime, audio: AudioSpectrumSnapshot,
                                         countScale: Float) {
         let program = system.configuration.program
-        func evaluated(_ record: ParticleProgramOp, scripts: [ParticleValueScript]) -> ParticleProgramOp {
-            var record = record
-            for script in scripts {
-                let fallback = record[script.vector, script.component]
-                record[script.vector, script.component] = AudioReactiveScriptEngine.shared.evaluate(
-                    script.script, fallback: fallback, time: time)
-            }
-            return record
-        }
         var collision: UInt32 = 0
         operators = program.operators.map { element in
-            var record = evaluated(element.record, scripts: element.scripts)
+            var record = element.record
             if let response = element.audio { record.e.w = response.response(audio) }
             if element.kind == .collision {
                 let count = element.collision?.placementCount ?? 0
@@ -327,7 +316,7 @@ struct ParticleFrameInputs {
             return record
         }
         initializers = program.initializers.map { element in
-            var record = evaluated(element.record, scripts: element.scripts)
+            var record = element.record
             if let response = element.audio { record.e.w = response.response(audio) }
             if let count = element.sequenceCount {
                 let scaled = (record.header.y & ParticleProgramCPU.sequenceFollowsCountFlag(element.kind)) != 0

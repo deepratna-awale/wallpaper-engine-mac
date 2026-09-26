@@ -60,6 +60,15 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private var pkgParser: PKGParser?
     private var loadedScene: WEScene?
+    /// The loaded scene.json and its parse signature (`ParsedScene`), which the scripts run from.
+    private var loadedDocument: (document: SceneJSON, signature: String)?
+    /// The loaded wallpaper's project.json, which declares its user properties.
+    private var loadedProject: SceneJSON?
+    /// User properties the built content reads (layer visibility, bound values outside scripts):
+    /// changing any other only reaches the scripts (`applyUserProperties`), without a rebuild.
+    private(set) var contentUserProperties = Set<String>()
+    /// The loaded scene has SceneScripts.
+    private var hasScriptSites = false
     private var loadedWallpaperDirectory: URL?
     private var assetDataCache: [String: Data] = [:]
     /// Where the loaded wallpaper's settings are stored, and the directory it was resolved for.
@@ -91,6 +100,8 @@ class SceneWallpaperViewModel: ObservableObject {
         let parser: PKGParser?
         let scene: WEScene
         let signature: String
+        /// scene.json as `scene` was decoded from (the user's object edits applied), for scripts.
+        let document: SceneJSON?
     }
 
     private static let parseCacheLock = NSLock()
@@ -260,6 +271,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let looseSceneURL = dir.appending(path: sceneFile)
 
         var scene: WEScene?
+        var document: SceneJSON?
         var servedFromCache = false
 
         let hasPackage = FileManager.default.fileExists(atPath: pkgURL.path(percentEncoded: false))
@@ -270,13 +282,14 @@ class SceneWallpaperViewModel: ObservableObject {
         if let cached = Self.cachedParse(for: dir, signature: signature) {
             self.pkgParser = cached.parser
             scene = cached.scene
+            document = cached.document
             servedFromCache = true
         } else if hasPackage {
             do {
                 let parser = try PKGParser(url: pkgURL)
                 self.pkgParser = parser
                 if let data = parser.extractFile(named: sceneFile) {
-                    scene = try decodeScene(data, settingsKey: settingsKey)
+                    (scene, document) = try decodeScene(data, settingsKey: settingsKey)
                 }
             } catch {
                 Self.log("Failed to parse PKG: \(error)")
@@ -286,7 +299,7 @@ class SceneWallpaperViewModel: ObservableObject {
             self.pkgParser = nil
             do {
                 let data = try Data(contentsOf: looseSceneURL)
-                scene = try decodeScene(data, settingsKey: settingsKey)
+                (scene, document) = try decodeScene(data, settingsKey: settingsKey)
             } catch {
                 Self.log("Failed to parse loose \(sceneFile): \(error)")
             }
@@ -307,7 +320,7 @@ class SceneWallpaperViewModel: ObservableObject {
             }
             return
         }
-        Self.storeParse(ParsedScene(parser: pkgParser, scene: scene, signature: signature), for: dir)
+        Self.storeParse(ParsedScene(parser: pkgParser, scene: scene, signature: signature, document: document), for: dir)
 
         if prepareDefaults {
             prepareSceneUserPropertyDefaults(for: wallpaper, scene: scene)
@@ -317,14 +330,20 @@ class SceneWallpaperViewModel: ObservableObject {
             WallpaperPackageConverter.markVerified(wallpaperDirectory: dir, objectCount: scene.objects.count)
         }
         loadedScene = scene
+        loadedDocument = document.map { ($0, "\(dir.path)|\(signature)") }
+        loadedProject = Self.project(in: dir)
+        contentUserProperties = document.map(Self.contentUserProperties(in:)) ?? []
+        hasScriptSites = document.map { !SceneScriptSiteBuilder(wallpaperID: "").sites(in: $0).isEmpty } ?? false
         loadedWallpaperDirectory = dir
         bumpRevision()
     }
 
-    private func decodeScene(_ data: Data, settingsKey: String) throws -> WEScene {
+    /// The scene and the document it was decoded from (for the scripts; nil when it isn't JSON the
+    /// tolerant reader takes).
+    private func decodeScene(_ data: Data, settingsKey: String) throws -> (WEScene, SceneJSON?) {
         guard var root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               var objects = root["objects"] as? [[String: Any]] else {
-            return try JSONDecoder().decode(WEScene.self, from: data)
+            return (try JSONDecoder().decode(WEScene.self, from: data), Self.document(data))
         }
             let values = UserDefaults.standard.dictionary(forKey: settingsKey) as? [String: String] ?? [:]
         for index in objects.indices {
@@ -345,7 +364,59 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         root["objects"] = objects
         let resolvedData = try JSONSerialization.data(withJSONObject: root)
-        return try JSONDecoder().decode(WEScene.self, from: resolvedData)
+        return (try JSONDecoder().decode(WEScene.self, from: resolvedData), Self.document(resolvedData))
+    }
+
+    private static func document(_ data: Data) -> SceneJSON? {
+        do {
+            return try SceneScriptSiteBuilder.document(from: data)
+        } catch {
+            OWELog.error(.script, "scene.json can't be read for its scripts: \(error)")
+            return nil
+        }
+    }
+
+    /// project.json as JSON; nil (logged) when it can't be read.
+    private static func project(in directory: URL) -> SceneJSON? {
+        let url = directory.appending(path: "project.json")
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            return try decodeTolerant(SceneJSON.self, from: Data(contentsOf: url))
+        } catch {
+            OWELog.error(.scene, "Can't read \(url.path): \(error)")
+            return nil
+        }
+    }
+
+    /// The user properties the content is built from: every `"user"` binding of the document
+    /// except inside script sites (their scripts get the change through `applyUserProperties` and
+    /// the binding, docs/scenescript-plan.md WP8) and `scriptproperties`.
+    static func contentUserProperties(in document: SceneJSON) -> Set<String> {
+        var names = Set<String>()
+        func walk(_ value: SceneJSON) {
+            switch value {
+            case .object(let fields):
+                if case .string(let script)? = fields["script"], !script.isEmpty { return }
+                if let user = SceneScriptUserReference(fields["user"]) { names.insert(user.name) }
+                for (key, field) in fields where key != "scriptproperties" { walk(field) }
+            case .array(let values):
+                values.forEach(walk)
+            default:
+                break
+            }
+        }
+        walk(document)
+        return names
+    }
+
+    /// How much of the scene a user property change invalidates. A declared property no built
+    /// content reads (only scripts do) changes nothing here: the renderer hands it to the scripts.
+    func impact(of keys: [String]) -> SceneChangeImpact {
+        keys.reduce(.none) { impact, key in
+            let own = SceneChangeImpact.impact(of: key)
+            guard own == .rebuildContent, !key.hasPrefix("_owe_") else { return max(impact, own) }
+            return max(impact, contentUserProperties.contains(key) ? .rebuildContent : .none)
+        }
     }
 
     /// The settings identity of the wallpaper in `directory`, resolved (and old path keys moved)
@@ -446,25 +517,18 @@ class SceneWallpaperViewModel: ObservableObject {
         scene.objects = SceneObjectIdentity.assigningFallbackIDs(
             authoredScene.objects.map { $0.resolvingUserBindings(in: valueContext) })
         let sceneSize = metalSceneSize(for: scene)
-        let sceneScript = loadSceneScript(scene.script, wallpaperDir: wallpaperDir)
-        let visibility = resolvedVisibility(for: scene)
+        // Hidden objects are built too: a script can show them (docs/scenescript-plan.md §4.3).
+        let visibility = Dictionary(scene.objects.map { (String($0.id ?? -1), isObjectVisible($0)) },
+                                    uniquingKeysWith: { first, _ in first })
         let authoredTransforms = SceneTransformHierarchy(objects: scene.objects, sceneSize: sceneSize)
         // WE draws objects in scene.json order; both lists carry that index so the renderer can interleave them.
         let layers: [SceneMetalLayer] = scene.objects.enumerated().compactMap { index, object in
-            guard visibility[String(object.id ?? -1)] ?? false else { return nil }
-            if object.textValue != nil,
-                    userProperty("_owe_text_\(object.id ?? -1)_enabled") == "false" {
-                return nil
-            }
-            var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
-                ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
-                ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+            var layer = buildLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize, context: valueContext)
             layer?.order = index
-            layer?.bindings = SceneLayerBindings(object: object, builtWith: valueContext)
             return layer
         }
         var particleSystems: [SceneMetalParticleSystem] = []
-        for (index, object) in scene.objects.enumerated() where visibility[String(object.id ?? -1)] ?? false {
+        for (index, object) in scene.objects.enumerated() {
             let base = particleSystems.count
             for var system in buildParticleFamily(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
                                                   pixelUnits: Self.particlesUsePixelUnits(scene),
@@ -474,32 +538,35 @@ class SceneWallpaperViewModel: ObservableObject {
                 particleSystems.append(system)
             }
         }
-        if !layers.isEmpty || !particleSystems.isEmpty {
+        // A scene of scripts alone (groups whose scripts create layers) runs too.
+        if !layers.isEmpty || !particleSystems.isEmpty || hasScriptSites {
             var transforms = authoredTransforms
             for layer in layers where layer.fillsScene {
                 transforms.makeRoot(layer.id, local: SceneLocalTransform(origin: layer.position, scale: layer.scale, angle: layer.rotation))
             }
             var content = SceneMetalContent(size: sceneSize, layers: layers, particleSystems: particleSystems,
-                                            sceneScript: sceneScript, bloom: bloomSettings(for: scene.general),
+                                            bloom: bloomSettings(for: scene.general),
                                             transforms: transforms,
                                             camera: SceneCameraEffects(scene.general, in: valueContext),
                                             wallpaperKey: propertyStoreKey)
             content.motions = objectMotions(scene.objects, besides: layers, sceneSize: sceneSize, context: valueContext)
+            content.visibility = visibility
+            content.objectIDs = scene.objects.map { $0.id ?? -1 }
+            content.scripts = scriptContent(wallpaperDir: wallpaperDir, sceneSize: sceneSize)
             cachedContent = content
             cachedContentRevision = metalRevision
             return content
         }
         guard let preview = loadPreviewImage(wallpaperDir: wallpaperDir) else { return nil }
         return SceneMetalContent(size: sceneSize, layers: [SceneMetalLayer(id: "preview", name: "preview", source: .image(preview),
-            position: sceneSize / 2, size: sceneSize, scale: SIMD2<Float>(repeating: 1), scaleScript: nil, scaleAnimation: nil,
-            opacity: 1, opacityScript: nil, opacityAnimation: nil,
-            brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
-            text: nil,
+            position: sceneSize / 2, size: sceneSize, scale: SIMD2<Float>(repeating: 1), scaleAnimation: nil,
+            opacity: 1, opacityAnimation: nil,
+            brightness: 1, color: SIMD4<Float>(repeating: 1), text: nil,
             parallaxDepth: .zero, perspective: false,
-            positionScript: nil, positionScriptProperties: [:], positionAnimation: nil, sizeScript: nil, sizeAnimation: nil,
-            rotation: 0, rotationScript: nil, rotationAnimation: nil,
+            positionAnimation: nil, sizeAnimation: nil,
+            rotation: 0, rotationAnimation: nil,
                 effects: .identity,
-            )], particleSystems: [], sceneScript: sceneScript,
+            )], particleSystems: [],
             bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1)))
     }
 
@@ -536,16 +603,15 @@ class SceneWallpaperViewModel: ObservableObject {
         var layer = SceneMetalLayer(
             id: "video", name: "video", source: .video(stream),
             position: sceneSize / 2, size: sceneSize,
-            scale: SIMD2<Float>(repeating: 1), scaleScript: nil, scaleAnimation: nil,
-            opacity: 1, opacityScript: nil, opacityAnimation: nil,
-            brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
-            text: nil, parallaxDepth: .zero, perspective: false,
-            positionScript: nil, positionScriptProperties: [:], positionAnimation: nil,
-            sizeScript: nil, sizeAnimation: nil,
-            rotation: 0, rotationScript: nil, rotationAnimation: nil,
+            scale: SIMD2<Float>(repeating: 1), scaleAnimation: nil,
+            opacity: 1, opacityAnimation: nil,
+            brightness: 1, color: SIMD4<Float>(repeating: 1), text: nil, parallaxDepth: .zero, perspective: false,
+            positionAnimation: nil,
+            sizeAnimation: nil,
+            rotation: 0, rotationAnimation: nil,
             effects: .identity)
         layer.musicSync = musicSync
-        return SceneMetalContent(size: sceneSize, layers: [layer], particleSystems: [], sceneScript: nil,
+        return SceneMetalContent(size: sceneSize, layers: [layer], particleSystems: [],
                                  bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7,
                                                            tint: SIMD3<Float>(repeating: 1)))
     }
@@ -569,21 +635,64 @@ class SceneWallpaperViewModel: ObservableObject {
         }
     }
 
-    func loadSceneScript(_ value: String?, wallpaperDir: URL) -> String? {
-        let candidates: [String] = value.map { [$0] } ?? ["script.js", "scene.js", "scenescript.js"]
-        for candidate in candidates {
-            if candidate.contains("\n") || candidate.contains("function ") || candidate.contains("export ") {
-                return candidate
-            }
-            if let data = pkgParser?.extractFile(named: candidate), let script = String(data: data, encoding: .utf8) {
-                return script
-            }
-            let url = wallpaperDir.appending(path: candidate)
-            if let data = try? Data(contentsOf: url), let script = String(data: data, encoding: .utf8) {
-                return script
-            }
+    /// An object's layer: an image, text or shape layer, with its user bindings; nil for objects
+    /// that draw nothing of their own (groups, particle systems, sounds).
+    private func buildLayer(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
+                            context: SceneValueContext) -> SceneMetalLayer? {
+        var layer = buildMetalLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+            ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+            ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+        layer?.bindings = SceneLayerBindings(object: object, builtWith: context)
+        return layer
+    }
+
+    // MARK: - Scripts
+
+    /// What the renderer runs the scene's scripts from; nil without a scene document.
+    private func scriptContent(wallpaperDir: URL, sceneSize: SIMD2<Float>) -> SceneScriptSceneContent? {
+        guard let loadedDocument else { return nil }
+        let storeKey = propertyStoreKey
+        return SceneScriptSceneContent(
+            wallpaperID: loadedProjectId ?? Self.localWallpaperID(wallpaperDir),
+            document: loadedDocument.document, documentSignature: loadedDocument.signature,
+            project: loadedProject,
+            userValues: { AudioReactiveScriptEngine.shared.userProperties(wallpaper: storeKey) },
+            file: { [weak self] path in self?.scriptFile(path, wallpaperDir: wallpaperDir) },
+            makeLayer: { [weak self] json in self?.buildScriptLayer(json, wallpaperDir: wallpaperDir, sceneSize: sceneSize) })
+    }
+
+    /// A stable id for a wallpaper without a Workshop id: its directory's hash (scripts' ids and
+    /// `localStorage` are keyed on it).
+    static func localWallpaperID(_ directory: URL) -> String {
+        let digest = SHA256.hash(data: Data(directory.standardizedFileURL.path.utf8))
+        return "local-" + digest.prefix(8).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// A file for the scripts (`createLayer` assets, texture animations). Called on a script
+    /// thread, so it takes the scene lock like every other asset read.
+    private func scriptFile(_ path: String, wallpaperDir: URL) -> Data? {
+        sceneLock.lock()
+        defer { sceneLock.unlock() }
+        return assetData(named: path, wallpaperDir: wallpaperDir)
+    }
+
+    /// The layer of an object a script created (`thisScene.createLayer`), built like the scene's
+    /// own. Off the main thread, under the scene lock.
+    private func buildScriptLayer(_ json: [String: SceneJSON], wallpaperDir: URL,
+                                  sceneSize: SIMD2<Float>) -> SceneMetalLayer? {
+        sceneLock.lock()
+        defer { sceneLock.unlock() }
+        let object: WESceneObject
+        do {
+            let data = try JSONSerialization.data(withJSONObject: SceneJSON.object(json).foundationObject)
+            object = try JSONDecoder().decode(WESceneObject.self, from: data)
+        } catch {
+            OWELog.error(.script, "createLayer: the object can't be decoded: \(error)")
+            return nil
         }
-        return nil
+        let context = userValueContext
+        return buildLayer(object.resolvingUserBindings(in: context), wallpaperDir: wallpaperDir, sceneSize: sceneSize,
+                          context: context)
     }
 
     private func bloomSettings(for general: WESceneGeneral) -> SceneBloomSettings {
@@ -656,18 +765,14 @@ class SceneWallpaperViewModel: ObservableObject {
         let effectPlans = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
-                       scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
-                       opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript,
-                       opacityAnimation: object.alphaAnimation,
-                       brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
-                       color: SIMD4<Float>(Float(objectColor.0), Float(objectColor.1), Float(objectColor.2), 1), colorScript: object.colorScript,
-                       text: nil,
+                       scaleAnimation: object.scaleAnimation,
+                       opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                       brightness: Float(object.brightness ?? 1), color: SIMD4<Float>(Float(objectColor.0), Float(objectColor.1), Float(objectColor.2), 1), text: nil,
                        parallaxDepth: Self.parallaxDepth(of: object),
                        perspective: object.perspective ?? false,
-                       positionScript: object.originScript, positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
-                       sizeScript: object.sizeScript, sizeAnimation: nil,
-                               rotation: rotation, rotationScript: object.anglesScript,
-                               rotationAnimation: object.anglesAnimation, effects: .identity)
+                       positionAnimation: object.originAnimation,
+                       sizeAnimation: nil,
+                               rotation: rotation, rotationAnimation: object.anglesAnimation, effects: .identity)
         layer.weEffects = effectPlans.plans
         layer.sceneInput = sceneInput
         layer.alignment = model.fullscreen == true ? nil : object.alignment
@@ -711,19 +816,14 @@ class SceneWallpaperViewModel: ObservableObject {
                        position: localOrigin(for: object, sceneSize: sceneSize),
                        size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
-                       scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
-                       opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript,
-                       opacityAnimation: object.alphaAnimation,
-                       brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
-                       color: SIMD4<Float>(repeating: 1), colorScript: object.colorScript,
-                       text: nil,
+                       scaleAnimation: object.scaleAnimation,
+                       opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                       brightness: Float(object.brightness ?? 1), color: SIMD4<Float>(repeating: 1), text: nil,
                        parallaxDepth: Self.parallaxDepth(of: object),
                        perspective: object.perspective ?? false,
-                       positionScript: object.originScript, positionScriptProperties: object.originScriptProperties,
                        positionAnimation: object.originAnimation,
-                       sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
-                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
-                       rotationAnimation: object.anglesAnimation, effects: .identity)
+                       sizeAnimation: object.sizeAnimation,
+                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationAnimation: object.anglesAnimation, effects: .identity)
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         layer.alignment = object.alignment
         return layer
@@ -760,7 +860,7 @@ class SceneWallpaperViewModel: ObservableObject {
         let paddingParts = (object.padding ?? "0").split(separator: " ").compactMap { Float($0) }
         let padding = SIMD2<Float>(paddingParts.first ?? 0,
                                    paddingParts.count > 1 ? paddingParts[1] : (paddingParts.first ?? 0))
-        let textConfig = SceneMetalText(value: text, script: object.textScript, scriptProperties: object.textScriptProperties, font: registerFont(object.font),
+        let textConfig = SceneMetalText(value: text, font: registerFont(object.font),
                                          pointSize: CGFloat(object.pointsize ?? 24),
                                          horizontalAlignment: object.horizontalalign,
                                          verticalAlignment: object.verticalalign,
@@ -773,17 +873,13 @@ class SceneWallpaperViewModel: ObservableObject {
                                source: .image(transparentPlaceholderImage),
                                position: localOrigin(for: object, sceneSize: sceneSize),
                                size: SIMD2<Float>(Float(sizeValue.0), Float(sizeValue.1)),
-                               scale: SIMD2<Float>(Float(textScale.0), Float(textScale.1)), scaleScript: object.scaleScript, scaleAnimation: object.scaleAnimation,
-                               opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
-                               brightness: Float(object.brightness ?? 1), brightnessScript: object.brightnessScript,
-                               color: SIMD4<Float>(Float(color.0), Float(color.1), Float(color.2), 1), colorScript: object.colorScript,
-                               text: textConfig, parallaxDepth: Self.parallaxDepth(of: object),
+                               scale: SIMD2<Float>(Float(textScale.0), Float(textScale.1)), scaleAnimation: object.scaleAnimation,
+                               opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                               brightness: Float(object.brightness ?? 1), color: SIMD4<Float>(Float(color.0), Float(color.1), Float(color.2), 1), text: textConfig, parallaxDepth: Self.parallaxDepth(of: object),
                                perspective: object.perspective ?? false,
-                               positionScript: object.originScript,
-                               positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
-                               sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
-                               rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
-                               rotationAnimation: object.anglesAnimation,
+                               positionAnimation: object.originAnimation,
+                               sizeAnimation: object.sizeAnimation,
+                               rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationAnimation: object.anglesAnimation,
                                effects: .identity)
         layer.alignment = SceneAlignment.text(horizontal: object.horizontalalign, vertical: object.verticalalign)
         // WE runs a text object's effects on its rasterised text; the renderer rasterises before effects run.
@@ -830,14 +926,12 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                        source: .image(transparentPlaceholderImage), position: position, size: size,
-                       scale: SIMD2<Float>(repeating: 1), scaleScript: nil, scaleAnimation: nil,
-                       opacity: Float(object.alpha ?? 1), opacityScript: object.alphaScript, opacityAnimation: object.alphaAnimation,
-                       brightness: 1, brightnessScript: nil, color: SIMD4<Float>(repeating: 1), colorScript: nil,
-                       text: nil, parallaxDepth: Self.parallaxDepth(of: object), perspective: object.perspective ?? false,
-                       positionScript: object.originScript, positionScriptProperties: object.originScriptProperties, positionAnimation: object.originAnimation,
-                       sizeScript: object.sizeScript, sizeAnimation: object.sizeAnimation,
-                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationScript: object.anglesScript,
-                       rotationAnimation: object.anglesAnimation,
+                       scale: SIMD2<Float>(repeating: 1), scaleAnimation: nil,
+                       opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                       brightness: 1, color: SIMD4<Float>(repeating: 1), text: nil, parallaxDepth: Self.parallaxDepth(of: object), perspective: object.perspective ?? false,
+                       positionAnimation: object.originAnimation,
+                       sizeAnimation: object.sizeAnimation,
+                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationAnimation: object.anglesAnimation,
                        effects: .identity)
         layer.weEffects = plans
         layer.alignment = object.alignment
@@ -943,18 +1037,23 @@ class SceneWallpaperViewModel: ObservableObject {
         var handled = Set<Int>()
         let storeKey = propertyStoreKey
         for (index, effect) in effects.enumerated() {
+            // The app's own switch removes an effect; WE's `visible` only hides it, so a script or a
+            // user property can show it again.
             let enabled = userProperty(
                 sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: index)) != "false"
-            guard isEffectVisible(effect), enabled else {
+            guard enabled else {
                 handled.insert(index)
                 continue
             }
             do {
-                plans.append(try builder.build(effect, overrides: { key in
+                var plan = try builder.build(effect, overrides: { key in
                     SceneEffectOverride.stored(
                         property: sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key),
                         lookup: { AudioReactiveScriptEngine.shared.userPropertyString($0, wallpaper: storeKey) })
-                }))
+                })
+                plan.effectIndex = index
+                plan.visible = isEffectVisible(effect)
+                plans.append(plan)
                 handled.insert(index)
             } catch {
                 OWELog.error(.scene, "Effect \(effect.file) on object \(objectID) can't use WE shaders: \(error)")
@@ -999,29 +1098,6 @@ class SceneWallpaperViewModel: ObservableObject {
             return selectedValue.caseInsensitiveCompare("true") == .orderedSame || selectedValue == "1"
         }
         return object.visible != false
-    }
-
-    private func resolvedVisibility(for scene: WEScene) -> [String: Bool] {
-        var visibility: [String: Bool] = [:]
-        var objectsByID: [Int: WESceneObject] = [:]
-        for (index, object) in scene.objects.enumerated() {
-            let id = object.id ?? index
-            objectsByID[id] = object
-            visibility[String(id)] = isObjectVisible(object)
-        }
-        visibility = AudioReactiveScriptEngine.shared.resolveLayerVisibility(scene.objects, initial: visibility,
-                                                                             wallpaper: propertyStoreKey)
-
-        func isVisibleWithParents(_ object: WESceneObject, visited: Set<Int> = []) -> Bool {
-            let id = object.id ?? -1
-            guard visibility[String(id)] ?? false else { return false }
-            guard let parent = object.parent, !visited.contains(parent), let parentObject = objectsByID[parent] else { return true }
-            return isVisibleWithParents(parentObject, visited: visited.union([id]))
-        }
-        for object in scene.objects {
-            visibility[String(object.id ?? -1)] = isVisibleWithParents(object)
-        }
-        return visibility
     }
 
     private func isEffectVisible(_ effect: WEObjectEffect) -> Bool {

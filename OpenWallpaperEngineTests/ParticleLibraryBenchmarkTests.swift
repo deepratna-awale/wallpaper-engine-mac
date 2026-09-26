@@ -173,7 +173,7 @@ final class ParticleLibraryBenchmarkTests: XCTestCase {
                 return system
             }
         }
-        var particles = SceneMetalContent(size: size, layers: [], particleSystems: systems, sceneScript: nil, bloom: bloom)
+        var particles = SceneMetalContent(size: size, layers: [], particleSystems: systems, bloom: bloom)
         // Emitters hang off their objects as in the scene.
         particles.transforms = content?.transforms ?? .empty
         particles.motions = content?.motions ?? [:]

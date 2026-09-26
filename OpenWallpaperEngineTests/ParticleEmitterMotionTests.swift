@@ -120,7 +120,7 @@ final class ParticleEmitterMotionTests: XCTestCase {
     /// The world transform of `id` at `time`, the way the renderer evaluates it for objects that
     /// aren't drawn layers.
     private func world(_ id: String, in content: SceneMetalContent, at time: Float) -> SceneAffineTransform {
-        content.transforms.world(of: id) { content.motions[$0]?.local(at: time, stateId: $0) }
+        content.transforms.world(of: id) { content.motions[$0]?.local(at: time) }
     }
 
     func testEmittersFollowTheirAnimatedParent() throws {
@@ -142,7 +142,7 @@ final class ParticleEmitterMotionTests: XCTestCase {
         let content = try content("particle-animated-parent")
         let marker = try XCTUnwrap(content.layers.first { $0.id == "4" })
         let emitter = world("2", in: content, at: 1)
-        let markerWorld = content.transforms.parentWorld(of: marker.id) { content.motions[$0]?.local(at: 1, stateId: $0) }
+        let markerWorld = content.transforms.parentWorld(of: marker.id) { content.motions[$0]?.local(at: 1) }
             * SceneAffineTransform(SceneLocalTransform(origin: marker.position, scale: marker.scale, angle: marker.rotation))
         XCTAssertLessThan(simd_distance(markerWorld.translation, emitter.apply(SIMD2(0, 50))), 1e-2)
     }

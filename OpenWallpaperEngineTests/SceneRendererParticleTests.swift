@@ -68,7 +68,6 @@ final class SceneRendererParticleTests: XCTestCase {
         var configuration = system.configuration
         configuration.order = 2
         let content = SceneMetalContent(size: SIMD2(scene, scene), layers: [a, c, b], particleSystems: [configuration],
-                                        sceneScript: nil,
                                         bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3(repeating: 1)))
         renderer.setContent(content)
 
@@ -140,7 +139,6 @@ final class SceneRendererParticleTests: XCTestCase {
         var configuration = system.configuration
         configuration.order = 1
         let content = SceneMetalContent(size: SIMD2(scene, scene), layers: [below, above], particleSystems: [configuration],
-                                        sceneScript: nil,
                                         bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3(repeating: 1)))
         renderer.setContent(content)
 
@@ -210,14 +208,12 @@ final class SceneRendererParticleTests: XCTestCase {
     private func layer(_ id: String, color: [Double], center: SIMD2<Float>, size: SIMD2<Float>, order: Int) -> SceneMetalLayer {
         var layer = SceneMetalLayer(
             id: id, name: id, source: .image(image(color)), position: center, size: size, scale: SIMD2(1, 1),
-            scaleScript: nil, scaleAnimation: nil, opacity: 1, opacityScript: nil, opacityAnimation: nil,
-            brightness: 1, brightnessScript: nil, color: SIMD4(repeating: 1), colorScript: nil, text: nil,
-            parallaxDepth: .zero, perspective: false, positionScript: nil, positionScriptProperties: [:],
-            positionAnimation: nil, sizeScript: nil, sizeAnimation: nil, rotation: 0, rotationScript: nil,
-            rotationAnimation: nil,
+            scaleAnimation: nil, opacity: 1, opacityAnimation: nil,
+            brightness: 1, color: SIMD4(repeating: 1), text: nil,
+            parallaxDepth: .zero, perspective: false, positionAnimation: nil, sizeAnimation: nil, rotation: 0, rotationAnimation: nil,
             effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0, exposure: 0,
                                           gamma: 1, hue: 0, bloomThreshold: 0.7, transformAngle: 0, transformOffset: .zero,
-                                          transformScale: SIMD2(1, 1), scripts: [:]))
+                                          transformScale: SIMD2(1, 1)))
         layer.order = order
         return layer
     }

@@ -124,7 +124,6 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
         renderer.setPlacement(.stretch)
         let scene = Float(Self.size)
         var content = SceneMetalContent(size: SIMD2(scene, scene), layers: [background(scene)], particleSystems: systems,
-                                        sceneScript: nil,
                                         bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7,
                                                                   tint: SIMD3(repeating: 1)))
         content.transforms = transforms
@@ -152,14 +151,12 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
         var layer = SceneMetalLayer(
             id: "A", name: "A", source: .image(SceneWallpaperViewModel.pixelImage([1, 0, 0, 1])),
             position: SIMD2(scene / 2, scene / 2), size: SIMD2(scene, scene), scale: SIMD2(1, 1),
-            scaleScript: nil, scaleAnimation: nil, opacity: 1, opacityScript: nil, opacityAnimation: nil,
-            brightness: 1, brightnessScript: nil, color: SIMD4(repeating: 1), colorScript: nil, text: nil,
-            parallaxDepth: .zero, perspective: false, positionScript: nil, positionScriptProperties: [:],
-            positionAnimation: nil, sizeScript: nil, sizeAnimation: nil, rotation: 0, rotationScript: nil,
-            rotationAnimation: nil,
+            scaleAnimation: nil, opacity: 1, opacityAnimation: nil,
+            brightness: 1, color: SIMD4(repeating: 1), text: nil,
+            parallaxDepth: .zero, perspective: false, positionAnimation: nil, sizeAnimation: nil, rotation: 0, rotationAnimation: nil,
             effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0, exposure: 0,
                                           gamma: 1, hue: 0, bloomThreshold: 0.7, transformAngle: 0, transformOffset: .zero,
-                                          transformScale: SIMD2(1, 1), scripts: [:]))
+                                          transformScale: SIMD2(1, 1)))
         layer.order = 0
         return layer
     }

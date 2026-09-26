@@ -48,7 +48,14 @@ struct SceneWallpaperView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> MTKView {
         let metalView = MTKView(frame: .zero)
-        context.coordinator.renderer = SceneMetalRenderer(view: metalView)
+        context.coordinator.renderer = SceneMetalRenderer(view: metalView, scriptServices: AppDelegate.shared.sceneScriptServices,
+                                                          screenID: screenId)
+        context.coordinator.renderer?.scripts.onHalt = { [weak coordinator = context.coordinator,
+                                                         weak sceneViewModel = viewModel] error in
+            guard let coordinator, let sceneViewModel else { return }
+            // `take()` reports it from the renderer's draw, on the main thread.
+            MainActor.assumeIsolated { coordinator.showScriptsHalted(sceneViewModel, error: error) }
+        }
         if let watchdog = wallpaperViewModel.renderWatchdog {
             context.coordinator.renderer?.frameTimeObserver = { watchdog.recordFrame(duration: $0) }
         }
@@ -56,8 +63,12 @@ struct SceneWallpaperView: NSViewRepresentable {
             forName: .sceneUserPropertiesDidChange, object: nil, queue: .main
         ) { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] notification in
             let keys = notification.userInfo?["keys"] as? [String] ?? []
-            let impact = SceneChangeImpact.aggregate(keys)
-            guard impact > .none, let coordinator, let sceneViewModel else { return }
+            guard let coordinator, let sceneViewModel else { return }
+            // Scripts get every change (`applyUserProperties`); content is rebuilt only when it
+            // reads the property itself.
+            coordinator.renderer?.scripts.userPropertiesDidChange(Set(keys))
+            let impact = sceneViewModel.impact(of: keys)
+            guard impact > .none else { return }
             coordinator.scheduleSceneUpdate(impact, for: sceneViewModel)
         }
         context.coordinator.assetsObserver = NotificationCenter.default.addObserver(
@@ -156,6 +167,39 @@ struct SceneWallpaperView: NSViewRepresentable {
 
         private var pendingImpact: SceneChangeImpact = .none
         private var pendingUpdate: DispatchWorkItem?
+        private var scriptsNotice: SafeRestartNotice?
+
+        /// The watchdog stopped this wallpaper's scripts (a script ran past WE's 15 s): the
+        /// wallpaper keeps showing their last values. Says so without blocking, like SafeRestart;
+        /// Retry reloads the wallpaper, which starts its scripts again.
+        @MainActor
+        func showScriptsHalted(_ viewModel: SceneWallpaperViewModel, error: SceneScriptError?) {
+            let title = viewModel.currentWallpaper.project.title
+            OWELog.error(.script, "\(title): scripts stopped by the watchdog\(error.map { " in \($0.scriptID)" } ?? "")")
+            let message = String(localized: """
+            The scripts of “\(title)” were stopped because one of them ran for too long. The wallpaper \
+            keeps showing, without its scripted animations.
+            """)
+            scriptsNotice?.close()
+            scriptsNotice = SafeRestartNotice(
+                message: message,
+                onRetry: { [weak self, weak viewModel] in
+                    self?.dismissScriptsNotice()
+                    guard let self, let viewModel else { return }
+                    // A new document signature is not needed: dropping the content stops the
+                    // halted scripts, and the reload starts new ones.
+                    self.renderer?.releaseContent()
+                    self.scheduleSceneUpdate(.reloadScene, for: viewModel)
+                },
+                onDismiss: { [weak self] in self?.dismissScriptsNotice() })
+            scriptsNotice?.show()
+        }
+
+        @MainActor
+        private func dismissScriptsNotice() {
+            scriptsNotice?.close()
+            scriptsNotice = nil
+        }
 
         /// Coalesces bursts of property changes (e.g. dragging a slider) into one rebuild,
         /// escalating to a full re-parse only when some key in the burst demands it.
@@ -199,6 +243,7 @@ struct SceneWallpaperView: NSViewRepresentable {
             if let videoMusicSyncObserver {
                 NotificationCenter.default.removeObserver(videoMusicSyncObserver)
             }
+            if let scriptsNotice { MainActor.assumeIsolated { scriptsNotice.close() } }
             audio?.stop()
             // Built layers hold the video stream, so the renderer has to let go of them or the
             // soundtrack outlives this view.

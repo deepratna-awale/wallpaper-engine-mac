@@ -71,7 +71,6 @@ final class EffectGraphTests: XCTestCase {
 
     struct FixedValues: SceneValueContext {
         func userProperty(_ name: String) -> String? { nil }
-        func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? { nil }
         var time: Double { 1.5 }
     }
 
