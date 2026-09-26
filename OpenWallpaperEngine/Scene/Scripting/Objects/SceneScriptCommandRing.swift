@@ -69,18 +69,27 @@ final class SceneScriptCommandRing {
 
     var pendingCount: Int { Int(header[0]) }
 
-    /// Executes and clears the queued commands, in the order scripts issued them.
+    /// Executes and clears the queued commands, in the order scripts issued them. A handler that
+    /// calls back into JavaScript can push more commands while this runs (S11): they are appended
+    /// behind the ones being executed and run in the same drain, before the ring is reset. The
+    /// ring's capacity bounds how many a drain can run, so a handler that keeps pushing ends in
+    /// the overflow, never in a loop.
     func drain() {
-        let count = min(max(0, Int(header[0])), capacity)
-        let overflowed = header[2] != 0
-        guard count > 0 || overflowed else { return }
-        let hasStrings = (0..<count).contains { records[$0 * Layout.recordStride + 5] > 0 }
-        let strings: [String] = hasStrings
-            ? (rt.forProperty("ring")?.forProperty("strings")?.toArray() as? [String] ?? [])
-            : []
-        for index in 0..<count {
-            execute(record: index, strings: strings)
+        guard header[0] > 0 || header[2] != 0 else { return }
+        var executed = 0
+        while true {
+            let count = min(max(0, Int(header[0])), capacity)
+            guard executed < count else { break }
+            let hasStrings = (executed..<count).contains { records[$0 * Layout.recordStride + 5] > 0 }
+            let strings: [String] = hasStrings
+                ? (rt.forProperty("ring")?.forProperty("strings")?.toArray() as? [String] ?? [])
+                : []
+            for index in executed..<count {
+                execute(record: index, strings: strings)
+            }
+            executed = count
         }
+        let overflowed = header[2] != 0
         if overflowed && !reportedOverflow {
             reportedOverflow = true
             OWELog.error(.script, "SceneScript command ring full (\(capacity) commands); later commands were dropped")
