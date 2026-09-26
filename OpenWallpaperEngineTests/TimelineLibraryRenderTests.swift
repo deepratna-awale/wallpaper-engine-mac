@@ -203,10 +203,16 @@ final class TimelineLibraryRenderTests: XCTestCase {
             print("\(item.id): \(site) never drawn: layer drawn \(probe.layers[id] != nil), visible \(renderer.scripts.isVisible(id)), "
                   + "plans \(renderer.effectPlans(ofLayer: id).map { plan in (plan.effectIndex, plan.visible, plan.passes.map { pass in pass.constants.dynamic.map { ($0.uniform, $0.source.animationSite?.description ?? "-", pass.variant?.uniforms?.members[$0.uniform] != nil) } }) })")
         }
-        let row = [item.id, String(checkedModel.count), String(checkedSet.count), String(owned.subtracting(checkedModel).count),
-                   String(never.count),
-                   String(spriteLayers.count), Self.format(sorted[sorted.count / 2]), Self.format(p99),
-                   Self.format(sorted.last ?? 0)].joined(separator: "\t")
+        let ownedOnly: Int = owned.subtracting(checkedModel).count
+        let median: String = Self.format(sorted[sorted.count / 2])
+        let worst: String = Self.format(sorted.last ?? 0)
+        var columns: [String] = [item.id, String(checkedModel.count), String(checkedSet.count), String(ownedOnly)]
+        columns.append(String(never.count))
+        columns.append(String(spriteLayers.count))
+        columns.append(median)
+        columns.append(Self.format(p99))
+        columns.append(worst)
+        let row = columns.joined(separator: "\t")
         return Result(row: row)
     }
 
