@@ -10,7 +10,7 @@ import simd
 /// otherwise and without the library (`OWE_LIBRARY`).
 ///
 /// Each wallpaper is drawn at every size of `OWE_SCENE_BENCH_SIZES` (default 1920x1080 and
-/// 3840x2160, a 4K display at 2×: the scene target follows the drawable,
+/// 3840x2160, a 4K display at 2×, as a shared frame of that size: the scene target follows it,
 /// `SceneRenderResolution`), as a whole, without its particle systems, with them alone, and under
 /// each particle budget that thins it (`ParticleBudget`). A row gives the GPU time (the least of the
 /// measured frames, and the median), the render thread's CPU time for `draw(in:)` (median; it
@@ -27,6 +27,8 @@ final class SceneFrameBenchmarkTests: XCTestCase {
 
     private enum Variant: CustomStringConvertible {
         case full, withoutParticles, particlesOnly, withoutEffects, budget(GSParticleBudget)
+        /// The whole scene drawn with other render settings (`renderModes`).
+        case render(String, SceneRenderSettings)
 
         var description: String {
             switch self {
@@ -35,7 +37,28 @@ final class SceneFrameBenchmarkTests: XCTestCase {
             case .particlesOnly: return "particles only"
             case .withoutEffects: return "no effects"
             case .budget(let budget): return "budget \(budget.rawValue)"
+            case .render(let name, _): return name
             }
+        }
+    }
+
+    /// The render settings `OWE_SCENE_BENCH_MODES` asks for, by name (comma separated): `half` (WE's
+    /// texture reduction), `match` (scene detail matched to the display), `desktop` (one pixel per
+    /// point), and `+` joins them (`match+desktop`). With the variable set, only these and `full`
+    /// are drawn.
+    private static func renderModes(_ request: String) -> [Variant] {
+        request.split(separator: ",").map { name in
+            var settings = SceneRenderSettings()
+            settings.particleBudget = .unlimited
+            for part in name.split(separator: "+") {
+                switch part {
+                case "half": settings.textureReduction = 2
+                case "match": settings.sceneDetail = .matchDisplay
+                case "desktop": settings.renderResolution = .desktop
+                default: XCTFail("unknown render mode \(part)")
+                }
+            }
+            return .render(String(name), settings)
         }
     }
 
@@ -86,8 +109,12 @@ final class SceneFrameBenchmarkTests: XCTestCase {
                                 directory.lastPathComponent, project.title, content.size.x, content.size.y, content.layers.count,
                                 effects, content.particleSystems.count, refracting.count, authored))
             var variants: [Variant] = [.full]
-            if effects > 0 { variants.append(.withoutEffects) }
-            if !content.particleSystems.isEmpty {
+            if let modes = environment["OWE_SCENE_BENCH_MODES"], !modes.isEmpty {
+                variants += Self.renderModes(modes)
+            } else {
+                if effects > 0 { variants.append(.withoutEffects) }
+            }
+            if environment["OWE_SCENE_BENCH_MODES"]?.isEmpty ?? true, !content.particleSystems.isEmpty {
                 variants += [.withoutParticles, .particlesOnly]
                 for budget in [GSParticleBudget.high, .medium, .low] where ParticleBudget.scale(authored: authored, budget: budget.limit) < 1 {
                     variants.append(.budget(budget))
@@ -96,8 +123,14 @@ final class SceneFrameBenchmarkTests: XCTestCase {
             for size in sizes {
                 for variant in variants {
                     var drawn = content
+                    var settings = unlimited
                     switch variant {
                     case .full: break
+                    case .render(_, let modeSettings):
+                        settings = modeSettings
+                        model.setRenderSettings(settings)
+                        drawn = try XCTUnwrap(model.metalContent())
+                        model.setRenderSettings(unlimited)
                     case .withoutEffects:
                         let plain = content.layers.map { layer -> SceneMetalLayer in
                             var layer = layer
@@ -116,7 +149,7 @@ final class SceneFrameBenchmarkTests: XCTestCase {
                         drawn = try XCTUnwrap(model.metalContent())
                         model.setRenderSettings(unlimited)
                     }
-                    let measure = try frameCost(drawn, size: size, device: device, services: services)
+                    let measure = try frameCost(drawn, size: size, settings: settings, device: device, services: services)
                     lines.append(String(format: "  %4dx%-4d %-16@ gpu %7.3f / %7.3f  cpu %6.3f  script %6.3f  particles %d",
                                         size.x, size.y, variant.description as NSString, measure.gpuMin, measure.gpuMedian,
                                         measure.cpuMedian, measure.scriptMedian, measure.particleCapacity))
@@ -183,8 +216,41 @@ final class SceneFrameBenchmarkTests: XCTestCase {
         copy.timelines = content.timelines
         copy.sounds = content.sounds
         copy.lighting = content.lighting
+        copy.volumetrics = content.volumetrics
         copy.engineCombos = content.engineCombos
+        copy.bloomChain = content.bloomChain
+        copy.hdrChain = content.hdrChain
         return copy
+    }
+
+    /// `OWE_SCENE_BENCH_PASSES`: the effect passes of 10 more frames, timed each (`EffectPassTimer`);
+    /// the costliest, by their least time, are printed.
+    private func printPasses(_ renderer: SceneMetalRenderer, viewport: SceneViewport) throws {
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        guard let timer = EffectPassTimer(device: device) else { return print("    (no stage-boundary timestamps)") }
+        renderer.effectPassTimer = timer
+        defer { renderer.effectPassTimer = nil }
+        var least: [String: (nanoseconds: Double, pixels: Int)] = [:]
+        let start = (gpu: device.sampleTimestamps().gpu, wall: CACurrentMediaTime())
+        var frames: [[EffectPassTimer.Sample]] = []
+        for _ in 0..<10 {
+            timer.reset()
+            renderer.renderShared([viewport])
+            renderer.lastCommandBuffer?.waitUntilCompleted()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.02))
+            let rate = EffectPassTimer.tickRate(from: start.gpu, to: device.sampleTimestamps().gpu,
+                                                wallSeconds: CACurrentMediaTime() - start.wall)
+            frames.append(timer.samples(ticksPerNanosecond: rate))
+        }
+        for sample in frames.joined() {
+            let known = least[sample.label]
+            if known == nil || sample.nanoseconds < known!.nanoseconds { least[sample.label] = (sample.nanoseconds, sample.pixels) }
+        }
+        let total = least.values.reduce(0) { $0 + $1.nanoseconds } / 1e6
+        print(String(format: "    effect passes: %d, %.3f ms summed (least of 10 frames each; passes overlap)", least.count, total))
+        for (label, value) in least.sorted(by: { $0.value.nanoseconds > $1.value.nanoseconds }).prefix(12) {
+            print(String(format: "      %7.3f ms  %5.1f MPix  %@", value.nanoseconds / 1e6, Double(value.pixels) / 1e6, label))
+        }
     }
 
     /// The wallpapers `request` names: workshop ids, or `playlist:<name>` for a playlist's scenes.
@@ -230,8 +296,8 @@ final class SceneFrameBenchmarkTests: XCTestCase {
 
     /// Frames of `content` at `size`: two and a half seconds at 60 fps to load, compile and fill,
     /// then 60 frames back to back.
-    private func frameCost(_ content: SceneMetalContent, size: SIMD2<Int>, device: MTLDevice,
-                           services: SceneScriptServices) throws -> Measure {
+    private func frameCost(_ content: SceneMetalContent, size: SIMD2<Int>, settings: SceneRenderSettings,
+                           device: MTLDevice, services: SceneScriptServices) throws -> Measure {
         let view = MTKView(frame: CGRect(x: 0, y: 0, width: size.x / 2, height: size.y / 2), device: device)
         view.colorPixelFormat = .bgra8Unorm
         view.autoResizeDrawable = false
@@ -239,6 +305,7 @@ final class SceneFrameBenchmarkTests: XCTestCase {
         let renderer = try XCTUnwrap(SceneMetalRenderer(view: view, scriptServices: services, screenID: "bench"))
         view.isPaused = true
         renderer.setPlacement(.fill)
+        renderer.renderSettings = settings
         renderer.setContent(content)
         defer { renderer.releaseContent() }
         let deadline = Date().addingTimeInterval(60)
@@ -248,12 +315,16 @@ final class SceneFrameBenchmarkTests: XCTestCase {
                 _ = materials.waitUntilCompiled(plan, pixelFormat: .bgra8Unorm)
             }
         }
+        let viewport = SceneViewport(drawableSize: SIMD2(Float(size.x), Float(size.y)),
+                                     pointSize: SIMD2(Float(size.x / 2), Float(size.y / 2)), cursor: nil, frameRateLimit: 30)
         var gpu: [Double] = [], cpu: [Double] = [], script: [Double] = []
         for frame in 0..<210 {
             if frame < 150 { RunLoop.main.run(until: Date().addingTimeInterval(1.0 / 60)) } else { RunLoop.main.run(until: Date()) }
             let scriptFrames = renderer.scripts.wallpaper?.frameTiming.frames ?? 0
             let start = CACurrentMediaTime()
-            renderer.draw(in: view)
+            // The frame a display (or the displays of a shared wallpaper) shows, at the asked size: an
+            // offscreen view's drawable can fall back to its bounds' size, one pixel per point.
+            renderer.renderShared([viewport])
             let elapsed = CACurrentMediaTime() - start
             guard let commandBuffer = renderer.lastCommandBuffer else { continue }
             commandBuffer.waitUntilCompleted()
@@ -265,6 +336,7 @@ final class SceneFrameBenchmarkTests: XCTestCase {
                 script.append(timing.recentMilliseconds.last ?? 0)
             }
         }
+        if ProcessInfo.processInfo.environment["OWE_SCENE_BENCH_PASSES"] != nil { try printPasses(renderer, viewport: viewport) }
         let capacity = content.particleSystems.reduce(0) { total, system in
             total + Int((Float(ParticleBudget.capacity(of: system)) * system.budgetScale).rounded())
         }

@@ -90,6 +90,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var fullDetailScale: Float = 1
     /// Bumped for every prelit image an effect chain starts from (`runEffects`).
     private var prelitVersion: UInt64 = 0
+    /// Times the effect passes when set (profiling; `EffectPassTimer`).
+    var effectPassTimer: EffectPassTimer? {
+        get { effectGraph?.passTimer }
+        set { effectGraph?.passTimer = newValue }
+    }
     /// Draws particle systems through their WE material.
     private lazy var particleMaterials = ParticleMaterialRenderer(device: device)
     /// Draws image layers through their own WE material.

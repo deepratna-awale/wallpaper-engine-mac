@@ -110,6 +110,8 @@ final class EffectGraphRenderer {
     /// Counters for tests and diagnostics.
     private(set) var passesEncoded = 0
     private(set) var layersReused = 0
+    /// Times every effect pass when set (profiling; `EffectPassTimer`).
+    var passTimer: EffectPassTimer?
     /// Frames that started after a kept static prefix (`staticPrefix`).
     private(set) var prefixesReused = 0
     private(set) var targetsAllocated = 0
@@ -380,7 +382,8 @@ final class EffectGraphRenderer {
                     reusable = reusable && program.isReusable && !pass.readsSceneSnapshot && !pass.readsMipMappedFrameBuffer
                     encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
                            current: current, previous: previous, fbos: fbos, context: context,
-                           standIn: StandIn(input: input, inputSize: standIn, targets: state.standInSizes),
+                           standIn: StandIn(input: input, inputSize: standIn, targets: state.standInSizes,
+                                            label: passTimer == nil ? "" : Self.passLabel(layerID, effect: effect, pass: passIndex)),
                            scriptWrites: context.constantWrites[effect.effectIndex] ?? [],
                            commandBuffer: commandBuffer)
                     didRender = true
@@ -394,6 +397,12 @@ final class EffectGraphRenderer {
         // per-frame cost).
         state.staticOutput = reusable && !readsScene ? (staticKey, current) : nil
         return current
+    }
+
+    /// "layer effect pass", for `passTimer`.
+    private static func passLabel(_ layerID: String, effect: SceneEffectPlan, pass: Int) -> String {
+        let name = (effect.file as NSString).deletingLastPathComponent.split(separator: "/").last.map(String.init) ?? effect.file
+        return "\(layerID) \(name) \(pass)"
     }
 
     /// How many of the chain's leading effects (by index, hidden ones included) give an output that
@@ -553,6 +562,8 @@ final class EffectGraphRenderer {
         let input: MTLTexture
         let inputSize: SIMD2<Int>
         let targets: [ObjectIdentifier: SIMD2<Float>]
+        /// The layer, for `passTimer`.
+        var label = ""
 
         /// The size `texture` reports to the built-ins; nil for its own.
         func size(of texture: MTLTexture) -> SIMD2<Float>? {
@@ -571,6 +582,8 @@ final class EffectGraphRenderer {
         // Blended passes composite over what's already there; others overwrite every pixel.
         descriptor.colorAttachments[0].loadAction = Self.blendMode(pass.blending) == nil ? .dontCare : .load
         descriptor.colorAttachments[0].storeAction = .store
+        passTimer?.attach(to: descriptor, label: "\(standIn.label) \(output.width)x\(output.height)",
+                          pixels: output.width * output.height)
         guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
         defer { encoder.endEncoding() }
         passesEncoded += 1
