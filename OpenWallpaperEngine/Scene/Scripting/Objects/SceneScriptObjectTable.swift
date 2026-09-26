@@ -47,7 +47,8 @@ final class SceneScriptObjectTable {
         static let instance = 51
         /// `instance.controlpoint0…7`, x y z each.
         static let controlPoints = 58
-        static let stride = 84         // 82 used, padded to a multiple of 4
+        static let brightness = 82
+        static let stride = 84         // 83 used, padded to a multiple of 4
 
         /// The offsets as the JS side reads them (`__rt.table.layout`).
         static var javaScriptObject: [String: Int] {

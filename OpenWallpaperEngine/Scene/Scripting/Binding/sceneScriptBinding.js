@@ -112,6 +112,12 @@
             key = property.slice('instanceoverride.'.length);
         }
         if (object === null || object === undefined || !(key in object) || typeof object[key] === 'function') return null;
+        if (object === target && typeof objects.isBoundOnly === 'function' && objects.isBoundOnly(key)) {
+            return {
+                read: function () { return object[key]; },
+                write: function (value) { objects.writeBound(object, key, value); },
+            };
+        }
         return {
             read: function () { return object[key]; },
             write: function (value) { object[key] = value; },

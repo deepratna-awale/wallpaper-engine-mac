@@ -128,6 +128,29 @@ final class SceneScriptRenderTests: XCTestCase {
         XCTAssertEqual(healthy.origin(of: "1")?.x, 4, "the other display's scripts go on")
     }
 
+    // MARK: - Objects scripts drive
+
+    /// Sound layers under script control (`stop()`, a bound `volume`), `createLayer` of a particle
+    /// system and of a sound, a bound `brightness` dimming a layer and a bound `size` growing one.
+    func testScriptsDriveSoundsCreatedObjectsBrightnessAndSize() throws {
+        let scene = try Scene(fixture: "scripted-objects", services: services(), size: SIMD2(64, 64))
+        defer { scene.close() }
+        let pixels = try scene.render(frames: 8) { _ in scene.renderer.particleSystemCount > 0 }
+
+        let sounds = scene.renderer.sounds
+        let tone = try XCTUnwrap(sounds.playback(of: 2), "the scene's sound layer")
+        XCTAssertTrue(tone.isStopped, "its script stopped it on frame 3")
+        XCTAssertEqual(tone.volume, 0.5, "the volume script's return")
+        let made = try XCTUnwrap(sounds.ids.first { $0 >= SceneScriptSceneDescriber.firstCreatedID }, "createLayer made a sound")
+        XCTAssertEqual(sounds.playback(of: made)?.isPlaying, false, "startsilent")
+        XCTAssertEqual(scene.renderer.particleSystemCount, 1, "createLayer('particles/…') made a particle system")
+
+        XCTAssertEqual(pixels.color(atScene: SIMD2(46, 16)), .red, "the size script grew Grown from 8 to 16")
+        let dimmed = pixels.rgb(atScene: SIMD2(16, 48))
+        XCTAssertTrue((90...170).contains(Int(dimmed.x)) && abs(Int(dimmed.x) - Int(dimmed.y)) < 8,
+                      "brightness 0.5 halves Dimmed's white: \(dimmed)")
+    }
+
     // MARK: - Draw order
 
     func testDrawOrderPutsParticlesBetweenTheLayersAroundThem() {
@@ -235,6 +258,13 @@ final class SceneScriptRenderTests: XCTestCase {
             case (true, true, true): return .white
             default: return .other
             }
+        }
+
+        /// The colour's bytes (r, g, b) at a scene point.
+        func rgb(atScene point: SIMD2<Float>) -> SIMD3<UInt8> {
+            let x = Int(point.x), y = size.y - 1 - Int(point.y)
+            let index = (y * size.x + x) * 4
+            return SIMD3(bytes[index + 2], bytes[index + 1], bytes[index])
         }
 
         /// Pixels brighter than black within a scene rectangle.

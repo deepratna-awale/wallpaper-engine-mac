@@ -32,6 +32,8 @@ struct SceneScriptObjectFeedback {
     var angle: Float
     var alpha: Float?
     var color: SIMD3<Float>?
+    /// An image layer's `brightness` (authored or user-bound).
+    var brightness: Float?
     /// The object's own `visible` before scripts (authored or user-bound).
     var visible: Bool
     /// The unscaled quad size (`ILayer.size`, read-only for scripts); nil for objects without one.

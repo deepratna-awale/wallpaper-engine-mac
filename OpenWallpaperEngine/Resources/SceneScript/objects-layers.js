@@ -180,6 +180,21 @@
     }
     const PLAYING = fields.find(function (field) { return field.field === 'playing'; }).offset;
 
+    // Fields member writes can't change (`size`: read-only in lib.sceneScript.d.ts) but a script
+    // bound to them can: WE's native property is writable (wallpaper64.exe 0x1401a4200). The
+    // property binding writes them through this.
+    const boundOnly = {};
+    fields.forEach(function (field) { if (field.group === 'layer' && field.readOnly) boundOnly[field.name] = field; });
+    objects.isBoundOnly = function (name) { return Object.prototype.hasOwnProperty.call(boundOnly, name); };
+    objects.writeBound = function (layer, name, value) {
+        const field = boundOnly[name];
+        if (field === undefined || layer._dead) return;
+        const c = objects.convert(field.type, value);
+        if (c === undefined) return;
+        for (let k = 0; k < c.length; k++) layer._t[layer._base + field.offset + k] = c[k];
+        layer._d[layer._di] = 1;
+    };
+
     for (let i = 0; i < STRINGS.length; i++) {
         const field = STRINGS[i];
         Object.defineProperty(Layer.prototype, field, {

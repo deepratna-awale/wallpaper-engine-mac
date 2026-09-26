@@ -14,20 +14,21 @@ import Foundation
 /// is detected against: one flat buffer of `Layout.stride` floats per slot, like the table.
 /// Confined to the script thread, and called every frame, so it works on the buffers directly.
 final class SceneScriptTableSync {
-    /// A field whose writes make it script-owned: every member but `size` (read-only, the
-    /// renderer's) and `playing` (native state behind `isPlaying()`).
+    /// A field whose writes make it script-owned: every member but `playing` (native state behind
+    /// `isPlaying()`). `size` is read-only for member writes, so only a script bound to it owns it.
     private struct Tracked {
         var bit: UInt64
         var offset: Int
         var components: Int
     }
 
-    private static let tracked: [Tracked] = SceneScriptObjectField.allCases.filter { !$0.isReadOnly }.map {
+    private static let tracked: [Tracked] = SceneScriptObjectField.allCases.filter { $0 != .playing }.map {
         Tracked(bit: SceneScriptOwnedFields.bit($0), offset: $0.offset, components: $0.components)
     }
     private static let originBit = SceneScriptOwnedFields.bit(.origin), scaleBit = SceneScriptOwnedFields.bit(.scale)
     private static let anglesBit = SceneScriptOwnedFields.bit(.angles), alphaBit = SceneScriptOwnedFields.bit(.alpha)
     private static let colorBit = SceneScriptOwnedFields.bit(.color), visibleBit = SceneScriptOwnedFields.bit(.visible)
+    private static let brightnessBit = SceneScriptOwnedFields.bit(.brightness), sizeBit = SceneScriptOwnedFields.bit(.size)
 
     private typealias Layout = SceneScriptObjectTable.Layout
     private static let origin = SceneScriptObjectField.origin.offset
@@ -38,6 +39,7 @@ final class SceneScriptTableSync {
     private static let visible = SceneScriptObjectField.visible.offset
     private static let size = SceneScriptObjectField.size.offset
     private static let playing = SceneScriptObjectField.playing.offset
+    private static let brightness = SceneScriptObjectField.brightness.offset
 
     private let store: SceneScriptObjectStore
     private var baselines: [Float]
@@ -92,7 +94,8 @@ final class SceneScriptTableSync {
                 put(Self.color + 2, color.z)
             }
             if writable(Self.visibleBit) { put(Self.visible, feedback.visible ? 1 : 0) }
-            if let size = feedback.size {
+            if let brightness = feedback.brightness, writable(Self.brightnessBit) { put(Self.brightness, brightness) }
+            if let size = feedback.size, writable(Self.sizeBit) {
                 put(Self.size, size.x)
                 put(Self.size + 1, size.y)
             }

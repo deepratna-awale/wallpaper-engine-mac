@@ -953,7 +953,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             input.objects[id] = SceneScriptObjectFeedback(
                 origin: own.origin, scale: own.scale, angle: own.angle,
                 alpha: baseOpacity(entry, base: base, time: time, script: script),
-                color: SIMD3(base.color.x, base.color.y, base.color.z), visible: scripts.baseVisible(entry.layer.id),
+                color: SIMD3(base.color.x, base.color.y, base.color.z), brightness: base.brightness,
+                visible: scripts.baseVisible(entry.layer.id),
                 size: lastTextSizes[entry.layer.id] ?? layerBaseSize(entry, time: time),
                 world: worldTransform(entry, time: time), animated: animated)
         }
@@ -961,7 +962,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard let id = Int(key) else { continue }
             let own = objectMotion.local(at: time, script: scripts.object(key), scriptValues: false)
             input.objects[id] = SceneScriptObjectFeedback(
-                origin: own.origin, scale: own.scale, angle: own.angle, alpha: nil, color: nil,
+                origin: own.origin, scale: own.scale, angle: own.angle, alpha: nil, color: nil, brightness: nil,
                 visible: scripts.baseVisible(key), size: nil,
                 world: transforms.world(of: key) { [self] id in liveLocal(id, time: time) },
                 animated: objectMotion.animatedFields, playing: sounds.isPlaying(id))
@@ -1061,7 +1062,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // to hide its edges while it moves) isn't pinned inside the scene.
         let center = quad.center + parallaxOffset - motion.shake
         let color = script?.vector3(.color).map { SIMD4<Float>($0.x, $0.y, $0.z, base.color.w) } ?? base.color
-        return LayerDraw(opacity: opacity, color: color, brightness: base.brightness,
+        return LayerDraw(opacity: opacity, color: color, brightness: script?.scalar(.brightness) ?? base.brightness,
                          quad: SceneQuadGeometry(center: center, axisX: quad.axisX, axisY: quad.axisY),
                          musicSyncLevel: musicSyncLevel)
     }
@@ -1074,10 +1075,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                             fallback: base.opacity)
     }
 
-    /// The layer's unscaled size this frame: its timeline, then authored. Read-only for scripts.
+    /// The layer's unscaled size this frame: a script bound to `size` (WE's image property is
+    /// writable and drawn every frame, wallpaper64.exe 0x1401e8bb0), else its timeline, else authored.
     private func layerBaseSize(_ entry: PreparedLayer, time: Float) -> SIMD2<Float> {
-        vector2(SceneTimeline.vector3(entry.layer.sizeAnimation, at: time,
-                                      fallback: SIMD3<Float>(entry.layer.size.x, entry.layer.size.y, 0)))
+        if let scripted = scripts.object(entry.layer.id)?.vector2(.size) { return scripted }
+        return vector2(SceneTimeline.vector3(entry.layer.sizeAnimation, at: time,
+                                             fallback: SIMD3<Float>(entry.layer.size.x, entry.layer.size.y, 0)))
     }
 
     /// A text layer's current string (a script's, else authored), laid out and rasterised (through

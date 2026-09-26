@@ -11,6 +11,9 @@ enum SceneScriptObjectField: String, CaseIterable {
     case instanceAlpha, instanceSize, instanceCount, instanceSpeed, instanceLifetime, instanceRate, instanceColorn
     case controlpoint0, controlpoint1, controlpoint2, controlpoint3
     case controlpoint4, controlpoint5, controlpoint6, controlpoint7
+    /// An image layer's `brightness` (WE's image property table, wallpaper64.exe 0x1401ee520:
+    /// a float that multiplies the colour).
+    case brightness
 
     /// Which JS object carries the member.
     enum Group: String {
@@ -64,6 +67,7 @@ enum SceneScriptObjectField: String, CaseIterable {
         case .controlpoint0, .controlpoint1, .controlpoint2, .controlpoint3,
              .controlpoint4, .controlpoint5, .controlpoint6, .controlpoint7:
             return Layout.controlPoints + 3 * (controlPointIndex ?? 0)
+        case .brightness: return Layout.brightness
         }
     }
 
@@ -105,7 +109,8 @@ enum SceneScriptObjectField: String, CaseIterable {
         }
     }
 
-    /// `size` is computed by the renderer (lib.sceneScript.d.ts `readonly size: Vec2`).
+    /// `size` is computed by the renderer (lib.sceneScript.d.ts `readonly size: Vec2`): member
+    /// writes are ignored, but a script bound to it sets it (WE's property is writable natively).
     var isReadOnly: Bool { self == .size || self == .playing }
 
     var components: Int {
@@ -124,7 +129,7 @@ enum SceneScriptObjectField: String, CaseIterable {
         switch self {
         case .scale, .color: return [1, 1, 1]
         case .parallaxDepth: return [1, 1]
-        case .alpha, .visible, .solid, .volume, .zoom, .instanceAlpha, .instanceSize, .instanceCount, .instanceSpeed,
+        case .alpha, .visible, .solid, .volume, .zoom, .brightness, .instanceAlpha, .instanceSize, .instanceCount, .instanceSpeed,
              .instanceLifetime, .instanceRate, .instanceColorn: return [1]
         default: return Array(repeating: 0, count: components)
         }
