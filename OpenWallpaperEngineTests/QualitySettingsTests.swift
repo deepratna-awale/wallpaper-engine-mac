@@ -11,7 +11,11 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertTrue(settings.reflections)
         XCTAssertEqual(settings.shadows, .medium)
         XCTAssertEqual(settings.volumetrics, .medium)
-        XCTAssertEqual(SceneRenderSettings(settings), SceneRenderSettings())
+        // The app matches the scene's detail to the display by default (`GSSceneDetail`); a renderer
+        // without settings draws as WE does.
+        var drawn = SceneRenderSettings()
+        drawn.sceneDetail = .matchDisplay
+        XCTAssertEqual(SceneRenderSettings(settings), drawn)
         XCTAssertEqual(GSLightingQuality.allCases.map(\.level), [0, 1, 2, 3, 4])
         XCTAssertTrue(GSPostProcessingQuality.enabled.allowsBloom)
         XCTAssertFalse(GSPostProcessingQuality.disabled.allowsBloom)
