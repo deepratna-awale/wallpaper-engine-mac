@@ -144,16 +144,25 @@ final class ShaderVariantTranslator {
     }
 
     /// Combo values for a pass: declared defaults < material < effect pass < instance, plus sampler
-    /// combos (`"combo":"MASK"`) switched on for bound texture slots.
-    static func resolveCombos(vertex: ShaderSource, fragment: ShaderSource,
-                              overrides: [[String: Int]], boundTextureSlots: Set<Int>) -> [String: Int] {
+    /// combos (`"combo":"MASK"`) switched on for bound texture slots, and a bound mask's component
+    /// combos (`"components"`) for the channels its `.tex` flags mark painted (`textureFlags`, by
+    /// slot; `ShaderUniformDeclaration.componentCombos`).
+    static func resolveCombos(vertex: ShaderSource, fragment: ShaderSource, overrides: [[String: Int]],
+                              boundTextureSlots: Set<Int>, textureFlags: [Int: UInt32] = [:]) -> [String: Int] {
         var combos: [String: Int] = [:]
         for declaration in vertex.combos + fragment.combos where combos[declaration.name] == nil {
             combos[declaration.name] = declaration.defaultValue
         }
         for sampler in vertex.samplers + fragment.samplers {
-            guard let combo = sampler.combo?.uppercased(), let slot = sampler.textureSlot else { continue }
-            combos[combo] = boundTextureSlots.contains(slot) ? 1 : (combos[combo] ?? 0)
+            guard let slot = sampler.textureSlot else { continue }
+            if let combo = sampler.combo?.uppercased() {
+                combos[combo] = boundTextureSlots.contains(slot) ? 1 : (combos[combo] ?? 0)
+            }
+            guard boundTextureSlots.contains(slot), let flags = textureFlags[slot] else { continue }
+            for (component, combo) in sampler.componentCombos.enumerated()
+            where !combo.isEmpty && component < 12 && flags & (UInt32(0x100000) << component) != 0 {
+                combos[combo.uppercased()] = 1
+            }
         }
         for layer in overrides {
             for (name, value) in layer { combos[name.uppercased()] = value }

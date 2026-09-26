@@ -58,12 +58,6 @@ final class ImageMaterialRenderTests: XCTestCase {
         XCTAssertNil(try builder.build(materialPath: "materials/flat.json", colorBlendMode: nil))
     }
 
-    func testLightingNeedsSceneLightsAndFallsBack() {
-        XCTAssertThrowsError(try builder.build(materialPath: "materials/lit.json", colorBlendMode: nil)) { error in
-            guard case ImageMaterialPlanError.unsupported = error else { return XCTFail("\(error)") }
-        }
-    }
-
     func testAMissingTextureOnlyUnbindsItsSlot() throws {
         let plan = try XCTUnwrap(try builder.build(materialPath: "materials/missingmask.json", colorBlendMode: nil))
         XCTAssertNil(plan.pass.textures[1])

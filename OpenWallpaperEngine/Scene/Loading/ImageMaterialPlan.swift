@@ -101,40 +101,19 @@ struct ImageMaterialPlanBuilder {
         let vertex = try loader.load(materialPass.shader, stage: .vertex)
         let fragment = try loader.load(materialPass.shader, stage: .fragment)
 
-        var inputs: [Int: SceneEffectTextureInput] = [:]
+        var listed: [Int: SceneEffectTextureInput] = [:]
+        var headers: [Int: Data] = [:]
         for (slot, name) in materialPass.textures.enumerated() where slot > 0 {
             guard let name else { continue }
-            inputs[slot] = try textureInput(named: name, materialPath: materialPath)
+            listed[slot] = try textureInput(named: name, materialPath: materialPath)
+            if listed[slot] != nil, !name.hasPrefix("_rt_") { headers[slot] = textureHeader(name, materialPath: materialPath) }
         }
-        var overrides = [materialPass.combos]
-        if let colorBlendMode { overrides.append(["BLENDMODE": colorBlendMode]) }
-        let combos = sceneEngineCombos.applied(to: ShaderVariantTranslator.resolveCombos(
-            vertex: vertex, fragment: fragment, overrides: overrides, boundTextureSlots: Set(inputs.keys).union([0])))
-        if (combos["LIGHTING"] ?? 0) != 0 {
-            throw ImageMaterialPlanError.unsupported("LIGHTING needs scene lights (roadmap area 5)")
-        }
-        if prelit, (combos["REFLECTION"] ?? 0) != 0 {
-            throw ImageMaterialPlanError.unsupported("REFLECTION on a layer with effects or a puppet needs the prelighting pass (roadmap area 5)")
-        }
-
-        let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)
-        var sampled = Set(variant.textureSlots)
-        if !listsItsImage {
-            // `font` declares COLORFONT's colour atlas (`g_Texture1`) in every variant; one that
-            // doesn't read it (SPIRV-Cross emits only the textures a stage uses) needs nothing there.
-            let msl = variant.vertexMSL + variant.fragmentMSL
-            sampled = sampled.filter { $0 == 0 || msl.contains("[[texture(\($0))]]") }
-        }
-        guard sampled.contains(0) else { return nil }
-        inputs = inputs.filter { sampled.contains($0.key) }
-        for sampler in vertex.samplers + fragment.samplers {
-            guard let slot = sampler.textureSlot, slot != 0, sampled.contains(slot), inputs[slot] == nil,
-                  let name = sampler.defaultTexture else { continue }
-            inputs[slot] = try textureInput(named: name, materialPath: materialPath)
-        }
-        inputs[0] = .current
-        if let unbound = sampled.subtracting(inputs.keys).min() {
-            throw ImageMaterialPlanError.unsupported("g_Texture\(unbound) has no texture")
+        let formats = Self.formatCombos(vertex.samplers + fragment.samplers, headers: headers)
+        let combos = { (overrides: [[String: Int]]) in
+            sceneEngineCombos.applied(to: ShaderVariantTranslator.resolveCombos(
+                vertex: vertex, fragment: fragment, overrides: [materialPass.combos] + overrides + [formats],
+                boundTextureSlots: Set(listed.keys).union([0]),
+                textureFlags: headers.compactMapValues { TEXImageFormat.texiWord(1, in: $0) }))
         }
 
         let uniforms = (vertex.uniforms + fragment.uniforms).filter { !$0.isSampler }
@@ -153,13 +132,40 @@ struct ImageMaterialPlanBuilder {
             staticValues: resolved.staticValues.filter { !ImageMaterialPlan.liveUniforms.contains($0.key) },
             dynamic: resolved.dynamic)
 
-        let pass = SceneEffectPassPlan(command: .render,
+        // One variant of the material: nil when it doesn't draw the layer image (slot 0).
+        func pass(_ combos: [String: Int], blending: String) throws -> SceneEffectPassPlan? {
+            let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)
+            // A variant may declare samplers it never reads: `font` declares COLORFONT's colour
+            // atlas (`g_Texture1`) in every variant, `genericimage4` its normal map and PBR mask
+            // whenever `LIGHTING` or `REFLECTION` is on. SPIRV-Cross emits only the textures a stage
+            // uses, and one it doesn't emit needs nothing bound.
+            let msl = variant.vertexMSL + variant.fragmentMSL
+            let sampled = Set(variant.textureSlots).filter { $0 == 0 || msl.contains("[[texture(\($0))]]") }
+            guard sampled.contains(0) else { return nil }
+            var inputs = listed.filter { sampled.contains($0.key) }
+            for sampler in vertex.samplers + fragment.samplers {
+                guard let slot = sampler.textureSlot, slot != 0, sampled.contains(slot), inputs[slot] == nil,
+                      let name = sampler.defaultTexture else { continue }
+                inputs[slot] = try textureInput(named: name, materialPath: materialPath)
+            }
+            inputs[0] = .current
+            if let unbound = sampled.subtracting(inputs.keys).min() {
+                throw ImageMaterialPlanError.unsupported("g_Texture\(unbound) has no texture")
+            }
+            return SceneEffectPassPlan(command: .render,
                                        variantKey: ShaderVariantTranslator.cacheKey(vertex: vertex, fragment: fragment, combos: combos),
-                                       variant: variant, blending: materialPass.blending ?? "normal", target: nil,
-                                       textures: inputs, constants: constants)
+                                       variant: variant, blending: blending, target: nil, textures: inputs, constants: constants)
+        }
+
+        let drawn = combos(colorBlendMode.map { [["BLENDMODE": $0]] } ?? [])
+        if prelit, (drawn["LIGHTING"] ?? 0) != 0 || (drawn["REFLECTION"] ?? 0) != 0 {
+            throw ImageMaterialPlanError.unsupported("LIGHTING or REFLECTION on a layer with effects or a puppet needs the prelighting pass (roadmap area 5)")
+        }
+        guard let layerPass = try pass(drawn, blending: materialPass.blending ?? "normal") else { return nil }
+
         var clampedSlots = Set<Int>()
         if clampUVs == true || image.map({ textureClamps($0, materialPath: materialPath) }) ?? true { clampedSlots.insert(0) }
-        for (slot, input) in inputs {
+        for (slot, input) in layerPass.textures {
             switch input {
             case .sceneSnapshot, .mipMappedFrameBuffer: clampedSlots.insert(slot)
             case .asset(let key, _):
@@ -169,22 +175,39 @@ struct ImageMaterialPlanBuilder {
             default: break
             }
         }
-        return ImageMaterialPlan(materialPath: materialPath, pass: pass,
-                                 usesSpriteSheetUniforms: (variant.combos["SPRITESHEET"] ?? 0) != 0,
+        return ImageMaterialPlan(materialPath: materialPath, pass: layerPass,
+                                 usesSpriteSheetUniforms: (layerPass.variant?.combos["SPRITESHEET"] ?? 0) != 0,
                                  liveFactors: liveFactors, clampedSlots: clampedSlots)
     }
 
     /// The `.tex` ClampUVs flag (TEXI flags bit 2) of texture `name`, looked up like the texture
     /// loader does. A texture that isn't a `.tex` (or can't be read) clamps.
     func textureClamps(_ name: String, materialPath: String) -> Bool {
+        guard let data = textureHeader(name, materialPath: materialPath), let flags = Self.texFlags(data) else { return true }
+        return flags & Self.texClampUVsFlag != 0
+    }
+
+    /// The `.tex` file of texture `name`, looked up like the texture loader does; nil when there is none.
+    func textureHeader(_ name: String, materialPath: String) -> Data? {
         let directory = (materialPath as NSString).deletingLastPathComponent
         let root = directory.split(separator: "/").first.map(String.init) ?? "materials"
         for path in ["\(directory)/\(name).tex", "\(root)/\(name).tex", "materials/\(name).tex", "\(name).tex"] {
-            guard let data = readFile(path) else { continue }
-            guard let flags = Self.texFlags(data) else { return true }
-            return flags & Self.texClampUVsFlag != 0
+            if let data = readFile(path) { return data }
         }
-        return true
+        return nil
+    }
+
+    /// `TEX<n>FORMAT` for the samplers annotated `"formatcombo": true` (0x1401a5c40: the bound
+    /// texture's format), as `SceneEffectPlanBuilder` sets it: only the formats that load as the GPU
+    /// samples them (RG88, R8, block-compressed); the others are expanded to RGBA on load.
+    static func formatCombos(_ samplers: [ShaderUniformDeclaration], headers: [Int: Data]) -> [String: Int] {
+        var combos: [String: Int] = [:]
+        for sampler in samplers where (sampler.annotation["formatcombo"] as? NSNumber)?.boolValue == true {
+            guard let slot = sampler.textureSlot, let header = headers[slot], let format = TEXImageFormat(texData: header),
+                  format.isChannelReduced || format.isBlockCompressed else { continue }
+            combos["TEX\(slot)FORMAT"] = Int(format.rawValue)
+        }
+        return combos
     }
 
     static let texClampUVsFlag: UInt32 = 2

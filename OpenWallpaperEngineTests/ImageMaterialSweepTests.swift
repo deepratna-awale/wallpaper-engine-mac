@@ -5,8 +5,9 @@ import MetalKit
 
 /// The library sweep for image layers: every image object's own material in every scene wallpaper
 /// of a local library is planned, translated, compiled and drawn through `ImageMaterialRenderer`.
-/// Materials that need an engine feature that doesn't exist yet (scene lights) are counted, not
-/// failed: those layers draw natively. Skipped without the library (CI); `OWE_LIBRARY` overrides it.
+/// Materials that need an engine feature that doesn't exist yet are counted, not failed: those
+/// layers draw natively. Lit (`LIGHTING`) materials draw with no light budget, as in a scene
+/// without `lightconfig`. Skipped without the library (CI); `OWE_LIBRARY` overrides it.
 final class ImageMaterialSweepTests: XCTestCase {
     func testEveryLibraryImageMaterialPlansCompilesAndDraws() throws {
         let assets = ShaderVariantTests.weAssets
@@ -95,7 +96,7 @@ final class ImageMaterialSweepTests: XCTestCase {
                     layerID: label, quad: SceneQuadGeometry(center: SIMD2(128, 128), axisX: SIMD2(200, 0), axisY: SIMD2(0, 120)),
                     sceneSize: SIMD2(256, 256), color: SIMD3(1, 1, 1), alpha: 1, brightness: 1, texture: image,
                     contentSize: nil, uvOrigin: .zero, uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1), sceneSnapshot: snapshot,
-                    frame: BuiltinFrameContext(time: 1.5), values: EffectGraphTests.FixedValues(),
+                    mipMappedFrameBuffer: snapshot, frame: BuiltinFrameContext(time: 1.5), values: EffectGraphTests.FixedValues(),
                     assetTexture: { _, source in
                         guard case .image(let image) = source,
                               let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }

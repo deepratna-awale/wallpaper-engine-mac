@@ -22,6 +22,13 @@ struct ShaderUniformDeclaration {
     var materialKey: String? { annotation["material"] as? String }
     /// Set when the sampler switches a combo on while a texture is bound (e.g. `MASK`).
     var combo: String? { annotation["combo"] as? String }
+    /// The combos of a PBR mask's channels (`"components"`, r first: `METALLIC_MAP`,
+    /// `ROUGHNESS_MAP`, `REFLECTION_MAP`, `EMISSIVE_MAP` on the image and model shaders). WE
+    /// switches component k on when the bound texture's `.tex` flags have bit 20 + k, which the
+    /// editor sets for each channel painted (0x14016c800).
+    var componentCombos: [String] {
+        (annotation["components"] as? [Any] ?? []).map { ($0 as? [String: Any])?["combo"] as? String ?? "" }
+    }
     /// `util/noise` etc.: what fills the slot when nothing else does.
     var defaultTexture: String? { annotation["default"] as? String }
     var isSampler: Bool { type.hasPrefix("sampler") }
