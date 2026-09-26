@@ -1,6 +1,6 @@
 # SceneScript plan
 
-**Status: 2026-09-25, WP0 (from evidence) and WP1–WP8 done; the runtime hardened against the WP2–WP7 findings (test-risks SF1–SF13, S11, S19, S28).** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
+**Status: 2026-09-26, WP0 (from evidence) and WP1–WP11 done: the app runs every scene's scripts on `SceneScriptRuntime`, one per display, and the legacy `AudioReactiveScriptEngine` scripting is deleted. WP12 (timelines and animation APIs) is next.** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
 
 Sources, in order of authority:
 
@@ -267,7 +267,9 @@ Ten further exports are the authors' own helpers (`skip`, `playTrack`, …); WE 
 
 ---
 
-## 3. Our implementation today
+## 3. The implementation before WP11
+
+Kept as the record of what the rewrite replaced; WP11 deleted all of it (see WP11 below for what runs now).
 
 Files:
 
@@ -500,7 +502,7 @@ Each frame:
 | Bridging per frame | ~15 `setObject` + `toDictionary` of all layers per call | 1 call + buffer reads |
 | Allocations | dictionaries per call | one `Vec3` per vector getter or argument (like WE) |
 
-Per-frame budget assertions go into the harness (§5, WP9) as `measure` tests, with a baseline per scene.
+Per-frame budget assertions go into the harness (§5, WP9) as `measure` tests, with a baseline per scene. Measured after WP11 in the renderer (`SceneScriptLibraryCostTests`, Release, median): 0.10–0.26 ms per frame for the library's scenes, 0.49 ms for 3453730450 (71 sites); see WP11.
 
 ### 4.7 Audio, media and storage sources
 
@@ -596,7 +598,7 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 - Tests: every corpus script compiles except `8bb9b9a54120`, which reports a compile error with its line; line numbers match the original; unsupported export forms are rejected; fixtures are synthetic snippets.
 - The full-corpus test reads `/Volumes/980Pro/dd-scenescript/corpus` and is skipped when absent (like `LibrarySweepTests`).
 
-**WP4 — Engine, input, console, timers, storage.** *Done:* `Scripting/Engine/` (`SceneScriptEngineExtension`, `SceneScriptStorage`, `SceneScriptInput`, `SceneScriptConsole`, `SceneScriptEngineEnvironment`) and `Resources/SceneScript/sceneScript{Engine,Timers,LocalStorage,Console}.js`. Best guesses: timers run on scene time and fire once per frame at most; the user-shortcut count resets per frame; storage writes flush once a second of scene time, at teardown and on app termination, and a store's cap counts keys too (SF6); `engine.runtime` is a double (SF8). Later packages extend `engine`, never replace it. WP11 wiring: one `SceneScriptStorage` app-wide; set `environment` on resize and `input` per frame on the script thread; `registerAsset` lives in the object model (an `IAssetHandle` whose `toConfigString()` is the path), `isObjectValid`/`requestFeatures` are still missing.
+**WP4 — Engine, input, console, timers, storage.** *Done:* `Scripting/Engine/` (`SceneScriptEngineExtension`, `SceneScriptStorage`, `SceneScriptInput`, `SceneScriptConsole`, `SceneScriptEngineEnvironment`) and `Resources/SceneScript/sceneScript{Engine,Timers,LocalStorage,Console}.js`. Best guesses: timers run on scene time and fire once per frame at most; the user-shortcut count resets per frame; storage writes flush once a second of scene time, at teardown and on app termination, and a store's cap counts keys too (SF6); `engine.runtime` is a double (SF8). Later packages extend `engine`, never replace it. WP11 wiring: one `SceneScriptStorage` app-wide; set `environment` on resize and `input` per frame on the script thread; `registerAsset` lives in the object model (an `IAssetHandle` whose `toConfigString()` is the path), and so do `isObjectValid` and `requestFeatures` since WP11 (best guesses: alive-or-destroyed, and a global-scope no-op).
 
 - `engine.*` including the `is*()` functions and `userProperties` via `_Internal.convertUserProperties`.
 - `setTimeout`/`setInterval` returning cancel functions, global-scope rules, `localStorage` per §4.7, `openUserShortcut` (logs "unsupported" until user shortcuts exist).
@@ -662,7 +664,21 @@ Originally planned: `Scene/Values/` (`SceneValueContext`, `SceneValueResolver`, 
 
 ### Step 3 (serial)
 
-**WP11 — Renderer integration and deletion.**
+**WP11 — Renderer integration and deletion.** *Done* (2026-09-26). How it runs:
+
+- **Per wallpaper instance.** `SceneRendererScripts` (the renderer's side) owns a `SceneScriptWallpaper` (`Scripting/Host/`), which creates the runtime inside its `SceneScriptThread` (`thread.sync`) with every extension: WP4 over the one app-wide `SceneScriptStorage`, WP5 over `capture.audioSpectrumSnapshot`, WP6 over the one process-wide `MacMediaSessionSource`, WP7, WP8 (sites from `SceneScriptSiteBuilder`, bound to the slots WP7 gave the scene's objects) and WP10. `AppDelegate.sceneScriptServices` holds the shared parts and the prelude, read once. The runtime survives a content rebuild of the same document (a user property changed a layer) and restarts with a new document or wallpaper.
+- **Frames.** Each draw hands the scripts the clock, the display (`engine` environment), `input` (screen pixels, the left button for desktop clicks while Finder is in front, the camera shake offset), the cursor pass's frame (WP10: scene cursor plus shake, parallax only for an orthographic scene with parallax on, the image and text layers in draw order) and every object as drawn (`SceneScriptFrameInput`), and runs a script frame with `asyncFrame`. What the last finished frame left (`SceneScriptFrameState`) is drawn from the next draw on: one frame of latency, and a hung script only drops script frames.
+- **The tables.** `SceneScriptTableSync` writes the renderer's values (authored, user-bound, animated) into every field scripts don't own, and world matrices and sizes into all, before each frame (P2: an animated field gets the animation's value even when a script owns it; the script's return wins). After the frame a dirty slot's fields that changed become script-owned for good, and the renderer draws those from the table: origin, scale, angles, alpha, colour, visible, parallax depth, point size, instance overrides. Dirty bytes are cleared.
+- **Commands** (`SceneScriptSceneMirror`, the object host): `createLayer` describes the layer from the asset (under the script's Workshop item first), a configuration or a copy (`SceneScriptSceneDescriber`), and the renderer builds it through the loader off the main thread; `destroyLayer` removes it and frees its GPU state after the in-flight frame; `sortLayer` reorders at once, particle systems keep their place among the layers; strings (text, font, alignments), `setMaterialProperty`/`IMaterial` writes (into the pass uniforms whose key matches), effect `visible`, particle `play`/`pause`/`stop`/`emitParticles`, and play/pause/stop/setFrame/rate of object property and texture animations (their timelines are evaluated at the animation's own time). Scene settings scripts set (bloom, camera shake and parallax) override the scene's.
+- **Visibility.** The loader builds every object and effect, hidden ones included; visibility scripts run every frame (P6), a hidden parent hides its children, and hidden particle systems neither step nor draw.
+- **User properties.** Every change reaches `applyUserProperties` with WE's raw payload (values typed as project.json declares them); the content is rebuilt only for a property the built content reads outside scripts (`SceneWallpaperViewModel.contentUserProperties`).
+- **Halt.** A watchdog stop is logged, shown in a non-blocking panel like safe restart's (Retry reloads the wallpaper), and stops only that wallpaper's scripts; the renderer keeps drawing their last values.
+- **Deleted:** `AudioReactiveScriptEngine`'s scripting (what remains, audio capture and user properties, is `Audio/WallpaperServices.swift`), `SceneScriptPropertiesShim`, the invented globals, the legacy 64-band spectrum and waveform, `resolveLayerVisibility`, the `script.js` guess, the per-field script sources the loader decoded, and `SceneValueContext.evaluateScript` (a scripted value starts from its fallback; the runtime owns it). Also `engine.isObjectValid` and `requestFeatures` (WP4's leftovers) are in.
+- **Best guesses and gaps:** the left button counts only while Finder is frontmost (the wallpaper window ignores mouse events); fields outside the object model (`brightness`, `size`) are kept by their scripts but not drawn from them (no corpus site uses them); sound layers are not played, so their playback only changes `isPlaying()` (logged once); scene, effect and material animations and `executeMaterialFunction` are not script-controlled (WP12, logged once); `createLayer` draws image, text and shape layers, not particle systems; `fullscreen` layers and models are not hit-tested (WP10's gaps).
+- **Tests:** `SceneScriptRenderTests` (headless renders of `Tests/Fixtures/Scenes/scripted*` through the real loader: an origin moves a layer, a layer hidden at load is shown and a visible one hidden, a material constant turns a tint green, `createLayer` draws, a user-bound script property reaches a text layer; two displays share nothing; a script-only user property reaches `applyUserProperties` without a rebuild; a hang halts only its wallpaper), `SceneScriptWallpaperTests` (ownership and P2, world matrices, create/sort/destroy, effects and constants, strings, playback, the cursor pass, animation control, the 1000-frame create/destroy churn), `SceneScriptSceneDescriberTests`, `UniformScriptWriteTests`, `SceneScriptInstanceOverridesTests`, and `SceneScriptLibraryCostTests` (the cost table below). The replay now uses the app's describer and WP10's cursor pass.
+- **Cost** (§4.6), per frame, CPU time of the script thread for a whole script frame (renderer values into the tables, cursor pass, scripts, read-back), median of 240 frames on the local library's 21 scenes with scripts, Release: 0.10–0.26 ms, and 0.49 ms for 3453730450 (71 sites; p99 0.97 ms), almost all of it the scripts' own JavaScript (the host around them is about 0.05 ms); the render thread's share is 0.01–0.07 ms. Before, with the legacy engine on the render thread (Debug): 1.1–64 ms per frame, 3453730450 about 500 ms. Debug builds of the new path: 0.18–0.41 ms, 3453730450 0.72 ms; render thread 0.03–0.26 ms.
+
+Originally planned:
 
 - `SceneMetalRenderer`, `SceneObjectMotion` and `ParticleFrameInputs` read the object table.
 - The command ring is executed there.

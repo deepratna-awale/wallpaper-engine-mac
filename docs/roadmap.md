@@ -2,7 +2,7 @@
 
 Order: finish what is **most implemented** first, then what is **partly implemented**, then what is **not implemented**. Within each area, smaller items come first. The goal is to run every Wallpaper Engine wallpaper except the `application` type (see [`architecture.md`](architecture.md)).
 
-**Status: 2026-09-25.** PR #2, branch `deepratna/feature-work`.
+**Status: 2026-09-26.** PR #2, branch `deepratna/feature-work`.
 
 ## Done
 
@@ -13,6 +13,7 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 - Phase 4: user properties on every field, per-wallpaper property store, sidebar conditions and property types, web wallpaper properties and audio.
 - Phase 5: parent transforms, image alignment, WE text layout and colour.
 - M8: library sweep passes (44 wallpapers, 0 failures).
+- Area 4 SceneScript, WP0–WP11 (docs/scenescript-plan.md): every scene's scripts run on `SceneScriptRuntime`, one per display, feeding the renderer through the object table; the legacy engine's scripting is deleted.
 
 ## Work queue (autonomous loop, from 2026-09-25 night)
 
@@ -20,7 +21,7 @@ Each step: research → parallel agents by file ownership + tester → fix the t
 
 1. Finish in flight: the depth-parallax and shine bug (3802047741). The particle finish (child control points, per-instance ropes, non-uniform scale, particle uniform arena, test cleanup) is done.
 2. WE-authored values everywhere (priority): every threshold, default, range, step and option comes from WE's json, shader annotations and scripts (effect.json, materials, `// {..}` uniform annotations, `[COMBO]`, project.json properties, particle jsons, SceneScript `createScriptProperties`). No invented constants, magic factors or app-made ranges. Audit → fix → a test that fails on hard-coded values.
-3. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise.
+3. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise. WP0–WP11 done; WP12 (timelines and animation APIs) goes with area 3.
 4. Area 3 Timeline animations → tester → optimise.
 5. Area 5 Lighting and reflections → tester → optimise.
 6. Area 6 3D models (with particle collisionmodel) → tester → optimise.
@@ -61,15 +62,17 @@ Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs 
 3. The `getTextureAnimation` API: play, pause, stop, frame and rate.
 4. The `getAnimation` / animation-layer API for puppet and model animations; this completes with area 7.
 
-### 4. SceneScript (partly implemented; Phase 6)
+### 4. SceneScript (mostly implemented; Phase 6)
 
-1. One JavaScript context per scene with live layer proxies. `thisLayer` writes stick, `update(value)` chains, and the 36%-of-frame re-bridging goes away.
-2. Visibility scripts every frame; objects hidden at load stay creatable and showable.
-3. `getEffect(...).visible`, `getMaterial`, `setMaterialProperty`, wired to the effect constants.
-4. Live left/right `registerAudioBuffers` (16/32/64).
-5. Input: scene-space cursor, events only on `solid` layers with hit-testing, angles in degrees.
-6. Callbacks: `applyUserProperties` (changed keys only), `media*`, `destroy`, `resizeScreen`.
-7. Layer API: `createLayer` from an asset, `destroyLayer`, `sortLayer`, `getLayerIndex`, sound layers, `localStorage`.
+1. ~~One JavaScript context per scene with live layer proxies.~~ Done (WP2–WP11).
+2. ~~Visibility scripts every frame; objects hidden at load stay creatable and showable.~~ Done (WP11).
+3. ~~`getEffect(...).visible`, `getMaterial`, `setMaterialProperty`, wired to the effect constants.~~ Done (WP7, WP11).
+4. ~~Live left/right `registerAudioBuffers` (16/32/64).~~ Done (WP5).
+5. ~~Input: scene-space cursor, events only on `solid` layers with hit-testing, angles in degrees.~~ Done (WP4, WP10, WP11).
+6. ~~Callbacks: `applyUserProperties` (changed keys only), `media*`, `destroy`, `resizeScreen`.~~ Done (WP4, WP6, WP11).
+7. Layer API: ~~`createLayer` from an asset, `destroyLayer`, `sortLayer`, `getLayerIndex`, `localStorage`~~ done; sound layers are not played at all yet (their script playback only changes `isPlaying()`), and `createLayer` of a particle system is not drawn.
+8. WP12: scene, effect and material animations under script control, `animationEvent`, animation layers, bones (with areas 3, 6, 7).
+9. Live Now Playing on macOS 15.4+ (MediaRemote answers only entitled processes: the `/usr/bin/perl` adapter or a helper).
 
 ### 5. Lighting and reflections (mostly not implemented)
 
@@ -98,7 +101,7 @@ Ranked; the area each item belongs to is in brackets.
 
 1. Retina scene target: the scene renders at scene size and is upscaled, which defeats sharp text; `g_Screen` reports the scene size. [new, Phase 5]
 2. `sceneRegion` crops with the local position (no parent, script, animation or rotation). [new, Phase 3/5]
-3. Hidden layers (script `visible=false`) still draw their raw texture. [4]
+3. ~~Hidden layers (script `visible=false`) still draw their raw texture.~~ Done (WP11): hidden layers and effects are built and skipped. [4]
 4. Animation time is `Float(CACurrentMediaTime())`: precision drifts with uptime, the speed slider makes time jump, effects and particles ignore `_owe_speed`. [3]
 5. Static-chain cache is keyed on the input's `ObjectIdentifier` and ignores scripted colour and alpha; `g_Color`/`g_Alpha` use authored values. [1]
 6. Effects on text reallocate their buffers whenever the text's size changes (clocks). [1]
@@ -117,6 +120,6 @@ Ranked; the area each item belongs to is in brackets.
 19. Scene audio cache names use `hashValue` (random per launch), so copies pile up in Caches. [new]
 20. Pipeline compiles are unbounded, with no eviction or retry; the variant cache key ignores toolchain versions; a `TEMPDUMP` debug block is left in. [1]
 21. The text cache clears completely past 128 entries and thrashes with animated scale. [new]
-22. Script clones share `layer.id` with their source (text and effect state), and effect state is never pruned. [4]
+22. ~~Script clones share `layer.id` with their source (text and effect state), and effect state is never pruned.~~ Done (WP11): created layers get their own ids and free their state when destroyed. [4]
 23. Objects without an `id`: the hierarchy uses the index, layers use −1, so the parent link is lost. [new]
 24. Dead `_owe_effect_*` UI code; toggling parallax triggers a full rebuild. [new]

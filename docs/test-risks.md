@@ -1043,3 +1043,19 @@ S28 and S11 were closed with WP8 (see WP8 below).
 - Which properties use the converter's Int32 and inert cases is unknown; every numeric property is treated as float. `instanceoverride.colorn` is a number (the d.ts), though scene.json writes a colour.
 - The argument is the object model's live value, so it is only as right as the descriptions WP11 builds: they must carry user-resolved values and the renderer's animated values (P2).
 - Direct member writes (`thisLayer.visible = 1`) still accept numbers through the object model's setters; whether WE's member setters use the same converter is not verified.
+
+### WP11: renderer integration (`9fe7c90`…`ee8b3bf`)
+
+**What the commits cover.**
+- S19: every runtime lives on its own `SceneScriptThread` and the renderer only posts frames (`asyncFrame`), so a hung script drops script frames while the renderer keeps drawing their last values. A watchdog stop is logged, shown in a non-blocking panel like safe restart's (Retry reloads the wallpaper) and stops only that wallpaper's scripts (`SceneScriptRenderTests.testAHungScriptHaltsOnlyItsWallpaper`). The watchdog still covers a whole frame, not each outermost call.
+- S22: one runtime per renderer, i.e. per display; `shared`, module variables and frame counts are their own (`testTwoDisplaysShareNothing`). Storage and the media session are shared on purpose (one `SceneScriptStorage`, one `MacMediaSessionSource`, which fans out per subscriber, so SF14 is moot).
+- S11/S12: the clone stress test runs 1000 frames of create-and-destroy with the table's slots reused and the scene flat (`SceneScriptWallpaperTests.testCreatingAndDestroyingALayerEveryFrameStaysFlat`). `createLayer` describes the layer synchronously and the renderer builds it off the main thread, so it draws a frame or more later; a missing asset gives `null` and one log line.
+- S13: `sortLayer` reorders at once in JS and the renderer applies the order on its next draw, with particle systems kept between the layers around them (`testDrawOrderPutsParticlesBetweenTheLayersAroundThem`).
+- S26: hidden objects and effects are built and skipped; visibility scripts run every frame (`testScriptWritesReachThePixels`).
+- S10: the renderer tears its runtime down on its thread (`destroy()` runs there) when the content stops or the document changes.
+
+**Open.**
+- One frame of latency: scripts run between draws, so what they write shows on the next draw (WE runs them in the frame).
+- The left button counts only while Finder is frontmost, the closest this app gets to "clicks the wallpaper receives".
+- `brightness` and `size` scripts (none in the corpus) keep their values in JS but aren't drawn from them; sound layers aren't played; scene, effect and material animations aren't script-controlled (WP12).
+- 3453730450 takes 0.49 ms per frame (Release median, p99 0.97 ms), just under §4.6's budget, nearly all of it its 71 scripts' JavaScript; the host around them costs about 0.05 ms.

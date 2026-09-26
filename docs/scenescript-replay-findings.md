@@ -16,7 +16,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, HEAD `46daecc` plus the WP9
 - Each run is load plus 600 frames at 60 fps, driven by these fakes:
   - **Clock:** starts at 23:59:52 on 31 December. `Date` is stubbed to it and `Math.random` is seeded.
   - **Audio:** silence, then a moving two-channel tone with a kick every 0.5 s (frames 150–450), then silence.
-  - **Cursor:** a moving cursor. Clicks go only to Solid objects (§1.9 P7).
+  - **Cursor:** WP10's cursor pass over a stand-in for the renderer's table (world matrix from each object's origin and scale, 64 × 64 for an unsized image or text). The cursor moves on a path, and from frames 300 and 460 clicks each Solid layer with scripts in turn (§1.9 P7).
   - **Media:** playing, paused, stopped without a thumbnail, then a new track.
   - **User properties:** every flag, slider and combo is changed at frame 420 and restored at frame 540.
 - The test assertions and their checks:
@@ -36,7 +36,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, HEAD `46daecc` plus the WP9
   - **failures:** a compile error, P4 (a throwing `update` is disabled while its media callback keeps running), "undefined" text, and a NaN origin.
   - **watchdog:** a hung `update` halts the runtime.
 - Property binding is WP8's own: each site's type, initial value and resolved `scriptproperties` come from `SceneScriptSiteBuilder`, and `SceneScriptBindingExtension` binds it.
-- `Tests/Fixtures/SceneScript/replay-harness/replay.js` samples the bound properties, and stands in for WP10: cursor events arrive as an inbox kind targeted at an object slot.
+- `Tests/Fixtures/SceneScript/replay-harness/replay.js` samples the bound properties and makes the run deterministic. Since WP11 the objects are described by the app's own `SceneScriptSceneDescriber`, as the renderer describes them.
 - Set `TEST_RUNNER_OWE_REPLAY_REPORT=<path>` on `xcodebuild` to get the table below as a file.
 
 ## Results
@@ -89,6 +89,8 @@ Timing is from a Debug build on a shared M-series machine, with other builds run
 | workshop/3030025146 | 4 | 4.75 | 0.061 | 0.056 | 0.193 | 2400 | ok |
 | workshop/3074485715 | 7 | 9.08 | 0.081 | 0.073 | 0.238 | 4200 | ok |
 | workshop/3109042108 | 20 | 13.84 | 0.077 | 0.069 | 0.299 | 2428 | ok |
+
+**After WP11** (2026-09-26, the app's describer and WP10's cursor pass): the findings are the same six expected ones (RF1 stays fixed), mean frame times 0.04–0.35 ms, 3453730450 at 0.35 ms, and far fewer commands per run since RF2's fix (text only flushes on change).
 
 **Summary.**
 

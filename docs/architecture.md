@@ -46,7 +46,7 @@ These are folders in the app target today. The scene engine (`Scene/`, `Audio/`,
 | `Scene/Values/` | *(Phase 4)* Resolve every dynamic value the same way: literal, `{"user":…}`, `{"user":{"name","condition"}}`, `{"script":…}`, `{"animation":…}`. | `SceneValue<T>` |
 | `Scene/Shaders/` | GLSL → SPIR-V → MSL translation, reflection, the translation cache and the effect catalog. | `SceneShaderTranslator`, `SceneDynamicEffectCatalog` |
 | `Scene/Rendering/` | Metal: layers, the effect pass graph, render targets, text, particles and the camera. | `SceneMetalRenderer`, `SceneShaders.metal` |
-| `Scene/Scripting/` | The SceneScript runtime (JavaScriptCore) and the WE JS API surface. | `AudioReactiveScriptEngine` (to be renamed `SceneScriptRuntime`) |
+| `Scene/Scripting/` | The SceneScript runtime (JavaScriptCore), one per wallpaper instance on its own thread, and the WE JS API surface as extensions; `Host/` ties a runtime to the renderer (docs/scenescript-plan.md). | `SceneScriptRuntime`, `SceneScriptWallpaper`, `SceneScriptSceneMirror` |
 | `Scene/Loading/` | Turns a wallpaper into render content: loads, resolves and builds. | `SceneWallpaperViewModel` (to be split) |
 | `Scene/UI/` | Scene-specific SwiftUI: the inspector and user properties. These are the **only** scene files allowed to import SwiftUI views. | `SceneInspectorView`, `SceneUserPropertiesView`, `SceneHelp` |
 
@@ -83,7 +83,7 @@ These are folders in the app target today. The scene engine (`Scene/`, `Audio/`,
 2. **Resolve.** `Scene/Values` binds user properties (per wallpaper, per display), scripts and animations to typed values. Nothing downstream reads raw JSON or string-keyed dictionaries.
 3. **Build.** `Scene/Loading` produces render content: an ordered layer list in authored object order. Each layer carries its full parent transform, its effect pass graph (from `effect.json` passes, `fbos`, `bind`, `target` and combos) and its text, particle and sound state.
 4. **Render.** `Scene/Rendering` executes the pass graph each frame through translated WE shaders. Uniforms come from reflection, plus built-ins such as `g_Time`, resolutions, pointer and audio spectrum, plus resolved constants.
-5. **Script.** `Scene/Scripting` runs once per frame in one context per scene. Live layer proxies write straight into render state.
+5. **Script.** `Scene/Scripting` runs once per frame in one context per wallpaper instance, on its own thread. Layer objects read and write a shared object table; the renderer feeds it each object's drawn values before the frame and draws what scripts wrote after it (`SceneRendererScripts`).
 
 ## Invariants
 
