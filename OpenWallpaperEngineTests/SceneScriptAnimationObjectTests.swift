@@ -43,6 +43,23 @@ final class SceneScriptAnimationObjectTests: XCTestCase {
 
     // MARK: - IAnimation
 
+    /// `thisScene.getAnimation(name)` finds a timeline of any owner: a layer's field, a material's
+    /// constant; the same object the owner's own `getAnimation` gives. Only a string name is
+    /// looked up (null otherwise), and a name nobody has gives undefined (scenescript64.dll
+    /// 0x181635ee0 → 0x18163613d).
+    func testTheSceneFindsAnAnimationOfAnyOwner() throws {
+        let f = try fixture()
+        XCTAssertEqual(string(f, "thisScene.getAnimation('bounce') === bounce"), "true")
+        XCTAssertEqual(string(f, "thisScene.getAnimation('intro') === intro"), "true")
+        XCTAssertEqual(string(f, "thisScene.getAnimation('fade') === sprite.getEffect(0).getMaterial(0).getAnimation('fade')"),
+                       "true")
+        XCTAssertEqual(string(f, "thisScene.getAnimation('fade').frameCount"), "30")
+        XCTAssertEqual(string(f, "String(thisScene.getAnimation('nothing'))"), "undefined")
+        XCTAssertEqual(string(f, "[thisScene.getAnimation(), thisScene.getAnimation(3), thisScene.getAnimation(new String('fade'))].join('|')"),
+                       "||", "null for anything but a string")
+        XCTAssertEqual(string(f, "String(thisScene.getAnimation())"), "null")
+    }
+
     func testIsPlayingReadsThePausedAndFinishedFlags() throws {
         let f = try fixture()
         let bounce = try slot(f, "bounce")

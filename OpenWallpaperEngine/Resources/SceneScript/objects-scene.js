@@ -162,7 +162,7 @@
             if (changed) sceneBuffer.dirty[CAMERA_DIRTY] = 1;
         }
 
-        getAnimation(name) { return objects.resolveAnimation(this, sceneAnimations, name); }
+        getAnimation(name) { return objects.findAnimation(name, sceneAnimations); }
     }
 
     // Scene settings (bloom, clearcolor, camerashake, …), generated from SceneScriptSceneField.

@@ -239,6 +239,41 @@
         return found ? objects.animationFor(owner, found, false) : null;
     };
 
+    // thisScene.getAnimation(name). scenescript64.dll's callback (0x181635ee0, 0x18163613d) takes
+    // only a string name, which it hands to the host with no owner: anything else gives null, a
+    // name no animation has gives undefined. The host's search isn't traced; it covers every
+    // owner (d.ts: "by name from any layer"), in the order the scene registers animations: the
+    // layers in scene order (created ones after), each with its own fields, then its effects' and
+    // their materials', then the scene's own settings.
+    objects.findAnimation = function (name, sceneRecords) {
+        if (typeof name !== 'string') return null;
+        function named(records) {
+            if (!records) return undefined;
+            for (let i = 0; i < records.length; i++) if (records[i].name === name) return records[i];
+            return undefined;
+        }
+        for (const layer of objects.bySlot.values()) {
+            if (layer._dead) continue;
+            const record = layer._record;
+            let found = named(record.animations);
+            if (found) return objects.animationFor(layer, found, false);
+            const effects = record.effects || [];
+            for (let e = 0; e < effects.length; e++) {
+                const effect = layer.getEffect(effects[e].index);
+                found = named(effects[e].animations);
+                if (found && effect !== null) return objects.animationFor(effect, found, false);
+                const materials = effects[e].materials || [];
+                for (let m = 0; m < materials.length; m++) {
+                    found = named(materials[m].animations);
+                    const material = effect === null ? null : effect.getMaterial(m);
+                    if (found && material !== null) return objects.animationFor(material, found, false);
+                }
+            }
+        }
+        const found = named(sceneRecords);
+        return found ? objects.animationFor(objects.scene, found, false) : undefined;
+    };
+
     // MARK: animationEvent (§3.3)
 
     function holds(records, slot) {

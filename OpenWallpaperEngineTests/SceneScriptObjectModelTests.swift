@@ -262,12 +262,14 @@ final class SceneScriptObjectModelTests: XCTestCase {
         let f = try fixture()
         f.add("bloom", slot: nil, binding: .scene(property: "bloomstrength"), initialValue: 2, """
             function init(value) {
-                shared.scope = (typeof thisLayer) + ',' + (thisObject === thisScene) + ',' + thisObject.getAnimation().name;
+                shared.scope = (typeof thisLayer) + ',' + (thisObject === thisScene) + ','
+                    + (thisObject.getAnimation() === null) + ',' + thisObject.getAnimation('pulse').name;
             }
             """)
         f.add("general", slot: nil, "function init(value) { shared.general = thisObject === thisScene; }")
         f.runtime.load()
-        XCTAssertEqual(f.evaluate("shared.scope")?.toString(), "undefined,true,pulse")
+        // IScene.getAnimation takes only a name (scenescript64.dll 0x18163613d).
+        XCTAssertEqual(f.evaluate("shared.scope")?.toString(), "undefined,true,true,pulse")
         XCTAssertEqual(f.evaluate("shared.general")?.toBool(), true)
     }
 
