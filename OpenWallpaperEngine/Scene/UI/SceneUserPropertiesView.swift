@@ -154,6 +154,7 @@ private final class SceneUserPropertiesModel: ObservableObject {
             // anyway since the renderer already honors any visibleUserProperty by name.
             authoredPropertyIDs.formUnion(visibilityProperties.map(\.id))
             properties.append(contentsOf: visibilityProperties)
+            if isScene { properties.append(contentsOf: colorCorrectionProperties(labels: labels)) }
             let textLayers = isScene ? textObjectsInScene(for: wallpaper) : []
             textObjects = textLayers
             for (index, textLayer) in textLayers.enumerated() {
@@ -184,6 +185,35 @@ private final class SceneUserPropertiesModel: ObservableObject {
             values[property.id] = property.defaultValue
         }
         targets.publish(values)
+    }
+
+    /// WE's own image filter and colour options, which its UI adds to every wallpaper's
+    /// properties (`WEColorCorrectionProperty`), in WE's order after the authored ones.
+    private func colorCorrectionProperties(labels: WallpaperEngineLabels) -> [SceneUserProperty] {
+        WEColorCorrectionProperty.allCases.enumerated().map { index, key in
+            let title = labels.translation(key.label.key) ?? key.label.english
+            let order = trailingOrder(offset: 130, index: index)
+            var property: SceneUserProperty
+            switch key {
+            case .filter:
+                property = SceneUserProperty(id: key.rawValue, title: title, type: "combo", order: order,
+                                             defaultValue: key.defaultValue,
+                                             options: WEImageFilters.options { labels.translation($0) },
+                                             minimum: 0, maximum: 1)
+            case .showColorOptions:
+                property = SceneUserProperty(id: key.rawValue, title: title, type: "bool", order: order,
+                                             defaultValue: key.defaultValue, options: [], minimum: 0, maximum: 1)
+            case .filterStrength, .brightness, .contrast, .saturation, .hueShift:
+                property = SceneUserProperty(id: key.rawValue, title: title, type: "slider", order: order,
+                                             defaultValue: key.defaultValue, options: [], minimum: 0, maximum: 100)
+                // WE's slider row: step 1 (`property.step || 1`), whole numbers.
+                property.fraction = false
+                property.step = 1
+            }
+            property.condition = key.condition.flatMap(UserPropertyCondition.init)
+            property.rawText = title
+            return property
+        }
     }
 
     /// Simple on/off `visibleUserProperty` gates (no string variant condition) that the author never
