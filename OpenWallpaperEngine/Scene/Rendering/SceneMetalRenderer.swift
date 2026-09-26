@@ -139,6 +139,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Layers drawn through their material, and prelighting passes run (tests, diagnostics).
     var imageMaterialDraws: Int { imageMaterials?.drawsEncoded ?? 0 }
     var imageMaterialPrelitDraws: Int { imageMaterials?.prelitDraws ?? 0 }
+    /// The last frame's scene target, before the post-process (tests, diagnostics).
+    var lastSceneTarget: MTLTexture? { sceneRenderTarget }
     /// A drawn layer's effect plans (tests, diagnostics).
     func effectPlans(ofLayer id: String) -> [SceneEffectPlan] {
         layers.first { $0.layer.id == id }?.layer.weEffects ?? []
@@ -1440,7 +1442,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             frame: frame, values: timelines.values,
             assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
             assetSprite: { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) }),
-            commandBuffer: commandBuffer)
+            // The layer's effect buffers' format: RGBA16F in HDR (docs/lighting-plan.md §2.3, §2.6).
+            format: postProcess.drawsHDR ? .rgba16Float : .rgba8Unorm, commandBuffer: commandBuffer)
     }
 
     /// Continues the scene pass after a pause (a snapshot of it, or effects run in between).

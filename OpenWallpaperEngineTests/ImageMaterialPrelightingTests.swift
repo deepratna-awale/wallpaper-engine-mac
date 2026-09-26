@@ -112,19 +112,9 @@ final class ImageMaterialPrelightingTests: XCTestCase {
     /// Through the whole renderer: a lit layer whose effect changes nothing draws what the same
     /// layer without effects draws (lit directly), and its prepass runs every frame.
     func testALayerWithAnIdentityEffectMatchesTheDirectPath() throws {
-        let effects = try XCTUnwrap(EffectGraphRenderer(device: device, pipelineArchiveDirectory: cache?.appending(path: "archives")))
-        defer { effects.pipelineArchive?.flush() } // before tearDown deletes its directory
-        let assets = ShaderVariantTests.weAssets
-        let effectBuilder = SceneEffectPlanBuilder(
-            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache),
-            readFile: { FileManager.default.contents(atPath: assets.appending(path: $0).path) },
-            loadTexture: { _, _ in nil })
-        let effect = try JSONDecoder().decode(WEObjectEffect.self, from: Data(
-            #"{"file":"effects/tint/effect.json","passes":[{"constantshadervalues":{"color":"1 0 0","alpha":0}}]}"#.utf8))
-        let tint = try effectBuilder.build(effect)
-
-        let viaEffects = try renderScene(effects: [tint])
-        let direct = try renderScene(effects: [])
+        let tint = try identityTint()
+        let viaEffects = try renderScene(effects: [tint]).pixels
+        let direct = try renderScene(effects: []).pixels
         var worst = 0
         for index in direct.indices where index % 4 != 3 { worst = max(worst, abs(Int(direct[index]) - Int(viaEffects[index]))) }
         XCTAssertLessThanOrEqual(worst, 3, "prelit through an identity effect vs lit directly: \(worst)/255")
@@ -132,9 +122,35 @@ final class ImageMaterialPrelightingTests: XCTestCase {
                              "the lighting varies over the layer")
     }
 
+    /// LF3: in HDR the prepass draws into the frame-buffer format, RGBA16F, as WE's layer buffers
+    /// are: `CombineLighting`'s overbright reaches the effects and the float scene target, as it
+    /// does for the same layer lit directly.
+    func testAnHDRPrepassKeepsTheOverbright() throws {
+        let tint = try identityTint()
+        let viaEffects = try XCTUnwrap(try renderScene(effects: [tint], hdr: true).scene)
+        let direct = try XCTUnwrap(try renderScene(effects: [], hdr: true).scene)
+        func brightest(_ image: HDRReference.Image) -> Float { image.pixels.map { $0.max() }.max() ?? 0 }
+        XCTAssertGreaterThan(brightest(direct), 1.03, "the lit layer is overbright in HDR")
+        // The prepass lights the 16×16 image per texel and the direct draw per pixel, so only the
+        // peak is compared: RGBA8 would clip it at 1.
+        XCTAssertEqual(brightest(viaEffects), brightest(direct), accuracy: 0.03, "the prelit image keeps the overbright")
+    }
+
     // MARK: - Helpers
 
-    private func builder(budget: WELightConfig? = Lit.budget) throws -> ImageMaterialPlanBuilder {
+    /// `tint` with alpha 0: an effect that changes nothing.
+    private func identityTint() throws -> SceneEffectPlan {
+        let assets = ShaderVariantTests.weAssets
+        let effectBuilder = SceneEffectPlanBuilder(
+            translator: ShaderVariantTranslator(compiler: InProcessShaderCompiler(), cacheDirectory: cache),
+            readFile: { FileManager.default.contents(atPath: assets.appending(path: $0).path) },
+            loadTexture: { _, _ in nil })
+        let effect = try JSONDecoder().decode(WEObjectEffect.self, from: Data(
+            #"{"file":"effects/tint/effect.json","passes":[{"constantshadervalues":{"color":"1 0 0","alpha":0}}]}"#.utf8))
+        return try effectBuilder.build(effect)
+    }
+
+    private func builder(budget: WELightConfig? = Lit.budget, hdr: Bool = false) throws -> ImageMaterialPlanBuilder {
         let roots = [Fixtures.url("ImageMaterials"), ShaderVariantTests.weAssets]
         let normal = try Lit.image(Lit.normal)
         let mask = try Lit.image(Lit.mask)
@@ -152,7 +168,7 @@ final class ImageMaterialPrelightingTests: XCTestCase {
                 default: return nil
                 }
             },
-            sceneEngineCombos: SceneEngineCombos(sceneOrtho: true, lightBudget: budget))
+            sceneEngineCombos: SceneEngineCombos(hdr: hdr, sceneOrtho: true, lightBudget: budget))
     }
 
     private func frame(ambient: SIMD3<Float>, lights: [LightingReference.Light]) -> BuiltinFrameContext {
@@ -189,8 +205,10 @@ final class ImageMaterialPrelightingTests: XCTestCase {
     }
 
     /// A 128×128 scene with one lit layer (its image a gradient) under a point light, through the
-    /// whole renderer, with `effects` on the layer; the drawable's RGBA bytes once the material draws.
-    private func renderScene(effects: [SceneEffectPlan]) throws -> [UInt8] {
+    /// whole renderer, with `effects` on the layer; the drawable's RGBA bytes once the material
+    /// draws, and in `hdr` (a brighter light) the float scene target.
+    private func renderScene(effects: [SceneEffectPlan],
+                             hdr: Bool = false) throws -> (pixels: [UInt8], scene: HDRReference.Image?) {
         let size = 128
         let view = MTKView(frame: CGRect(x: 0, y: 0, width: size, height: size), device: device)
         view.colorPixelFormat = .bgra8Unorm
@@ -207,13 +225,16 @@ final class ImageMaterialPrelightingTests: XCTestCase {
         var layer = Stage.layer("lit", image: gradient, size: scene)
         layer.weEffects = effects
         let budget = WELightConfig(point: 1)
-        layer.imageMaterial = try builder(budget: budget).build(materialPath: "materials/lit.json", colorBlendMode: nil,
-                                                                 prelit: !effects.isEmpty)
+        layer.imageMaterial = try builder(budget: budget, hdr: hdr).build(materialPath: "materials/lit.json",
+                                                                           colorBlendMode: nil, prelit: !effects.isEmpty)
         XCTAssertEqual(layer.imageMaterial?.prelighting != nil, !effects.isEmpty)
         var content = Stage.content(layers: [layer], size: scene)
         var point = SceneLight(kind: .point)
-        point.intensity = 3
+        point.intensity = hdr ? 12 : 3
+        // A white light bright enough for `CombineLighting` to exceed 1 (the default colour is black).
+        if hdr { point.color = SIMD3(repeating: 1) }
         point.radius = 120
+        content.engineCombos = SceneEngineCombos(hdr: hdr, sceneOrtho: true, lightBudget: budget)
         content.lighting.settings.lightConfig = budget
         content.lighting.settings.ambient = SIMD3(repeating: 0.2)
         content.lighting.lights = [SceneLightObject(id: "9", authored: WESceneLight(kind: .point), light: point,
@@ -244,8 +265,13 @@ final class ImageMaterialPrelightingTests: XCTestCase {
         }
         XCTAssertGreaterThan(renderer.imageMaterialDraws, 0, "the layer never drew through its material")
         if !effects.isEmpty { XCTAssertGreaterThan(renderer.imageMaterialPrelitDraws, 0, "the prepass never ran") }
+        var sceneTarget: HDRReference.Image?
+        if hdr, let target = renderer.lastSceneTarget {
+            XCTAssertEqual(target.pixelFormat, .rgba16Float)
+            sceneTarget = try HDRReference.read(target, device: device)
+        }
         renderer.releaseContent()
-        return Stage.swappingRedAndBlue(last)
+        return (Stage.swappingRedAndBlue(last), sceneTarget)
     }
 
     static func packed(_ lights: [LightingReference.Light]) -> [String: [Float]] {

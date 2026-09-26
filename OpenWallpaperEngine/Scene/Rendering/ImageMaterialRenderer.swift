@@ -200,8 +200,6 @@ final class ImageMaterialRenderer {
         return true
     }
 
-    /// The prelit image's format: WE's LDR effect buffers are RGBA8.
-    static let prelitFormat = MTLPixelFormat.rgba8Unorm
 
     /// WE's prelighting pass (0x140209540; docs/lighting-plan.md §2.3) for a lit or reflective
     /// layer with effects: `plan.prelighting`, the material with its lighting and `PRELIGHTING`,
@@ -212,17 +210,20 @@ final class ImageMaterialRenderer {
     /// `g_ModelViewProjectionMatrix` maps it into the texture. `g_Color4` is white: the layer's
     /// colour, alpha and brightness are applied once, by its own draw after the effects. nil (the
     /// effects take the image unlit) while the pipeline compiles or an input is missing. Encodes its
-    /// own render pass.
-    func prelight(_ plan: ImageMaterialPlan, _ draw: Draw, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+    /// own render pass. `format` is the frame-buffer class's, which the layer's effect buffers
+    /// take (0x1401ea642): RGBA8, or RGBA16F in HDR, where the prepass's overbright must reach the
+    /// effects and the bloom.
+    func prelight(_ plan: ImageMaterialPlan, _ draw: Draw, format: MTLPixelFormat = .rgba8Unorm,
+                  commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         guard let pass = plan.prelighting,
-              let pipeline = pipeline(for: pass, material: plan.materialPath, pixelFormat: Self.prelitFormat) else { return nil }
+              let pipeline = pipeline(for: pass, material: plan.materialPath, pixelFormat: format) else { return nil }
         let extent = draw.quad.extent
         guard extent.x > 0, extent.y > 0, extent.x.isFinite, extent.y.isFinite,
               let textureInfo = textures(of: pass, plan: plan, draw) else { return nil }
         let program = program(for: plan, layerID: draw.layerID)
         let width = draw.texture.width, height = draw.texture.height
-        if program.prelit?.width != width || program.prelit?.height != height {
-            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: Self.prelitFormat, width: width,
+        if program.prelit?.width != width || program.prelit?.height != height || program.prelit?.pixelFormat != format {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: width,
                                                                       height: height, mipmapped: false)
             descriptor.usage = [.renderTarget, .shaderRead]
             descriptor.storageMode = .private
@@ -416,9 +417,10 @@ final class ImageMaterialRenderer {
 
     /// Blocks until the plan's pipelines (its prelighting pass's too, into `prelitFormat`) compiled
     /// or failed (tests, prewarming). True when they are ready.
-    func waitUntilReady(_ plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat, timeout: TimeInterval = 60) -> Bool {
+    func waitUntilReady(_ plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat, prelitFormat: MTLPixelFormat = .rgba8Unorm,
+                        timeout: TimeInterval = 60) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        let passes = [(plan.pass, pixelFormat)] + (plan.prelighting.map { [($0, Self.prelitFormat)] } ?? [])
+        let passes = [(plan.pass, pixelFormat)] + (plan.prelighting.map { [($0, prelitFormat)] } ?? [])
         for (pass, format) in passes {
             let key = Self.pipelineKey(pass, pixelFormat: format)
             while pipeline(for: pass, material: plan.materialPath, pixelFormat: format) == nil {
