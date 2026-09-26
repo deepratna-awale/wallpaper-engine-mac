@@ -131,9 +131,11 @@ final class SceneScriptReplayHarness {
                                                 consoleSink: { _, _ in })
         let audio = SceneScriptAudioBuffersExtension(spectrum: { spectrum })
         let model = SceneScriptObjectModel(host: objectHost)
+        let binding = SceneScriptBindingExtension()
         let support = SceneScriptReplaySupport()
         let runtime = try SceneScriptRuntime(host: scriptHost, compiler: SceneScriptModuleTransformer(),
-                                             extensions: [engine, audio, SceneScriptMediaExtension(source: media), model, support],
+                                             extensions: [engine, audio, SceneScriptMediaExtension(source: media), model,
+                                                          binding, support],
                                              configuration: options.configuration)
         support.setClock(clock)
 
@@ -144,17 +146,26 @@ final class SceneScriptReplayHarness {
                 objectHost.objectIDsBySlot[slot] = object.id
             }
         }
+        // Property binding (WP8) as a wallpaper sets it up: types, initial values and resolved
+        // `scriptproperties` from SceneScriptSiteBuilder, matched to this walk's sites by object and path.
+        var built = try Self.builtSites(wallpaper)
         var records: [SiteRecord] = []
         for (index, site) in wallpaper.sites.enumerated() {
             let slot = site.objectIndex.flatMap { slotsByObjectIndex[$0] }
             let object = site.objectIndex.map { wallpaper.objects[$0] }
             let id = "\(wallpaper.id)/\(object.map { "\($0.name)#\($0.id)" } ?? "scene")/\(site.field)#\(index)"
             let type = SceneScriptReplayFieldType(field: site.field, value: site.value)
-            let binding = SceneScriptObjectBinding(fieldPath: site.field, slot: slot)
-            if let binding { support.bind(scriptID: id, type: type, binding: binding) }
-            runtime.add(SceneScriptInstance(id: id, source: site.source, initialValue: type.initialValue(site.value),
-                                            scriptPropertiesJSON: site.scriptPropertiesJSON, objectSlot: slot,
-                                            binding: binding))
+            let objectBinding = SceneScriptObjectBinding(fieldPath: site.field, slot: slot)
+            if let objectBinding { support.bind(scriptID: id, type: type, binding: objectBinding) }
+            let key = "\(site.objectIndex ?? -1)|\(site.field)"
+            guard var bound = built[key]?.first else {
+                throw SceneScriptReplayWallpaper.LoadError(description: "\(wallpaper.id): the builder has no site \(key)")
+            }
+            built[key]?.removeFirst()
+            bound.instance.id = id
+            bound.instance.objectSlot = slot
+            bound.instance.binding = objectBinding
+            binding.add([bound], to: runtime)
             records.append(SiteRecord(id: id, site: site, type: type, slot: slot))
         }
 
@@ -216,6 +227,19 @@ final class SceneScriptReplayHarness {
                       frameCPUMilliseconds: frameCPUMilliseconds, strings: strings,
                       nonFinite: nonFinite, commandCount: commandCount,
                       createdLayers: objectHost.created, sharedNumbers: sharedNumbers, unsupportedMembers: model.unsupportedMembers)
+    }
+
+    /// The wallpaper's sites as SceneScriptSiteBuilder finds them, by "<object index>|<field path>".
+    static func builtSites(_ wallpaper: SceneScriptReplayWallpaper) throws -> [String: [SceneScriptSite]] {
+        guard let data = wallpaper.file(wallpaper.documentName) else {
+            throw SceneScriptReplayWallpaper.LoadError(description: "\(wallpaper.id): no \(wallpaper.documentName)")
+        }
+        let project = try SceneScriptSiteBuilder.document(from: JSONSerialization.data(withJSONObject: wallpaper.project))
+        let builder = SceneScriptSiteBuilder(wallpaperID: wallpaper.id,
+                                             userProperties: SceneScriptUserProperties(project: project))
+        return Dictionary(grouping: builder.sites(in: try SceneScriptSiteBuilder.document(from: data))) {
+            "\($0.objectIndex ?? -1)|\($0.property.path)"
+        }
     }
 
     // MARK: - Inputs
