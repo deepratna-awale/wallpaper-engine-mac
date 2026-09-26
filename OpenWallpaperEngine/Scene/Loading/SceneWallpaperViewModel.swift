@@ -832,7 +832,10 @@ class SceneWallpaperViewModel: ObservableObject {
             let parsed = value.parseVector2()
             return SIMD2<Float>(Float(parsed.0), Float(parsed.1))
         }
-        let size = authoredSize.flatMap { $0.x > 0 && $0.y > 0 ? $0 : nil } ?? sceneSize
+        // An authored size is the quad's even when it is zero: WE draws nothing of an empty quad
+        // (2963872291's 'Player Options', a 0×0 host for the music player's scripts). Only a
+        // layer without a size takes the scene's.
+        let size = authoredSize ?? sceneSize
         let color = object.color?.parseVector3() ?? (1, 1, 1)
         let staticScale = object.scale?.parseVector3() ?? (1, 1, 1)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),

@@ -62,9 +62,10 @@ final class SceneLayerKindTests: XCTestCase {
         XCTAssertEqual(white.z, 1, accuracy: 0.01)
         XCTAssertEqual(white.w, 1, accuracy: 0.01)
 
-        // A zero size falls back to the scene; the colour is baked into the texture, not doubled on the quad.
+        // A zero size stays zero: the layer is kept (its scripts run) but its quad is empty, as in WE.
+        // The colour is baked into the texture, not doubled on the quad.
         let tinted = try XCTUnwrap(layers["2"])
-        XCTAssertEqual(tinted.size, SIMD2(1920, 1080))
+        XCTAssertEqual(tinted.size, .zero)
         XCTAssertEqual(tinted.color, SIMD4(repeating: 1))
         let red = try solidColor(tinted)
         XCTAssertEqual(red.x, 0.8, accuracy: 0.01)
