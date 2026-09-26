@@ -51,6 +51,9 @@ struct ParticleProgramContext {
     var source: ParticleInstance?
     /// Instance overrides: size, alpha, lifetime and speed factors (`ParticleFrameInputs.spawnScale`).
     var spawnScale = SIMD4<Float>(repeating: 1)
+    /// The particle object's position in the scene, for `remapvalue`'s `layerorigin` input
+    /// (`ParticleFrameInputs.layerOrigin`).
+    var layerOrigin = SIMD2<Float>.zero
     /// Spawn order of the particle among its system's (or instance's) spawns, and since the current
     /// emission period started, for the `mapsequence…` initializers.
     var sequenceIndex: UInt32 = 0

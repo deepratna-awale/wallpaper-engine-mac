@@ -17,51 +17,71 @@ extension ParticleProgramCPU {
     /// Runs `operators` on `particle` (index `index` of the step), in order.
     static func runOperators(_ operators: [ParticleProgramOp], on particle: inout ParticleProgramState,
                              context: ParticleProgramContext, index: Int, neighbors: Neighbors) -> Bool {
+        var context = context
+        return runOperators(operators, on: &particle, in: &context, index: index, neighbors: neighbors)
+    }
+
+    /// Runs `operators` on `particle`, in order, as one run of WE's operator VM; a `remapvalue` that
+    /// writes a control point writes it into `context`. True when an operator deletes the particle.
+    static func runOperators(_ operators: [ParticleProgramOp], on particle: inout ParticleProgramState,
+                             in context: inout ParticleProgramContext, index: Int, neighbors: Neighbors) -> Bool {
+        beginRun(&particle)
         var dies = false
+        for record in operators where runOperator(record, on: &particle, in: &context, index: index, neighbors: neighbors) {
+            dies = true
+        }
+        return dies
+    }
+
+    /// The start of a VM run (0x14023fc08…0x14023fc99): size, alpha and colour from their base
+    /// values, the position before this run's movement.
+    static func beginRun(_ particle: inout ParticleProgramState) {
         particle.size = particle.baseSize
         particle.alpha = particle.baseAlpha
         particle.color = particle.baseColor
         particle.previous = particle.position
-        for record in operators {
-            guard let kind = ParticleOperatorKind(rawValue: record.header.x) else { continue }
-            let blended = record.blend.x >= -1
-            let blend = blended ? blendFactor(record.blend, particle.lifeFraction) : 1
-            switch kind {
-            case .movement: movement(record, &particle, context)
-            case .angularMovement: angularMovement(record, &particle, context, blend: blend)
-            case .alphaFade: particle.alpha *= alphaFade(record, particle.lifeFraction)
-            case .sizeChange:
-                particle.size *= change(record.a, particle.lifeFraction)
-            case .alphaChange:
-                particle.alpha *= change(record.a, particle.lifeFraction)
-            case .colorChange:
-                let w = progress(particle.lifeFraction, record.c.x, record.c.y)
-                let start = SIMD3(record.a.x, record.a.y, record.a.z), end = SIMD3(record.b.x, record.b.y, record.b.z)
-                particle.color *= start + (end - start) * w
-            case .oscillatePosition: oscillatePosition(record, &particle, context, blend: blend)
-            case .oscillateAlpha:
-                let value = oscillation(record, particle, context)
-                particle.alpha *= blended ? 1 - (1 - value) * blend : value
-            case .oscillateSize:
-                let value = oscillation(record, particle, context)
-                particle.size *= blended ? 1 + (value - 1) * blend : value
-            case .controlPointAttract:
-                if controlPointAttract(record, &particle, context, blend: blend) { dies = true }
-            case .maintainDistanceToControlPoint: maintainDistance(record, &particle, context, blend: blend)
-            case .maintainDistanceBetweenControlPoints: maintainBetween(record, &particle, context, blend: blend)
-            case .reduceMovementNearControlPoint: reduceMovement(record, &particle, context, blend: blend)
-            case .turbulence: turbulence(record, &particle, context, blend: blend)
-            case .vortex: vortex(record, &particle, context)
-            case .vortexV2: vortexV2(record, &particle, context, blend: blend)
-            case .boids: boids(record, &particle, context, index: index, neighbors: neighbors)
-            case .capVelocity: capVelocity(record, &particle, blend: blend, blended: blended)
-            case .remapValue: remap(record, &particle, context, initializer: false, blend: blend)
-            case .inheritValueFromEvent: inheritValue(record, &particle, context)
-            case .collision:
-                if collide(record, &particle, context) { dies = true }
-            }
+    }
+
+    /// One operator record on `particle`. True when it deletes the particle.
+    static func runOperator(_ record: ParticleProgramOp, on particle: inout ParticleProgramState,
+                            in context: inout ParticleProgramContext, index: Int, neighbors: Neighbors) -> Bool {
+        guard let kind = ParticleOperatorKind(rawValue: record.header.x) else { return false }
+        let blended = record.blend.x >= -1
+        let blend = blended ? blendFactor(record.blend, particle.lifeFraction) : 1
+        switch kind {
+        case .movement: movement(record, &particle, context)
+        case .angularMovement: angularMovement(record, &particle, context, blend: blend)
+        case .alphaFade: particle.alpha *= alphaFade(record, particle.lifeFraction)
+        case .sizeChange:
+            particle.size *= change(record.a, particle.lifeFraction)
+        case .alphaChange:
+            particle.alpha *= change(record.a, particle.lifeFraction)
+        case .colorChange:
+            let w = progress(particle.lifeFraction, record.c.x, record.c.y)
+            let start = SIMD3(record.a.x, record.a.y, record.a.z), end = SIMD3(record.b.x, record.b.y, record.b.z)
+            particle.color *= start + (end - start) * w
+        case .oscillatePosition: oscillatePosition(record, &particle, context, blend: blend)
+        case .oscillateAlpha:
+            let value = oscillation(record, particle, context)
+            particle.alpha *= blended ? 1 - (1 - value) * blend : value
+        case .oscillateSize:
+            let value = oscillation(record, particle, context)
+            particle.size *= blended ? 1 + (value - 1) * blend : value
+        case .controlPointAttract:
+            return controlPointAttract(record, &particle, context, blend: blend)
+        case .maintainDistanceToControlPoint: maintainDistance(record, &particle, context, blend: blend)
+        case .maintainDistanceBetweenControlPoints: maintainBetween(record, &particle, context, blend: blend)
+        case .reduceMovementNearControlPoint: reduceMovement(record, &particle, context, blend: blend)
+        case .turbulence: turbulence(record, &particle, context, blend: blend)
+        case .vortex: vortex(record, &particle, context)
+        case .vortexV2: vortexV2(record, &particle, context, blend: blend)
+        case .boids: boids(record, &particle, context, index: index, neighbors: neighbors)
+        case .capVelocity: capVelocity(record, &particle, blend: blend, blended: blended)
+        case .remapValue: remap(record, &particle, &context, initializer: false, blend: blend)
+        case .inheritValueFromEvent: inheritValue(record, &particle, context)
+        case .collision: return collide(record, &particle, context)
         }
-        return dies
+        return false
     }
 
     // MARK: - Movement

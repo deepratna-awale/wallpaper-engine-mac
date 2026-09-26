@@ -339,16 +339,3 @@ kernel void particleWriteFallbackRopeTrails(device const ParticleState *particle
         }
     }
 }
-
-/// The sizes of the structures above, for the layout test.
-kernel void particleLayoutSizes(device uint *sizes [[buffer(0)]]) {
-    sizes[0] = sizeof(ParticleState);
-    sizes[1] = sizeof(ParticleParameters);
-    sizes[2] = sizeof(ParticleFrame);
-    sizes[3] = sizeof(SpriteRecord);
-    sizes[4] = sizeof(RopeRecord);
-    sizes[5] = sizeof(FallbackInstance);
-    sizes[6] = sizeof(ParticleInstanceState);
-    sizes[7] = sizeof(CollisionPlacement);
-    sizes[8] = sizeof(LinkedPoints);
-}

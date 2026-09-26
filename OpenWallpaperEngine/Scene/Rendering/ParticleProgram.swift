@@ -14,6 +14,24 @@ struct ParticleProgram: Equatable {
 
     /// The most records either list may hold; `ParticleProgram.h` sizes its buffers by it.
     static let capacity = 32
+
+    /// A `remapvalue` writes a control point (its `controlpoint` output): the operators run record by
+    /// record over every particle (`ParticleCPUSimulation.advanceOperatorMajor`).
+    var operatorsWriteControlPoints: Bool {
+        operators.contains { $0.kind == .remapValue && ParticleProgramCPU.RemapCode.output($0.record.header.w) == 16 }
+    }
+
+    /// A `remapinitialvalue` writes a control point: the `controlpoint` output, or an input that
+    /// reads one (WE zeroes the point first, 0x14023d31d).
+    var initializersWriteControlPoints: Bool {
+        initializers.contains { element in
+            let code = element.record.header.w
+            return element.kind == .remapInitialValue
+                && (ParticleProgramCPU.RemapCode.output(code) == 16 || (16...18).contains(ParticleProgramCPU.RemapCode.input(code)))
+        }
+    }
+
+    var writesControlPoints: Bool { operatorsWriteControlPoints || initializersWriteControlPoints }
 }
 
 /// WE's operator opcodes (the operator VM's jump table at `wallpaper64.exe` 0x14024bb58).

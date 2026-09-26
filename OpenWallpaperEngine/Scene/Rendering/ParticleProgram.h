@@ -41,6 +41,7 @@ struct ProgramContext {
     ParticleInstanceState source;
     float4 spawnScale;
     uint sequenceIndex, sequenceRestartIndex;
+    float2 layerOrigin;
 };
 
 static float lifeFraction(thread const ProgramState &p) { return p.age / max(p.lifetime, 0.001f); }
@@ -118,10 +119,12 @@ static void sequenceBasis(float3 axis, thread float3 &unit, thread float3 &first
 
 // MARK: - Remap
 
-/// `ParticleProgramCPU.remapInput`.
-static float3 remapInput(uint input, ProgramOp record, thread const ProgramState &p, thread const ProgramContext &c,
+/// `ParticleProgramCPU.remapInput`: the initializer's control point inputs zero the point first.
+static float3 remapInput(uint input, ProgramOp record, thread const ProgramState &p, thread ProgramContext &c,
                          bool initializer) {
-    const float2 cp0 = programPoint(c.points, record.header.z & 0xFFu);
+    const uint pointIndex = min(record.header.z & 0xFFu, 7u);
+    if (initializer && input >= 16 && input <= 18) c.points[pointIndex] = float2(0);
+    const float2 cp0 = c.points[pointIndex];
     switch (input) {
     case 0: return float3(lifeFraction(p));
     case 1: return float3(p.lifetime);
@@ -140,17 +143,19 @@ static float3 remapInput(uint input, ProgramOp record, thread const ProgramState
     }
     case 9: return float3(c.engineTime);
     case 10: return float3(c.timeOfDay);
-    case 11: case 12: return float3(c.systemTime);
+    case 11: return float3(initializer ? c.systemTime : c.engineTime);
+    case 12: return float3(c.systemTime);
     case 13: return initializer ? p.baseColor : p.color;
     case 14: return float3(p.position, 0);
     case 15: return float3(p.velocity, 0);
     case 16: return float3(cp0, 0);
-    case 17: return float3(p.position - cp0, 0);
+    case 17: return float3(cp0 - p.position, 0);
     case 18: {
-        const float2 offset = p.position - cp0;
+        const float2 offset = cp0 - p.position;
         const float offsetLength = length(offset);
         return offsetLength > 0 ? float3(offset / offsetLength, 0) : float3(0);
     }
+    case 19: return float3(c.layerOrigin, 0);
     default: return float3(0);
     }
 }
@@ -203,16 +208,17 @@ static float remapApply(uint operation, float old, float value, float blend) {
     return old + (result - old) * blend;
 }
 
+/// A vector output's component (all, x, y or z); the reductions leave it alone.
 static float3 remapApplyVector(uint operation, uint component, float3 old, float3 value, float blend) {
     float3 result = old;
     for (int c = 0; c < 3; ++c) {
-        if (component == 0 || component > 3 || int(component) - 1 == c) result[c] = remapApply(operation, old[c], value[c], blend);
+        if (component == 0 || int(component) - 1 == c) result[c] = remapApply(operation, old[c], value[c], blend);
     }
     return result;
 }
 
 /// `ParticleProgramCPU.remap`.
-static void remap(ProgramOp record, thread ProgramState &p, thread const ProgramContext &c, bool initializer, float blend) {
+static void remap(ProgramOp record, thread ProgramState &p, thread ProgramContext &c, bool initializer, float blend) {
     const uint code = record.header.w;
     const uint flags = record.header.y;
     const uint input = (code >> 4) & 0x1Fu;
@@ -227,6 +233,8 @@ static void remap(ProgramOp record, thread ProgramState &p, thread const Program
     float3 mapped = record.c.xyz + value * (record.d.xyz - record.c.xyz);
     if (flags & 2u) mapped = clamp(mapped, float3(0), float3(1));
     const uint operation = code & 0xFu, output = (code >> 9) & 0x1Fu, component = (code >> 18) & 0xFu;
+    const uint outputPoint = min((record.header.z >> 8) & 0xFFu, 7u);
+    const float2 center = c.points[outputPoint];
     switch (output) {
     case 1: p.lifetime = remapApply(operation, p.lifetime, mapped.x, blend); break;
     case 2:
@@ -249,8 +257,38 @@ static void remap(ProgramOp record, thread ProgramState &p, thread const Program
         if (initializer) p.baseColor = remapApplyVector(operation, component, p.baseColor, mapped, blend);
         else p.color = remapApplyVector(operation, component, p.color, mapped, blend);
         break;
+    case 7: {
+        const float2 offset = p.position - center;
+        const float distance = length(offset);
+        p.position = center + (distance > 0 ? offset / distance : float2(0)) * remapApply(operation, distance, mapped.x, blend);
+        break;
+    }
+    case 8: {
+        const float2 span = programPoint(c.points, (record.header.z >> 24) & 0xFFu) - center;
+        const float spanLength = length(span);
+        const float2 direction = spanLength > 0 ? span / spanLength : float2(0);
+        const float2 offset = p.position - center;
+        const float along = dot(offset, direction);
+        const float fraction = spanLength > 0 ? along / spanLength : 0.0f;
+        p.position = center + (offset - along * direction)
+            + direction * (remapApply(operation, fraction, mapped.x, blend) * spanLength);
+        break;
+    }
     case 14: p.position = remapApplyVector(operation, component, float3(p.position, 0), mapped, blend).xy; break;
     case 15: p.velocity = remapApplyVector(operation, component, float3(p.velocity, 0), mapped, blend).xy; break;
+    case 16: c.points[outputPoint] = remapApplyVector(operation, component, float3(center, 0), mapped, blend).xy; break;
+    case 17:
+        p.position = center - remapApplyVector(operation, component, float3(center - p.position, 0), mapped, blend).xy;
+        break;
+    case 18: {
+        const float2 offset = center - p.position;
+        const float distance = length(offset);
+        const float2 direction = distance > 0 ? offset / distance : float2(0);
+        const float2 turned = remapApplyVector(operation, component, float3(direction, 0), mapped, blend).xy;
+        const float turnedLength = length(turned);
+        p.position = center - (turnedLength > 0 ? turned / turnedLength : float2(0)) * distance;
+        break;
+    }
     default: break;
     }
 }
@@ -330,7 +368,7 @@ static void emitParticle(EmitterParameters e, thread const ProgramContext &c, th
 }
 
 /// `ParticleProgramCPU.runInitializers`.
-static void runInitializers(constant ProgramOp *records, uint count, thread ProgramState &p, thread const ProgramContext &c) {
+static void runInitializers(constant ProgramOp *records, uint count, thread ProgramState &p, thread ProgramContext &c) {
     for (uint index = 0; index < count; ++index) {
         const ProgramOp record = records[index];
         const uint seed = c.seed, serial = c.serial;
@@ -484,20 +522,23 @@ static float oscillation(ProgramOp record, thread const ProgramState &p, thread 
 static bool programCollide(ProgramOp record, thread ProgramState &p, thread const ProgramContext &c,
                            constant CollisionPlacement *collisions, uint collisionCount, float2 shift);
 
-/// `ParticleProgramCPU.runOperators`. `neighbors` are the step's particles (scene space) for boids;
-/// true when an operator deletes the particle.
-static bool runOperators(constant ProgramOp *records, uint count, thread ProgramState &p, thread const ProgramContext &c,
-                         constant CollisionPlacement *collisions, uint collisionCount, float2 shift,
-                         device const ParticleState *neighbors, uint neighborCount, uint self, uint liveCount,
-                         uint frame, device const uint *alive, uint aged) {
-    bool dies = false;
+/// `ParticleProgramCPU.beginRun`: the start of a VM run.
+static void beginRun(thread ProgramState &p) {
     p.size = p.baseSize;
     p.alpha = p.baseAlpha;
     p.color = p.baseColor;
     p.previous = p.position;
+}
+
+/// `ParticleProgramCPU.runOperator`: one record. `neighbors` are the step's particles (scene space)
+/// for boids; true when it deletes the particle.
+static bool runOperator(ProgramOp record, thread ProgramState &p, thread ProgramContext &c,
+                        constant CollisionPlacement *collisions, uint collisionCount, float2 shift,
+                        device const ParticleState *neighbors, uint neighborCount, uint self, uint liveCount,
+                        uint frame, device const uint *alive, uint aged) {
+    bool dies = false;
     const float dt = c.deltaTime;
-    for (uint index = 0; index < count; ++index) {
-        const ProgramOp record = records[index];
+    {
         const bool blended = record.blend.x >= -1;
         const float blend = blended ? blendFactor(record.blend, lifeFraction(p)) : 1.0f;
         const uint flags = record.header.y;
@@ -721,5 +762,38 @@ static bool runOperators(constant ProgramOp *records, uint count, thread Program
     }
     return dies;
 }
+
+/// `ParticleProgramCPU.runOperators`: one VM run of every record, in order.
+static bool runOperators(constant ProgramOp *records, uint count, thread ProgramState &p, thread ProgramContext &c,
+                         constant CollisionPlacement *collisions, uint collisionCount, float2 shift,
+                         device const ParticleState *neighbors, uint neighborCount, uint self, uint liveCount,
+                         uint frame, device const uint *alive, uint aged) {
+    beginRun(p);
+    bool dies = false;
+    for (uint index = 0; index < count; ++index) {
+        dies = runOperator(records[index], p, c, collisions, collisionCount, shift, neighbors, neighborCount, self,
+                           liveCount, frame, alive, aged) || dies;
+    }
+    return dies;
+}
+
+
+
+// MARK: - Control point writes
+
+/// A slot's control points while a step writes them (`ParticleCPUSimulation+ControlPointWrites`):
+/// the step's, the current group's start, the last step's result and whether there is one.
+struct PointState {
+    float4 points[4];
+    float4 group[4];
+    float4 kept[4];
+    uint4 flags;             // kept, lane, -, -
+};
+
+/// One particle's program state between the serial step's records.
+struct SerialState {
+    ProgramState state;
+    uint dies;
+};
 
 #endif

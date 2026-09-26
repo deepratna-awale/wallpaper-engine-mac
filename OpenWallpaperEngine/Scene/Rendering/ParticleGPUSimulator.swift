@@ -22,6 +22,7 @@ final class ParticleGPUSimulator {
 
     private let device: MTLDevice
     private let age, begin, emit, simulate, scanBlocks, scanBlockSums, compact, finish: MTLComputePipelineState
+    private let emitSerial, simulateSerial: MTLComputePipelineState
     private let eventMark, eventScatter, instanceStep, linkPoints: MTLComputePipelineState
     private let writers: [ParticleGPUDrawKind: MTLComputePipelineState]
 
@@ -38,6 +39,8 @@ final class ParticleGPUSimulator {
         begin = try pipeline("particleBegin")
         emit = try pipeline("particleEmit")
         simulate = try pipeline("particleSimulate")
+        emitSerial = try pipeline("particleEmitSerial")
+        simulateSerial = try pipeline("particleSimulateSerial")
         scanBlocks = try pipeline("particleScanBlocks")
         scanBlockSums = try pipeline("particleScanBlockSums")
         compact = try pipeline("particleCompact")
@@ -163,7 +166,9 @@ final class ParticleGPUSimulator {
             encoder.dispatchThreads(single, threadsPerThreadgroup: single)
         }
 
-        encoder.setComputePipelineState(emit)
+        // A program that writes control points spawns and steps in one thread, in WE's order.
+        let serialPoints = gpu.writesControlPoints ? gpu.pointStates : nil
+        encoder.setComputePipelineState(serialPoints == nil ? emit : emitSerial)
         encoder.setBuffer(particles, offset: 0, index: 0)
         encoder.setBuffer(control, offset: 0, index: 1)
         encoder.setBuffer(gpu.parameters, offset: 0, index: 2)
@@ -173,9 +178,14 @@ final class ParticleGPUSimulator {
         bindProgram(request.inputs, index: 6, fallback: control, encoder: encoder)
         encoder.setBuffer(gpu.emitterParameters, offset: 0, index: 7)
         encoder.setBuffer(gpu.emitterStates, offset: 0, index: 8)
-        perParticle()
+        if let serialPoints {
+            encoder.setBuffer(serialPoints, offset: 0, index: 9)
+            encoder.dispatchThreads(single, threadsPerThreadgroup: single)
+        } else {
+            perParticle()
+        }
 
-        encoder.setComputePipelineState(simulate)
+        encoder.setComputePipelineState(serialPoints == nil ? simulate : simulateSerial)
         encoder.setBuffer(particles, offset: 0, index: 0)
         encoder.setBuffer(stepped, offset: 0, index: 1)
         encoder.setBuffer(alive, offset: 0, index: 2)
@@ -197,7 +207,13 @@ final class ParticleGPUSimulator {
         }
         encoder.setBuffer(linked, offset: 0, index: 9)
         bindProgram(request.inputs, index: 10, fallback: control, encoder: encoder)
-        perParticle()
+        if let serialPoints, let serialStates = gpu.serialStates {
+            encoder.setBuffer(serialPoints, offset: 0, index: 11)
+            encoder.setBuffer(serialStates, offset: 0, index: 12)
+            encoder.dispatchThreads(single, threadsPerThreadgroup: single)
+        } else {
+            perParticle()
+        }
 
         scan(alive, count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.count, offsets: offsets,
              blockSums: blockSums, control: control, encoder: encoder)

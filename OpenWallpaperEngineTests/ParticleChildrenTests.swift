@@ -371,6 +371,32 @@ final class ParticleChildrenTests: XCTestCase {
         }
     }
 
+    /// Each instance of a child whose remaps write control points writes its own.
+    func testChildInstancesWriteTheirOwnControlPointsTheSameOnTheGPU() throws {
+        var drops = ParticleTestSystem()
+        drops.emissionRate = 60
+        drops.maximum = 30
+        drops.lifetime = 0.3...0.6
+        drops.controlPoints[1] = ParticleTestSystem.point(SIMD2(20, 0))
+        var write = ParticleOperator(.remapValue, controlPoints: 1 << 8, b: SIMD4(1, 1, 1, 0), d: SIMD4(3, -2, 0, 0),
+                                     e: SIMD4(2, 0, 0, 1))
+        write.record.header.w = ParticleProgramCPU.RemapCode.pack(operation: 2, input: 0, output: 16, inputComponent: 0,
+                                                                    outputComponent: 0, transform: 0, octaves: 3)
+        drops.operators = [write, ParticleOperator(.controlPointAttract, controlPoints: 1, b: SIMD4(200, 300, 5, 0))]
+        let links: [(ParticleTestSystem.Linked, Int)] = [(drops.link(.follow, instances: 5, probability: 1), 0)]
+        let cpu = try Family(root: rocketTestSystem(), children: links)
+        let gpu = try Family(root: rocketTestSystem(), children: links)
+        cpu.stepCPU(frames: 60, root: translation(SIMD2(500, 300)))
+        try gpu.stepGPU(frames: 60, root: translation(SIMD2(500, 300)))
+        let expected = cpu.runtimes[1].particles
+        let actual = gpu.simulator.snapshot(gpu.runtimes[1], queue: gpu.queue)
+        XCTAssertGreaterThan(expected.count, 20)
+        XCTAssertEqual(actual.map(\.identity.x), expected.map(\.serial), "the same particles")
+        for (a, e) in zip(actual, expected) {
+            XCTAssertLessThan(simd_distance(SIMD2(a.positionVelocity.x, a.positionVelocity.y), e.position), 0.05)
+        }
+    }
+
     /// WE's thunderbolt: each spawner instance flies one particle off the bolt, and a static child of
     /// it draws a beam from the instance to that particle through its control point 1 (link flag 1,
     /// start index 1).

@@ -83,7 +83,7 @@ enum ParticleGPUDrawKind: UInt32 {
 struct ParticleGPUFrame {
     /// Delta, system time, the damped step (`ParticleFrameInputs.dragDeltaTime`), engine time.
     var time: SIMD4<Float>
-    /// Time of day, clears, -, -.
+    /// Time of day, clears, the layer origin xy (`ParticleFrameInputs.layerOrigin`).
     var misc: SIMD4<Float>
     /// Scene size xy, render target size xy (the built-in draw's pixels).
     var scene: SIMD4<Float>
@@ -111,7 +111,8 @@ struct ParticleGPUFrame {
     /// Spawn size scale, spawn turn (`ParticleFrameInputs.spawnSizeScale`), has motion, trail and
     /// rope record size scale (`drawSizeScale`).
     var motionExtras: SIMD4<Float>
-    /// `ParticleFrameInputs.absolutePoints`, maximum, collisions, initializers | operators << 16.
+    /// `ParticleFrameInputs.absolutePoints` | `keptPoints` << 8, maximum, collisions,
+    /// initializers | operators << 16.
     var extra: SIMD4<UInt32>
     /// `ParticleFrameInputs.spawnScale`.
     var spawnScale: SIMD4<Float>
@@ -131,7 +132,7 @@ struct ParticleGPUFrame {
     init(_ inputs: ParticleFrameInputs, sceneSize: SIMD2<Float>, targetSize: SIMD2<Float>, kind: ParticleGPUDrawKind,
          materialVertexCount: Int, renderVarOffset: Int?) {
         time = SIMD4(inputs.deltaTime, inputs.elapsedTime, inputs.dragDeltaTime, inputs.engineTime)
-        misc = SIMD4(inputs.timeOfDay, inputs.clears ? 1 : 0, 0, 0)
+        misc = SIMD4(inputs.timeOfDay, inputs.clears ? 1 : 0, inputs.layerOrigin.x, inputs.layerOrigin.y)
         scene = SIMD4(sceneSize.x, sceneSize.y, targetSize.x, targetSize.y)
         indices = SIMD4(inputs.frameIndex, UInt32(materialVertexCount),
                         renderVarOffset.map { UInt32($0 / 4) } ?? Self.noRenderVar, kind.rawValue)
@@ -155,7 +156,7 @@ struct ParticleGPUFrame {
         motionExtras = SIMD4(inputs.spawnSizeScale, inputs.spawnTurn, inputs.motion == nil ? 0 : 1, inputs.drawSizeScale)
         spriteLinear = Self.columns(inputs.spriteLinear)
         rope = .zero
-        extra = SIMD4(inputs.absolutePoints, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count),
+        extra = SIMD4(inputs.absolutePoints | inputs.keptPoints << 8, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count),
                       UInt32(inputs.initializers.count) | UInt32(inputs.operators.count) << 16)
         spawnScale = inputs.spawnScale
         colorScale = SIMD4(inputs.colorScale, 1)

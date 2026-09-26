@@ -38,12 +38,12 @@ extension ParticleProgramCPU {
     /// The remap's value inputs above this index are vectors.
     static let remapVectorInputs: UInt32 = 13
 
-    static func remap(_ record: ParticleProgramOp, _ p: inout ParticleProgramState, _ context: ParticleProgramContext,
+    static func remap(_ record: ParticleProgramOp, _ p: inout ParticleProgramState, _ context: inout ParticleProgramContext,
                       initializer: Bool, blend: Float) {
         let code = record.header.w
         let flags = record.header.y
         let input = RemapCode.input(code)
-        var value = remapInput(input, record: record, p, context, initializer: initializer)
+        var value = remapInput(input, record: record, p, &context, initializer: initializer)
         if input >= remapVectorInputs { value = reduce(value, RemapCode.inputComponent(code)) }
         let low = SIMD3(record.a.x, record.a.y, record.a.z), high = SIMD3(record.b.x, record.b.y, record.b.z)
         var width = high - low
@@ -56,14 +56,25 @@ extension ParticleProgramCPU {
         var mapped = outLow + value * (outHigh - outLow)
         if flags & 2 != 0 { mapped = simd_clamp(mapped, .zero, SIMD3(repeating: 1)) }
         writeRemap(RemapCode.output(code), RemapCode.operation(code), RemapCode.outputComponent(code), mapped,
-                   &p, initializer: initializer, blend: blend)
+                   record: record, &p, &context, initializer: initializer, blend: blend)
     }
 
     /// The input, splatted when it is a scalar. An initializer reads the base size, alpha and
-    /// colour; an operator the working ones.
+    /// colour; an operator the working ones. Control points are `header.z`'s input bytes (the
+    /// output ones for `positionbetweentwocontrolpoints`, WE's quirk).
+    ///
+    /// The operator (0x140244874…0x140244fef) reads `runtime` and `particlesystemtime` both as the
+    /// engine time and the vector control point inputs from the point: `controlpoint`, point −
+    /// particle, and its direction. The initializer (0x14023ce53…0x14023d546) reads the system time
+    /// for `particlesystemtime`, and for the three control point inputs first writes (0, 0, 0) over
+    /// the control point's position, then reads that zero: the point, 0 − particle and its direction.
     static func remapInput(_ input: UInt32, record: ParticleProgramOp, _ p: ParticleProgramState,
-                           _ context: ParticleProgramContext, initializer: Bool) -> SIMD3<Float> {
-        let cp0 = point(context.controlPoints, Int(record.header.z & 0xFF))
+                           _ context: inout ParticleProgramContext, initializer: Bool) -> SIMD3<Float> {
+        let pointIndex = Int(record.header.z & 0xFF)
+        if initializer, (16...18).contains(input) {
+            context.controlPoints[min(max(pointIndex, 0), ParticleControlPoint.count - 1)] = .zero
+        }
+        let cp0 = point(context.controlPoints, pointIndex)
         func splat(_ value: Float) -> SIMD3<Float> { SIMD3(repeating: value) }
         switch input {
         case 0: return splat(p.lifeFraction)
@@ -83,16 +94,18 @@ extension ParticleProgramCPU {
             return splat(length > 0 ? simd_dot(p.position - a, span) / length : 0)
         case 9: return splat(context.engineTime)
         case 10: return splat(context.timeOfDay)
-        case 11, 12: return splat(context.systemTime)
+        case 11: return splat(initializer ? context.systemTime : context.engineTime)
+        case 12: return splat(context.systemTime)
         case 13: return initializer ? p.baseColor : p.color
         case 14: return SIMD3(p.position.x, p.position.y, 0)
         case 15: return SIMD3(p.velocity.x, p.velocity.y, 0)
         case 16: return SIMD3(cp0.x, cp0.y, 0)
-        case 17: return SIMD3(p.position.x - cp0.x, p.position.y - cp0.y, 0)
+        case 17: return SIMD3(cp0.x - p.position.x, cp0.y - p.position.y, 0)
         case 18:
-            let offset = p.position - cp0
+            let offset = cp0 - p.position
             let length = simd_length(offset)
             return length > 0 ? SIMD3(offset.x / length, offset.y / length, 0) : .zero
+        case 19: return SIMD3(context.layerOrigin.x, context.layerOrigin.y, 0)
         default: return .zero
         }
     }
@@ -134,9 +147,20 @@ extension ParticleProgramCPU {
         return result
     }
 
-    /// Applies `value` to the output with the operation (remap sets it), blended.
+    /// Applies `value` to the output with the operation (remap sets it), blended. A vector output
+    /// takes its component (all, x, y or z); the reductions leave it alone (0x1402464e6).
+    ///
+    /// The control point outputs (0x140245c9e…0x140246e52): `distancetocontrolpoint` moves the
+    /// particle along its line from output control point 0 to the new distance;
+    /// `positionbetweentwocontrolpoints` moves it along output points 0 → 1 to the new fraction,
+    /// keeping its offset across the line; `controlpoint` writes the point itself, into the
+    /// system's shared array (`ParticleProgramContext.controlPoints`), so later particles and records
+    /// read it (the operator writes it once per four particles, `ParticleCPUSimulation`);
+    /// `deltatocontrolpoint` and `directiontocontrolpoint` set point − particle, and its direction
+    /// at the same distance. The time and `layerorigin` outputs write nothing.
     static func writeRemap(_ output: UInt32, _ operation: UInt32, _ component: UInt32, _ value: SIMD3<Float>,
-                           _ p: inout ParticleProgramState, initializer: Bool, blend: Float) {
+                           record: ParticleProgramOp, _ p: inout ParticleProgramState, _ context: inout ParticleProgramContext,
+                           initializer: Bool, blend: Float) {
         func apply(_ old: Float, _ value: Float) -> Float {
             let new: Float
             switch operation {
@@ -150,11 +174,13 @@ extension ParticleProgramCPU {
         }
         func applyVector(_ old: SIMD3<Float>) -> SIMD3<Float> {
             var result = old
-            for c in 0..<3 where component == 0 || component > 3 || Int(component) - 1 == c {
+            for c in 0..<3 where component == 0 || Int(component) - 1 == c {
                 result[c] = apply(old[c], value[c])
             }
             return result
         }
+        let outputPoint = min(max(Int((record.header.z >> 8) & 0xFF), 0), ParticleControlPoint.count - 1)
+        let center = context.controlPoints[outputPoint]
         switch output {
         case 1: p.lifetime = apply(p.lifetime, value.x)
         case 2:
@@ -167,6 +193,20 @@ extension ParticleProgramCPU {
             p.velocity = speed > 0 ? p.velocity / speed * target : .zero
         case 5: p.rotation = apply(p.rotation, value.x)
         case 6: p.angularVelocity = apply(p.angularVelocity, value.x)
+        case 7:
+            let offset = p.position - center
+            let distance = simd_length(offset)
+            p.position = center + (distance > 0 ? offset / distance : .zero) * apply(distance, value.x)
+        case 8:
+            let end = point(context.controlPoints, Int((record.header.z >> 24) & 0xFF))
+            let span = end - center
+            let length = simd_length(span)
+            let direction = length > 0 ? span / length : .zero
+            let offset = p.position - center
+            let along = simd_dot(offset, direction)
+            let across = offset - along * direction
+            let fraction = length > 0 ? along / length : 0
+            p.position = center + across + direction * (apply(fraction, value.x) * length)
         case 13:
             if initializer { p.baseColor = applyVector(p.baseColor) } else { p.color = applyVector(p.color) }
         case 14:
@@ -175,6 +215,19 @@ extension ParticleProgramCPU {
         case 15:
             let moved = applyVector(SIMD3(p.velocity.x, p.velocity.y, 0))
             p.velocity = SIMD2(moved.x, moved.y)
+        case 16:
+            let moved = applyVector(SIMD3(center.x, center.y, 0))
+            context.controlPoints[outputPoint] = SIMD2(moved.x, moved.y)
+        case 17:
+            let delta = applyVector(SIMD3(center.x - p.position.x, center.y - p.position.y, 0))
+            p.position = center - SIMD2(delta.x, delta.y)
+        case 18:
+            let offset = center - p.position
+            let distance = simd_length(offset)
+            let direction = distance > 0 ? offset / distance : .zero
+            let turned = applyVector(SIMD3(direction.x, direction.y, 0))
+            let turnedLength = simd_length(SIMD2(turned.x, turned.y))
+            p.position = center - (turnedLength > 0 ? SIMD2(turned.x, turned.y) / turnedLength : .zero) * distance
         default: break
         }
     }

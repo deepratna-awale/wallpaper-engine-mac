@@ -96,6 +96,15 @@ struct ParticleFrameInputs {
     /// The control points in the system's space, by index, and where they were last step.
     var controlPoints = [SIMD2<Float>](repeating: .zero, count: ParticleControlPoint.count)
     var previousControlPoints = [SIMD2<Float>](repeating: .zero, count: ParticleControlPoint.count)
+    /// The offsets the object's `controlpoint<n>` overrides give, by index; nil for a point they
+    /// don't drive (`ParticleCPUSimulation.keepWrittenControlPoints`).
+    var overridePoints = [SIMD2<Float>?](repeating: nil, count: ParticleControlPoint.count)
+    /// The points an override drives that didn't change since the last step: the GPU keeps what the
+    /// last step wrote there (`particleEmitSerial`). Bit n is control point n.
+    var keptPoints: UInt32 = 0
+    /// The particle object's position in the scene (`remapvalue`'s `layerorigin`, WE's layer
+    /// origin, 0x1402448d0).
+    var layerOrigin = SIMD2<Float>.zero
     /// Control points that sit in the scene (the cursor, scene-space and linked ones): an instance
     /// of an instanced system doesn't carry them (`placed(at:)`). Bit n is control point n.
     var absolutePoints: UInt32 = 0
@@ -188,6 +197,7 @@ struct ParticleFrameInputs {
             if let response = emitter.audio { inputs.emitters[index].rate *= response.response(audio) }
         }
         inputs.space = configuration.worldSpace ? .identity : world
+        inputs.layerOrigin = world.translation
         inputs.emitterLinear = configuration.worldSpace ? world.linear : matrix_identity_float2x2
         if configuration.worldSpace {
             let linear = world.linear
@@ -246,7 +256,18 @@ struct ParticleFrameInputs {
         let emitterToSpace = toSpace * world
         for index in 0..<ParticleControlPoint.count {
             let point = index < configuration.controlPoints.count ? configuration.controlPoints[index] : ParticleControlPoint()
-            let offset = overrides.controlPoints[index].map { SIMD2($0.x, $0.y) } ?? point.offset
+            let driven = overrides.controlPoints[index].map { SIMD2($0.x, $0.y) }
+            overridePoints[index] = driven
+            if let driven, system.lastOverridePoints[index] == driven { keptPoints |= 1 << UInt32(index) }
+            system.lastOverridePoints[index] = driven
+            // A point the override drives keeps what a remap wrote until the override changes.
+            if let driven, let written = system.writtenOverridePoints[index], written.override == driven {
+                controlPoints[index] = written.point
+                system.lastControlPoints[index] = space.apply(written.point)
+                continue
+            }
+            system.writtenOverridePoints[index] = nil
+            let offset = driven ?? point.offset
             let scene: SIMD2<Float>?
             if point.followsCursor {
                 scene = cursor

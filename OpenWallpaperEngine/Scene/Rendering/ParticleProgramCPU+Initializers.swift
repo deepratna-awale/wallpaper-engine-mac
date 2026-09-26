@@ -55,6 +55,14 @@ extension ParticleProgramCPU {
     /// Runs `initializers` on a spawned particle, in order.
     static func runInitializers(_ initializers: [ParticleProgramOp], on p: inout ParticleProgramState,
                                 context: ParticleProgramContext) {
+        var context = context
+        runInitializers(initializers, on: &p, in: &context)
+    }
+
+    /// Runs `initializers` on a spawned particle, in order; a `remapinitialvalue` that writes a
+    /// control point writes it into `context` for the spawns after it (`ParticleProgramCPU.remap`).
+    static func runInitializers(_ initializers: [ParticleProgramOp], on p: inout ParticleProgramState,
+                                in context: inout ParticleProgramContext) {
         for (index, record) in initializers.enumerated() {
             guard let kind = ParticleInitializerKind(rawValue: record.header.x) else { continue }
             func random(_ k: Int) -> Float {
@@ -109,7 +117,7 @@ extension ParticleProgramCPU {
             case .mapSequenceBetweenControlPoints:
                 sequenceBetween(record, &p, context: context)
             case .remapInitialValue:
-                remap(record, &p, context, initializer: true, blend: 1)
+                remap(record, &p, &context, initializer: true, blend: 1)
             case .inheritInitialValueFromEvent:
                 inheritInitialValue(record, &p, context)
             }

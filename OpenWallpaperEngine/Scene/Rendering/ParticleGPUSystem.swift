@@ -22,6 +22,14 @@ final class ParticleGPUSystem {
     /// Each emitter's running state (`ParticleGPUEmitterState`), `slots` × emitters of them.
     let emitterStates: MTLBuffer
     let emitterCount: Int
+    /// A program that writes control points (`ParticleProgram.writesControlPoints`) steps in one
+    /// thread (`particleEmitSerial`, `particleSimulateSerial`): each slot's points (`PointState`), and
+    /// the particles' program state between records (`SerialState`, sized with the particles).
+    let writesControlPoints: Bool
+    let pointStates: MTLBuffer?
+    private(set) var serialStates: MTLBuffer?
+    /// `PointState` and `SerialState` in `ParticleProgram.h`.
+    static let pointStateStride = 208, serialStateStride = 112
     /// Counters and indirect arguments; shared so tests and metrics can read the count.
     let control: MTLBuffer
     let historyLimit: Int
@@ -83,6 +91,17 @@ final class ParticleGPUSystem {
         self.emitterParameters = emitterParameters
         self.emitterStates = emitterStates
         emitterCount = emitters.count
+        writesControlPoints = configuration.program.writesControlPoints
+        if writesControlPoints {
+            guard let points = device.makeBuffer(length: slotCount * Self.pointStateStride, options: .storageModeShared) else {
+                return nil
+            }
+            memset(points.contents(), 0, points.length)
+            points.label = "Particle control point writes"
+            pointStates = points
+        } else {
+            pointStates = nil
+        }
         self.device = device
         self.parameters = parameters
         self.control = control
@@ -156,6 +175,11 @@ final class ParticleGPUSystem {
             buffer?.label = label
             return buffer
         }
+        var newSerialStates: MTLBuffer?
+        if writesControlPoints {
+            guard let serial = buffer(slots * Self.serialStateStride, "Particle serial states") else { return false }
+            newSerialStates = serial
+        }
         guard let newParticles = buffer(slots * stateStride, "Particles"),
               let newStepped = buffer(slots * stateStride, "Particles stepped"),
               let newAlive = buffer(slots * 4, "Particle alive"),
@@ -180,6 +204,7 @@ final class ParticleGPUSystem {
         }
         particles = newParticles
         stepped = newStepped
+        serialStates = newSerialStates
         alive = newAlive
         offsets = newOffsets
         blockSums = newBlockSums

@@ -68,6 +68,11 @@ final class ParticleSystemRuntime {
     var ropeFrame = SIMD3<Float>(1, 1, 0)
     /// Particles that died of age since the system started (a scrolling rope's shift), on the CPU.
     var died: UInt32 = 0
+    /// Control points a remap wrote over a point the instance override drives: the override then,
+    /// and the point in the system's space (`keepWrittenControlPoints`).
+    var writtenOverridePoints: [Int: (override: SIMD2<Float>, point: SIMD2<Float>)] = [:]
+    /// The offsets the instance override gave the control points last step (`keptPoints`).
+    var lastOverridePoints = [SIMD2<Float>?](repeating: nil, count: ParticleControlPoint.count)
     /// Each emitter's clock (`ParticleEmitterTiming`), carried fraction and what its rate emitted this
     /// period (`ParticleFrameInputs.periodLimit`) for a system that isn't instanced; the CPU
     /// simulation's counts.
@@ -185,7 +190,7 @@ enum ParticleCPUSimulation {
                 for (emitter, state) in instance.emitterStates.enumerated() {
                     if state.startsPeriod { periodSpawned = spawned }
                     for _ in 0..<state.spawnCount {
-                        system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: instanceInputs[index],
+                        system.particles.append(spawn(serial: system.nextSerial, system: system, inputs: &instanceInputs[index],
                                                       emitter: emitter, instance: index, source: instance,
                                                       sequence: SIMD2(spawned, spawned &- periodSpawned)))
                         system.nextSerial &+= 1
@@ -215,7 +220,7 @@ enum ParticleCPUSimulation {
                 system.emitterStates[index].periodEmitted += emitted.rate
                 for _ in 0..<(emitted.burst + emitted.rate) {
                     let serial = system.nextSerial
-                    system.particles.append(spawn(serial: serial, system: system, inputs: inputs, emitter: index,
+                    system.particles.append(spawn(serial: serial, system: system, inputs: &inputs, emitter: index,
                                                   sequence: SIMD2(serial, serial &- system.periodSerial)))
                     system.nextSerial &+= 1
                 }
@@ -224,13 +229,22 @@ enum ParticleCPUSimulation {
         let neighbors = ParticleProgramCPU.Neighbors(positions: system.particles.map(\.position),
                                                      velocities: system.particles.map(\.velocity),
                                                      serials: system.particles.map(\.serial), frame: inputs.frameIndex)
-        for index in system.particles.indices {
-            let instance = system.particles[index].instance
-            let own = instanceInputs.isEmpty ? inputs : instanceInputs[instance]
-            let source = instanceInputs.isEmpty ? nil : system.instances[instance]
-            advance(&system.particles[index], index: index, system: system, inputs: own, source: source,
-                    neighbors: neighbors)
-            if let source, source.clearing { system.particles[index].age = .infinity }
+        if configuration.program.operatorsWriteControlPoints {
+            advanceOperatorMajor(system, inputs: &inputs, instanceInputs: &instanceInputs, neighbors: neighbors)
+        } else {
+            for index in system.particles.indices {
+                let instance = system.particles[index].instance
+                let own = instanceInputs.isEmpty ? inputs : instanceInputs[instance]
+                let source = instanceInputs.isEmpty ? nil : system.instances[instance]
+                advance(&system.particles[index], index: index, system: system, inputs: own, source: source,
+                        neighbors: neighbors)
+            }
+        }
+        for index in system.particles.indices where configuration.isInstanced {
+            if system.instances[system.particles[index].instance].clearing { system.particles[index].age = .infinity }
+        }
+        if configuration.program.writesControlPoints, !configuration.isInstanced {
+            keepWrittenControlPoints(system, inputs: inputs)
         }
         if configuration.hasEventChildren {
             for particle in system.particles where particle.serial &- firstSerial < system.nextSerial &- firstSerial {
@@ -285,12 +299,15 @@ enum ParticleCPUSimulation {
         context.collisions = inputs.collisions
         context.source = source
         context.spawnScale = inputs.spawnScale
+        context.layerOrigin = inputs.layerOrigin
         return context
     }
 
     /// A new particle: the emitter's shape, WE's base values and every initializer
     /// (0x14023b340: lifetime 1, size 0.5, the instance colour and alpha).
-    static func spawn(serial: UInt32, system: ParticleSystemRuntime, inputs: ParticleFrameInputs, emitter: Int = 0,
+    /// A `remapinitialvalue` that writes a control point writes it into `inputs` for the spawns and
+    /// the operators after it.
+    static func spawn(serial: UInt32, system: ParticleSystemRuntime, inputs: inout ParticleFrameInputs, emitter: Int = 0,
                       instance: Int = 0, source: ParticleInstance? = nil, sequence: SIMD2<UInt32>) -> Particle {
         let configuration = system.configuration
         var context = context(system, inputs: inputs, serial: serial, source: source)
@@ -305,7 +322,8 @@ enum ParticleCPUSimulation {
         let emitted = ParticleProgramCPU.emit(shape, context: context)
         state.position = emitted.position
         state.velocity = emitted.velocity
-        ParticleProgramCPU.runInitializers(inputs.initializers, on: &state, context: context)
+        ParticleProgramCPU.runInitializers(inputs.initializers, on: &state, in: &context)
+        inputs.controlPoints = context.controlPoints
         // A worldspace particle leaves the emitter's space: it takes the emitter's scale and turn now.
         let size = state.baseSize * inputs.spawnSizeScale
         let color = SIMD4(state.baseColor, 1)
@@ -321,8 +339,23 @@ enum ParticleCPUSimulation {
     /// One step of every operator for the particle at `index`.
     static func advance(_ particle: inout Particle, index: Int, system: ParticleSystemRuntime, inputs: ParticleFrameInputs,
                         source: ParticleInstance?, neighbors: ParticleProgramCPU.Neighbors) {
-        let configuration = system.configuration
         var context = context(system, inputs: inputs, serial: particle.serial, source: source)
+        var state = programState(particle, inputs: inputs)
+        // At a frame-rate limit of 20 or less WE runs the operators twice, in half steps
+        // (`ParticleFrameInputs.substeps`); the neighbours stay the step's.
+        let substeps = inputs.substeps
+        context.deltaTime /= Float(substeps)
+        context.dragDeltaTime /= Float(substeps)
+        var dies = false
+        for _ in 0..<substeps {
+            if ParticleProgramCPU.runOperators(inputs.operators, on: &state, in: &context, index: index,
+                                               neighbors: neighbors) { dies = true }
+        }
+        finish(&particle, state: state, dies: dies, system: system, inputs: inputs)
+    }
+
+    /// `particle` as the program sees it, in the system's space.
+    static func programState(_ particle: Particle, inputs: ParticleFrameInputs) -> ParticleProgramState {
         var state = ParticleProgramState()
         state.position = inputs.toSpace * (particle.position - inputs.space.translation)
         state.velocity = inputs.toSpace * particle.velocity
@@ -333,16 +366,13 @@ enum ParticleCPUSimulation {
         state.baseColor = SIMD3(particle.baseColor.x, particle.baseColor.y, particle.baseColor.z)
         state.rotation = particle.rotation
         state.angularVelocity = particle.angularVelocity
-        // At a frame-rate limit of 20 or less WE runs the operators twice, in half steps
-        // (`ParticleFrameInputs.substeps`); the neighbours stay the step's.
-        let substeps = inputs.substeps
-        context.deltaTime /= Float(substeps)
-        context.dragDeltaTime /= Float(substeps)
-        var dies = false
-        for _ in 0..<substeps {
-            if ParticleProgramCPU.runOperators(inputs.operators, on: &state, context: context, index: index,
-                                               neighbors: neighbors) { dies = true }
-        }
+        return state
+    }
+
+    /// Takes the operators' `state` back into `particle` and records its trail history.
+    static func finish(_ particle: inout Particle, state: ParticleProgramState, dies: Bool, system: ParticleSystemRuntime,
+                       inputs: ParticleFrameInputs) {
+        let configuration = system.configuration
         particle.position = inputs.space.apply(state.position)
         particle.velocity = inputs.space.linear * state.velocity
         particle.lifetime = state.lifetime

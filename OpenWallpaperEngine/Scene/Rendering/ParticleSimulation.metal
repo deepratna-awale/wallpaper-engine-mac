@@ -143,6 +143,7 @@ static ProgramContext programContext(constant ParticleParameters &p, constant Pa
     c.spawnScale = f.spawnScale;
     c.sequenceIndex = 0;
     c.sequenceRestartIndex = 0;
+    c.layerOrigin = f.misc.zw;
     return c;
 }
 
@@ -289,6 +290,118 @@ static void follow(thread ParticleState &particle, device float2 *own, constant 
     }
 }
 
+/// Particle `gid`'s place in its step: its instance's move and slot, and whether it clears.
+struct SimulateStart {
+    float2 shift, previousShift;
+    uint slot;
+    bool clearing;
+    ParticleInstanceState instance;
+};
+
+/// The start of particle `gid`'s step (`ParticleCPUSimulation.advance`): it follows its emitter's (or
+/// its instance's) move. False for a particle that died aging, which stays as it is.
+static bool beginSimulate(uint gid, thread ParticleState &particle, thread SimulateStart &start,
+                          device const uint *alive, device float2 *history, uint aged, constant ParticleParameters &p,
+                          constant ParticleFrame &f, device ParticleInstanceState *instances) {
+    if (gid < aged && alive[gid] == 0) return false;
+    const uint flags = p.counts.y;
+    const float2x2 motion = float2x2(f.motionLinear.xy, f.motionLinear.zw);
+    device float2 *own = history + gid * p.counts.w;
+    start.shift = float2(0);
+    start.previousShift = float2(0);
+    start.clearing = false;
+    start.instance = ParticleInstanceState{};
+    start.slot = (flags & kInstanced) ? uint(particle.trail.z) : 0;
+    if (flags & kInstanced) {
+        // `ParticleCPUSimulation.followInstance`: the instance's move around its own position.
+        start.instance = instances[start.slot];
+        start.shift = start.instance.place.xy;
+        start.previousShift = start.instance.place.zw;
+        start.clearing = (start.instance.state.x & iClearing) != 0;
+        const bool moved = f.motionExtras.z > 0.5 || any(start.instance.place.xy != start.instance.place.zw);
+        if (!(flags & kWorldSpace) && moved && gid < aged) {
+            follow(particle, own, p, motion, start.instance.place.xy + f.spaceMotion.zw - motion * start.instance.place.zw);
+        }
+    } else if (f.motionExtras.z > 0.5 && gid < aged) {
+        follow(particle, own, p, motion, f.spaceMotion.zw);
+    }
+    return true;
+}
+
+/// The program's view of particle `particle`'s step.
+static ProgramContext simulateContext(ParticleState particle, SimulateStart start, constant ParticleParameters &p,
+                                      constant ParticleFrame &f, device const LinkedPoints *linked) {
+    ProgramContext c = programContext(p, f, particle.identity.x);
+    placeProgramPoints(c, p, f, start.shift, start.previousShift, true,
+                       p.linking.x != 0 ? linked[start.slot] : LinkedPoints{});
+    if (p.counts.y & kInstanced) {
+        c.hasSource = true;
+        c.source = start.instance;
+    }
+    // `ParticleFrameInputs.substeps`: at a frame-rate limit of 20 or less the operators run twice,
+    // in half steps.
+    const uint substeps = max(f.emission.x, 1u);
+    c.deltaTime /= float(substeps);
+    c.dragDeltaTime /= float(substeps);
+    return c;
+}
+
+/// `ParticleCPUSimulation.programState`.
+static ProgramState simulateState(ParticleState particle, thread const ProgramContext &c) {
+    ProgramState state;
+    state.position = c.toSpace * (particle.positionVelocity.xy - c.origin);
+    state.velocity = c.toSpace * particle.positionVelocity.zw;
+    state.previous = state.position;
+    state.age = particle.life.x;
+    state.lifetime = particle.life.y;
+    state.size = particle.life.z;
+    state.baseSize = particle.life.w;
+    state.alpha = particle.alphaRotation.x;
+    state.baseAlpha = particle.alphaRotation.y;
+    state.rotation = particle.alphaRotation.z;
+    state.angularVelocity = particle.alphaRotation.w;
+    state.color = particle.color.xyz;
+    state.baseColor = particle.baseColor.xyz;
+    return state;
+}
+
+/// `ParticleCPUSimulation.finish`: the step's result into `stepped`, with its trail history and
+/// the instance's live count.
+static void endSimulate(uint gid, ParticleState particle, ProgramState state, thread const ProgramContext &c, bool dies,
+                        SimulateStart start, device ParticleState *stepped, device uint *alive, device float2 *history,
+                        constant ParticleParameters &p, constant ParticleFrame &f,
+                        device ParticleInstanceState *instances) {
+    const uint flags = p.counts.y;
+    device float2 *own = history + gid * p.counts.w;
+    const float2 position = c.space * state.position + c.origin;
+    particle.positionVelocity = float4(position, c.space * state.velocity);
+    particle.life = float4(dies ? state.lifetime : particle.life.x, state.lifetime, state.size, particle.life.w);
+    particle.alphaRotation = float4(state.alpha, particle.alphaRotation.y, state.rotation, state.angularVelocity);
+    particle.color = float4(state.color, particle.color.w);
+    if (flags & kHistory) {
+        const uint limit = p.counts.w;
+        particle.trail.x += f.time.x;
+        if (particle.trail.x >= p.trail.x || particle.identity.z == 0) {
+            particle.trail.x = 0;
+            if (particle.identity.z < limit) {
+                own[particle.identity.z] = position;
+                particle.identity.z += 1;
+            } else {
+                own[particle.identity.w] = position;
+                particle.identity.w = (particle.identity.w + 1) % limit;
+            }
+        }
+    }
+    stepped[gid] = particle;
+    const bool lives = !start.clearing;
+    alive[gid] = lives ? 1 : 0;
+    if ((flags & kInstanced) && lives) {
+        // `state.z`: uint 18 of an instance.
+        device uint *live = (device uint *)(instances + start.slot) + 18;
+        atomic_fetch_add_explicit((device atomic_uint *)live, 1u, memory_order_relaxed);
+    }
+}
+
 /// `ParticleCPUSimulation.advance`: every operator. Reads `particles` (boids read neighbours from
 /// there too), writes `stepped`; particles that died aging stay dead.
 kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]],
@@ -307,87 +420,194 @@ kernel void particleSimulate(device const ParticleState *particles [[buffer(0)]]
     if (gid >= total) return;
     const uint aged = control[cCount];
     ParticleState particle = particles[gid];
-    if (gid < aged && alive[gid] == 0) {
+    SimulateStart start;
+    if (!beginSimulate(gid, particle, start, alive, history, aged, p, f, instances)) {
         stepped[gid] = particle;
         return;
     }
-    const uint flags = p.counts.y;
-    const float deltaTime = f.time.x;
-    const float2x2 motion = float2x2(f.motionLinear.xy, f.motionLinear.zw);
-    device float2 *own = history + gid * p.counts.w;
-    float2 shift = float2(0), previousShift = float2(0);
-    bool clearing = false;
-    ParticleInstanceState instance = ParticleInstanceState{};
-    const uint slot = (flags & kInstanced) ? uint(particle.trail.z) : 0;
-    if (flags & kInstanced) {
-        // `ParticleCPUSimulation.followInstance`: the instance's move around its own position.
-        instance = instances[slot];
-        shift = instance.place.xy;
-        previousShift = instance.place.zw;
-        clearing = (instance.state.x & iClearing) != 0;
-        const bool moved = f.motionExtras.z > 0.5 || any(instance.place.xy != instance.place.zw);
-        if (!(flags & kWorldSpace) && moved && gid < aged) {
-            follow(particle, own, p, motion, instance.place.xy + f.spaceMotion.zw - motion * instance.place.zw);
-        }
-    } else if (f.motionExtras.z > 0.5 && gid < aged) {
-        follow(particle, own, p, motion, f.spaceMotion.zw);
-    }
-    ProgramContext c = programContext(p, f, particle.identity.x);
-    placeProgramPoints(c, p, f, shift, previousShift, true, p.linking.x != 0 ? linked[slot] : LinkedPoints{});
-    if (flags & kInstanced) {
-        c.hasSource = true;
-        c.source = instance;
-    }
-    ProgramState state;
-    state.position = c.toSpace * (particle.positionVelocity.xy - c.origin);
-    state.velocity = c.toSpace * particle.positionVelocity.zw;
-    state.previous = state.position;
-    state.age = particle.life.x;
-    state.lifetime = particle.life.y;
-    state.size = particle.life.z;
-    state.baseSize = particle.life.w;
-    state.alpha = particle.alphaRotation.x;
-    state.baseAlpha = particle.alphaRotation.y;
-    state.rotation = particle.alphaRotation.z;
-    state.angularVelocity = particle.alphaRotation.w;
-    state.color = particle.color.xyz;
-    state.baseColor = particle.baseColor.xyz;
-    // `ParticleFrameInputs.substeps`: at a frame-rate limit of 20 or less the operators run twice,
-    // in half steps; the neighbours stay the step's.
-    const uint substeps = max(f.emission.x, 1u);
-    c.deltaTime /= float(substeps);
-    c.dragDeltaTime /= float(substeps);
+    ProgramContext c = simulateContext(particle, start, p, f, linked);
+    ProgramState state = simulateState(particle, c);
     bool dies = false;
-    for (uint substep = 0; substep < substeps; ++substep) {
-        dies = runOperators(program + (f.extra.w & 0xFFFFu), f.extra.w >> 16, state, c, collisions, f.extra.z, shift,
+    for (uint substep = 0; substep < max(f.emission.x, 1u); ++substep) {
+        dies = runOperators(program + (f.extra.w & 0xFFFFu), f.extra.w >> 16, state, c, collisions, f.extra.z, start.shift,
                             particles, total, gid, control[cLive], f.indices.x, alive, aged) || dies;
     }
-    const float2 position = c.space * state.position + c.origin;
-    particle.positionVelocity = float4(position, c.space * state.velocity);
-    particle.life = float4(dies ? state.lifetime : particle.life.x, state.lifetime, state.size, particle.life.w);
-    particle.alphaRotation = float4(state.alpha, particle.alphaRotation.y, state.rotation, state.angularVelocity);
-    particle.color = float4(state.color, particle.color.w);
-    if (flags & kHistory) {
-        const uint limit = p.counts.w;
-        particle.trail.x += deltaTime;
-        if (particle.trail.x >= p.trail.x || particle.identity.z == 0) {
-            particle.trail.x = 0;
-            if (particle.identity.z < limit) {
-                own[particle.identity.z] = position;
-                particle.identity.z += 1;
-            } else {
-                own[particle.identity.w] = position;
-                particle.identity.w = (particle.identity.w + 1) % limit;
+    endSimulate(gid, particle, state, c, dies, start, stepped, alive, history, p, f, instances);
+}
+
+// MARK: - Control point writes
+
+static void loadPoints(thread ProgramContext &c, device const float4 *pairs) {
+    for (uint i = 0; i < 8; ++i) {
+        const float4 pair = pairs[i / 2];
+        c.points[i] = (i % 2 == 0) ? pair.xy : pair.zw;
+    }
+}
+
+static void storePoints(device float4 *pairs, thread const ProgramContext &c) {
+    for (uint i = 0; i < 4; ++i) pairs[i] = float4(c.points[i * 2], c.points[i * 2 + 1]);
+}
+
+/// The kept points of the last step: the previous points, and the points the object's instance
+/// override drives while it doesn't change (`ParticleFrameInputs.keptPoints`, `f.misc`).
+static void applyKeptPoints(thread ProgramContext &c, device const PointState &state, constant ParticleFrame &f) {
+    if (state.flags.x == 0) return;
+    const uint pinned = f.extra.x >> 8;
+    for (uint i = 0; i < 8; ++i) {
+        const float4 pair = state.kept[i / 2];
+        const float2 kept = (i % 2 == 0) ? pair.xy : pair.zw;
+        c.previousPoints[i] = kept;
+        if (pinned & (1u << i)) c.points[i] = kept;
+    }
+}
+
+/// `particleEmit` for a program whose initializers write control points: one thread spawns in order,
+/// each spawn reading what the ones before it wrote. Also starts every slot's points for the step.
+kernel void particleEmitSerial(device ParticleState *particles [[buffer(0)]],
+                               device const uint *control [[buffer(1)]],
+                               constant ParticleParameters &p [[buffer(2)]],
+                               constant ParticleFrame &f [[buffer(3)]],
+                               device const ParticleInstanceState *instances [[buffer(4)]],
+                               device const LinkedPoints *linked [[buffer(5)]],
+                               constant ProgramOp *program [[buffer(6)]],
+                               constant EmitterParameters *emitterParameters [[buffer(7)]],
+                               device const EmitterState *emitters [[buffer(8)]],
+                               device PointState *points [[buffer(9)]]) {
+    const bool instanced = (p.counts.y & kInstanced) != 0;
+    const uint slots = instanced ? max(p.instancing.y, 1u) : 1u;
+    for (uint slot = 0; slot < slots; ++slot) {
+        ProgramContext c = programContext(p, f, 0);
+        const ParticleInstanceState source = instanced ? instances[slot] : ParticleInstanceState{};
+        placeProgramPoints(c, p, f, source.place.xy, source.place.zw, true, p.linking.x != 0 ? linked[slot] : LinkedPoints{});
+        applyKeptPoints(c, points[slot], f);
+        storePoints(points[slot].points, c);
+    }
+    const uint emitterCount = p.instancing.z;
+    const uint count = control[cEmit];
+    for (uint gid = 0; gid < count; ++gid) {
+        const uint serial = control[cSerialBase] + gid;
+        ProgramContext c = programContext(p, f, serial);
+        ParticleState particle;
+        uint slot = 0;
+        if (instanced) {
+            slot = spawningInstance(instances, p.instancing.y, gid);
+            const ParticleInstanceState source = instances[slot];
+            placeProgramPoints(c, p, f, source.place.xy, source.place.zw, true, p.linking.x != 0 ? linked[slot] : LinkedPoints{});
+            applyKeptPoints(c, points[slot], f);
+            loadPoints(c, points[slot].points);
+            c.hasSource = true;
+            c.source = source;
+            const uint local = gid - source.state.w;
+            device const EmitterState *own = emitters + slot * emitterCount;
+            const uint e = spawningEmitter(own, emitterCount, local);
+            const uint index = source.spawn.y + local;
+            c.sequenceIndex = index;
+            c.sequenceRestartIndex = index - own[e].counts.w;
+            particle = spawn(serial, p, f, program, c, emitterParameters[e]);
+            particle.trail.z = float(slot);
+        } else {
+            placeProgramPoints(c, p, f, float2(0), float2(0), true, p.linking.x != 0 ? linked[0] : LinkedPoints{});
+            applyKeptPoints(c, points[0], f);
+            loadPoints(c, points[0].points);
+            const uint e = spawningEmitter(emitters, emitterCount, gid);
+            c.sequenceIndex = serial;
+            c.sequenceRestartIndex = serial - emitters[e].counts.w;
+            particle = spawn(serial, p, f, program, c, emitterParameters[e]);
+        }
+        storePoints(points[slot].points, c);
+        particles[control[cCount] + gid] = particle;
+    }
+}
+
+/// `particleSimulate` for a program whose operators write control points
+/// (`ParticleCPUSimulation.advanceOperatorMajor`): one thread runs record by record over every
+/// particle, groups of four reading the points the previous group left and the first of each
+/// writing them. Keeps each slot's points for the next step.
+kernel void particleSimulateSerial(device const ParticleState *particles [[buffer(0)]],
+                                   device ParticleState *stepped [[buffer(1)]],
+                                   device uint *alive [[buffer(2)]],
+                                   device float2 *history [[buffer(3)]],
+                                   device const uint *control [[buffer(4)]],
+                                   constant ParticleParameters &p [[buffer(5)]],
+                                   constant ParticleFrame &f [[buffer(6)]],
+                                   device ParticleInstanceState *instances [[buffer(7)]],
+                                   constant CollisionPlacement *collisions [[buffer(8)]],
+                                   device const LinkedPoints *linked [[buffer(9)]],
+                                   constant ProgramOp *program [[buffer(10)]],
+                                   device PointState *points [[buffer(11)]],
+                                   device SerialState *serial [[buffer(12)]]) {
+    const uint total = control[cTotal];
+    const uint aged = control[cCount];
+    const bool instanced = (p.counts.y & kInstanced) != 0;
+    const uint slots = instanced ? max(p.instancing.y, 1u) : 1u;
+    constant ProgramOp *operators = program + (f.extra.w & 0xFFFFu);
+    const uint operatorCount = f.extra.w >> 16;
+    for (uint gid = 0; gid < total; ++gid) {
+        ParticleState particle = particles[gid];
+        SimulateStart start;
+        if (!beginSimulate(gid, particle, start, alive, history, aged, p, f, instances)) {
+            stepped[gid] = particle;
+            continue;
+        }
+        stepped[gid] = particle;
+        const ProgramContext c = simulateContext(particle, start, p, f, linked);
+        serial[gid].state = simulateState(particle, c);
+        serial[gid].dies = 0;
+    }
+    for (uint substep = 0; substep < max(f.emission.x, 1u); ++substep) {
+        for (uint gid = 0; gid < total; ++gid) {
+            if (gid < aged && alive[gid] == 0) continue;
+            ProgramState state = serial[gid].state;
+            beginRun(state);
+            serial[gid].state = state;
+        }
+        for (uint k = 0; k < operatorCount; ++k) {
+            for (uint slot = 0; slot < slots; ++slot) points[slot].flags.y = 0;
+            for (uint gid = 0; gid < total; ++gid) {
+                if (gid < aged && alive[gid] == 0) continue;
+                const ParticleState particle = stepped[gid];
+                SimulateStart start;
+                start.slot = instanced ? uint(particle.trail.z) : 0;
+                start.instance = instanced ? instances[start.slot] : ParticleInstanceState{};
+                start.shift = start.instance.place.xy;
+                start.previousShift = start.instance.place.zw;
+                ProgramContext c = simulateContext(particle, start, p, f, linked);
+                applyKeptPoints(c, points[start.slot], f);
+                device PointState &own = points[start.slot];
+                const bool first = own.flags.y % 4 == 0;
+                if (first) {
+                    for (uint i = 0; i < 4; ++i) own.group[i] = own.points[i];
+                }
+                loadPoints(c, own.group);
+                ProgramState state = serial[gid].state;
+                if (runOperator(operators[k], state, c, collisions, f.extra.z, start.shift, particles, total, gid,
+                                control[cLive], f.indices.x, alive, aged)) {
+                    serial[gid].dies = 1;
+                }
+                serial[gid].state = state;
+                if (first) storePoints(own.points, c);
+                own.flags.y += 1;
             }
         }
     }
-    stepped[gid] = particle;
-    const bool lives = !clearing;
-    alive[gid] = lives ? 1 : 0;
-    if ((flags & kInstanced) && lives) {
-        // `state.z`: uint 18 of the 24 in an instance.
-        device uint *live = (device uint *)(instances + slot) + 18;
-        atomic_fetch_add_explicit((device atomic_uint *)live, 1u, memory_order_relaxed);
+    for (uint gid = 0; gid < total; ++gid) {
+        if (gid < aged && alive[gid] == 0) continue;
+        const ParticleState particle = stepped[gid];
+        SimulateStart start;
+        start.slot = instanced ? uint(particle.trail.z) : 0;
+        start.instance = instanced ? instances[start.slot] : ParticleInstanceState{};
+        start.shift = start.instance.place.xy;
+        start.previousShift = start.instance.place.zw;
+        start.clearing = (start.instance.state.x & iClearing) != 0;
+        const ProgramContext c = simulateContext(particle, start, p, f, linked);
+        endSimulate(gid, particle, serial[gid].state, c, serial[gid].dies != 0, start, stepped, alive, history, p, f,
+                    instances);
+    }
+    // A system without instances keeps its points for the next step
+    // (`ParticleCPUSimulation.keepWrittenControlPoints`).
+    for (uint slot = 0; slot < slots; ++slot) {
+        for (uint i = 0; i < 4; ++i) points[slot].kept[i] = points[slot].points[i];
+        points[slot].flags.x = instanced ? 0u : 1u;
     }
 }
 
@@ -464,4 +684,24 @@ kernel void particleCompact(device const ParticleState *stepped [[buffer(0)]],
         }
         trailCounts[destination] = particle.identity.z;
     }
+}
+
+// MARK: - Layout
+
+/// The sizes of the shared structures, for the layout test (`ParticleSimulationParityTests`).
+kernel void particleLayoutSizes(device uint *sizes [[buffer(0)]]) {
+    sizes[0] = sizeof(ParticleState);
+    sizes[1] = sizeof(ParticleParameters);
+    sizes[2] = sizeof(ParticleFrame);
+    sizes[3] = sizeof(SpriteRecord);
+    sizes[4] = sizeof(RopeRecord);
+    sizes[5] = sizeof(FallbackInstance);
+    sizes[6] = sizeof(ParticleInstanceState);
+    sizes[7] = sizeof(CollisionPlacement);
+    sizes[8] = sizeof(LinkedPoints);
+    sizes[9] = sizeof(EmitterParameters);
+    sizes[10] = sizeof(EmitterStep);
+    sizes[11] = sizeof(EmitterState);
+    sizes[12] = sizeof(PointState);
+    sizes[13] = sizeof(SerialState);
 }
