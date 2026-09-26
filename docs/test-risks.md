@@ -1105,3 +1105,216 @@ S28 and S11 were closed with WP8 (see WP8 below).
 - WE applies `brightness` only when an unidentified flag (0x2000 at layer+0xc8+0x118) is set; ours always applies it.
 - Unsigned test hosts (CI) run JavaScriptCore without its JIT, so CI timings are the interpreter's; `SceneScriptJITTests` skips its JIT halves there.
 - **S19 again, found by the full suite in a signed host.** With the JIT on, the watchdog could not stop a compiled `while (true) {}`. `SceneScriptRenderTests.testAHungScriptHaltsOnlyItsWallpaper` hung the suite: JavaScriptCore's VMTraps thread kept signalling while the loop never reached a trap. Polling traps (`JSC_usePollingTraps`, set in `main.swift` before the first VM) fix it: the loop stops at 0.31 s under a 0.3 s limit, and tight loops cost about 10 % more. It relies on JavaScriptCore reading that option from the environment, as it does on macOS 27; `SceneScriptJITTests.testTheWatchdogStopsAJITCompiledEmptyLoop` fails if that stops working.
+
+---
+
+# Timeline animations
+
+Status: 2026-09-26, branch `deepratna/feature-work`, base `fee2a06`. Landed: T0 (oracle `Scripts/timeline-reference.py`, `Tests/Fixtures/Timeline/`, sweep tests), T1 (`SceneTimelineClock`/`Channel`/`Animation`), T2 (`SceneAnimationSet`, sites, holders), T5a (`SceneTextureAnimationClock`/`Control`/`Animations`), T4a (`objects-animations.js`). In flight: T3 (renderer). Adversarial list for [`timeline-plan.md`](timeline-plan.md); owners are its packages. Paths are relative to `OpenWallpaperEngine/`. Library cases are from `/Volumes/980Pro/dd-timeline/animations.json` and `anim_scripts.json`; "the oracle" is `Scripts/timeline-reference.py`.
+
+| # | Sev | Owner | Risk |
+|---|-----|-------|------|
+| TL1 | Critical | T3 | An animated site silently falls back to its static value (context without the set, site identity mismatch) |
+| TL2 | Critical | T3, T4a | Script writes and bound scripts fight the timeline (P2): owned fields freeze it, or writes stick |
+| TL3 | High | T3, T2 | Script calls reach the set late, twice, or get undone by the next publish |
+| TL4 | High | T3 | Static-chain caching and animated constants (stale output, or 22 paused fades that never cache) |
+| TL5 | High | T3 | The app's own inspector edit replaces an animated constant, so the timeline stops |
+| TL6 | High | T1, T4a, T3 | NaN/Infinity `rate`/`setFrame` poison a clock for good and reach the GPU |
+| TL7 | High | T5a, T3 | A texture frame out of range (`setFrame(1000)`, `-5`, NaN) indexes the frame list |
+| TL8 | High | T5a, T3 | A layer's texture override advances once per *call*, not per frame |
+| TL9 | Medium | T3, T6 | Frame-rate dependence: textures step once per tick; WE's fps cap vs 120/144 Hz |
+| TL10 | Medium | T3 | Sleep/wake, pause, speed 0, occlusion: the delta the clocks get |
+| TL11 | Medium | T1 | float32 accumulation over hours; displays at different refresh rates drift apart |
+| TL12 | High | T2, T3 | Linked children when the parent is removed, or the layer comes from `createLayer` |
+| TL13 | Medium | T3 | `relative` with user-bound or user-changed values; rebuilds re-bake |
+| TL14 | Medium | T5a, T3 | Texture clocks shared by layers with different visibility |
+| TL15 | Medium | T5a, T3 | 0 s frames and all-zero textures (`Moic (1).tex`) |
+| TL16 | Medium | T3 | Reload keeps or resets clocks (content rebuild, watchdog Retry, wallpaper switch) |
+| TL17 | Medium | T2, T3 | Two displays: sets, restores and texture clocks must not cross |
+| TL18 | Medium | T2, T4a | `animationEvent` storms, dropped events and O(layers) dispatch |
+| TL19 | Medium | T3 | Property width vs channel count (1-channel `origin`, 3-channel `alpha`, vec4 uniforms) |
+| TL20 | Medium | T6 | Cost with many animations; cold Bézier-cache spikes |
+| TL21 | Low | T2 | Registration order (keys sorted, not JSON order): `getAnimation(name)` duplicates, event order |
+| TL22 | Low | T1 | Hostile `length`/`fps`: the lazy cache grows to `length` floats |
+
+---
+
+## TL1. An animated site silently falls back to static (Critical, T3)
+**Scenario.** The value path is now `SceneValueSource.animation(site:)` → `SceneValueContext.animationValue(site)` → the instance's `SceneAnimationSet`. Every miss is silent: it returns the fallback, the authored `value`.
+- **A context built without the set.** `LiveSceneValueContext()` defaults `animations` to nil. In T3's working tree it is built that way in `SceneObjectMotion.base`, `ParticleFrameInputs` (`values ?? LiveSceneValueContext()`), `SceneWallpaperViewModel.userValueContext` and the renderer's `baseValues`. Any of those on a path that resolves an animated constant or a particle `instanceoverride` freezes it.
+- **Site identity.** The set keys sites by `SceneScriptSceneDescriber.objectID` (scene.json `id`, else the index) and scene.json pass index. The effect plan keys them by `object.id ?? -1` and the *effect document's* pass index (`SceneEffectPlan.swift` `build`, `pass: index`). The two agree only while scene.json's `passes` runs parallel to the effect's passes, command passes included (3803044683 animates passes 0, 1, 2, 4, 5, 7, 8, 10, 11 and 15 of one effect, so a one-off shift shows up there first), and while every object has an `id`. Keys are also case-sensitive (`"Cutout Gradient Value 1 (Fade = 0.1)"`, 3074485715), and `ShaderConstantResolver` matches constants case-insensitively.
+- **The fallback is plausible.** 3639372043 `alpha` falls back to 0.0035 and the multiply fades fall back to 0, so a frozen timeline looks like a dim layer, not a bug.
+**Test.**
+- A debug assertion or log-once when a `.animation(site: nil, …)` source is resolved at render time, and when `animationValue` returns nil for a bound site that the set doesn't contain.
+- A headless render of 3803044683 at t = 0 and t = 2.5 s: every one of its 10 `opacity` passes reads the oracle's value (`lib-opacity-wraploop-short`), not 0.
+- A synthetic effect with a `copy` command pass *before* the animated material pass: the animated uniform moves.
+- For every library site, `set.contains(site)` holds for the site the renderer builds (an enumeration test over the 15 animated items).
+
+## TL2. Script writes and bound scripts fight the timeline (Critical, T3, T4a)
+**Scenario.** §2.6: the setter writes every frame, and a bound `update`'s return wins only for its frame.
+- **3546971487** (a scene; 3187908708 is its source asset). The scripts are bound to `alpha` and `origin`, export only `mediaPropertiesChanged`/`mediaThumbnailChanged`, and do `thisLayer.alpha = 0; thisObject.getAnimation().play()`. WE: `alpha = 0` is overwritten on the next frame by the linked `alpha` child, sampled on the `origin` clock, which restarts at 0. Two failures are possible: the bound script (it has no `update`) makes `alpha` "script-owned", so `owned?.scalar(.alpha)` beats the timeline forever and the layer stays at 0; or the write sticks until the next `update`.
+- **Accumulators.** `update(v) { return v + 0.01 }` on an animated `alpha` must stay at `timeline + 0.01`. It must not run away, which it would if the next frame's `value` were the last return rather than the timeline's value.
+- **3453730450** has 71 scripts and 9 animated `alpha` fields (one, `objects/0/alpha`, is scripted): the heaviest mix in the library.
+**Test.**
+- Headless render through the real loader: an animated `alpha` with a bound script that has no `update` shows the oracle's values.
+- `thisLayer.alpha = 0` from an event shows 0 for exactly one frame (or none, if the timeline writes first), then the timeline.
+- The accumulator case after 600 frames is within 0.01 of the oracle.
+- 3546971487 replayed with a synthetic `mediaPropertiesChanged`: `origin` and `alpha` follow `lib-title-origin-linked-alpha` from the frame after the event.
+
+## TL3. Script calls reach the set late, twice, or get undone (High, T3, T2)
+**Scenario.** JS applies `play`/`pause`/`stop`/`setFrame`/`rate` to the animation buffer. `readAnimations` turns a dirty slot into `.animation(site, time, flags, rate)`, a render event applied "before the next advance". Meanwhile `publishAnimations` rewrites every slot from the set each frame.
+- If the event is applied *after* the next frame's advance and publish, `restore` sets `time` back to the value from before that advance. The clock loses a frame, and the play/`setFrame` shows a frame late.
+- If the restore is dropped (the script frame was skipped because the watchdog is busy, or the frame was coalesced), `isPlaying()` goes back to false on the next publish: `play()` "didn't happen".
+- `restore` copies `rate` too. A `setFrame` from one script and a `rate` write from another in the same frame are merged in the buffer, which is fine only because the whole slot is copied.
+- **Material and effect sites.** The multiply fades (2134765860, 2370927443, 2978204069, 2978738836, 3000562427, 3109042108, 3352730400; 22 constants) call `thisObject.getAnimation().play()` from a constant's script. The slot must map to `.material(object, effect, pass)` with the describer's material index equal to the scene.json pass index.
+**Test.**
+- A frame-exact test: `play()` in frame N's `update` on a `startpaused` single. The set's clock time after frame N+1's advance is exactly one delta, and the drawn value at N+1 is `S` at that time.
+- `setFrame(30)` then `getFrame()` in the same call returns 30, and the drawn frame at N+1 is 30 + delta × fps.
+- The multiply fade on 3352730400: after `play()`, the constant follows `lib-multiply-fade`'s `controls` run, not 0.
+- A skipped script frame (watchdog stub) never reverts a clock.
+
+## TL4. Static-chain caching and animated constants (High, T3)
+**Scenario.** `EffectGraphRenderer` reuses a chain's output while `UniformProgram.isStatic` holds (`dynamic.isEmpty && frameBuiltins.isEmpty`). The `StaticChainKey` has input, colour, alpha and script revision, but no animated values.
+- **Stale output.** If an animated constant ends up in `staticValues` (for example because `isDynamic` or a pre-resolution treats a paused or unbound `.animation` as literal), a `play()` or a loop never reaches the pixels.
+- **The reverse.** Every `.animation` source is dynamic, so the 22 `startpaused` multiply fades and the 10 finished cutouts of 3074485715 re-render their chains every frame forever, although their value is constant. That is a performance regression on 10 items: the old path was dynamic too, but the old fades were frozen at frame 0.
+**Test.**
+- Pixel test: a `startpaused` fade layer's output is reused (`layersReused` grows) while paused, and changes on the frame after `play()`.
+- A loop constant changes pixels every frame.
+- Optional: key the static output on the animated values (one float per dynamic constant), so a paused or finished timeline caches again.
+
+## TL5. The app's inspector edit replaces an animated constant (High, T3)
+**Scenario.** `SceneEffectPlanBuilder.applyingOverrides` replaces the source with `.literal(value)`, or with a music-synced `.user`, for any key the user edited in the app's inspector. The `.animation` wrapper is thrown away, so editing 3803044683's `opacity` stops its loop. WE's rule is the reverse: the timeline beats static and user values.
+**Test.** Edit an animated constant through `SceneEffectOverride` and render two times: the value still follows the oracle. Alternatively, the inspector shows animated constants as read-only. That is a product decision, but it must not stop the timeline silently.
+
+## TL6. NaN and Infinity poison a clock (High, T1, T4a, T3)
+**Scenario.** WE-faithful maths keeps NaN: `setFrame(NaN)` or `rate = NaN` gives `time = NaN`, and no branch of `advance` ever leaves it (`0 > NaN` and `NaN >= duration` are both false). The same happens after `advance(by: .infinity)`. Verified with the landed `SceneTimelineClock`: after `setFrame(.nan)` and 600 frames, the value is `[nan]` and `isPlaying` is true. The JS guard `typeof frame !== 'number'` lets NaN through. Sources in the corpus: `audio.average[...]` past the end (S6), `1000/(now-last)`.
+- NaN `alpha` poisons blending; NaN `origin` makes the layer vanish; NaN in a uniform can NaN a whole effect chain.
+- The texture `rate = NaN` takes control (WE does too), and then `step` does nothing: harmless.
+**Test.**
+- For each of `rate`, `setFrame` ∈ {NaN, ±Infinity, 1e39, -0}: 10 rendered frames with no trap. The GPU uniform and the layer alpha are either what WE would compute or a clamped substitute, and the choice is documented.
+- `stop()` or `setFrame(0)` recovers a NaN clock.
+
+## TL7. Texture frame out of range (High, T5a, T3)
+**Scenario.** `ITextureAnimation.setFrame(n)` is not range-checked (as in WE), and `readAnimations` converts a NaN frame to `Int32.min`. The landed `SceneTextureAnimations.drawnFrame` returns the raw value: verified `setFrame(1000)` → 1000 and `setFrame(-5)` → -5 with delta 0. The frame only wraps once the clock steps. Any renderer code doing `frames[Int(frame)]` traps. 2963872291 calls `setFrame(0)`/`setFrame(1)` and compares `getFrame() == 30`; a typo'd or computed frame is one script away.
+**Test.** Render an animated image after `setFrame(1000)`, `setFrame(-5)`, `setFrame(NaN)` and `rate = -3`: no trap, and the drawn rect is frame 0 or a documented clamp. Then `join()` goes back to the shared frame.
+
+## TL8. A layer's texture override advances once per call (High, T5a, T3)
+**Scenario.** `SceneTextureAnimationClock.advance` has a tick guard. `SceneTextureAnimationControl.advance`, called from `drawnFrame`, has none. The renderer asks for a layer's texture frame at up to four sites per frame (`SceneMetalRenderer` `textureFrame(for:)`: the effect input, the scene-reading pass, the material uniform and the text fallback). If each routes to `SceneAnimationSet.drawnTextureFrame`, a script-controlled layer (2176097362's audio-driven `rate`, 2963872291's `rate` 9) plays 2–4× too fast. Verified with the landed types: with `rate` 1.5 and two calls per tick over 10 ticks, the override reaches frame 5; with one call per tick it reaches frame 2.
+**Test.** Call `drawnFrame(object:tick:delta:)` twice per tick: the override's frame and time equal those from a single call. Better, advance once per frame in the set's frame (`advance(by:)`) and make `drawnFrame` a pure read.
+
+## TL9. Frame-rate dependence (Medium, T3, T6)
+**Scenario.**
+- **Timelines** are functions of the clock's time: whole-frame samples blended linearly, so 144 Hz and 30 Hz agree to float32 accumulation error (the oracle's `play-144`, `play-30` and `play-jitter` runs).
+- **Textures move at most one frame per engine frame** (§2.7). A texture with 1/60 s frames plays at the authored speed at 60 Hz and above, but at half speed under WE's common 30 fps cap. `syn-tex-shorter-than-tick` (0.004 s frames) plays at the display rate: about 144 frames/s on a ProMotion display and 60 on an external one.
+- **WE's fps limit.** WE caps its engine rate (the user's FPS setting) and we draw at the display's rate, so a WE-faithful clock still looks different from WE at 120 Hz. That matters for short-frame sprite sheets and particle sheets.
+**Test.** The texture oracle's `60` and `144` runs (already in `TextureClockOracleTests`); a render test at 30 Hz and 120 Hz delta sequences over `lib-tex-uniform`; and a decision, recorded in the plan, on whether the engine tick follows the app's frame limiter (if any) or the display.
+
+## TL10. Sleep/wake, pause, speed 0, occlusion (Medium, T3)
+**Scenario.**
+- `SceneClock` clamps a frame's delta to 0.25 s and multiplies by speed. After wake, a single fade that WE would have finished moves only 0.25 s. WE's clamp, if any, is unknown (plan open question: the delta at `0x1401802e5`).
+- Speed 0: `advance(by: 0)` still increments `frameCounter`, so the texture tick guard moves on while `step` does nothing. Correct, but an override with `rate` ≠ 0 also stands still: WE uses the engine frame time, which is 0 when paused.
+- When the renderer stops drawing (occluded, screensaver, lock), every clock and texture freezes, and in WE a paused wallpaper freezes too. When a wallpaper shows on only one of two displays, only that set moves.
+**Test.** A 10 s gap in wall time → one 0.25 s step: a loop moves 0.25 s, a single does not finish, and no events are skipped (an event inside the 0.25 s fires once). Speed 0 for 100 frames → identical values and texture frames, and scripts still see `isPlaying()` true.
+
+## TL11. float32 accumulation over hours (Medium, T1)
+**Scenario.** Clocks are float32 sums of deltas, reduced by `fmodf` at each wrap. Huge times can't build up (loop and mirror stay in [0, duration], and single stops), but each add rounds.
+- **Measured with the landed clock:** a 1 s loop (30 fps × 30) after 24 h has phase 0.856 s at 144 Hz steps and 0.979 s at 60 Hz steps. The exact phase is 0.0.
+- So two displays of the same wallpaper at different refresh rates drift apart by up to about a second a day. So do two loops of different lengths, and a timeline against `g_Time` or audio. WE has the same error at its own tick rate, so this is fidelity, not a bug, but it isn't reproducible across machines.
+- **Exact comparisons.** Scripts compare exactly: 2963872291 does `getFrame() == frameCount - 1`. `IAnimation.getFrame()` is fractional and a single ends at `length`, so the comparison is almost never true, in WE too. Our float32 operation order must match WE's for such a comparison to behave the same.
+**Test.** Keep the oracle's float32 equality at 1e-5 over 2 × duration (T0). Add a 24 h synthetic run at 1/60 that compares the Swift clock's `time` bit-for-bit with the oracle's (`we_anim_ref.py`), not with the exact phase.
+
+## TL12. Linked children when the parent goes or arrives (High, T2, T3)
+**Scenario.**
+- **The parent is removed.** `removeObject` clears the link (`0x1401774b4`). The child then samples its **own** clock, which never advanced while linked: it sits at time 0, and a `single` that isn't `startpaused` (the `alpha` children of 3187908708 and 3546971487) starts playing from 0 on the next frame. That is a visible replay, WE-faithful only if WE's child clock also never moved.
+- **`createLayer`.** `addObject(fields, id:)` must be called with the id the renderer and the script table use, *before* the first draw of the layer. Otherwise the layer draws a frame of static values. Ids reused after a destroy must not inherit old entries (`removeObject` must run first).
+- **Cycles.** `options.parent` pointing at itself, or two animations naming each other: the one-level lookup can't loop, but a self-parent makes the animation its own clock owner, which is fine. Pin it with a test.
+- **Wrong-owner links.** A child whose parent key names a property of another owner stays unlinked (logged at debug).
+**Test.** 3546971487 shape: remove the `origin`'s layer (a script `destroyLayer`, if the object model allows it; otherwise a set-level test): the child's value is `S_child` at its own time. `createLayer` of an object with a linked pair: both animate from its first drawn frame. A self-parented animation advances once per frame.
+
+## TL13. `relative` with user-bound or changed values (Medium, T3)
+**Scenario.** The bake uses the holder's `value` string at load. The library has 8 relative animations (origin 4, scale 3, angles 1), all with a literal Vec3 string, and no `user` binding together with `animation`.
+- A holder `{"value": "0 0 0", "user": "pos", "animation": {… "relative": true}}` bakes against the authored value, not the user's. Whether WE re-bakes on a user change is an open question.
+- A content rebuild (the user changes another property) must not re-bake from a *changed* document, or the offsets double up. `SceneTimelineSource.signature` keeps the set only while the document is the same.
+- A numeric scalar `value` is never offset (`syn-relative-scalar-is-absolute`). A two-token string is ignored (`syn-relative-two-tokens-ignored`).
+**Test.** A user-bound relative origin: record what we do (bake the authored value) and flag it "needs WE ground truth". Rebuild content 3 times: the origin's offsets stay single.
+
+## TL14. Texture clocks shared by layers with different visibility (Medium, T5a, T3)
+**Scenario.** One clock per texture, advanced by whichever user draws first in a tick. The renderer skips hidden layers (`guard scripts.isVisible`), so:
+- Two layers share a sprite sheet and one is hidden: the visible one moves the clock. That is right.
+- Both are hidden, as 2963872291's player UI is while `shared.uiopacity == 0`: the clock freezes and resumes at the old frame when shown. In WE the texture advances "when a user binds the texture", and whether a hidden layer binds it is unknown.
+- A hidden layer's *override* doesn't advance either. A script polling `getFrame()` on it (2963872291 waits for `getFrame() == 30`) waits forever while hidden.
+- Keyed by `textureName`: two spellings of one texture (`materials/x` and `materials/x.tex`, or a different case) get two clocks.
+**Test.** Two layers sharing a texture, then one hidden: the shared frame matches the one-layer oracle. Both hidden for 60 frames: record the behaviour and flag it for ground truth. A script-controlled hidden layer's `getFrame()` over time.
+
+## TL15. 0 s frames (Medium, T5a, T3)
+**Scenario.** `Moic (1).tex` (2176097362) has a 0 s frame. The new clock shows it for exactly one tick (`lib-tex-zero-frame`), and `syn-tex-zero-frames` covers runs of them.
+- **Leftovers of the old path.** The renderer's old `textureFrame(for:time:)` took scene time modulo the total: a texture whose frames are all 0 s divides by zero (NaN index → trap), and the describer's fps is `count / duration` → ∞.
+- `ITextureAnimation.duration` 0 must reach scripts as 0, not NaN.
+**Test.** Render an image whose TEXS frames are all 0 s: it cycles one frame per tick with no trap; `duration == 0`, and `fps` is finite or absent. `grep` that no `truncatingRemainder(dividingBy: …duration)` on texture frames survives T3.
+
+## TL16. Reload keeps or resets clocks (Medium, T3)
+**Scenario.** The renderer keeps its set "across content rebuilt from the same document" (signature), like the scripts. Four ways this can go wrong:
+- A user-property change rebuilds content while the clocks keep going: correct, and texture overrides survive (the new `register` keeps them).
+- The watchdog's Retry, or a script-runtime restart, rebuilds the runtime but keeps the set: the scripts' state (`resetAnim`, `appearAnim` in 2963872291) restarts while the clocks don't. The scripts' `init` then calls `stop()`/`setFrame`, so it's mostly harmless. WE reloads everything.
+- Switching wallpapers and back must start at time 0 with `startpaused` held (§2.4: every clock starts at 0 on load).
+- Layers removed by a rebuild stay registered in `SceneTextureAnimations` (only `removeObject` unregisters), so their clocks leak and can keep a clock alive.
+**Test.** Rebuild content 3 times at t = 1 s: timeline values are continuous. Retry: the clocks reset, and the plan decides this. Switch and back: values equal the `load-60` oracle run from 0. After a rebuild that drops a layer, `textures.objectIDs` doesn't contain it.
+
+## TL17. Two displays (Medium, T2, T3)
+**Scenario.** One set per renderer. The risks are in the plumbing:
+- A script's `.animation` render event applied to the other display's set (a shared `SceneScriptWallpaper` or event queue).
+- A static `SceneTextureAnimations` or clock cache.
+- `LiveSceneValueContext` taking `WallpaperServices.shared` for values while the set comes from the wrong renderer.
+- The same wallpaper on a 60 Hz and a 120 Hz display drifts (TL11). That's expected; a shared set would be wrong.
+**Test.** The two-display harness (`testTwoDisplaysShareNothing` style): `play()` on display A's animation leaves display B's paused. Texture overrides are per display. Values match the oracle per display for their own delta sequences.
+
+## TL18. `animationEvent` storms and drops (Medium, T2, T4a)
+**Scenario.** There are no library users yet. Events fire per crossing, and a loop can cross [time, new) and then [0, wrapped) in one advance.
+- A `length` 2 / `fps` 120 loop with 4 events at 144 Hz fires about 4 events per frame per animation. After a 0.25 s delta a short loop still fires each event at most twice (WE-faithful).
+- `dispatchAnimationEvent` walks every layer, effect and material per event to find the owner (`animationOwner`), then every script record: O(events × objects). A scene with 100 layers and a few event-heavy loops costs about a millisecond.
+- Events go through the inbox (S20); overflow drops them.
+- Events of a site with no animation slot are dropped by `animationEvents(_:)`. The describer must place slots for every animated site, including materials, or the scripts of a material never hear.
+- A linked child's events never fire (its clock doesn't move; documented). A script expecting them gets nothing, and so it would in WE.
+**Test.** A synthetic loop with events at frames 0, 15, 29.5 and 30 (`syn-events-loop`), 600 frames at 144 Hz: exactly the oracle's event count reaches `animationEvent`, in order, and the first frame's event at 0 fires once. A material animation's event reaches that material's script. Measure dispatch cost with 200 layers.
+
+## TL19. Property width vs channel count (Medium, T3)
+**Scenario.** `SceneObjectAnimation` reads a missing channel as 0 (`read(…, width:)`), and the resolver's `ShaderValue(components:)` passes one component per channel for `ShaderConstantResolver.shape` to fit.
+- **A 1-channel `origin`.** The docs' "one axis" timelines have `c0` only. y and z become 0, so the layer jumps to the scene's bottom edge. WE's `0x14017242d` switch reads `componentCount` channels, and what it reads past the vector's end is unknown.
+- **Channel gaps.** `syn-channels-stop-at-gap` (`c1` not an array): the channels after the gap are dropped, so `c2` also reads 0.
+- **More channels than the property has.** 2963872291's `scale` has 3 channels (z unused; fine). `alpha` with 3 channels takes `c0`. A `color` timeline on a vec4 uniform: is alpha 0, or 1?
+- **Rotation.** Only `angles.z` is drawn (2134765860's `angles` loop animates `c2` to 2π in radians). x and y timelines are silently ignored.
+**Test.**
+- 1-channel `origin`: record the behaviour and flag it for ground truth. Until then prefer the authored component over 0, and write that choice down.
+- A vec3 constant animated with 1 channel: y and z are what `shape` gives a 1-component value (broadcast, or 0), matching the existing static rule for a 1-number string.
+- 2134765860's angle loop: 2π in 0.5 s, and the layer is back at 0 rad at every wrap.
+
+## TL20. Cost with many animations (Medium, T6)
+**Scenario.**
+- **Measured with the landed `SceneAnimationSet` (`-O`, 2 timelines per layer: a 600-frame alpha loop and a 3-channel mirror origin), `advance` plus one `value(of:)` per layer:**
+  - 20 timelines: 5 µs/frame.
+  - 128 timelines: 24 µs/frame.
+  - 1000 timelines: 225 µs/frame.
+
+  That is about 0.2 µs per timeline, mostly the per-frame `[Site: [Float]]` dictionary and an array per value, keyed by a `String` hash.
+- **The render side multiplies it.** `SceneObjectAnimation.init` builds 7 `SceneAnimationSite`s (String keys) per layer per frame, animated or not, and `input.animations` copies a `SceneAnimationState` (with its `name` String) per site per frame for the script mirror.
+- **Cold spike, measured.** `setFrame(599)` on 128 timelines of 600 frames costs **12.8 ms** on the next frame: the lazy Bézier cache fills every frame from 0 to 599, one 1000-step bisection each. That is a dropped frame. A `rate = 50` or a mirror bounce does the same the first time round.
+**Test.** A `SceneScriptLibraryCostTests`-style budget for 3453730450 (9 timelines, 71 scripts) and 3803044683 (10 constants): animation work stays under 0.05 ms p99 after warm-up. A cold-spike test: `setFrame(length − 1)` on the library's longest channel (600 frames, 3639372043) stays under 2 ms. Options: fill the cache at load (600 × channels solves ≈ 0.1 ms per timeline), or cache only the segment's samples.
+
+## TL21. Registration order (Low, T2)
+**Scenario.** `SceneAnimationHolders` sorts keys within a block because `SceneJSON` doesn't keep JSON order. WE registers in document order. So:
+- `getAnimation(name)` with two animations of the same `options.name` on one owner returns the alphabetically first. WE returns the first in the file.
+- Events of several animations crossing in one frame fire in key order, not file order.
+No library item has duplicate names or events.
+**Test.** A synthetic owner with `zeta` and `alpha`, both named "fade": pin the choice. Order-preserving JSON would fix it.
+
+## TL22. Hostile `length`/`fps` (Low, T1)
+**Scenario.** The cache grows up to `length` (`frame1 ≤ length`). A Workshop file with `length: 2000000000` and a `setFrame` near the end, or a mirror bounce, allocates 8 GB and runs 2·10⁹ Bézier solves on the render thread. `fps: 1e-38` with `length: 60` gives `duration = inf` (float32 overflow), which passes the `duration > 0` check. WE does the same, but it's a denial of service by a wallpaper file.
+**Test.** Load `length` 2³¹−1: no hang over 10 frames. Cap the cache or evaluate uncached past a bound (for example 1 << 16 frames). `fps` 1e-38 and 1e30: finite values, no trap.
+
+## Needs WE ground truth (timelines)
+- Missing channels for the property's width (TL19): 0, garbage, or the static value?
+- Does a hidden layer advance its texture (TL14)?
+- Does `relative` re-bake on a user change (TL13)?
+- Does the engine clamp the frame delta after sleep (TL10)?
+- Does WE's engine tick follow its fps cap for textures (TL9)?
+- After a parent is removed, does the child's own clock carry on from 0 (TL12)?
