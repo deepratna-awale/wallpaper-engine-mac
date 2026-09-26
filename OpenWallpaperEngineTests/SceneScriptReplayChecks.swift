@@ -16,7 +16,7 @@ enum SceneScriptReplayChecks {
         case finite
         /// A script of an animating class left its value unchanged where the class says it changes.
         case change
-        /// The median frame time exceeded the budget.
+        /// The median CPU time of a frame exceeded the budget.
         case budget
     }
 
@@ -118,11 +118,13 @@ enum SceneScriptReplayChecks {
             findings.append(Finding(check: .finite, key: result.wallpaperID,
                                     message: "\(place) from frame \(entry.frame): \(entry.value.prefix(60))"))
         }
-        // The median, not the mean: other processes on a shared machine add spikes, not a floor.
-        if result.percentile(0.5) >= budgetMilliseconds {
+        // The median CPU time of the script thread: other processes on a shared machine add
+        // spikes and waits, not script cost.
+        if result.percentile(0.5, cpu: true) >= budgetMilliseconds {
             findings.append(Finding(check: .budget, key: result.wallpaperID,
-                                    message: String(format: "p50 %.3f ms/frame (mean %.3f, p99 %.3f)", result.percentile(0.5),
-                                                    result.meanFrameMilliseconds, result.percentile(0.99))))
+                                    message: String(format: "p50 %.3f ms CPU/frame (wall p50 %.3f, p99 %.3f)",
+                                                    result.percentile(0.5, cpu: true), result.percentile(0.5),
+                                                    result.percentile(0.99))))
         }
         return deduplicated(findings)
     }

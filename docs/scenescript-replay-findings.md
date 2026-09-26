@@ -29,7 +29,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, HEAD `46daecc` plus the WP9
     - clocks change across midnight;
     - a thumbnail script's effect visibility follows `hasThumbnail`;
     - a media text follows the track.
-  - **budget:** the median frame time is at or above 0.5 ms (§4.6).
+  - **budget:** the median CPU time of the script thread per frame is at or above 0.5 ms (§4.6). CPU time is used because in the full suite, with other builds running, wall-clock medians reached 0.56–0.58 ms for 2134765860 and 2176097362, where CPU medians stay at or below 0.26 ms for every wallpaper.
 - A finding outside `expectedFailures` fails the test. Each expected entry is an `XCTExpectFailure` with its reason, and it fails once its finding is gone.
 - `SceneScriptReplayFixtureTests` runs three synthetic wallpapers from `Tests/Fixtures/SceneScript/replay` in CI:
   - **behaviour:** every class expectation, P2 accumulators, P7 Solid-only clicks, `getAnimation` on a material constant, `createLayer`, `scriptproperties` and user properties.

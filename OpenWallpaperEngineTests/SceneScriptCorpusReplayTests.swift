@@ -119,16 +119,16 @@ final class SceneScriptCorpusReplayTests: XCTestCase {
             counts[check].map { "\(check.rawValue) \($0)" }
         }.joined(separator: ", ")
         let unsupported = result.unsupportedMembers.sorted().joined(separator: ", ")
-        return String(format: "| %@ | %d | %.2f | %.3f | %.3f | %.3f | %d | %d | %@ | %@ |", label, result.sites.count,
-                      result.loadMilliseconds, result.meanFrameMilliseconds, result.percentile(0.5),
-                      result.percentile(0.99), result.commandCount, result.createdLayers,
+        return String(format: "| %@ | %d | %.2f | %.3f | %.3f | %.3f | %.3f | %d | %d | %@ | %@ |", label,
+                      result.sites.count, result.loadMilliseconds, result.meanFrameMilliseconds, result.percentile(0.5),
+                      result.percentile(0.99), result.percentile(0.5, cpu: true), result.commandCount, result.createdLayers,
                       unsupported.isEmpty ? "-" : unsupported, summary.isEmpty ? "ok" : summary)
     }
 
     static func report(rows: [String], findings: [SceneScriptReplayChecks.Finding], sites: Int) -> String {
         var lines = ["SceneScript corpus replay: \(rows.count) wallpapers, \(sites) sites, \(findings.count) findings", "",
-                     "| wallpaper | sites | load ms | mean ms/frame | p50 | p99 | commands | created | stubs used | findings |",
-                     "|---|---|---|---|---|---|---|---|---|---|"]
+                     "| wallpaper | sites | load ms | mean ms/frame | p50 | p99 | CPU p50 | commands | created | stubs used | findings |",
+                     "|---|---|---|---|---|---|---|---|---|---|---|"]
         lines += rows
         lines += ["", "Findings:"]
         lines += findings.map { "- \($0)" }

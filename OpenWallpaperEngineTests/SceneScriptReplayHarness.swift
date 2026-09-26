@@ -63,7 +63,11 @@ final class SceneScriptReplayHarness {
         var errorFrames: [Int]
         var halted: Bool
         var loadMilliseconds: Double
+        /// Wall-clock time per frame.
         var frameMilliseconds: [Double]
+        /// CPU time of the script thread per frame: what the scripts cost, without the waits a
+        /// loaded machine adds. The budget check uses it.
+        var frameCPUMilliseconds: [Double]
         /// Strings written through `setString` commands (text, font, …), with their slot and field.
         var strings: [(slot: Int, field: SceneScriptStringField, value: String)]
         /// Table fields and `shared` numbers that were not finite, each once, at the first check
@@ -79,9 +83,10 @@ final class SceneScriptReplayHarness {
             frameMilliseconds.isEmpty ? 0 : frameMilliseconds.reduce(0, +) / Double(frameMilliseconds.count)
         }
 
-        func percentile(_ fraction: Double) -> Double {
-            guard !frameMilliseconds.isEmpty else { return 0 }
-            let sorted = frameMilliseconds.sorted()
+        func percentile(_ fraction: Double, cpu: Bool = false) -> Double {
+            let times = cpu ? frameCPUMilliseconds : frameMilliseconds
+            guard !times.isEmpty else { return 0 }
+            let sorted = times.sorted()
             return sorted[min(sorted.count - 1, Int(Double(sorted.count - 1) * fraction))]
         }
     }
@@ -159,6 +164,7 @@ final class SceneScriptReplayHarness {
         var errorFrames = Array(repeating: -1, count: scriptHost.errors.count)
 
         var frameMilliseconds: [Double] = []
+        var frameCPUMilliseconds: [Double] = []
         var strings: [(slot: Int, field: SceneScriptStringField, value: String)] = []
         var nonFinite: [NonFinite] = []
         var commandCount = 0
@@ -176,7 +182,9 @@ final class SceneScriptReplayHarness {
             postCursor(frame: frame, slots: slotsWithScripts, model: model, runtime: runtime)
 
             let start = DispatchTime.now().uptimeNanoseconds
+            let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
             runtime.frame(deltaTime: options.deltaTime)
+            frameCPUMilliseconds.append(Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStart) / 1_000_000)
             frameMilliseconds.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000)
             errorFrames += Array(repeating: frame, count: scriptHost.errors.count - errorFrames.count)
 
@@ -204,7 +212,8 @@ final class SceneScriptReplayHarness {
         runtime.tearDown()
         return Result(wallpaperID: wallpaper.id, sites: records, errors: scriptHost.errors,
                       errorFrames: errorFrames, halted: halted,
-                      loadMilliseconds: loadMilliseconds, frameMilliseconds: frameMilliseconds, strings: strings,
+                      loadMilliseconds: loadMilliseconds, frameMilliseconds: frameMilliseconds,
+                      frameCPUMilliseconds: frameCPUMilliseconds, strings: strings,
                       nonFinite: nonFinite, commandCount: commandCount,
                       createdLayers: objectHost.created, sharedNumbers: sharedNumbers, unsupportedMembers: model.unsupportedMembers)
     }
