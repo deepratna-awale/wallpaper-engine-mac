@@ -125,84 +125,93 @@ The app's `_owe_effect_enabled_parallax` toggle and `_owe_effect_parallax_amount
 | `AudioSpectrum` (was LWE's `maxStep 0.3`, `0.35·log10`, tilt) | LWE's FFT shaping | fixed: WE's pipeline from `wallpaper64.exe` (block DFT and bands `0x1400d02b0`, gain and smoothing `0x140111654`; `Audio/AudioSpectrum*.swift`) |
 | `SceneMetalRenderer` `_owe_speed` | scales the scene clock | keep: app extra; roadmap 8.4 covers the clock problems |
 
-## 6. Particles — handoff to the particle agent
+## 6. Particles — fixed
 
-Almost nothing in the particle loader cites WE. The only citations are the emitter clock (`ParticleEmitterClock.swift`, `wallpaper64.exe` 0x1401c1c70) and the collision control point clamp to 7 (matches `re/coll_parse.asm`). Everything below is **unknown** until it is checked against `we64.asm`. Items marked ⚠ are inconsistent or drop authored data.
+Particle systems now compile their initializers and operators into records the way `wallpaper64.exe`'s particle parser (0x1401c1c70) does, and the CPU (`ParticleProgramCPU`) and GPU (`ParticleProgram.h`) run them in authored order. Every default below is WE's own: it fills each element's json before parsing, with one filler per element (cited in `ParticleSystemBuilder`, `ParticleInitializerBuilder`, `ParticleOperatorBuilder`). Where two values are given, the first is for an orthographic (2D) scene and the second for a perspective one; the parser's flag comes from `orthogonalprojection` (0x14010daa0, 0x14018768a). The reverse-engineering notes are `re/initializers-spec.md` and `re/operators-spec.md` under the session's derived data.
 
-**Emitters** (`SceneWallpaperViewModel.buildMetalParticleSystem`):
+**Emitters** (`ParticleSystemBuilder.emitterShape`):
 
-| Field | Current value |
-|---|---|
-| `rate` | ?? 100 |
-| `distancemax` | ?? 0 |
-| `directions` | ?? (1, 1, 0) |
-| emitter `name` | ?? "sphererandom" |
-| `instantaneous` | ?? 0 |
-| `speedmin` / `speedmax` | ?? 0; swapped if reversed |
-| `sign` | ?? 0 |
-| `distancemin` | ⚠ only x is used, as a ratio of `distancemax.x` |
-| system `maxcount` | ?? 1000 |
+| Field | Was | WE's value | Verdict |
+|---|---|---|---|
+| `rate` | ?? 100 | 10 (0x1401b8e59) | fixed |
+| `distancemax` | ?? 0 | sphere 256 / 1 (a scalar); box "256 256 0" / "1 1 1" (0x1401b9100, 0x1401b9520) | fixed |
+| `distancemin` | ⚠ x only, as a ratio | sphere: a radius (scalar), 0; box: a per-axis shell, "0 0 0" | fixed |
+| `directions` | ?? (1, 1, 0) | sphere "1 1 0"; box "1 1 0" / "1 1 1" | fixed |
+| emitter `name` | ?? "sphererandom" | sphererandom unless `boxrandom` | kept |
+| `instantaneous` | ?? 0 | 0; the burst also comes out of the rate's carry (0x140237a06) | fixed |
+| `speedmin` / `speedmax` | ?? 0; swapped if reversed | 0 / 0, as authored; radial from the centre, set (0x140237c14) | fixed |
+| `sign` | ?? 0 | "0 0 0"; applied by flag 1, which a non-zero sign sets (0x1401c61e7) | fixed |
+| `cone` | not read | 0: `u` from −cos(cone·π) (0x1401c61ba) | fixed |
+| sphere spawn | uniform in a ring | radius `dmin + cbrt(r)·|v·directions|·(dmax − dmin)` (0x140237c14) | fixed |
+| system `maxcount` | ?? 1000 | no default: 0 | fixed |
+| `starttime` | not read | pre-simulated in 0.05 s steps (0.2 s from 500 particles; 0x14022f2e0) | fixed |
+| system `flags` 8…0x80 | not read | switch off the colour, speed, count, lifetime and size overrides | fixed |
+| a second emitter | ignored silently | WE runs every emitter | **open**: logged; 4 corpus systems |
 
-**Initializers:**
+**Initializers:** lifetime is set; size, colour and alpha multiply WE's base values (lifetime 1, size 0.5, the instance colour and alpha; 0x14023b340); velocity, rotation and spin add. Two of a kind both apply.
 
-| Initializer | Current value |
-|---|---|
-| `lifetimerandom` | 1…1 |
-| `sizerandom` | 20…20 |
-| `alpharandom` | 1…1 |
-| `velocityrandom` / `turbulentvelocityrandom` | 0 |
-| `colorrandom` | ?? (1, 1, 1) |
-| `hsvcolorrandom` | ⚠ treated as RGB |
-| `normalizedParticleColor` | ⚠ divides by 255 when any channel is > 1 (a heuristic) |
-| `rotationrandom`, `angularvelocityrandom` | ⚠ z only |
-| `mapsequencebetweencontrolpoints` | count ≥ 2; ⚠ arc × 0.5 |
-| `remapinitialvalue` | output ?? size; input range 0…1 |
+| Initializer | Was | WE's value | Verdict |
+|---|---|---|---|
+| `lifetimerandom` | 1…1 | 0…1, `exponent` 1, at least 0.001 | fixed |
+| `sizerandom` | 20…20 | 5…50 / 0.001…1, times the base 0.5 | fixed |
+| `alpharandom` | 1…1 | 0.05…1 | fixed |
+| `colorrandom` | ?? (1, 1, 1) | "0 0 0"…"255 255 255" ÷ 255, one random for the three channels | fixed |
+| `hsvcolorrandom` | ⚠ treated as RGB | hue 0…1 in `huesteps` 6 steps, saturation 0.5…1, value 0.5…1, HSV→RGB (0x1401b8c70) | fixed |
+| `colorlist` | not read | a random colour of the list, jittered in HSV by the noises | fixed (up to 4 colours, more logged) |
+| `normalizedParticleColor` | ⚠ ÷255 when > 1 | removed: `colorrandom` always ÷ 255, `colorchange` never | fixed |
+| `velocityrandom` | 0 | "−32 −32 0"…"32 32 0" / "−1 −1 −1"…"1 1 1", one random per axis | fixed |
+| `turbulentvelocityrandom` | 0; added to the range | 1D simplex noise turns `forward` about `right`; speed 100…250 / 0.5…1, phase 0…0.1 | fixed |
+| `rotationrandom`, `angularvelocityrandom` | ⚠ z only | z is the 2D axis; a bare number is (0, 0, n); 0…2π and −5…5 | fixed |
+| `positionoffsetrandom` | a random box | fBm of 2D simplex noise of the position and time; scale 0.001 / 1, distance 100 / 0.1, octaves 6 | fixed |
+| `inheritcontrolpointvelocity` | not read | the control point's velocity × 0.1…0.2 | fixed |
+| `mapsequencebetweencontrolpoints` | count ≥ 2; ⚠ arc × 0.5 | count 32 (step 1/(count − 1)), arcamount 0.3, sizereductionamount 0.9, flags 1/2/4/8, 16 (count override), 32 (restart each period) | fixed |
+| `mapsequencearoundcontrolpoint` | a helix from the span | radius and height kept from the emitter, angle from the sequence; count 32, flags 1 (count override), 2 (restart each period) | fixed |
+| `remapinitialvalue` | output ?? size; input range 0…1 | WE's full remap: multiply, `maxlifetime` → `size` by default, every input, output, component and transform | fixed |
+| `inheritinitialvaluefromevent` | setcolor | setcolor | kept |
 
-**Operators:**
+**Operators:** size, alpha and colour start from their base values every frame and the operators multiply them (0x14023fc08…0x14023fc99). Only `movement` moves particles by their velocity. Blend windows (`blendinstart` … `blendoutend`, 0x1401c2a40) switch an operator to its blended form.
 
-| Operator | Current value |
-|---|---|
-| `movement` `gravity` | ⚠ z if non-zero, else y |
-| `drag` | linear `1 − drag·dt` |
-| `alphafade` | fadeout ?? 1, which means none |
-| `sizechange` / `alphachange` / `colorchange` | 0 → 1, values 1 |
-| `vortex` | distanceouter 1000 |
-| `boids` | neighborthreshold 150; ~256 neighbours sampled |
-| `oscillate*` | ⚠ the middle of each range is used, not a per-particle random |
-| `remapvalue` | ⚠ always drives alpha unless the output is velocity |
-| `reducemovementnearcontrolpoint` | outer 100 |
-| `maintaindistancebetweencontrolpoints` | stiffness 10 |
-| `turbulence` | scale 0.005, speed 500…1000, timescale 0.01; ⚠ `phasemax` is ignored |
-| `controlpointattract` | scale 100, threshold 1000 |
+| Operator | Was | WE's value | Verdict |
+|---|---|---|---|
+| `movement` `gravity` | ⚠ z if non-zero, else y | "0 0 0", in the system's space; flag 1 gives it in the scene | fixed |
+| `drag` | linear `1 − drag·dt` | `v·(1 − min(drag·dt, 1))`, after the position step | fixed; WE's low-frame-rate factor `pow(min(0.025/x, 1), 0.7)` is **open** (x unidentified) |
+| `alphafade` | fadeout ?? 1 (none) | 0.5 / 0.5, fractions of the life | fixed |
+| `sizechange` / `alphachange` / `colorchange` | 0 → 1, values 1 | start 1 (colour "1 1 1"), end 0 ("0 0 0"), times 0 → 1 | fixed |
+| `angularmovement` | integrated always | force 0, drag 0; only this operator spins | fixed |
+| `oscillate*` | ⚠ range middles | one random per particle for frequency, phase and scale; frequency 1…5 / 1…10, scale 0…10 (0.5) / 0…1 / 0.8…1.2 | fixed |
+| `remapvalue` | ⚠ drives alpha unless velocity | multiply, `lifetimefraction` → `size`; every input, output and transform (FastNoise2 simplex and fBm) | fixed |
+| `vortex` | distanceouter 1000 | 500 / 1 … 650 / 2, speed 2500 / 1 … 0, axis "0 0 1" | fixed |
+| `vortex_v2` | = vortex | adds centre force (flag 2) and a ring (flag 4): radius 300, width 50, pull 50 / 10 | fixed |
+| `boids` | threshold 150; ~256 neighbours | separation 20, neighbours 50, maxspeed 500, factors 15 / 1 / 2; WE's time slicing | fixed |
+| `reducemovementnearcontrolpoint` | outer 100 | inner 100 / 0.5, outer 350 / 1, reduction 100 … 0 | fixed |
+| `maintaindistancetocontrolpoint` | pulls velocity | moves with the point and keeps `distance` 200 / 1 | fixed |
+| `maintaindistancebetweencontrolpoints` | stiffness 10 | carries each particle with the moving segment | fixed |
+| `turbulence` | scale 0.005, speed 500…1000, timescale 0.01; ⚠ `phasemax` ignored | scale 0.01 / 0.5, speed 500…1000 / 1…5, timescale 20 / 1, 3D simplex noise; `phasemax` × the particle's random (`phasemin` WE never reads) | fixed |
+| `controlpointattract` | scale 100, threshold 1000 | 512 / 20, 512 / 5, flag 2 (no overshoot), delete within 15 / 0.5 (flag 1) | fixed |
+| `capvelocity` | cap | 100 / 1 | fixed |
+| `inheritvaluefromevent` | set/multiply only | setcoloropacity; every verb, each step | fixed |
 
 **Renderer:**
-- ⚠ trail length is `maxlength ?? length ?? 1` in the simulation, but 0.05 / 10 for the WE shader uniforms (`ParticleMaterialPlanBuilder`).
-- ⚠ `subdivision` is 4 in the simulation but 0 for the `TRAILSUBDIVISION` combo.
-- `segments` ?? 4.
-- The built-in trail uses `speed · 0.08`.
-- The refract-amount opacity is clamped to 0.04…1 (a heuristic).
 
-**Children:**
-- `maxcount` ?? 10
-- `probability` ?? 1
-- linked control points ≤ 8
-- `controlpoint<n>` overrides ids 0…7
+| Field | Was | WE's value | Verdict |
+|---|---|---|---|
+| trail length | ⚠ 1 in the simulation, 0.05 / 10 for the shader | one value: `spritetrail` `length` 0.05, `maxlength` 10, `minlength` 0 (the shader's stretch); `ropetrail` `length` 1 s of history | fixed |
+| `subdivision` | ⚠ 4 in the simulation, 0 for `TRAILSUBDIVISION` | `rope` 4, `ropetrail` 1, clamped 0…32, for both | fixed |
+| `segments` | ?? 4 | 4 | kept |
+| built-in trail | `speed · 0.08` | WE's stretch, as the shader | fixed |
+| particle size | the shaders read half | WE's size (the base 0.5 × the random) is the quad's width everywhere | fixed |
+| refract-amount opacity 0.04…1 | heuristic | built-in draw only | keep (it only affects the fallback draw) |
+| `orientation`, rope `uvsmoothing` / `uvscale` / `uvscrolling` | not read | ORIENTATION combo and rope UV options | **open** |
 
-**Audio and collision:**
+**Control points** (0x14022e3e0): read by index (WE ignores `id` and `locktopointer`); flag 1 follows the cursor, flag 2 is a scene position (not for control point 0), flag 4 copies the parent system's `parentcontrolpoint`. Flag 16 is set by 10 WE assets, but no runtime test of it was found: **open**.
 
-| Field | Current value |
-|---|---|
-| `audioprocessingbounds` | (0.8, 1) |
-| `audioprocessingexponent` | 2 |
-| `collisionplane` distance | −150 |
-| `collisionsphere` | (0, −200, 0) r 50 |
-| `collisionquad` | 200 × 200 at (0, −150, 0) |
-| `bouncefactor` | 0.5 |
-| quad push-out | × 1.05 |
+**Units:** the particles simulate in their system's space (WE's model matrix, 0x14023761b…0x14023767a): velocities, gravity, forces and every distance scale and turn with the object. A `worldspace` system simulates in the scene; its spawn offsets and velocity initializers turn with the emitter (the control point matrix).
 
-**Instance overrides:** all default to 1, with no clamps on size and speed.
+**Children, audio, collision:** children `maxcount` 10, `probability` 1, type static (kept); audio `audioprocessingbounds` "0.8 1.0", `exponent` 2, frequency 0…1 (kept); collision defaults 2D / 3D: plane at −150 / 0, sphere at "0 −200 0" / origin with radius 50 / 1, quad "0 −150 0" / origin of 200 × 200 / 1 × 1, bounce 0.5, push-out × 1.05 (kept, now cited).
 
-Loader-side fixes are the particle agent's, because they share the particle files. They should check each default in `we64.asm` the way §3 did: find the initializer's or operator's property table by its field names, then the constructor that writes the offsets.
+**Instance overrides:** unchanged (1 by default, no clamps: WE has none either); the system's flags switch parts off.
+
+**Camera:** particle systems now move with camera parallax and shake as every WE object does (their emitter's transform takes the layer's offset).
 
 ## Tests
 
@@ -219,3 +228,5 @@ Loader-side fixes are the particle agent's, because they share the particle file
   - the `general` defaults, with authored values winning
   - the inspector combo override
   - `createScriptProperties` defaults and `scriptproperties` injection, run against WE's own `baseclasses.js`
+
+`OpenWallpaperEngineTests/ParticleProgramTests.swift` checks WE's particle defaults per element (2D and 3D), two operators of a kind, the oscillators' per-particle random, `hsvcolorrandom`'s hue steps, the remap default, movement in the object's units, sequences restarting each period and `starttime`. `ParticleSimulationParityTests` runs every operator and initializer kind on both simulations.
