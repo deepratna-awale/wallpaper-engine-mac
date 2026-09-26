@@ -107,4 +107,20 @@ final class SceneRendererAnimationsTests: XCTestCase {
         timelines.restoreTexture(control, object: 2, seenAt: seen)
         XCTAssertEqual(timelines.spriteFrame(object: 2, delta: 0.1), 1, "setFrame(0) a frame ago, one frame on")
     }
+
+    /// TL16: content rebuilt without a layer drops its texture animation, and the texture's clock
+    /// goes with its last layer; a layer that stays keeps its override.
+    func testARebuildDropsTheTextureAnimationsOfLayersItLost() throws {
+        let timelines = try timelines(Self.sheet)
+        let set = try XCTUnwrap(timelines.set)
+        let sheet = (texture: "materials/sheet.tex", frameTimes: [Float](repeating: 0.1, count: 4))
+        timelines.registerTextures([(1, sheet.texture, sheet.frameTimes), (2, sheet.texture, sheet.frameTimes)])
+        set.textures.perform(.pause, object: 1)
+        timelines.registerTextures([(1, sheet.texture, sheet.frameTimes)])
+        XCTAssertEqual(set.textures.objectIDs, [1])
+        XCTAssertEqual(set.textures.state(object: 1)?.control.overridden, true, "kept its override")
+        timelines.registerTextures([])
+        XCTAssertEqual(set.textures.objectIDs, [])
+        XCTAssertNil(set.textures.clock(texture: sheet.texture))
+    }
 }

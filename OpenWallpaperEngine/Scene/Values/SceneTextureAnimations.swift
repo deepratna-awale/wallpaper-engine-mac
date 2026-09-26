@@ -42,6 +42,11 @@ final class SceneTextureAnimations {
         if layers[id]?.texture != texture { layers[id] = Layer(texture: texture) }
     }
 
+    /// Every layer but `ids` is gone (content rebuilt without them): as `removeObject` for each.
+    func retainObjects(_ ids: Set<Int>) {
+        for id in layers.keys where !ids.contains(id) { removeObject(id) }
+    }
+
     /// The layer is gone; its texture's clock goes with its last user.
     func removeObject(_ id: Int) {
         guard let removed = layers.removeValue(forKey: id) else { return }

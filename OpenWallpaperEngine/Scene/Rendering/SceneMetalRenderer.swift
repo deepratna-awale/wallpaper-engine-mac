@@ -367,7 +367,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.sounds.setContent(content.sounds + self.scriptSounds.keys.sorted().compactMap { self.scriptSounds[$0] })
                 for (id, created) in self.scriptLayers { self.scripts.setBaseVisibility(created.visible, for: id) }
                 self.layers = preparedLayers + self.scriptLayers.values.map(\.entry)
-                self.layers.forEach(self.registerTextureAnimation)
+                self.timelines.registerTextures(self.layers.compactMap(Self.textureAnimation))
                 self.orderLayers()
                 self.hasContent = true
                 self.clock = SceneClock()
@@ -438,8 +438,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// An animated texture's layer shares its texture's clock (§2.7), frame times in sheet order.
     private func registerTextureAnimation(_ entry: PreparedLayer) {
-        guard let key = entry.layer.textureKey, let id = Int(entry.layer.id) else { return }
-        timelines.registerTexture(object: id, texture: key, frameTimes: entry.frames.map(\.duration))
+        guard let animation = Self.textureAnimation(entry) else { return }
+        timelines.registerTexture(object: animation.id, texture: animation.texture, frameTimes: animation.frameTimes)
+    }
+
+    private static func textureAnimation(_ entry: PreparedLayer) -> (id: Int, texture: String, frameTimes: [Float])? {
+        guard let key = entry.layer.textureKey, let id = Int(entry.layer.id) else { return nil }
+        return (id, key, entry.frames.map(\.duration))
     }
 
     /// Builds an object a script created through the loader, off the main thread: a layer, a

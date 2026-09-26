@@ -78,6 +78,13 @@ final class SceneRendererAnimations {
         set?.textures.register(object: id, texture: texture, frameTimes: frameTimes)
     }
 
+    /// The layers of rebuilt content: each animated one registered, every other layer's texture
+    /// animation dropped (a rebuild that no longer has a layer mustn't keep its clock, TL16).
+    func registerTextures(_ layers: [(id: Int, texture: String, frameTimes: [Float])]) {
+        for layer in layers { registerTexture(object: layer.id, texture: layer.texture, frameTimes: layer.frameTimes) }
+        set?.textures.retainObjects(Set(layers.map(\.id)))
+    }
+
     /// The objects with an animated field of their own, whose values `advance` reads.
     private func refreshAnimatedObjects() {
         animatedObjects.removeAll()
