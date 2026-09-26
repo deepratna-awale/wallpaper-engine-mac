@@ -1,21 +1,21 @@
 import Foundation
 
+/// A number of a particle file (or another WE asset) that may be written as text or as
+/// `{"value": …}`. WE reads particle files' numbers as plain JSON numbers (wallpaper64.exe
+/// 0x140086220); only scene.json properties take scripts (the one reader of `"script"`, the
+/// scriptable-property loader 0x1401a4db0), so a `script` here is ignored, as in WE.
 @propertyWrapper
 struct WEFlexibleDouble: Codable {
     var wrappedValue: Double?
-    var script: String?
-    var projectedValue: WEFlexibleDouble { self }
 
     init(wrappedValue: Double? = nil) {
         self.wrappedValue = wrappedValue
-        self.script = nil
     }
 
     init(from decoder: Decoder) throws {
         if let keyed = try? decoder.container(keyedBy: CodingKeys.self) {
             wrappedValue = (try? keyed.decodeIfPresent(Double.self, forKey: .value))
                 ?? (try? keyed.decodeIfPresent(String.self, forKey: .value)).flatMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
-            script = try? keyed.decodeIfPresent(String.self, forKey: .script)
         } else {
             let container = try decoder.singleValueContainer()
             if let number = try? container.decode(Double.self) {
@@ -25,11 +25,10 @@ struct WEFlexibleDouble: Codable {
             } else {
                 wrappedValue = nil
             }
-            script = nil
         }
     }
 
-    private enum CodingKeys: String, CodingKey { case value, script }
+    private enum CodingKeys: String, CodingKey { case value }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()

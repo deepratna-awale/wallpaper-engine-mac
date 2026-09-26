@@ -93,18 +93,9 @@ struct ParticleProgramOp: Equatable {
     static let noBlend = SIMD4<Float>(-2, 0, 0, 0)
 }
 
-/// A value of a record that a script sets every frame (`WEFlexibleDouble.script`).
-struct ParticleValueScript: Equatable {
-    /// Which record vector (0 `a` … 4 `e`) and component.
-    let vector: Int
-    let component: Int
-    let script: String
-}
-
 /// One authored operator: its record as parsed, and what changes it every frame.
 struct ParticleOperator: Equatable {
     var record: ParticleProgramOp
-    var scripts: [ParticleValueScript] = []
     /// The audio response scaling the operator's speed (`e.w`; `turbulence`, `vortex`, `vortex_v2`).
     var audio: ParticleAudioResponse?
     /// The shape of a collision operator (placed every frame, `ParticleFrameInputs.collisions`).
@@ -123,7 +114,6 @@ struct ParticleOperator: Equatable {
 /// One authored initializer (`ParticleOperator`'s counterpart for spawning particles).
 struct ParticleInitializer: Equatable {
     var record: ParticleProgramOp
-    var scripts: [ParticleValueScript] = []
     /// `turbulentvelocityrandom`'s audio response (scales its phase range, `e.w`).
     var audio: ParticleAudioResponse?
     /// A `mapsequence…` initializer's count, which the `count` instance override rescales (its

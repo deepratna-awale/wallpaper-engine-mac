@@ -13,7 +13,6 @@ struct SceneMetalParticleSystem {
     /// authored world transform, which the simulation uses unless the renderer supplies a live one.
     let origin: SIMD2<Float>
     let emissionRate: Float
-    let emissionRateScript: String?
     let maximumParticleCount: Int
     /// The emitter's shape (`sphererandom`, `boxrandom`).
     var emitter = ParticleEmitterShape()
@@ -91,8 +90,8 @@ struct SceneMetalParticleSystem {
 
     /// Every emitter, the first included, in the order WE runs them.
     var emitters: [ParticleEmitter] {
-        [ParticleEmitter(shape: emitter, rate: emissionRate, rateScript: emissionRateScript,
-                         instantaneous: instantaneous, timing: emitterTiming, audio: rateAudio)] + extraEmitters
+        [ParticleEmitter(shape: emitter, rate: emissionRate, instantaneous: instantaneous, timing: emitterTiming,
+                         audio: rateAudio)] + extraEmitters
     }
 
     /// The emitter's authored world transform.
@@ -109,7 +108,6 @@ struct ParticleEmitter {
     var shape = ParticleEmitterShape()
     /// Particles a second (WE's default 10, 0x1401b8e59).
     var rate: Float = 10
-    var rateScript: String?
     var instantaneous = 0
     var timing = ParticleEmitterTiming()
     var audio: ParticleAudioResponse?

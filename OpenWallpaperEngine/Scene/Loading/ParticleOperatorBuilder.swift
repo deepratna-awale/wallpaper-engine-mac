@@ -18,18 +18,13 @@ enum ParticleOperatorBuilder {
         switch element.name?.lowercased() {
         case "movement":
             // 0x1401bc9a0: gravity 0, drag 0, flags 0.
-            var op = ParticleOperator(.movement, flags: flags, a: SIMD4(v(element.gravity, .zero), f(element.drag, 0)))
-            if let script = element.$drag.script { op.scripts = [ParticleValueScript(vector: 0, component: 3, script: script)] }
-            return op
+            return ParticleOperator(.movement, flags: flags, a: SIMD4(v(element.gravity, .zero), f(element.drag, 0)))
         case "angularmovement":
             // 0x1401bcc80: force 0, drag 0.
             return ParticleOperator(.angularMovement, a: SIMD4(v(element.force, .zero), f(element.drag, 0)), blend: blend)
         case "alphafade":
             // 0x1401bce50: fadeintime 0.5, fadeouttime 0.5 (fractions of the life).
-            var op = ParticleOperator(.alphaFade, a: SIMD4(f(element.fadeintime, 0.5), f(element.fadeouttime, 0.5), 0, 0))
-            if let script = element.$fadeintime.script { op.scripts.append(ParticleValueScript(vector: 0, component: 0, script: script)) }
-            if let script = element.$fadeouttime.script { op.scripts.append(ParticleValueScript(vector: 0, component: 1, script: script)) }
-            return op
+            return ParticleOperator(.alphaFade, a: SIMD4(f(element.fadeintime, 0.5), f(element.fadeouttime, 0.5), 0, 0))
         case "sizechange", "alphachange":
             // 0x1401bcfe0: startvalue 1, endvalue 0, starttime 0, endtime 1.
             let values = SIMD4(ParticleDefaults.scalar(element.startvalue, 1), ParticleDefaults.scalar(element.endvalue, 0),

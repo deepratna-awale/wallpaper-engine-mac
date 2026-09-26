@@ -14,8 +14,6 @@ struct SceneParticleOverrides: Equatable {
     var lifetime: Float = 1
     var brightness: Float = 1
     var tint = SIMD3<Float>(repeating: 1)
-    /// The `rate` script, evaluated by the particle runtime each frame.
-    var rateScript: String?
     /// `controlpoint<n>`: where control point n sits, relative to the emitter, as authored.
     var controlPoints: [Int: SIMD3<Float>] = [:]
 
@@ -71,7 +69,6 @@ struct SceneParticleOverrides: Equatable {
         } else if let color = vector(.color) {
             tint = color / 255
         }
-        rateScript = override.values[.rate]?.scriptSource
         for id in 0..<8 {
             guard let field = SceneInstanceOverrideField.controlPoint(id), let value = value(field) else { continue }
             controlPoints[id] = value.vec3

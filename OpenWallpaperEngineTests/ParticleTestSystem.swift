@@ -109,7 +109,7 @@ struct ParticleTestSystem {
 
     var configuration: SceneMetalParticleSystem {
         var system = SceneMetalParticleSystem(
-            source: source, origin: origin, emissionRate: emissionRate, emissionRateScript: nil,
+            source: source, origin: origin, emissionRate: emissionRate,
             maximumParticleCount: maximum, rendererName: rendererName, trailLength: trailLength,
             trailSegments: trailSegments, ropeSubdivision: ropeSubdivision, fadeTrailAlpha: fadeTrailAlpha,
             fadeTrailSize: fadeTrailSize, spriteSheet: spriteSheet, animationMode: animationMode, sequenceMultiplier: 1,

@@ -27,7 +27,6 @@ enum ParticleSystemBuilder {
         let opacityMultiplier = refractAmount.map { max(0.04, min(abs(Float($0)), 1)) } ?? 1
         var system = SceneMetalParticleSystem(
             source: source, origin: world.translation, emissionRate: max(rate, 0),
-            emissionRateScript: overrides.rateScript ?? emitter?.$rate.script,
             // No default: a system without `maxcount` holds nothing.
             maximumParticleCount: max(particleSystem.maxcount ?? 0, 0),
             rendererName: rendererName, trailLength: trail.length, trailSegments: trail.segments,
@@ -59,7 +58,7 @@ enum ParticleSystemBuilder {
         // WE runs every emitter, each with its own rate, burst and timing (0x1402378a0).
         system.extraEmitters = (particleSystem.emitter ?? []).dropFirst().map { authored in
             ParticleEmitter(shape: emitterShape(authored, defaults: defaults), rate: max(Float(authored.rate ?? 10), 0),
-                            rateScript: authored.$rate.script, instantaneous: max(authored.instantaneous ?? 0, 0),
+                            instantaneous: max(authored.instantaneous ?? 0, 0),
                             timing: ParticleEmitterTiming(authored), audio: ParticleAudioResponse(authored))
         }
         system.controlPoints = controlPoints(particleSystem.controlpoint ?? [])

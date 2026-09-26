@@ -777,7 +777,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
         let trail = plan.stages.first?.variant.combos["TRAILRENDERER"] == 1
         let rendererName = plan.format == .rope ? (trail ? "ropetrail" : "rope") : (trail ? "spritetrail" : "sprite")
         var system = SceneMetalParticleSystem(
-            source: .image(NSImage()), origin: .zero, emissionRate: 0, emissionRateScript: nil, maximumParticleCount: 100,
+            source: .image(NSImage()), origin: .zero, emissionRate: 0, maximumParticleCount: 100,
             rendererName: rendererName, trailLength: 1, trailSegments: 4, ropeSubdivision: 1, fadeTrailAlpha: false,
             fadeTrailSize: false, spriteSheet: plan.spriteSheet, animationMode: animationMode, sequenceMultiplier: 1,
             opacityMultiplier: 1, refractive: false, blending: plan.blending)

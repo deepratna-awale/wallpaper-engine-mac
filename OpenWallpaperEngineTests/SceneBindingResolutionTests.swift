@@ -74,7 +74,6 @@ final class SceneBindingResolutionTests: XCTestCase {
         let object = try loadScene().objects[2]
         let defaults = SceneParticleOverrides(object.instanceoverride, in: PropertyContext())
         XCTAssertEqual(defaults.rate, 0.58, accuracy: 1e-5)
-        XCTAssertEqual(defaults.rateScript, "export function update(v) { return v; }")
         XCTAssertEqual(defaults.count, 0.1, accuracy: 1e-5)
         XCTAssertEqual(defaults.size, 1.5)
         XCTAssertEqual(defaults.alpha, 0.5)
