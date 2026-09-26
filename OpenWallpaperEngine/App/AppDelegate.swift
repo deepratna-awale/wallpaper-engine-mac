@@ -88,12 +88,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var wallpaperViewModel = WallpaperViewModel()
     var globalSettingsViewModel = GlobalSettingsViewModel()
     lazy var safeRestart = SafeRestart()
-    /// What every scene's SceneScripts share: WE's prelude, `localStorage` and the one media session.
-    lazy var sceneScriptServices = SceneScriptServices(
-        prelude: SceneScriptPrelude.load(),
-        storage: SceneScriptStorage(directory: SceneScriptStorage.defaultDirectory),
-        media: MacMediaSessionSource(),
-        spectrum: { WallpaperServices.shared.audioSpectrumSnapshot })
+    /// What every scene's SceneScripts share: WE's prelude, `localStorage`, the one media session and
+    /// the desktop's left clicks.
+    lazy var sceneScriptServices: SceneScriptServices = {
+        let clicks = DesktopClickMonitor()
+        clicks.start()
+        return SceneScriptServices(
+            prelude: SceneScriptPrelude.load(),
+            storage: SceneScriptStorage(directory: SceneScriptStorage.defaultDirectory),
+            media: MacMediaSessionSource(),
+            spectrum: { WallpaperServices.shared.audioSpectrumSnapshot },
+            clicks: clicks)
+    }()
     /// Fetches the Workshop items shown wallpapers borrow assets from.
     lazy var workshopDependencies = WorkshopDependencyService(steamCmd: contentViewModel.steamCmd)
     private var workshopDependencyCancellable: AnyCancellable?

@@ -144,6 +144,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var deferredReleases = SceneDeferredReleases()
     /// Where the cursor was last seen on this display, in display pixels from the top-left.
     private var lastCursorScreenPixels = SIMD2<Double>(repeating: 0)
+    /// This renderer's view of the desktop's left clicks.
+    private var clickReader = DesktopClickReader()
     /// The last drawn frame's camera motion and text sizes (by layer id), for the next script frame.
     private var lastCameraMotion: CameraMotion?
     private var lastTextSizes: [String: SIMD2<Float>] = [:]
@@ -484,9 +486,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let cursorSample = cursorTracker.update(sceneCursor(in: view, drawableSize: realDrawableSize),
                                                 sceneSize: sceneSize)
         let cursor = cursorSample.position
-        // WE's scripts get clicks the wallpaper receives: the desktop's, while Finder is in front.
-        let leftDown = cursorSample.onDisplay && NSEvent.pressedMouseButtons & 1 != 0
-            && NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
+        // WE's scripts and `g_PointerState` see only clicks that land on the wallpaper.
+        let leftDown = cursorSample.onDisplay
+            && clickReader.isDown(scripts.services?.clicks?.state ?? DesktopClickMonitor.State())
         releaseFinishedEffectState()
         beginTransformFrame()
         if scripts.isRunning {
@@ -514,8 +516,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.pointer = pointer
         effectFrame.pointerLast = lastPointer ?? pointer
         lastPointer = pointer
-        effectFrame.pointerState = BuiltinFrameContext.pointerState(
-            primaryDown: cursorSample.onDisplay && NSEvent.pressedMouseButtons & 1 != 0)
+        effectFrame.pointerState = BuiltinFrameContext.pointerState(primaryDown: leftDown)
         effectFrame.screenSize = drawableSize
         effectFrame.audio = WallpaperServices.shared.advanceAudioSpectrumFrame()
         let motion = cameraMotion(pointer: pointer, time: time, deltaTime: Float(clock.delta))
