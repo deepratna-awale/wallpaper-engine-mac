@@ -141,6 +141,14 @@ final class SceneRendererAnimations {
         position[key].map { objectAnimations[$0] }
     }
 
+    /// Field `field` of object `id` as its timeline set it this frame (a light's `intensity`);
+    /// nil when no timeline drives it.
+    func objectField(_ id: String, _ field: String) -> SIMD4<Float>? {
+        guard let set, let object = Int(id),
+              let index = set.index(of: SceneAnimationSite(owner: .object(object), key: field)) else { return nil }
+        return set.drawnComponents(at: index)
+    }
+
     /// The sprite frame layer `id` draws this frame: drawing binds the texture, which advances its
     /// shared clock once per frame (§2.7); a layer a script controls draws its override, which
     /// the set advanced with the frame. `delta` is the engine frame time.

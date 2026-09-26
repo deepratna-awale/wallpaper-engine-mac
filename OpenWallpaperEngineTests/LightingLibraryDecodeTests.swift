@@ -28,6 +28,8 @@ final class LightingLibraryDecodeTests: XCTestCase {
         "3352730400": Survey(lights: [.spot], lightConfig: true, hdr: true),
         "3453730450": Survey(lights: [.point, .point, .point], lightConfig: true),
         "3606529469": Survey(hdr: true),
+        // The Knight: the library's one layer lit by legacy lights (genericimage2).
+        "2515150033": Survey(lights: [.legacyPoint, .legacyPoint]),
         "arsenal": Survey(lights: [.legacyPoint, .legacyPoint]),
         "demon_core": Survey(lights: [.legacyPoint]),
         "razer_bedroom": Survey(hdr: true),

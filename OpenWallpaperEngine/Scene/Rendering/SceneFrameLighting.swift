@@ -10,6 +10,9 @@ struct SceneLightObject {
     /// The parts of the light's own transform that the 2D hierarchy doesn't carry: `origin.z`,
     /// `angles.x` and `angles.y` (radians) and `scale.z`, as authored.
     var depth = SceneLightDepth()
+    /// A timeline drives one of its light fields (`intensity`, `radius`, …): the frame reads them
+    /// (`live(script:animation:timeline:)`).
+    var hasTimelines = false
 }
 
 /// A light object's placement in one frame (`SceneFrameLighting.objects`).
@@ -19,6 +22,8 @@ struct SceneFrameLightObject: Equatable {
     var world: simd_float4x4
     /// It and every ancestor are shown.
     var visible: Bool
+    /// Its fields this frame (`SceneLightObject.live`); nil leaves the content's.
+    var light: SceneLight?
 }
 
 /// A light's own out-of-plane transform (`SceneLightObject.depth`).
@@ -61,6 +66,9 @@ struct SceneFrameLightingInput {
     /// A `general` colour scripts set this frame (`thisScene.ambientcolor`, `skylightcolor`); nil
     /// when no script owns it.
     var sceneColor: (SceneScriptSceneField) -> SIMD3<Float>?
+    /// A light's fields and out-of-plane transform this frame (`SceneLightObject.live`); the
+    /// content's when nil.
+    var live: ((SceneLightObject) -> SceneLightObject)?
     /// The user's shadows setting isn't "disabled" (WE's ctx+0x1ac).
     var shadows = true
     var eyePosition: SIMD3<Float>
@@ -86,14 +94,16 @@ struct SceneFrameLighting: Equatable {
                                           skylight: input.sceneColor(.skylightcolor) ?? content.settings.skylight)
         guard !content.lights.isEmpty else { return lighting }
         var objects: [SceneFrameLightObject] = []
-        let lights = content.lights.compactMap { object -> SceneLightPacker.Light? in
-            guard let local = input.local(object.id) else { return nil }
+        let lights = content.lights.compactMap { built -> SceneLightPacker.Light? in
+            guard let local = input.local(built.id) else { return nil }
+            let object = input.live?(built) ?? built
             let light = SceneLightPacker.Light(
                 light: object.light,
                 world: world(parent: input.parentWorld(object.id), local: local, depth: object.depth),
                 localOrigin: SIMD3(local.origin, object.depth.originZ),
                 visible: input.isVisible(object.id))
-            objects.append(SceneFrameLightObject(id: object.id, world: light.world, visible: light.visible))
+            objects.append(SceneFrameLightObject(id: object.id, world: light.world, visible: light.visible,
+                                                 light: object.light))
             return light
         }
         lighting.objects = objects

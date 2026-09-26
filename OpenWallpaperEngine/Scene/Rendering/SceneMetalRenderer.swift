@@ -754,6 +754,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let motion = cameraMotion(pointer: pointer, time: time, deltaTime: Float(clock.delta))
         effectFrame.parallax = parallaxEnabled ? cameraParallax.shaderPosition(sceneSize: sceneSize) : SIMD2(0.5, 0.5)
         effectFrame.lighting = frameLighting(eye: effectFrame.eyePosition, forward: effectFrame.viewForward)
+        drawProbe?.record(lighting: effectFrame.lighting)
         // Text is rasterised first so its effects run on the finished text, like an image layer's.
         var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
         // Only visible layers get an entry; the draw loop skips the rest.
@@ -1077,6 +1078,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             parentWorld: { [unowned self] id in self.transforms.parentWorld(of: id) { self.liveLocal($0) } },
             isVisible: { [unowned self] id in self.scripts.isVisible(id) },
             sceneColor: { scene.vector3($0) },
+            live: { [unowned self] object in
+                object.live(script: self.scripts.object(object.id), animation: self.timelines.object(object.id),
+                            timeline: { self.timelines.objectField(object.id, $0) })
+            },
             shadows: renderSettings.shadows != .disabled,
             eyePosition: eye, viewForward: forward))
     }

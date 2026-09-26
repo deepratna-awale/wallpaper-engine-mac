@@ -90,9 +90,12 @@ final class SceneVolumetrics: SceneFrameStage {
     func encode(_ context: SceneFrameStageContext) {
         lastRecord = nil
         guard let plan, let pipelines, Self.runs(plan, settings: context.settings) else { return }
-        let shown = plan.lights.compactMap { light -> (SceneVolumetricsPlan.Light, simd_float4x4)? in
-            guard let object = context.frame.lighting.objects.first(where: { $0.id == light.id }), object.visible
+        let shown = plan.lights.compactMap { planned -> (SceneVolumetricsPlan.Light, simd_float4x4)? in
+            guard let object = context.frame.lighting.objects.first(where: { $0.id == planned.id }), object.visible
             else { return nil }
+            // The light's fields this frame (scripts, timelines), as WE reads them per light.
+            var light = planned
+            if let live = object.light { light.light = live }
             return (light, object.world)
         }
         guard !shown.isEmpty, let targets = targets(for: context.scene, quality: plan.quality),

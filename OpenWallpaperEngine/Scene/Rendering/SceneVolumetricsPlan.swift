@@ -28,7 +28,7 @@ struct SceneVolumetricsPlan {
     struct Light {
         /// The light's scene object.
         let id: String
-        let light: SceneLight
+        var light: SceneLight
         let back: SceneVolumetricsPass
         let front: SceneVolumetricsPass
         let fullscreen: SceneVolumetricsPass

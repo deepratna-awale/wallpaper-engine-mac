@@ -161,7 +161,7 @@
     for (let i = 0; i < fields.length; i++) {
         const field = fields[i];
         if (field.group === 'layer') {
-            objects.defineField(Layer.prototype, field.name, field.offset, field.type, field.readOnly);
+            if (field.member) objects.defineField(Layer.prototype, field.name, field.offset, field.type, field.readOnly);
         } else if (field.group === 'instance') {
             const offset = field.offset, type = field.type;
             Object.defineProperty(ParticleInstance.prototype, field.name, {
@@ -180,12 +180,19 @@
     }
     const PLAYING = fields.find(function (field) { return field.field === 'playing'; }).offset;
 
-    // Fields member writes can't change (`size`: read-only in lib.sceneScript.d.ts) but a script
-    // bound to them can: WE's native property is writable (wallpaper64.exe 0x1401a4200). The
-    // property binding writes them through this.
+    // Fields member writes can't change (`size`: read-only in lib.sceneScript.d.ts), or that aren't
+    // members at all (a light's `intensity`), but a script bound to them can: WE's native property
+    // is writable (wallpaper64.exe 0x1401a4200). The property binding reads and writes them
+    // through these.
     const boundOnly = {};
-    fields.forEach(function (field) { if (field.group === 'layer' && field.readOnly) boundOnly[field.name] = field; });
+    fields.forEach(function (field) {
+        if (field.group === 'layer' && (field.readOnly || !field.member)) boundOnly[field.name] = field;
+    });
     objects.isBoundOnly = function (name) { return Object.prototype.hasOwnProperty.call(boundOnly, name); };
+    objects.readBound = function (layer, name) {
+        const field = boundOnly[name];
+        return field === undefined ? undefined : objects.read(field.type, layer._t, layer._base + field.offset);
+    };
     objects.writeBound = function (layer, name, value) {
         const field = boundOnly[name];
         if (field === undefined || layer._dead) return;

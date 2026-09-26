@@ -2,8 +2,8 @@ import simd
 
 /// What the renderer drew, recorded while a probe is attached (`SceneMetalRenderer.drawProbe`;
 /// tests and diagnostics, docs/timeline-plan.md T6): each drawn layer's opacity, colour and own
-/// transform, each animated layer's sprite frame, and what the GPU got for animated material
-/// constants. Without a probe the renderer records nothing. Render thread only.
+/// transform, each animated layer's sprite frame, what the GPU got for animated material
+/// constants, and the frame's lighting. Without a probe the renderer records nothing. Render thread only.
 final class SceneDrawProbe {
     struct Layer: Equatable {
         var opacity: Float
@@ -22,6 +22,8 @@ final class SceneDrawProbe {
     /// The last value written to each animated material constant's uniform, by site, as the
     /// uniform block holds it (script writes included). A chain reused as is keeps its last one.
     private(set) var constants: [SceneAnimationSite: [Float]] = [:]
+    /// This frame's lighting: the scene colours and the packed light arrays.
+    private(set) var lighting: SceneFrameLighting?
 
     func beginFrame() {
         frames += 1
@@ -34,4 +36,6 @@ final class SceneDrawProbe {
     func record(spriteFrame: Int32, object id: Int) { spriteFrames[id] = spriteFrame }
 
     func record(constant site: SceneAnimationSite, value: [Float]) { constants[site] = value }
+
+    func record(lighting: SceneFrameLighting) { self.lighting = lighting }
 }

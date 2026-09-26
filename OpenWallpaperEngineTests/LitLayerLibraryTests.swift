@@ -73,6 +73,38 @@ final class LitLayerLibraryTests: XCTestCase {
         XCTAssertGreaterThan(atTubes.min()!, between.max()! * 1.5, "the tubes' bands")
     }
 
+    /// The Knight 2515150033 (test-risks LF2): its legacy light 29 has scripts on `intensity`
+    /// (`1 + 0.3 sin 7.3t + 0.2 sin 9.8t`) and on `origin` (y = 500 + 200 sin 0.78t, z = 500 +
+    /// 200 sin t). Every frame's `g_LightsColorRadius[0]` and `g_LightsPosition[0].z` follow them.
+    func testKnightsScriptedLegacyLightFlickersAndMovesInDepth() throws {
+        let roots = LightingLibraryDecodeTests.roots.filter { FileManager.default.fileExists(atPath: $0.path) }
+        try XCTSkipIf(roots.count < LightingLibraryDecodeTests.roots.count, "wallpaper library not present")
+        let item = try XCTUnwrap(try Self.litScenes(in: roots).first { $0.id == "2515150033" })
+        let model = SceneWallpaperViewModel(wallpaper: WEWallpaper(using: item.project, where: item.directory))
+        let content = try XCTUnwrap(model.metalContent())
+        defer { Fixtures.removeStoredSettings(for: item.directory) }
+        let scene = try Scene(content: content, services: services(), settings: SceneRenderSettings.headless)
+        defer { scene.close() }
+        let probe = SceneDrawProbe()
+        scene.renderer.drawProbe = probe
+        var intensities = Set<Float>(), depths: [Float] = []
+        for _ in 0..<40 {
+            scene.draw(step: 0.1)
+            let arrays = try XCTUnwrap(probe.lighting?.arrays)
+            let colorRadius = try XCTUnwrap(arrays["g_LightsColorRadius"]), position = try XCTUnwrap(arrays["g_LightsPosition"])
+            // Colour 0.72157 0.35294 0.14902 × intensity, radius 2048.
+            let intensity = colorRadius[0] / 0.72157
+            XCTAssertEqual(colorRadius[3], 2048)
+            XCTAssertEqual(colorRadius[1] / 0.35294, intensity, accuracy: 1e-3)
+            XCTAssertTrue((0.5...1.5).contains(intensity), "intensity \(intensity) outside the script's range")
+            XCTAssertTrue((299...701).contains(position[2]), "z \(position[2]) outside 500 ± 200")
+            intensities.insert((intensity * 1000).rounded())
+            depths.append(position[2])
+        }
+        XCTAssertGreaterThan(intensities.count, 10, "the intensity script flickers the light")
+        XCTAssertGreaterThan((depths.max() ?? 0) - (depths.min() ?? 0), 100, "origin.z follows the script: \(depths)")
+    }
+
     // MARK: - One scene
 
     private func sweep(_ item: Item) throws -> String {
@@ -242,8 +274,8 @@ final class LitLayerLibraryTests: XCTestCase {
             XCTAssertTrue(renderer.hasContent)
         }
 
-        func draw() {
-            now += 1.0 / 60
+        func draw(step: CFTimeInterval = 1.0 / 60) {
+            now += step
             renderer.draw(in: view)
             renderer.lastCommandBuffer?.waitUntilCompleted()
             renderer.scripts.wallpaper?.waitUntilIdle()

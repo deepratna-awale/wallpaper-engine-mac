@@ -729,8 +729,13 @@ class SceneWallpaperViewModel: ObservableObject {
     static func lights(in objects: [WESceneObject], context: SceneValueContext) -> [SceneLightObject] {
         objects.compactMap { object in
             guard let light = object.light, let id = object.id else { return nil }
+            let animated: [SceneLightValueField] = [.intensity, .radius, .exponent, .innercone, .outercone, .controlpoint]
+            let hasTimelines = animated.contains { field in
+                if case .object(let bound)? = light.values[field] { return bound.animation != nil }
+                return false
+            }
             return SceneLightObject(id: String(id), authored: light, light: SceneLight(light, in: context),
-                                    depth: SceneLightDepth(object: object))
+                                    depth: SceneLightDepth(object: object), hasTimelines: hasTimelines)
         }
     }
 

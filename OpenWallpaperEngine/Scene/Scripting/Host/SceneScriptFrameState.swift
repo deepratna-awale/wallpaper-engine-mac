@@ -70,7 +70,7 @@ struct SceneScriptObjectState {
     }
 }
 
-/// A set of `SceneScriptObjectField`s (42 of them), as a bit mask.
+/// A set of `SceneScriptObjectField`s (48 of them, at most 64), as a bit mask.
 struct SceneScriptOwnedFields: Equatable {
     private(set) var bits: UInt64 = 0
 

@@ -322,6 +322,26 @@ final class SceneScriptBindingTests: XCTestCase {
         XCTAssertEqual(f.evaluate("thisScene.camerashake")?.toBool(), true)
     }
 
+    /// LF2: the Knight (2515150033) binds scripts to its legacy light's `intensity` and `origin`.
+    /// `intensity` isn't an `ILayer` member (lib.sceneScript.d.ts has no light interface), but the
+    /// script sets it every frame and gets the value it set as its argument.
+    func testALightFieldBindsWithoutBeingAMember() throws {
+        let lamp = SceneScriptObjectDescription.make(.light, id: 29, name: "Lamp",
+                                                     values: [.intensity: [1], .origin: [2124, 536, 588]])
+        let f = try SceneScriptBindingFixture(objects: [lamp])
+        try f.load("""
+            {"objects": [{"id": 29, "name": "Lamp", "light": "point",
+              "intensity": {"script": "export function update(value) { shared.seen = (shared.seen || []).concat([value]); return value + 0.5; }", "value": 1},
+              "origin": {"script": "export function update(value) { value.z = 700; return value; }", "value": "2124 536 588"}}]}
+            """)
+        f.frames(2)
+        XCTAssertEqual(f.table(0, .intensity), [2], "the bound script sets it every frame")
+        XCTAssertEqual(f.table(0, .origin), [2124, 536, 700], "origin.z reaches the table")
+        XCTAssertEqual(f.evaluate("shared.seen.join(',')")?.toString(), "1,1.5", "the argument is the live value")
+        XCTAssertEqual(f.evaluate("'intensity' in thisScene.getLayer('Lamp')")?.toBool(), false, "not a member")
+        XCTAssertTrue(f.errors.isEmpty, "\(f.errors)")
+    }
+
     // MARK: - User properties (S8)
 
     func testUserBoundScriptPropertiesAreInjectedBeforeApplyUserProperties() throws {

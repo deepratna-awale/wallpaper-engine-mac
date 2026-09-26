@@ -34,7 +34,7 @@ The extracted data is in `/Volumes/980Pro/dd-lighting`:
 
 ### 1.1 Light objects (`scene.json` objects with a `light` key)
 
-A light is a scene object with the usual `origin`, `angles`, `scale`, `parent`, `visible` and `parallaxDepth`, plus the fields below. The properties are registered at `0x14025da80`; the constructor defaults are at `0x140190457`…`0x1401904e4`. None of the library's light fields is bound to a user property, script or animation. Tube endpoints can still be animated, as the docs describe, so the fields are read through `Scene/Values` like any other.
+A light is a scene object with the usual `origin`, `angles`, `scale`, `parent`, `visible` and `parallaxDepth`, plus the fields below. The properties are registered at `0x14025da80`; the constructor defaults are at `0x140190457`…`0x1401904e4`. The Knight (2515150033) binds scripts to its legacy light's `intensity` and `origin` (y and z), and tube endpoints can be animated, as the docs describe. WE's packer reads the live properties every frame, so the app resolves them per frame too: a script's value, then the field's timeline, then the authored or user-bound one (`SceneLightObject.live`; `intensity`, `radius`, `exponent`, `innercone`, `outercone` and `controlpoint` are object-table fields that only a bound script sets, since `ILayer` has no light members).
 
 | Key | Type (offset) | WE default | Meaning |
 |---|---|---|---|
@@ -96,13 +96,14 @@ The docs' "Ultra HDR" and "HDR threshold smoothing" are `hdr` and `bloomhdrfeath
 
 ### 1.5 Library survey (106 scenes)
 
-**Lights: 11 lights in 5 scenes.**
+**Lights: 13 lights in 6 scenes** at the survey (the Knight was missed then; LF2). The library has grown since: `LightingLibraryDecodeTests` now counts 112 scenes with 11 `lpoint`, 4 `lspot`, 4 `ltube`, 3 `ldirectional` and 9 legacy points, 9 `lightconfig`s and 9 `hdr: true`.
 
 | Scene | Lights | `lightconfig` | What they light |
 |---|---|---|---|
 | 3270035750 "One piece girls" | 4 `ltube` (intensity 10, radius 500, exponent 2, z = 250, `controlpoint` (1.9, 1131.8, 0): vertical tubes across the image) | `{"tube":4}` | image layer `f1` (genericimage4, `LIGHTING:1`, **no effects**); ambient 0.294 0.133 0.133 |
 | 3352730400 "Hinata Uzumaki" | 1 `lspot` (cones 80/80, radius 1136, intensity 4.12, `usecookie`, `castvolumetrics`) | `{"spot":1,"spotcookie":1}` | no lit layer: only its volumetrics show. HDR and bloom are on. |
 | 3453730450 "Moon" [3D] | 3 `lpoint` (all `castvolumetrics`; 2 parented and invisible) | `{"point":3}` | 5 `generic4` models (`LIGHTING:1`, mostly `REFLECTION:1`): area 6 |
+| 2515150033 "Knight" | 2 legacy `point` (colours 0.72 0.35 0.15 and 1 0.85 0.77, radius 2048, z 588 and 331); light 29 has scripts on `intensity` (`1 + 0.3 sin 7.3t + 0.2 sin 9.8t`) and `origin` (y and z = 500 + 200 sin) | none | the genericimage2 `LIGHTING`/`REFLECTION` puppet `centurion 1080p_sheet` (reads `g_LightsPosition`/`g_LightsColorPremultiplied`): **the library's only layer lit by legacy lights** |
 | arsenal (default project) | 2 legacy `point` | none | 1 model (`generic`, LIGHTMAP/NORMALMAP/REFLECTION); uses `_rt_Reflection` |
 | demon_core (default project) | 1 legacy `point` | none | 2 models; custom `core` shader reading `g_Lights*` |
 

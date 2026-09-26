@@ -136,13 +136,22 @@
             object = target.instance;
             key = property.slice('instanceoverride.'.length);
         }
-        if (object === null || object === undefined || !(key in object) || typeof object[key] === 'function') return NOT_A_MEMBER;
-        const boundOnly = object === target && typeof objects.isBoundOnly === 'function' && objects.isBoundOnly(key);
-        return { mode: boundOnly ? BOUND_ONLY : MEMBER, object: object, key: key, owner: owner };
+        if (object === null || object === undefined) return NOT_A_MEMBER;
+        // Fields only a bound script sets (`size`, a light's `intensity`, the scene's `bloomhdr*`),
+        // whether or not they are members.
+        if (object === target && typeof objects.isBoundOnly === 'function' && objects.isBoundOnly(key, object)) {
+            return { mode: BOUND_ONLY, object: object, key: key, owner: owner };
+        }
+        if (!(key in object) || typeof object[key] === 'function') return NOT_A_MEMBER;
+        return { mode: MEMBER, object: object, key: key, owner: owner };
     }
 
     function read(access) {
-        return access.mode === MATERIAL ? access.object.getMaterialProperty(access.key) : access.object[access.key];
+        switch (access.mode) {
+        case MATERIAL: return access.object.getMaterialProperty(access.key);
+        case BOUND_ONLY: return rt.objects.readBound(access.object, access.key);
+        default: return access.object[access.key];
+        }
     }
 
     function write(access, value) {

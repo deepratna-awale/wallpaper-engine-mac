@@ -14,6 +14,12 @@ enum SceneScriptObjectField: String, CaseIterable {
     /// An image layer's `brightness` (WE's image property table, wallpaper64.exe 0x1401ee520:
     /// a float that multiplies the colour).
     case brightness
+    /// A light's fields (WE's light property table, wallpaper64.exe 0x14025da80; docs/lighting-plan.md
+    /// §1.1). They aren't `ILayer` members (lib.sceneScript.d.ts has no light interface), but a
+    /// script bound to one sets it every frame, as WE's native property is (the Knight 2515150033
+    /// flickers its legacy light by a script on `intensity`). `color` and the transform are the
+    /// object's own fields.
+    case intensity, radius, exponent, innercone, outercone, controlpoint
 
     /// Which JS object carries the member.
     enum Group: String {
@@ -68,12 +74,18 @@ enum SceneScriptObjectField: String, CaseIterable {
              .controlpoint4, .controlpoint5, .controlpoint6, .controlpoint7:
             return Layout.controlPoints + 3 * (controlPointIndex ?? 0)
         case .brightness: return Layout.brightness
+        case .intensity: return Layout.intensity
+        case .radius: return Layout.radius
+        case .exponent: return Layout.exponent
+        case .innercone: return Layout.innercone
+        case .outercone: return Layout.outercone
+        case .controlpoint: return Layout.controlpoint
         }
     }
 
     var type: ValueType {
         switch self {
-        case .origin, .scale, .color, .backgroundcolor: return .vec3
+        case .origin, .scale, .color, .backgroundcolor, .controlpoint: return .vec3
         case .controlpoint0, .controlpoint1, .controlpoint2, .controlpoint3,
              .controlpoint4, .controlpoint5, .controlpoint6, .controlpoint7: return .vec3
         case .angles: return .degrees
@@ -113,6 +125,15 @@ enum SceneScriptObjectField: String, CaseIterable {
     /// writes are ignored, but a script bound to it sets it (WE's property is writable natively).
     var isReadOnly: Bool { self == .size || self == .playing }
 
+    /// Whether scripts see the field as a member of `ILayer`. The light fields aren't members: only
+    /// a script bound to one reads and sets it (`objects-layers.js`, `sceneScriptBinding.js`).
+    var isMember: Bool {
+        switch self {
+        case .intensity, .radius, .exponent, .innercone, .outercone, .controlpoint: return false
+        default: return true
+        }
+    }
+
     var components: Int {
         switch type {
         case .number, .bool: return 1
@@ -131,6 +152,15 @@ enum SceneScriptObjectField: String, CaseIterable {
         case .parallaxDepth: return [1, 1]
         case .alpha, .visible, .solid, .volume, .zoom, .brightness, .instanceAlpha, .instanceSize, .instanceCount, .instanceSpeed,
              .instanceLifetime, .instanceRate, .instanceColorn: return [1]
+        // The light constructor's (`SceneLightDefaults`).
+        case .intensity: return [SceneLightDefaults.intensity]
+        case .radius: return [SceneLightDefaults.radius]
+        case .exponent: return [SceneLightDefaults.exponent]
+        case .innercone: return [SceneLightDefaults.innerCone]
+        case .outercone: return [SceneLightDefaults.outerCone]
+        case .controlpoint:
+            let point = SceneLightDefaults.controlPoint
+            return [point.x, point.y, point.z]
         default: return Array(repeating: 0, count: components)
         }
     }
@@ -144,7 +174,7 @@ enum SceneScriptObjectField: String, CaseIterable {
     static var javaScriptObject: [[String: Any]] {
         allCases.map {
             ["field": $0.rawValue, "name": $0.scriptName, "offset": $0.offset, "type": $0.type.rawValue,
-             "group": $0.group.rawValue, "readOnly": $0.isReadOnly]
+             "group": $0.group.rawValue, "readOnly": $0.isReadOnly, "member": $0.isMember]
         }
     }
 }
