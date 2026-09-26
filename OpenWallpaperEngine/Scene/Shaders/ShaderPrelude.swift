@@ -17,6 +17,10 @@ enum ShaderPrelude {
         let functions: Set<String>
         /// C++ keywords the shader declares itself, sorted.
         let reservedLocals: [String]
+        /// The shader reads a render target texel by texel (`texLoad2D`, `texSample2DBackBuffer`).
+        let loadsTexels: Bool
+        /// The shader discards with HLSL's `clip`.
+        let clips: Bool
         /// GLSL reserved words the shader uses as names (`GLSLReservedWords`), sorted.
         let glslReservedNames: [String]
 
@@ -25,12 +29,16 @@ enum ShaderPrelude {
             // A declaration needs the name as a whole identifier, so only names that occur as one
             // are checked with the (much slower) declaration patterns.
             let identifiers = identifierTokens(in: source)
+            loadsTexels = Self.loadNames.contains { identifiers.contains(Substring($0)) }
+            clips = identifiers.contains("clip")
             reservedLocals = cppReservedWords.subtracting(macros).sorted().filter { name in
                 identifiers.contains(Substring(name)) && declaresLocal(name, in: source)
             }
             let skipped = macros.union(reservedLocals)
             glslReservedNames = GLSLReservedWords.used(in: source).filter { !skipped.contains($0) }
         }
+
+        static let loadNames = ["texLoad2D", "texSample2DBackBuffer", "sampler2DBackBuffer"]
     }
 
     /// `source` is the shader the prelude goes in front of: a macro the shader defines itself (as a
@@ -80,6 +88,8 @@ enum ShaderPrelude {
                 lines.append("vec4 texSample2D(sampler2D s, vec2 uv, float bias) { return texture(s, uv, bias); }")
             }
         }
+        if analysis.loadsTexels { lines.append(loadFunctions) }
+        if analysis.clips && stage == .fragment && !defined.contains("clip") { lines.append(clipFunctions) }
         lines.append(conversionFunctions)
         // After every helper, so their own `mix` calls stay the built-in.
         if !defined.contains("mix") { lines.append("#define mix(a, b, t) weMix(a, b, t)") }
@@ -247,6 +257,24 @@ enum ShaderPrelude {
     vec4 texSample2DLod(sampler2D s, vec3 uv, float lod) { return textureLod(s, uv.xy, lod); }
     vec4 texSample2DLod(sampler2D s, vec4 uv, float lod) { return textureLod(s, uv.xy, lod); }
     vec4 texSample2DGrad(sampler2D s, vec2 uv, vec2 dx, vec2 dy) { return textureGrad(s, uv, dx, dy); }
+    """
+
+    /// WE's texel reads of a render target (`volumetricsfront` reads its depth targets so): the
+    /// texel under `uv` of a `res`-sized target, unfiltered, as HLSL's `Load`. A back buffer is a
+    /// plain texture here: the scene target isn't multisampled.
+    private static let loadFunctions = """
+    #define sampler2DBackBuffer sampler2D
+    vec4 weLoad2D(sampler2D s, vec2 uv, vec2 res) { return texelFetch(s, clamp(ivec2(uv * res), ivec2(0), textureSize(s, 0) - 1), 0); }
+    vec4 texLoad2D(sampler2D s, vec2 uv, vec2 res) { return weLoad2D(s, uv, res); }
+    vec4 texSample2DBackBuffer(sampler2D s, vec2 uv, vec2 res) { return weLoad2D(s, uv, res); }
+    """
+
+    /// HLSL's `clip`: discards the fragment when any component is below zero.
+    private static let clipFunctions = """
+    void clip(float x) { if (x < 0.0) discard; }
+    void clip(vec2 x) { if (any(lessThan(x, vec2(0.0)))) discard; }
+    void clip(vec3 x) { if (any(lessThan(x, vec3(0.0)))) discard; }
+    void clip(vec4 x) { if (any(lessThan(x, vec4(0.0)))) discard; }
     """
 
     /// HLSL's implicit conversions, applied to preprocessed text (see the extension below).
