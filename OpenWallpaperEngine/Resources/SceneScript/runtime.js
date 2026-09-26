@@ -48,6 +48,10 @@
             argument: function (record) { return record.value; },
             // Coerces a returned value to the bound field's type; undefined keeps the value (WP8).
             coerce: function (record, value) { return value; },
+            // Called with the raw changed user properties ({name: {type, value}}) before the
+            // frame's `applyUserProperties(changed)`: property binding (WP8) applies user-bound
+            // values and re-injects user-bound script properties there.
+            userPropertiesChanged: function (properties) {},
             // Converts user properties for applyUserProperties and engine.userProperties (WP4:
             // `_Internal.convertUserProperties`).
             userProperties: function (properties) { return properties; },
@@ -173,11 +177,29 @@
         return record.exports ? record.exports[name] : undefined;
     };
 
+    // Applies what `init`/`update` returned through the binding's converter. The converter may
+    // run script code (a returned object's getters or `toString`); a throw keeps the value.
     rt.apply = function (record, returned) {
         if (returned === undefined) return;
-        const value = rt.hooks.coerce(record, returned);
+        let value;
+        try {
+            value = rt.hooks.coerce(record, returned);
+        } catch (error) {
+            rt.reportError(record, '<value>', error);
+            return;
+        }
         if (value === undefined) return;
         record.value = value;
+    };
+
+    // The argument `init`/`update` receive; a binding that fails to read it passes the last value.
+    rt.argument = function (record) {
+        try {
+            return rt.hooks.argument(record);
+        } catch (error) {
+            rt.reportError(record, '<value>', error);
+            return record.value;
+        }
     };
 
     // MARK: phase rules (lib.sceneScript.d.ts, scenescript64.dll messages)
@@ -329,7 +351,7 @@
         for (let i = 0; i < records.length; i++) {
             const record = records[i];
             if (record.enabled && record.state === INJECTED) {
-                rt.apply(record, rt.invoke(record, 'init', [rt.hooks.argument(record)]));
+                rt.apply(record, rt.invoke(record, 'init', [rt.argument(record)]));
                 record.state = INITIALIZED;
                 try {
                     rt.hooks.initialized(record);
@@ -392,6 +414,11 @@
     };
 
     rt.addEventHandler('userProperties', EVENT_ORDER.userProperties, function (event) {
+        try {
+            rt.hooks.userPropertiesChanged(event.payload);
+        } catch (error) {
+            rt.reportError(null, 'userPropertiesChanged', error);
+        }
         rt.broadcast('applyUserProperties', [convertUserProperties(event.payload)]);
     });
     rt.addEventHandler('generalSettings', EVENT_ORDER.generalSettings, function (event) {
@@ -473,7 +500,7 @@
         for (let i = 0; i < records.length; i++) {
             const record = records[i];
             if (record.enabled && record.state === READY && !record.pendingDestroy) {
-                rt.apply(record, rt.invoke(record, 'update', [rt.hooks.argument(record)]));
+                rt.apply(record, rt.invoke(record, 'update', [rt.argument(record)]));
             }
         }
         runPhase('deferred', dt);
