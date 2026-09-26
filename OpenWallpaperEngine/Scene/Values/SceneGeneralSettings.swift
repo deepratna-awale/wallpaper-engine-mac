@@ -7,6 +7,12 @@ extension WESceneGeneral {
         if let source = raw.userBindingSource { return SceneValueResolver.resolve(source, in: context) }
         return raw.literalString.flatMap(ShaderValue.init(string:))
     }
+
+    /// `general.clearcolor`: what WE clears the scene target to each frame, as authored (no
+    /// colour-space conversion) with alpha 1 (0x14018031f…0x140180351).
+    func clearColor(in context: SceneValueContext) -> SIMD3<Float> {
+        value(.clearcolor, in: context)?.vec3 ?? SceneGeneralDefaults.clearColor
+    }
 }
 
 /// WE's defaults for the `general` block when a scene doesn't author a field: the scene
@@ -32,6 +38,8 @@ enum SceneGeneralDefaults {
     /// them (mostly 0.3 grey), so the zero is rarely seen.
     static let ambientColor = SIMD3<Float>(repeating: 0)
     static let skylightColor = SIMD3<Float>(repeating: 0)
+    /// Zeroed by the constructor too (0x140186f61…0x140186f6f).
+    static let clearColor = SIMD3<Float>(repeating: 0)
 }
 
 /// `general.hdr` and `bloomhdr*`, resolved against the user properties. WE turns HDR on at load

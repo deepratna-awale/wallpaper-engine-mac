@@ -539,6 +539,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                             bloom: bloom,
                                             transforms: transforms,
                                             camera: SceneCameraEffects(scene.general, in: valueContext),
+                                            clearColor: scene.general.clearColor(in: valueContext),
                                             wallpaperKey: propertyStoreKey)
             content.motions = objectMotions(scene.objects, besides: layers, sceneSize: sceneSize, context: valueContext)
             content.visibility = visibility

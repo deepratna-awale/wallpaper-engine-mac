@@ -157,6 +157,8 @@ struct SceneMetalContent {
     /// transform moves, so what hangs below them follows.
     var motions: [String: SceneObjectMotion] = [:]
     var camera = SceneCameraEffects()
+    /// `general.clearcolor`, resolved against the user properties: the scene target's clear colour.
+    var clearColor = SceneGeneralDefaults.clearColor
     /// The wallpaper instance's key in the user-property store (its directory path).
     var wallpaperKey = ""
     /// Every object's own `visible` before scripts (authored, user-bound or the app's toggle), by

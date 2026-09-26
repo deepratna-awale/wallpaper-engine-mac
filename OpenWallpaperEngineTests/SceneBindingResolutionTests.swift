@@ -103,4 +103,19 @@ final class SceneBindingResolutionTests: XCTestCase {
         XCTAssertEqual(camera.parallaxMouseInfluence, 0.4, accuracy: 1e-5)
         XCTAssertFalse(SceneCameraEffects(general, in: PropertyContext()).shake)
     }
+
+    /// R2: 3378346807 binds `clearcolor` to its `backgroundcolor` property; WE's capture shows the
+    /// empty scene as (65,80,83), the property exactly. An unauthored clear colour is black.
+    func testClearColorFollowsItsProperty() throws {
+        let json = #"{"clearcolor": {"user": "backgroundcolor", "value": "0.25490 0.31373 0.32549"}}"#
+        let general = try decodeTolerant(WESceneGeneral.self, from: Data(json.utf8))
+        let bound = general.clearColor(in: PropertyContext(properties: ["backgroundcolor": "0.2549019607843137 0.3137254901960784 0.3254901960784314"]))
+        XCTAssertEqual(bound.x * 255, 65, accuracy: 0.01)
+        XCTAssertEqual(bound.y * 255, 80, accuracy: 0.01)
+        XCTAssertEqual(bound.z * 255, 83, accuracy: 0.01)
+        let changed = general.clearColor(in: PropertyContext(properties: ["backgroundcolor": "1 0 0"]))
+        XCTAssertEqual(changed, SIMD3(1, 0, 0))
+        let unauthored = try decodeTolerant(WESceneGeneral.self, from: Data("{}".utf8))
+        XCTAssertEqual(unauthored.clearColor(in: PropertyContext()), .zero)
+    }
 }

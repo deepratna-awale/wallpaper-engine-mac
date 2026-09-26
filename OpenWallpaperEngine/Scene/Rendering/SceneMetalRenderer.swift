@@ -177,6 +177,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Which object each authored scene index is, for the draw order scripts set.
     private var objectIDs: [Int] = []
     private var camera = SceneCameraEffects()
+    /// `general.clearcolor` (`SceneMetalContent.clearColor`); a script's `thisScene.clearcolor` wins.
+    private var clearColor = SceneGeneralDefaults.clearColor
     /// WE's parallax camera position, eased across frames (`SceneCameraParallax`).
     private var cameraParallax = SceneCameraParallax(sceneSize: SIMD2<Float>(1920, 1080))
     /// Whose user properties this renderer's frames read (see `SceneMetalContent.wallpaperKey`).
@@ -408,6 +410,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.objectIDs = content.objectIDs
                 self.wallpaperKey = content.wallpaperKey
                 self.camera = content.camera
+                self.clearColor = content.clearColor
                 self.cameraParallax = SceneCameraParallax(sceneSize: content.size)
                 self.lastCameraMotion = nil
                 self.lastTextSizes.removeAll()
@@ -825,11 +828,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for (index, frame) in textFrames { lastTextSizes[layers[index].layer.id] = frame.baseSize }
         lastCameraMotion = motion
 
-        let clearColor = destination.descriptor?.colorAttachments[0].clearColor ?? SceneFrameDestination.clearColor
+        // WE clears the scene to `general.clearcolor` (the composite's letterbox stays black).
+        let clear = scripts.state.scene.vector3(.clearcolor) ?? clearColor
         let sceneRenderPass = MTLRenderPassDescriptor()
         sceneRenderPass.colorAttachments[0].texture = sceneTexture
         sceneRenderPass.colorAttachments[0].loadAction = .clear
-        sceneRenderPass.colorAttachments[0].clearColor = clearColor
+        sceneRenderPass.colorAttachments[0].clearColor = MTLClearColor(red: Double(clear.x), green: Double(clear.y),
+                                                                       blue: Double(clear.z), alpha: 1)
         sceneRenderPass.colorAttachments[0].storeAction = .store
         // One instanced draw per system rather than one per particle (or per rope segment, which
         // multiplies out to thousands on trail renderers).
