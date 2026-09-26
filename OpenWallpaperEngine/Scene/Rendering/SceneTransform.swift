@@ -12,16 +12,29 @@ struct SceneAffineTransform: Equatable {
         self.translation = translation
     }
 
-    /// `translate(origin) · rotate(angle) · scale(scale)`, the order WE applies an object's own
-    /// `origin`, `angles.z` and `scale`. A positive angle turns counter-clockwise on screen (+x
+    /// `translate(origin) · rotate(angles) · scale(scale)`, the order WE applies an object's own
+    /// `origin`, `angles` and `scale`. A positive `angles.z` turns counter-clockwise on screen (+x
     /// toward +y), as WE's object matrix does: its rotation is `Rz(z)·Ry(y)·Rx(x)` (0x1401dd630),
     /// whose +x row is (cos z, sin z). WE's previews agree (2764281221's lens flare), and so do
-    /// clock scripts, which turn hands clockwise with negative angles.
+    /// clock scripts, which turn hands clockwise with negative angles; so does WE's editor, where
+    /// z = +30 turns an object counter-clockwise.
+    ///
+    /// `angles.x` and `.y` tilt the object out of the plane, and the scene is drawn orthographically,
+    /// so what shows is the matrix's x and y rows without their z: `angles.x` squashes it vertically
+    /// by cos x and `angles.y` horizontally by cos y, with no perspective (WE's editor, 2.8.0.42).
     init(_ local: SceneLocalTransform) {
-        let c = cos(local.angle), s = sin(local.angle)
-        let rotation = simd_float2x2(columns: (SIMD2(c, s), SIMD2(-s, c)))
         let scale = simd_float2x2(diagonal: local.scale)
-        self.init(linear: rotation * scale, translation: local.origin)
+        self.init(linear: Self.rotation(angle: local.angle, tilt: local.tilt) * scale, translation: local.origin)
+    }
+
+    /// The x and y of `Rz(z)·Ry(y)·Rx(x)`'s images of +x and +y, as 0x1401dd630 builds its rows:
+    /// +x → (cy·cz, cy·sz), +y → (sx·sy·cz − cx·sz, sx·sy·sz + cx·cz).
+    static func rotation(angle: Float, tilt: SIMD2<Float>) -> simd_float2x2 {
+        let cz = cos(angle), sz = sin(angle)
+        guard tilt != .zero else { return simd_float2x2(columns: (SIMD2(cz, sz), SIMD2(-sz, cz))) }
+        let cx = cos(tilt.x), sx = sin(tilt.x), cy = cos(tilt.y), sy = sin(tilt.y)
+        return simd_float2x2(columns: (SIMD2(cy * cz, cy * sz),
+                                       SIMD2(sx * sy * cz - cx * sz, sx * sy * sz + cx * cz)))
     }
 
     /// `lhs` applied after `rhs`: a parent's world transform times a child's local one.
@@ -50,6 +63,8 @@ struct SceneLocalTransform: Equatable {
     var scale: SIMD2<Float>
     /// `angles.z`, in radians.
     var angle: Float
+    /// `angles.x` and `angles.y`, in radians: the tilt out of the scene's plane.
+    var tilt: SIMD2<Float> = .zero
 
     static let identity = SceneLocalTransform(origin: .zero, scale: SIMD2(repeating: 1), angle: 0)
 
@@ -63,13 +78,16 @@ struct SceneLocalTransform: Equatable {
         }
         let scale = object.scale?.parseVector3() ?? (1, 1, 1)
         self.scale = SIMD2(Float(scale.0), Float(scale.1))
-        self.angle = Float(object.angles?.parseVector3().2 ?? 0)
+        let angles = object.angles?.parseVector3() ?? (0, 0, 0)
+        self.angle = Float(angles.2)
+        self.tilt = SIMD2(Float(angles.0), Float(angles.1))
     }
 
-    init(origin: SIMD2<Float>, scale: SIMD2<Float>, angle: Float) {
+    init(origin: SIMD2<Float>, scale: SIMD2<Float>, angle: Float, tilt: SIMD2<Float> = .zero) {
         self.origin = origin
         self.scale = scale
         self.angle = angle
+        self.tilt = tilt
     }
 }
 

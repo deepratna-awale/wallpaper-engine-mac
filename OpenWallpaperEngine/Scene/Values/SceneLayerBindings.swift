@@ -43,6 +43,7 @@ struct SceneLayerBindings {
                 base.position += now.vec2 - binding.built.vec2
             case .angles:
                 base.rotation += now.vec3.z - binding.built.vec3.z
+                base.tilt += SIMD2(now.vec3.x - binding.built.vec3.x, now.vec3.y - binding.built.vec3.y)
             case .scale:
                 base.scale = Self.scaled(base.scale, from: SIMD2(binding.built.vec2), to: SIMD2(now.vec2))
             case .color:
@@ -82,14 +83,17 @@ struct SceneLayerBaseValues: Equatable {
     var position: SIMD2<Float>
     var scale: SIMD2<Float>
     var rotation: Float
+    /// `angles.x` and `angles.y`.
+    var tilt: SIMD2<Float>
     var opacity: Float
     var brightness: Float
     var color: SIMD4<Float>
 
-    init(position: SIMD2<Float>, scale: SIMD2<Float>, rotation: Float) {
+    init(position: SIMD2<Float>, scale: SIMD2<Float>, rotation: Float, tilt: SIMD2<Float> = .zero) {
         self.position = position
         self.scale = scale
         self.rotation = rotation
+        self.tilt = tilt
         opacity = 1
         brightness = 1
         color = SIMD4(repeating: 1)
@@ -99,6 +103,7 @@ struct SceneLayerBaseValues: Equatable {
         position = layer.position
         scale = layer.scale
         rotation = layer.rotation
+        tilt = layer.tilt
         opacity = layer.opacity
         brightness = layer.brightness
         color = layer.color

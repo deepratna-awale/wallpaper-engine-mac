@@ -55,6 +55,8 @@ struct SceneMetalLayer {
     let parallaxDepth: SIMD3<Float>
     let perspective: Bool
     let rotation: Float
+    /// `angles.x` and `angles.y` (radians): the orthographic squash of a tilted object.
+    var tilt: SIMD2<Float> = .zero
     let effects: SceneMaterialEffects
     /// Set for video layers so the picture can pulse with the music the way the AVKit path does.
     var musicSync: VideoMusicSyncVisuals? = nil

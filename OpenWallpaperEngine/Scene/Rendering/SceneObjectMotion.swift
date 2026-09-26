@@ -10,6 +10,8 @@ struct SceneObjectMotion {
     let scale: SIMD2<Float>
     /// `angles.z`, in radians.
     let angle: Float
+    /// `angles.x` and `angles.y`, in radians.
+    let tilt: SIMD2<Float>
     /// User-bound origin, scale and angles, re-resolved per frame.
     var bindings = SceneLayerBindings()
 
@@ -18,6 +20,7 @@ struct SceneObjectMotion {
         origin = layer.position
         scale = layer.scale
         angle = layer.rotation
+        tilt = layer.tilt
         bindings = layer.bindings
     }
 
@@ -27,16 +30,17 @@ struct SceneObjectMotion {
         origin = local.origin
         scale = local.scale
         angle = local.angle
+        tilt = local.tilt
         self.bindings = bindings
     }
 
     /// The values animations start from this frame.
     func base(in context: SceneValueContext) -> SceneLayerBaseValues {
-        let built = SceneLayerBaseValues(position: origin, scale: scale, rotation: angle)
+        let built = SceneLayerBaseValues(position: origin, scale: scale, rotation: angle, tilt: tilt)
         return bindings.isEmpty ? built : bindings.baseValues(built, in: context)
     }
 
-    /// The object's own origin, scale and `angles.z` this frame: what scripts wrote (`script`),
+    /// The object's own origin, scale and angles this frame: what scripts wrote (`script`),
     /// then its timelines (`animation`), then authored or user-bound. Scripts win over a timeline:
     /// WE runs the timeline first and applies the script's return after it (plan §1.9 P2).
     /// Without `scriptValues`: the object as the renderer alone would place it, which is what
@@ -47,8 +51,9 @@ struct SceneObjectMotion {
         let owned = scriptValues ? script : nil
         let position = owned?.vector3(.origin).map(Self.xy) ?? animation?.origin.map(Self.xy) ?? base.position
         let scale = owned?.vector3(.scale).map(Self.xy) ?? animation?.scale.map(Self.xy) ?? base.scale
-        let rotation = owned?.vector3(.angles)?.z ?? animation?.angles?.z ?? base.rotation
-        return SceneLocalTransform(origin: position, scale: scale, angle: rotation)
+        let angles = owned?.vector3(.angles) ?? animation?.angles
+        return SceneLocalTransform(origin: position, scale: scale, angle: angles?.z ?? base.rotation,
+                                   tilt: angles.map { SIMD2($0.x, $0.y) } ?? base.tilt)
     }
 
     private static func xy(_ value: SIMD3<Float>) -> SIMD2<Float> { SIMD2(value.x, value.y) }

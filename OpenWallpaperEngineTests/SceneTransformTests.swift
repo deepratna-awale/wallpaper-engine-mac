@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import OpenWallpaperEngine
 
 /// D3/D8: full parent transforms and image alignment anchors, checked against objects taken from
@@ -102,5 +103,58 @@ final class SceneTransformTests: XCTestCase {
         let hierarchy = SceneTransformHierarchy(objects: objects, sceneSize: sceneSize)
         assertEqual(hierarchy.world(of: "1").translation, sceneSize / 2)
         assertEqual(hierarchy.world(of: "2").translation, sceneSize / 2)
+    }
+
+    // MARK: - angles.x / angles.y (WE 2.8.0.42's editor, orthographic scenes)
+
+    private func world(angles: String) throws -> SceneAffineTransform {
+        let json = #"{"id": 1, "origin": "100 200 0", "angles": "\#(angles)"}"#
+        let object = try JSONDecoder().decode(WESceneObject.self, from: Data(json.utf8))
+        return SceneAffineTransform(SceneLocalTransform(object: object, sceneSize: sceneSize))
+    }
+
+    /// Editor ground truth: `angles.x` = 30° squashes the object vertically by cos 30°, no perspective.
+    func testAnglesXSquashesVerticallyByItsCosine() throws {
+        let quad = SceneQuadGeometry(world: try world(angles: "0.5235988 0 0"), size: SIMD2(200, 100), alignment: nil)
+        assertEqual(quad.axisX, SIMD2(200, 0), accuracy: 0.001)
+        assertEqual(quad.axisY, SIMD2(0, 100 * cos(Float.pi / 6)), accuracy: 0.001)
+        assertEqual(quad.center, SIMD2(100, 200))
+    }
+
+    /// Editor ground truth: `angles.y` = 30° squashes the object horizontally by cos 30°.
+    func testAnglesYSquashesHorizontallyByItsCosine() throws {
+        let quad = SceneQuadGeometry(world: try world(angles: "0 0.5235988 0"), size: SIMD2(200, 100), alignment: nil)
+        assertEqual(quad.axisX, SIMD2(200 * cos(Float.pi / 6), 0), accuracy: 0.001)
+        assertEqual(quad.axisY, SIMD2(0, 100), accuracy: 0.001)
+    }
+
+    /// Editor ground truth (and dc179e3): `angles.z` = +30° turns counter-clockwise.
+    func testAnglesZTurnsCounterClockwise() throws {
+        let linear = try world(angles: "0 0 0.5235988").linear
+        assertEqual(linear.columns.0, SIMD2(cos(Float.pi / 6), sin(Float.pi / 6)), accuracy: 0.0001)
+    }
+
+    /// All three together are the x and y of WE's `Rz(z)·Ry(y)·Rx(x)` (0x1401dd630), projected
+    /// orthographically: the 3D rotation's upper-left 2×2 block.
+    func testTiltIsWEsObjectRotationProjectedOrthographically() {
+        let (x, y, z): (Float, Float, Float) = (0.4, -0.7, 1.1)
+        func rx(_ a: Float) -> simd_float3x3 { simd_float3x3(columns: (SIMD3(1, 0, 0), SIMD3(0, cos(a), sin(a)), SIMD3(0, -sin(a), cos(a)))) }
+        func ry(_ a: Float) -> simd_float3x3 { simd_float3x3(columns: (SIMD3(cos(a), 0, -sin(a)), SIMD3(0, 1, 0), SIMD3(sin(a), 0, cos(a)))) }
+        func rz(_ a: Float) -> simd_float3x3 { simd_float3x3(columns: (SIMD3(cos(a), sin(a), 0), SIMD3(-sin(a), cos(a), 0), SIMD3(0, 0, 1))) }
+        let full = rz(z) * ry(y) * rx(x)
+        let scale = SIMD2<Float>(2, 3)
+        let linear = SceneAffineTransform(SceneLocalTransform(origin: .zero, scale: scale, angle: z, tilt: SIMD2(x, y))).linear
+        assertEqual(linear.columns.0, SIMD2(full.columns.0.x, full.columns.0.y) * scale.x, accuracy: 0.0001)
+        assertEqual(linear.columns.1, SIMD2(full.columns.1.x, full.columns.1.y) * scale.y, accuracy: 0.0001)
+    }
+
+    /// Timelines and scripts that set `angles` set the tilt too; without them the authored tilt stays.
+    func testObjectMotionKeepsTheTilt() throws {
+        let object = try JSONDecoder().decode(WESceneObject.self, from: Data(#"{"id": 1, "angles": "0.3 0.2 0.1"}"#.utf8))
+        let motion = SceneObjectMotion(object: object, sceneSize: sceneSize, bindings: SceneLayerBindings())
+        let local = motion.local()
+        XCTAssertEqual(local.tilt.x, 0.3, accuracy: 0.0001)
+        XCTAssertEqual(local.tilt.y, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(local.angle, 0.1, accuracy: 0.0001)
     }
 }

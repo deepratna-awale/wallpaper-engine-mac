@@ -648,6 +648,7 @@ class SceneWallpaperViewModel: ObservableObject {
             ?? buildMetalTextLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
             ?? buildShapeLayer(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize)
         layer?.bindings = SceneLayerBindings(object: object, builtWith: context)
+        if layer?.fillsScene == false { layer?.tilt = SceneLocalTransform(object: object, sceneSize: sceneSize).tilt }
         return layer
     }
 
