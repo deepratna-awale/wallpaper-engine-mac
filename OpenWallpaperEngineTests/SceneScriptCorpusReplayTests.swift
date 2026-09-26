@@ -48,7 +48,7 @@ final class SceneScriptCorpusReplayTests: XCTestCase {
         ExpectedFailure(key: "9029e263e6d9", check: .exception,
                         reason: "2321732083 calls getAnimation('origin') on ships whose origin timelines have no "
                             + "options.name; WE's parse (0x1401a5300) names an animation only from options.name, and "
-                            + "whether the host also matches the property key is untraced (open, RF3)"),
+                            + "WE on Windows shows the puppet static: it finds nothing by property name either (RF3)"),
         ExpectedFailure(key: "98ec4669d182", check: .change,
                         reason: "2350874185's bloom smooths at 2/s and returns the user value while the frame-420 flip "
                             + "turns audio off, so the frozen tone-time level only starts decaying at 540: WE too"),

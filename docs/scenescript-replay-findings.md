@@ -154,13 +154,13 @@ These are listed in `SceneScriptCorpusReplayTests.expectedFailures`, with reason
 
 ## Expanded corpus (2026-09-26)
 
-The corpus was re-extracted with the newly downloaded wallpapers: 1370 index entries, 65 wallpapers and 1239 sites in the replay. On HEAD `9c92f10` the new wallpapers gave 19 findings. One was a harness gap, 16 are WE's behaviour or follow from what the wallpaper lacks, one is our known gap, and one is open.
+The corpus was re-extracted with the newly downloaded wallpapers: 1370 index entries, 65 wallpapers and 1239 sites in the replay. On HEAD `9c92f10` the new wallpapers gave 19 findings. One was a harness gap, 17 are WE's behaviour or follow from what the wallpaper lacks (RF3 among them, since resolved), and one is our known gap.
 
 | wallpaper | sites | load ms | mean ms/frame | p50 | p99 | CPU p50 | commands | created | stubs used | findings |
 |---|---|---|---|---|---|---|---|---|---|---|
 | owe/2079954552 | 1 | 17.46 | 0.040 | 0.036 | 0.078 | 0.036 | 126 | 63 | - | ok |
 | owe/2276071817 | 2 | 18.19 | 0.081 | 0.075 | 0.133 | 0.074 | 128 | 63 | - | ok |
-| owe/2321732083 | 3 | 22.82 | 0.058 | 0.047 | 0.125 | 0.046 | 150 | 8 | - | exception 1 (open, RF3) |
+| owe/2321732083 | 3 | 22.82 | 0.058 | 0.047 | 0.125 | 0.046 | 150 | 8 | - | exception 1 (WE too, RF3) |
 | owe/2350874185 | 16 | 25.64 | 0.062 | 0.040 | 0.290 | 0.040 | 0 | 0 | - | change 3 (WE too) |
 | owe/2499516781 | 33 | 39.38 | 0.084 | 0.067 | 0.220 | 0.066 | 1760 | 7 | - | ok |
 | owe/2515150033 | 2 | 0.92 | 0.053 | 0.048 | 0.102 | 0.048 | 0 | 0 | - | ok |
@@ -186,12 +186,11 @@ The corpus was re-extracted with the newly downloaded wallpapers: 1370 index ent
 
 - **`0a3a85274f2b`** (3734636606, "More Physics"): its geometry comes from `IScene.createModelData`, still a stub returning `null` (roadmap WP12), so `entry.modelData.applyData` throws at line 14424 on frame 0. This is ours, not WE's; it goes when WP12 implements model data.
 
-### Open: RF3. `getAnimation(name)` for an unnamed timeline
+### Resolved: RF3. `getAnimation(name)` for an unnamed timeline
 
 - **`9029e263e6d9`** (2321732083): `ship.getAnimation('origin').play()` in a timer throws, because none of the three ships' `origin` timelines has `options.name`. The script also calls it on layers it creates from `getInitialLayerConfig`.
-- **What is traced:** WE's parse (`wallpaper64.exe` `0x1401a52f6`…`0x1401a5343`) sets the animation's name string (offset `0x68`, initialised empty) only when `options.name` is a string. The editor (`ui/dist/scripts/scripts.js`, `saveAnimationOptions`) deletes an empty name. So these animations are unnamed in WE too.
-- **What isn't:** the host's `IObject.getAnimation(name)` search. If it matches the property key as well as the name, the ships fly in WE and our `objects.resolveAnimation` must do the same. The wallpaper only works if it does, which suggests it, but that is not evidence.
-- **Until traced** it is an expected failure. Tracing the host search (the `scenescript64.dll` callback for `IObject.getAnimation` and the exe function it reaches) settles it.
+- **WE's parse** (`wallpaper64.exe` `0x1401a52f6`…`0x1401a5343`) sets the animation's name string (offset `0x68`, initialised empty) only when `options.name` is a string. The editor (`ui/dist/scripts/scripts.js`, `saveAnimationOptions`) deletes an empty name. So these animations are unnamed in WE too.
+- **WE's lookup doesn't fall back to the property name.** A capture of 2321732083 in WE 2.8.0.42 on Windows shows the puppet static: `getAnimation('origin')` finds nothing there either, and the ships don't fly. Our `getAnimation`, which matches only `options.name`, is WE's behaviour and stays; the finding is expected, as WE's.
 
 ### WE's behaviour, or what the wallpaper lacks
 
