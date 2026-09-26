@@ -144,6 +144,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var deferredReleases = SceneDeferredReleases()
     /// Where the cursor was last seen on this display, in display pixels from the top-left.
     private var lastCursorScreenPixels = SIMD2<Double>(repeating: 0)
+    /// The last drawn frame's camera motion and text sizes (by layer id), for the next script frame.
+    private var lastCameraMotion: CameraMotion?
+    private var lastTextSizes: [String: SIMD2<Float>] = [:]
     /// Told how long each frame took on the CPU, including the wait for a drawable.
     var frameTimeObserver: ((CFTimeInterval) -> Void)?
 
@@ -278,6 +281,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             clock = SceneClock()
             transforms = .empty
             lastPointer = nil
+            lastCameraMotion = nil
+            lastTextSizes.removeAll()
             cameraParallax = SceneCameraParallax(sceneSize: sceneSize)
             cursorTracker = SceneCursorTracker()
             deferredReleases.removeAll()
@@ -311,6 +316,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.wallpaperKey = content.wallpaperKey
                 self.camera = content.camera
                 self.cameraParallax = SceneCameraParallax(sceneSize: content.size)
+                self.lastCameraMotion = nil
+                self.lastTextSizes.removeAll()
                 self.textFrameCache.removeAll()
                 self.textRasterScales.removeAll()
                 let running = self.scripts.wallpaper
@@ -471,15 +478,32 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         clock.advance(to: CACurrentMediaTime(), speed: Double(animationSpeed))
         let sceneTime = clock.time
         let time = Float(sceneTime)
-        // What the scripts' last finished frame left (they run on their own thread, §4.5).
+        // What a script frame that overran the last draw's wait left (they run on their own thread, §4.5).
         let orderBefore = scripts.state.order
         applyScriptEvents(scripts.beginFrame())
-        if scripts.state.order != orderBefore { orderLayers() }
         let cursorSample = cursorTracker.update(sceneCursor(in: view, drawableSize: realDrawableSize),
                                                 sceneSize: sceneSize)
         let cursor = cursorSample.position
+        // WE's scripts get clicks the wallpaper receives: the desktop's, while Finder is in front.
+        let leftDown = cursorSample.onDisplay && NSEvent.pressedMouseButtons & 1 != 0
+            && NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
         releaseFinishedEffectState()
         beginTransformFrame()
+        if scripts.isRunning {
+            // Like WE, the scripts run before the frame that shows what they did (§4.4): this
+            // frame's clock, cursor and animated values go in, and their results are drawn now
+            // unless they overrun the wait (then they show from the next draw on).
+            let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+            submitScriptFrame(view: view, drawableSize: realDrawableSize, cursor: cursorSample, leftDown: leftDown,
+                              time: time)
+            scripts.record(since: start, newFrame: false)
+            applyScriptEvents(scripts.finishFrame(waitingUpTo: scripts.frameWait))
+            beginTransformFrame()
+        }
+        if scripts.state.order != orderBefore {
+            orderLayers()
+            beginTransformFrame()
+        }
         var dynamicTextures: [Int: MTLTexture] = [:]
         // Advanced once per frame: every advance smooths the spectrum one step further.
         var effectFrame = BuiltinFrameContext()
@@ -520,12 +544,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                                          snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
             }
         }
-        if scripts.isRunning {
-            let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-            submitScriptFrame(view: view, drawableSize: realDrawableSize, cursor: cursorSample, motion: motion,
-                              textSizes: textFrames.mapValues { $0.baseSize }, time: time)
-            scripts.record(since: start, newFrame: false)
-        }
+        // The next script frame reads this frame's text sizes and camera (WE's cursor pass and
+        // `size` see the last drawn frame).
+        lastTextSizes.removeAll(keepingCapacity: true)
+        for (index, frame) in textFrames { lastTextSizes[layers[index].layer.id] = frame.baseSize }
+        lastCameraMotion = motion
 
         let clearColor = descriptor.colorAttachments[0].clearColor
         let sceneRenderPass = MTLRenderPassDescriptor()
@@ -808,29 +831,25 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         lastCommandBuffer = commandBuffer
     }
 
-    /// Hands the scripts this frame: the clock, the display and cursor, and every object as drawn
-    /// (docs/scenescript-plan.md §4.4). They run on their own thread and their results show from
-    /// the next draw on.
+    /// Hands the scripts this frame: the clock, the display and cursor, and every object at this
+    /// frame's time with the last drawn frame's transforms, text sizes and camera
+    /// (docs/scenescript-plan.md §4.4). They run on their own thread; `finishFrame` waits for them.
     private func submitScriptFrame(view: MTKView, drawableSize: SIMD2<Float>,
-                                   cursor: (position: SIMD2<Float>, onDisplay: Bool), motion: CameraMotion,
-                                   textSizes: [Int: SIMD2<Float>], time: Float) {
+                                   cursor: (position: SIMD2<Float>, onDisplay: Bool), leftDown: Bool, time: Float) {
         var input = SceneScriptFrameInput()
         input.deltaTime = clock.delta
         input.environment = SceneScriptEngineEnvironment(
             screenResolution: SIMD2(Double(drawableSize.x), Double(drawableSize.y)),
             canvasSize: SIMD2(Double(sceneSize.x), Double(sceneSize.y)), placement: placement,
             pixelsPerPoint: Double(drawablePixelsPerPoint))
-        // WE's scripts get clicks the wallpaper receives: the desktop's, while Finder is in front.
-        let clicksDesktop = cursor.onDisplay && NSEvent.pressedMouseButtons & 1 != 0
-            && NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.apple.finder"
         input.input = SceneScriptInput(cursorScreenPosition: cursorScreenPixels(in: view, drawableSize: drawableSize),
-                                       cursorLeftDown: clicksDesktop)
+                                       cursorLeftDown: leftDown)
         input.cursorScenePosition = cursor.position
-        input.shakeOffset = motion.shake
-        if let parallax = motion.parallax {
+        input.shakeOffset = lastCameraMotion?.shake ?? .zero
+        if let parallax = lastCameraMotion?.parallax {
             input.parallax = SceneScriptCursorFrame.Parallax(state: parallax.state, amount: parallax.amount)
         }
-        for (index, entry) in layers.enumerated() {
+        for entry in layers {
             guard let id = Int(entry.layer.id) else { continue }
             let script = scripts.object(entry.layer.id)
             let base = baseValues(entry, time: time)
@@ -841,7 +860,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 origin: own.origin, scale: own.scale, angle: own.angle,
                 alpha: baseOpacity(entry, base: base, time: time, script: script),
                 color: SIMD3(base.color.x, base.color.y, base.color.z), visible: scripts.baseVisible(entry.layer.id),
-                size: textSizes[index] ?? layerBaseSize(entry, time: time),
+                size: lastTextSizes[entry.layer.id] ?? layerBaseSize(entry, time: time),
                 world: worldTransform(entry, time: time), animated: animated)
         }
         for (key, objectMotion) in objectMotions {

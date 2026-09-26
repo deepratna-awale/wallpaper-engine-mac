@@ -4,9 +4,11 @@ import Foundation
 /// with every extension on a `SceneScriptThread` of its own, fed and read by the renderer that owns
 /// it. Two displays get two of these and share nothing but the app-wide services.
 ///
-/// The renderer calls `submit(_:)` every frame with what it drew; the scripts run on their thread
-/// (`asyncFrame`, so a hung script only drops script frames) and leave a `SceneScriptFrameState`
-/// that `take()` hands back on the next draw. Everything else here runs on the script thread.
+/// The renderer calls `submit(_:)` at the start of every draw with the frame's inputs; the scripts
+/// run on their thread (`asyncFrame`, so a hung script only drops script frames) and leave a
+/// `SceneScriptFrameState` that `take()` hands back. The renderer waits for it a little
+/// (`waitForSubmittedFrame`, `Timing.frameWait`), so what scripts did is drawn in the same frame,
+/// as in WE. Everything else here runs on the script thread.
 final class SceneScriptWallpaper {
     struct CreationError: Error, CustomStringConvertible {
         var description: String
@@ -22,6 +24,11 @@ final class SceneScriptWallpaper {
         var recentMilliseconds: [Double] = []
 
         static let recentLimit = 4096
+        /// How long a draw waits for the script frame it started before drawing without it (its
+        /// results then show from the next draw on). WE runs scripts inside the frame; ours take
+        /// 0.1–0.5 ms, so the wait normally ends well before this, and a hung script is waited for
+        /// once (later frames are skipped while it runs, §4.5).
+        static let frameWait: TimeInterval = 0.004
     }
 
     let identity: SceneScriptIdentity
@@ -43,8 +50,12 @@ final class SceneScriptWallpaper {
     /// would reach no one otherwise).
     private var usesCursor = true
 
-    /// Guards `input`, `published`, `pendingEvents`, `timing` and `haltReported`.
-    private let lock = NSLock()
+    /// Guards `input`, `published`, `pendingEvents`, `timing`, `haltReported` and the frame
+    /// counts; signalled when a frame finishes.
+    private let lock = NSCondition()
+    /// Script frames started and finished (run or skipped by the runtime's state).
+    private var submittedFrames = 0
+    private var finishedFrames = 0
     private var input = SceneScriptFrameInput()
     private var published: SceneScriptFrameState?
     private var pendingEvents: [SceneScriptRenderEvent] = []
@@ -109,12 +120,36 @@ final class SceneScriptWallpaper {
 
     // MARK: - Main thread
 
-    /// This frame's inputs; runs a script frame on the script thread unless one is still running.
-    func submit(_ frameInput: SceneScriptFrameInput) {
+    /// This frame's inputs; runs a script frame on the script thread unless one is still running
+    /// (false then).
+    @discardableResult
+    func submit(_ frameInput: SceneScriptFrameInput) -> Bool {
         lock.lock()
         input = frameInput
         lock.unlock()
-        thread.asyncFrame { [weak self] in self?.runFrame() }
+        let started = thread.asyncFrame { [weak self] in
+            self?.runFrame()
+            self?.frameDidFinish()
+        }
+        if started {
+            lock.lock()
+            submittedFrames += 1
+            lock.unlock()
+        }
+        return started
+    }
+
+    /// Waits until every script frame `submit` started has finished, or `timeout` seconds passed;
+    /// whether they finished.
+    @discardableResult
+    func waitForSubmittedFrame(timeout: TimeInterval) -> Bool {
+        let deadline = Date(timeIntervalSinceNow: timeout)
+        lock.lock()
+        defer { lock.unlock() }
+        while finishedFrames < submittedFrames {
+            if !lock.wait(until: deadline) { return finishedFrames >= submittedFrames }
+        }
+        return true
     }
 
     /// The state the last finished script frame left (nil when nothing new) and the structural
@@ -184,6 +219,13 @@ final class SceneScriptWallpaper {
     }
 
     // MARK: - Script thread
+
+    private func frameDidFinish() {
+        lock.lock()
+        finishedFrames += 1
+        lock.broadcast()
+        lock.unlock()
+    }
 
     private func runFrame() {
         guard let runtime, runtime.state == .loaded, let mirror, let engine else { return }

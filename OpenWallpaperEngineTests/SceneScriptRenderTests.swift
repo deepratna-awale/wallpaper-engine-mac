@@ -77,6 +77,21 @@ final class SceneScriptRenderTests: XCTestCase {
         XCTAssertNotIdentical(first.renderer.scripts.wallpaper, second.renderer.scripts.wallpaper)
     }
 
+    /// Like WE, a frame draws what its own scripts did: the draw waits for the script frame it
+    /// started (plan §4.4), so there is no frame of latency.
+    func testADrawShowsItsOwnScriptFrame() throws {
+        let scene = try Scene(fixture: "scripted-counter", services: services(), size: SIMD2(64, 64))
+        defer { scene.close() }
+        scene.renderer.scripts.frameWait = 5 // a loaded test machine; the app waits 4 ms
+        _ = try scene.render(frames: 3)
+        let before = try XCTUnwrap(scene.renderer.scripts.object("1")?.vector3(.origin)).x
+        for step in 1...3 {
+            scene.renderer.draw(in: scene.view)
+            let drawn = try XCTUnwrap(scene.renderer.scripts.object("1")?.vector3(.origin)).x
+            XCTAssertEqual(drawn, before + Float(step), "draw \(step) shows the update it ran")
+        }
+    }
+
     /// A user property only scripts read reaches `applyUserProperties` without a content rebuild.
     func testAScriptOnlyUserPropertyReachesTheScriptsWithoutARebuild() throws {
         let scene = try Scene(fixture: "scripted-counter", services: services(), size: SIMD2(64, 64))

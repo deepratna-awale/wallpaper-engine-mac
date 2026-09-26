@@ -2,7 +2,8 @@ import Foundation
 import simd
 
 /// The renderer's side of SceneScript (docs/scenescript-plan.md WP11): owns the wallpaper
-/// instance's `SceneScriptWallpaper`, keeps the state its last frame left, and answers the
+/// instance's `SceneScriptWallpaper`, runs a script frame before each draw (`submit`, then
+/// `finishFrame`), keeps the state its last frame left, and answers the
 /// renderer's questions about it (is an object visible, where is it, what does its text say, in
 /// which order is it drawn). Main thread, like the renderer.
 final class SceneRendererScripts {
@@ -24,6 +25,11 @@ final class SceneRendererScripts {
     /// Objects' parents, for visibility.
     private var parents: [String: String] = [:]
     private var lastScreenSize: SIMD2<Double>?
+    /// Whether the last `submit` started a script frame (`finishFrame` waits only for that).
+    private var frameSubmitted = false
+    /// How long a draw waits for its script frame (`SceneScriptWallpaper.Timing.frameWait`; tests
+    /// on a loaded machine wait longer).
+    var frameWait = SceneScriptWallpaper.Timing.frameWait
 
     init(services: SceneScriptServices?, screenID: String) {
         self.services = services
@@ -90,14 +96,30 @@ final class SceneRendererScripts {
         }
     }
 
-    /// Hands this frame's inputs to the scripts and starts their next frame. The first display size
-    /// is the environment's; a later change is a `resizeScreen`.
+    /// Hands this frame's inputs to the scripts and starts their next frame, unless the last one is
+    /// still running. The first display size is the environment's; a later change is a `resizeScreen`.
     func submit(_ input: SceneScriptFrameInput) {
         guard let wallpaper else { return }
         let size = input.environment.screenResolution
         if let lastScreenSize, lastScreenSize != size { wallpaper.screenDidResize(width: size.x, height: size.y) }
         lastScreenSize = size
-        wallpaper.submit(input)
+        frameSubmitted = wallpaper.submit(input)
+    }
+
+    /// Waits, at most `wait` seconds, for the script frame `submit` started, then takes its state
+    /// like `beginFrame`. A frame that overruns is taken by a later draw; a skipped one (the last
+    /// is still running, e.g. a hung script) isn't waited for.
+    func finishFrame(waitingUpTo wait: TimeInterval) -> [SceneScriptRenderEvent] {
+        guard let wallpaper else { return [] }
+        if frameSubmitted {
+            frameSubmitted = false
+            wallpaper.waitForSubmittedFrame(timeout: wait)
+        }
+        let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+        let taken = wallpaper.take()
+        if let latest = taken.state { state = latest }
+        record(since: start, newFrame: false)
+        return taken.events
     }
 
     /// `applyUserProperties` for changed user properties.
