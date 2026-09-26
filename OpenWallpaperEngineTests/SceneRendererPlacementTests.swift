@@ -159,10 +159,8 @@ final class SceneRendererPlacementTests: XCTestCase {
         // Twice the scene's width: red left half, green right half; the seam is at its origin.
         var layer = SceneMetalLayer(
             id: "wide", name: "wide", source: .image(try Self.halves()), position: SIMD2(scene / 2, scene / 2),
-            size: SIMD2(scene * 2, scene), scale: SIMD2(1, 1), scaleAnimation: nil, opacity: 1,
-            opacityAnimation: nil, brightness: 1, color: SIMD4(repeating: 1),
-            text: nil, parallaxDepth: .zero, perspective: false, positionAnimation: nil, sizeAnimation: nil, rotation: 0,
-            rotationAnimation: nil,
+            size: SIMD2(scene * 2, scene), scale: SIMD2(1, 1), opacity: 1, brightness: 1, color: SIMD4(repeating: 1),
+            text: nil, parallaxDepth: .zero, perspective: false, rotation: 0,
             effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0, exposure: 0,
                                           gamma: 1, hue: 0, bloomThreshold: 0.7, transformAngle: 0, transformOffset: .zero,
                                           transformScale: SIMD2(1, 1)))

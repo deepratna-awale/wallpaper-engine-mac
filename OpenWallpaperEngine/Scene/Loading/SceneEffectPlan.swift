@@ -81,7 +81,10 @@ struct SceneEffectPlanBuilder {
     private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
 
     /// `overrides` returns the user's edit for a WE material key (inspector), as a WE value string.
-    func build(_ effect: WEObjectEffect, overrides: (String) -> SceneEffectOverride? = { _ in nil }) throws -> SceneEffectPlan {
+    /// `owner` is the layer's id and the effect's index in its `effects`: an animated constant of
+    /// scene.json pass `p` is the timeline of `SceneAnimationSite(.material(object, effect, p), key)`.
+    func build(_ effect: WEObjectEffect, owner: (object: Int, effect: Int)? = nil,
+               overrides: (String) -> SceneEffectOverride? = { _ in nil }) throws -> SceneEffectPlan {
         // An effect's materials, shaders and textures live under its own folder
         // (`effects/tint/materials/...`), like a small asset root of its own.
         let effectDirectory = (effect.file as NSString).deletingLastPathComponent
@@ -105,8 +108,14 @@ struct SceneEffectPlanBuilder {
             guard let materialPath = pass.material else { continue }
             let (material, resolvedMaterialPath): (MaterialDocument, String) = try scoped.decode(materialPath)
             guard let materialPass = material.passes.first else { throw SceneEffectPlanError.missing("\(materialPath) passes") }
+            let site = owner.map { owner in
+                { (key: String) in
+                    SceneAnimationSite(owner: .material(object: owner.object, effect: owner.effect, pass: index), key: key)
+                }
+            }
             if var plan = try scoped.buildPass(pass, materialPass: materialPass, materialPath: resolvedMaterialPath,
-                                               instance: instance, fbos: document.fbos, overrides: overrides) {
+                                               instance: instance, fbos: document.fbos, overrides: overrides,
+                                               animationSite: site) {
                 plan.materialIndex = index
                 passes.append(plan)
             }
@@ -121,6 +130,7 @@ struct SceneEffectPlanBuilder {
 
     fileprivate func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
                                instance: WEObjectEffectPass?, fbos: [EffectFBO], overrides: (String) -> SceneEffectOverride?,
+                               animationSite: ((String) -> SceneAnimationSite)? = nil,
                                shaderReader: @escaping (String) -> Data?, effectDirectory: String = "") throws -> SceneEffectPassPlan? {
         let loader = ShaderSourceLoader(readFile: shaderReader)
         let vertex = try loader.load(materialPass.shader, stage: .vertex)
@@ -169,7 +179,7 @@ struct SceneEffectPlanBuilder {
         let constants = ShaderConstantResolver.resolve(
             uniforms: uniforms.map { .init(name: $0.name, glslType: $0.type, arrayCount: $0.arrayCount ?? 1, annotation: $0.annotation) },
             material: materialPass.constantshadervalues.compactMapValues(\.valueSource),
-            instance: Self.applyingOverrides(overrides, to: (instance?.constants ?? [:]).compactMapValues(\.valueSource),
+            instance: Self.applyingOverrides(overrides, to: Self.instanceSources(instance, animationSite: animationSite),
                                              uniforms: uniforms))
         var textureFlags: [Int: TEXFlags] = [:]
         for (slot, input) in inputs {
@@ -236,9 +246,21 @@ struct SceneEffectPlanBuilder {
         return .asset(key: "\(materialPath)|\(name)", source: source)
     }
 
-    /// The user's inspector edits win over the scene's authored value. A plain edit is a static
-    /// literal, so an edited chain can still be reused frame to frame (an edit rebuilds the scene
-    /// content). A music-synced edit is bound to its user property instead, so it's resolved every
+    /// scene.json's constants of one pass, each animated one bound to its timeline's site. A
+    /// material file's own constants have no site: WE animates only the scene's (§1.1).
+    private static func instanceSources(_ instance: WEObjectEffectPass?,
+                                        animationSite: ((String) -> SceneAnimationSite)?) -> [String: SceneValueSource] {
+        var sources: [String: SceneValueSource] = [:]
+        for (key, raw) in instance?.constants ?? [:] {
+            guard let source = raw.valueSource else { continue }
+            sources[key] = animationSite.map { source.bindingAnimation(to: $0(key)) } ?? source
+        }
+        return sources
+    }
+
+    /// The user's inspector edits win over the scene's authored value, not over its timeline or
+    /// script. A plain edit is a static literal, so an edited chain can still be reused frame to
+    /// frame (an edit rebuilds the scene content). A music-synced edit is bound to its user property instead, so it's resolved every
     /// frame and modulated by the audio level like any other synced numeric value.
     static func applyingOverrides(_ overrides: (String) -> SceneEffectOverride?, to instance: [String: SceneValueSource],
                                   uniforms: [ShaderUniformDeclaration]) -> [String: SceneValueSource] {
@@ -246,10 +268,13 @@ struct SceneEffectPlanBuilder {
         for uniform in uniforms {
             guard let key = uniform.materialKey, let override = overrides(key),
                   let value = ShaderValue(string: override.value) else { continue }
+            let authored = result.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
             result = result.filter { $0.key.caseInsensitiveCompare(key) != .orderedSame }
-            result[key] = override.isMusicSynced
+            let edited: SceneValueSource = override.isMusicSynced
                 ? .user(name: override.property, condition: nil, fallback: .literal(value))
                 : .literal(value)
+            // An edit is a user value: an authored timeline (and script) still wins over it (§2.6).
+            result[key] = authored?.replacingBase(with: edited) ?? edited
         }
         return result
     }
@@ -302,12 +327,12 @@ private struct Scoped {
     }
 
     func buildPass(_ pass: EffectPass, materialPass: MaterialPass, materialPath: String,
-                   instance: WEObjectEffectPass?, fbos: [EffectFBO],
-                   overrides: (String) -> SceneEffectOverride?) throws -> SceneEffectPassPlan? {
+                   instance: WEObjectEffectPass?, fbos: [EffectFBO], overrides: (String) -> SceneEffectOverride?,
+                   animationSite: ((String) -> SceneAnimationSite)?) throws -> SceneEffectPassPlan? {
         let read = builder.readFile
         let scopes = candidates
         return try builder.buildPass(pass, materialPass: materialPass, materialPath: materialPath,
-                                     instance: instance, fbos: fbos, overrides: overrides,
+                                     instance: instance, fbos: fbos, overrides: overrides, animationSite: animationSite,
                                      shaderReader: { path in scopes(path).lazy.compactMap(read).first },
                                      effectDirectory: directory)
     }

@@ -26,8 +26,10 @@ enum SceneValueResolver {
             // first write (the renderer reads it from the object table); this is the value it starts from.
             return resolve(fallback, in: context)
 
-        case let .animation(animation, _):
-            return animation.value(at: context.time)
+        case let .animation(site, fallback):
+            // One component per channel (`c0`…); the uniform's type shapes it (`ShaderConstantResolver.shape`).
+            guard let site, let value = context.animationValue(site) else { return resolve(fallback, in: context) }
+            return ShaderValue(components: value)
         }
     }
 

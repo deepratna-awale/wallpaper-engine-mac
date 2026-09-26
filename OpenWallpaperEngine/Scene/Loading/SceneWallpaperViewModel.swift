@@ -518,6 +518,10 @@ class SceneWallpaperViewModel: ObservableObject {
             content.visibility = visibility
             content.objectIDs = scene.objects.map { $0.id ?? -1 }
             content.scripts = scriptContent(wallpaperDir: wallpaperDir, sceneSize: sceneSize)
+            content.timelines = loadedDocument.map {
+                SceneTimelineSource(wallpaperID: loadedProjectId ?? Self.localWallpaperID(wallpaperDir),
+                                    document: $0.document, signature: $0.signature)
+            }
             content.sounds = soundBuilder(wallpaperDir: wallpaperDir).sounds(in: scene.objects, context: valueContext)
             cachedContent = content
             cachedContentRevision = metalRevision
@@ -525,12 +529,11 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         guard let preview = loadPreviewImage(wallpaperDir: wallpaperDir) else { return nil }
         return SceneMetalContent(size: sceneSize, layers: [SceneMetalLayer(id: "preview", name: "preview", source: .image(preview),
-            position: sceneSize / 2, size: sceneSize, scale: SIMD2<Float>(repeating: 1), scaleAnimation: nil,
-            opacity: 1, opacityAnimation: nil,
+            position: sceneSize / 2, size: sceneSize, scale: SIMD2<Float>(repeating: 1),
+            opacity: 1,
             brightness: 1, color: SIMD4<Float>(repeating: 1), text: nil,
             parallaxDepth: .zero, perspective: false,
-            positionAnimation: nil, sizeAnimation: nil,
-            rotation: 0, rotationAnimation: nil,
+            rotation: 0,
                 effects: .identity,
             )], particleSystems: [],
             bloom: SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1)))
@@ -569,12 +572,10 @@ class SceneWallpaperViewModel: ObservableObject {
         var layer = SceneMetalLayer(
             id: "video", name: "video", source: .video(stream),
             position: sceneSize / 2, size: sceneSize,
-            scale: SIMD2<Float>(repeating: 1), scaleAnimation: nil,
-            opacity: 1, opacityAnimation: nil,
+            scale: SIMD2<Float>(repeating: 1),
+            opacity: 1,
             brightness: 1, color: SIMD4<Float>(repeating: 1), text: nil, parallaxDepth: .zero, perspective: false,
-            positionAnimation: nil,
-            sizeAnimation: nil,
-            rotation: 0, rotationAnimation: nil,
+            rotation: 0,
             effects: .identity)
         layer.musicSync = musicSync
         return SceneMetalContent(size: sceneSize, layers: [layer], particleSystems: [],
@@ -689,7 +690,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     /// Resolves user-bound values against this wallpaper's properties.
     private var userValueContext: LiveSceneValueContext {
-        LiveSceneValueContext(time: 0, wallpaper: propertyStoreKey)
+        LiveSceneValueContext(wallpaper: propertyStoreKey)
     }
 
     private func metalSceneSize(for scene: WEScene) -> SIMD2<Float> {
@@ -753,16 +754,14 @@ class SceneWallpaperViewModel: ObservableObject {
         let effectPlans = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1), source: source, position: position, size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
-                       scaleAnimation: object.scaleAnimation,
-                       opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                       opacity: Float(object.alpha ?? 1),
                        brightness: Float(object.brightness ?? 1), color: SIMD4<Float>(Float(objectColor.0), Float(objectColor.1), Float(objectColor.2), 1), text: nil,
                        parallaxDepth: Self.parallaxDepth(of: object),
                        perspective: object.perspective ?? false,
-                       positionAnimation: object.originAnimation,
-                       sizeAnimation: nil,
-                               rotation: rotation, rotationAnimation: object.anglesAnimation, effects: .identity)
+                               rotation: rotation, effects: .identity)
         layer.weEffects = effectPlans.plans
         layer.sceneInput = sceneInput
+        if case .animated = source { layer.textureKey = textureName }
         layer.alignment = model.fullscreen == true ? nil : object.alignment
         layer.fillsScene = model.fullscreen == true
         // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
@@ -804,14 +803,11 @@ class SceneWallpaperViewModel: ObservableObject {
                        position: localOrigin(for: object, sceneSize: sceneSize),
                        size: size,
                        scale: SIMD2<Float>(Float(staticScale.0), Float(staticScale.1)),
-                       scaleAnimation: object.scaleAnimation,
-                       opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                       opacity: Float(object.alpha ?? 1),
                        brightness: Float(object.brightness ?? 1), color: SIMD4<Float>(repeating: 1), text: nil,
                        parallaxDepth: Self.parallaxDepth(of: object),
                        perspective: object.perspective ?? false,
-                       positionAnimation: object.originAnimation,
-                       sizeAnimation: object.sizeAnimation,
-                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationAnimation: object.anglesAnimation, effects: .identity)
+                       rotation: Float(object.angles?.parseVector3().2 ?? 0), effects: .identity)
         layer.weEffects = buildEffectPlans(object.effects ?? [], objectID: object.id ?? -1, wallpaperDir: wallpaperDir).plans
         layer.alignment = object.alignment
         return layer
@@ -861,13 +857,11 @@ class SceneWallpaperViewModel: ObservableObject {
                                source: .image(transparentPlaceholderImage),
                                position: localOrigin(for: object, sceneSize: sceneSize),
                                size: SIMD2<Float>(Float(sizeValue.0), Float(sizeValue.1)),
-                               scale: SIMD2<Float>(Float(textScale.0), Float(textScale.1)), scaleAnimation: object.scaleAnimation,
-                               opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                               scale: SIMD2<Float>(Float(textScale.0), Float(textScale.1)),
+                               opacity: Float(object.alpha ?? 1),
                                brightness: Float(object.brightness ?? 1), color: SIMD4<Float>(Float(color.0), Float(color.1), Float(color.2), 1), text: textConfig, parallaxDepth: Self.parallaxDepth(of: object),
                                perspective: object.perspective ?? false,
-                               positionAnimation: object.originAnimation,
-                               sizeAnimation: object.sizeAnimation,
-                               rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationAnimation: object.anglesAnimation,
+                               rotation: Float(object.angles?.parseVector3().2 ?? 0),
                                effects: .identity)
         layer.alignment = SceneAlignment.text(horizontal: object.horizontalalign, vertical: object.verticalalign)
         // WE runs a text object's effects on its rasterised text; the renderer rasterises before effects run.
@@ -914,12 +908,10 @@ class SceneWallpaperViewModel: ObservableObject {
         }
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),
                        source: .image(transparentPlaceholderImage), position: position, size: size,
-                       scale: SIMD2<Float>(repeating: 1), scaleAnimation: nil,
-                       opacity: Float(object.alpha ?? 1), opacityAnimation: object.alphaAnimation,
+                       scale: SIMD2<Float>(repeating: 1),
+                       opacity: Float(object.alpha ?? 1),
                        brightness: 1, color: SIMD4<Float>(repeating: 1), text: nil, parallaxDepth: Self.parallaxDepth(of: object), perspective: object.perspective ?? false,
-                       positionAnimation: object.originAnimation,
-                       sizeAnimation: object.sizeAnimation,
-                       rotation: Float(object.angles?.parseVector3().2 ?? 0), rotationAnimation: object.anglesAnimation,
+                       rotation: Float(object.angles?.parseVector3().2 ?? 0),
                        effects: .identity)
         layer.weEffects = plans
         layer.alignment = object.alignment
@@ -1034,7 +1026,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 continue
             }
             do {
-                var plan = try builder.build(effect, overrides: { key in
+                var plan = try builder.build(effect, owner: (objectID, index), overrides: { key in
                     SceneEffectOverride.stored(
                         property: sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key),
                         lookup: { WallpaperServices.shared.userPropertyString($0, wallpaper: storeKey) })

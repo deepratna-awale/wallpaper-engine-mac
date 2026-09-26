@@ -327,5 +327,4 @@ final class WEAuthoredValuesTests: XCTestCase {
 
 private struct NoValues: SceneValueContext {
     func userProperty(_ name: String) -> String? { nil }
-    var time: Double { 0 }
 }

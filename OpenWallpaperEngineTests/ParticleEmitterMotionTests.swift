@@ -117,10 +117,19 @@ final class ParticleEmitterMotionTests: XCTestCase {
         return try XCTUnwrap(SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory)).metalContent())
     }
 
-    /// The world transform of `id` at `time`, the way the renderer evaluates it for objects that
-    /// aren't drawn layers.
-    private func world(_ id: String, in content: SceneMetalContent, at time: Float) -> SceneAffineTransform {
-        content.transforms.world(of: id) { content.motions[$0]?.local(at: time) }
+    /// Every object's own transform after `time` seconds of the content's timelines, the way the
+    /// renderer evaluates it for objects that aren't drawn layers.
+    private func locals(_ content: SceneMetalContent, at time: Float) throws -> (String) -> SceneLocalTransform? {
+        let source = try XCTUnwrap(content.timelines)
+        let set = SceneAnimationSet(document: source.document, wallpaperID: source.wallpaperID)
+        set.advance(by: time)
+        return { id in
+            content.motions[id]?.local(animation: Int(id).map { SceneObjectAnimation(set, object: $0) })
+        }
+    }
+
+    private func world(_ id: String, in content: SceneMetalContent, at time: Float) throws -> SceneAffineTransform {
+        content.transforms.world(of: id, live: try locals(content, at: time))
     }
 
     func testEmittersFollowTheirAnimatedParent() throws {
@@ -129,20 +138,21 @@ final class ParticleEmitterMotionTests: XCTestCase {
         XCTAssertEqual(systems.map(\.objectID), ["2", "3"])
         XCTAssertEqual(systems.map(\.worldSpace), [false, true])
         XCTAssertNotNil(content.motions["1"], "a group without a layer still moves its children")
-        let start = world("2", in: content, at: 0)
+        let start = try world("2", in: content, at: 0)
         XCTAssertLessThan(simd_distance(start.translation, SIMD2(500, 540)), 1e-3)
         XCTAssertEqual(start, systems[0].authoredWorld)
         // Halfway: the pivot is at (900, 540), turned a clockwise eighth.
-        let halfway = world("2", in: content, at: 1)
+        let halfway = try world("2", in: content, at: 1)
         let expected = SIMD2<Float>(900, 540) + SIMD2(100, -100) / sqrt(2)
-        XCTAssertLessThan(simd_distance(halfway.translation, expected), 1e-2)
+        // WE's sampler finds the curve's x by bisection to 0.01 frames, linear handles included.
+        XCTAssertLessThan(simd_distance(halfway.translation, expected), 0.1)
     }
 
     func testParticleSystemsParentOtherObjectsLive() throws {
         let content = try content("particle-animated-parent")
         let marker = try XCTUnwrap(content.layers.first { $0.id == "4" })
-        let emitter = world("2", in: content, at: 1)
-        let markerWorld = content.transforms.parentWorld(of: marker.id) { content.motions[$0]?.local(at: 1) }
+        let emitter = try world("2", in: content, at: 1)
+        let markerWorld = content.transforms.parentWorld(of: marker.id, live: try locals(content, at: 1))
             * SceneAffineTransform(SceneLocalTransform(origin: marker.position, scale: marker.scale, angle: marker.rotation))
         XCTAssertLessThan(simd_distance(markerWorld.translation, emitter.apply(SIMD2(0, 50))), 1e-2)
     }

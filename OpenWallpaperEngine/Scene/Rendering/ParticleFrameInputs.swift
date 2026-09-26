@@ -156,13 +156,13 @@ struct ParticleFrameInputs {
         inputs.frameTime = frameTime ?? deltaTime
         inputs.frameRateLimit = frameRateLimit
         inputs.elapsedTime = system.elapsedTime
-        inputs.engineTime = values.map { Float($0.time) } ?? system.elapsedTime
+        inputs.engineTime = system.elapsedTime
         inputs.frameIndex = system.frameIndex
         inputs.timeOfDay = system.timeOfDay()
         let world = emitter ?? childEmitter(system) ?? configuration.authoredWorld
         inputs.motion = motion(of: system, to: world)
         let time = Double(system.elapsedTime)
-        let context = values ?? LiveSceneValueContext(time: time)
+        let context = values ?? LiveSceneValueContext()
         let overrides = inputs.applyOverrides(configuration, values: context, scripted: scripted)
         let emitters = configuration.emitters
         inputs.emitters = emitters.map { emitter in

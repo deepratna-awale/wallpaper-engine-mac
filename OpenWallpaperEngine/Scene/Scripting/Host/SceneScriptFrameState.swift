@@ -21,10 +21,6 @@ struct SceneScriptObjectState {
     var effectRevision = 0
     /// Particle playback as scripts set it (`play`/`pause`/`stop`); nil until one did.
     var playback: SceneScriptObjectCommand.Playback?
-    /// Animations a script controls (played, paused, stopped, set a frame): where each stands, in
-    /// seconds, by the property it drives (`alpha`, `origin`, …) or `texture` for the image's
-    /// spritesheet. The renderer evaluates those timelines at this time instead of scene time.
-    var animationTimes: [String: Double] = [:]
 
     init(values: [Float]) {
         self.values = values
@@ -139,4 +135,10 @@ enum SceneScriptRenderEvent {
     case emit(id: Int, count: Int?)
     /// `ISoundLayer.play()`, `pause()`, `stop()`.
     case sound(id: Int, SceneScriptObjectCommand.Playback)
+    /// What a script's `IAnimation` calls left of a timeline's clock (`SceneAnimationSet.restore`):
+    /// applied before the next advance. An event, not state, so a frame's calls are never lost to
+    /// a later frame's.
+    case animation(SceneAnimationSite, time: Float, flags: SceneTimelineClock.Flags, rate: Float)
+    /// What a script's `ITextureAnimation` calls left of layer `id`'s override.
+    case textureAnimation(id: Int, SceneTextureAnimationControl)
 }

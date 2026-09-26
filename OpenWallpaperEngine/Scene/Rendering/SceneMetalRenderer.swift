@@ -4,7 +4,6 @@ import CryptoKit
 
 private struct PreparedLayer {
     let frames: [RenderTextureFrame]
-    let frameDuration: Float
     let layer: SceneMetalLayer
     /// Where the layer's own transform comes from each frame.
     let motion: SceneObjectMotion
@@ -12,9 +11,8 @@ private struct PreparedLayer {
     /// this (`SceneRendererScripts.drawOrder`).
     var particleBarrier: Int
 
-    init(frames: [RenderTextureFrame], frameDuration: Float, layer: SceneMetalLayer) {
+    init(frames: [RenderTextureFrame], layer: SceneMetalLayer) {
         self.frames = frames
-        self.frameDuration = frameDuration
         self.layer = layer
         motion = SceneObjectMotion(layer: layer)
         particleBarrier = layer.order
@@ -81,6 +79,19 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Scene time since the content loaded, speed applied; drives animations, `g_Time`,
     /// particles and scripts alike.
     private var clock = SceneClock()
+    /// The wall clock `clock` follows (tests step it).
+    var wallTime: () -> CFTimeInterval = { CACurrentMediaTime() }
+    /// The wallpaper instance's timelines and texture clocks (docs/timeline-plan.md §2), advanced
+    /// once per frame by `clock`'s delta, before the scripts run; nil without a scene document.
+    private(set) var animations: SceneAnimationSet?
+    /// The document `animations` was built from (`SceneTimelineSource`).
+    private var timelineKey: (wallpaperID: String, signature: String)?
+    /// Objects whose own fields a timeline drives (with those fields' keys), and the fields'
+    /// values this frame, by id.
+    private var animatedObjects: [(id: Int, key: String, fields: Set<String>)] = []
+    private var objectAnimations: [String: SceneObjectAnimation] = [:]
+    /// Each animated layer's sprite frame this frame, by id (`textureFrame(for:)`).
+    private var spriteFrames: [Int: Int32] = [:]
     private let contentQueue = DispatchQueue(label: "SceneMetalRenderer.content", qos: .userInitiated)
     private let contentGenerationLock = NSLock()
     private var contentGeneration = 0
@@ -113,6 +124,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var pendingEmits: [String: Int] = [:]
     /// How many particle systems are drawn (tests, diagnostics).
     var particleSystemCount: Int { particleSystems.count }
+    /// A drawn layer's effect plans (tests, diagnostics).
+    func effectPlans(ofLayer id: String) -> [SceneEffectPlan] {
+        layers.first { $0.layer.id == id }?.layer.weEffects ?? []
+    }
     /// Script-created layers still being built (tests wait for them).
     private(set) var pendingScriptLayers = 0
     /// The last `setContent` has been applied (its layers and scripts are in place).
@@ -284,6 +299,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             particleSystems = []
             objectMotions = [:]
             scripts.stop()
+            animations = nil
+            timelineKey = nil
+            animatedObjects = []
+            objectAnimations = [:]
             sounds.stopAll()
             lastSoundTime = nil
             scriptParticles.removeAll()
@@ -310,7 +329,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard let self, self.isCurrentContentGeneration(generation) else { return }
             let preparedLayers: [PreparedLayer] = content.layers.compactMap { layer in
                 guard let frames = self.makeTextureFrames(from: layer.source), !frames.isEmpty else { return nil }
-                return PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration }, layer: layer)
+                return PreparedLayer(frames: frames, layer: layer)
             }
             let runtimes: [ParticleSystemRuntime?] = content.particleSystems.enumerated().map { index, system in
                 guard let texture = self.makeTextureFrames(from: system.source)?.first?.texture else { return nil }
@@ -340,6 +359,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 let running = self.scripts.wallpaper
                 self.scripts.setContent(content.scripts, visibility: content.visibility,
                                         parents: content.transforms.nodes.compactMapValues(\.parentID))
+                self.setTimelines(content.timelines,
+                                  restart: self.scripts.wallpaper != nil && self.scripts.wallpaper !== running)
                 if self.scripts.wallpaper == nil || self.scripts.wallpaper !== running {
                     // New scripts: the old ones' layers are gone with them.
                     self.scriptLayers.removeAll()
@@ -355,6 +376,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 self.sounds.setContent(content.sounds + self.scriptSounds.keys.sorted().compactMap { self.scriptSounds[$0] })
                 for (id, created) in self.scriptLayers { self.scripts.setBaseVisibility(created.visible, for: id) }
                 self.layers = preparedLayers + self.scriptLayers.values.map(\.entry)
+                self.layers.forEach(self.registerTextureAnimation)
                 self.orderLayers()
                 self.hasContent = true
                 self.clock = SceneClock()
@@ -386,6 +408,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for event in events {
             switch event {
             case .create(let id, let object):
+                animations?.addObject(object, id: id)
+                refreshAnimatedObjects()
                 buildScriptLayer(String(id), object: object)
             case .destroy(let id):
                 let key = String(id)
@@ -401,11 +425,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     objectMotions.removeValue(forKey: key)
                 }
                 sounds.remove(id)
+                animations?.removeObject(id)
+                refreshAnimatedObjects()
                 removed.append(key)
             case .emit(let id, let count):
                 pendingEmits[String(id), default: 0] += count ?? 1
             case .sound(let id, let playback):
                 sounds.perform(playback, on: id)
+            case let .animation(site, time, flags, rate):
+                animations?.restore(site, time: time, flags: flags, rate: rate)
+            case .textureAnimation(let id, let control):
+                animations?.textures.restore(control, object: id)
             }
         }
         if !removed.isEmpty {
@@ -413,6 +443,59 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // once it has finished (`releaseFinishedEffectState`).
             deferredReleases.enqueue(removed, after: lastCommandBuffer)
         }
+    }
+
+    // MARK: - Timelines
+
+    /// Takes the content's timelines: a new set for a new document, or when new scripts started
+    /// (`restart`: the old ones' created layers and calls are gone); otherwise the running set
+    /// keeps its clocks, as WE keeps a scene's across a user property change.
+    private func setTimelines(_ source: SceneTimelineSource?, restart: Bool) {
+        guard let source else {
+            animations = nil
+            timelineKey = nil
+            refreshAnimatedObjects()
+            return
+        }
+        if restart || animations == nil || timelineKey?.wallpaperID != source.wallpaperID
+            || timelineKey?.signature != source.signature {
+            animations = SceneAnimationSet(document: source.document, wallpaperID: source.wallpaperID)
+            timelineKey = (source.wallpaperID, source.signature)
+        }
+        refreshAnimatedObjects()
+    }
+
+    /// The objects with an animated field of their own, whose values `advanceAnimations` reads.
+    private func refreshAnimatedObjects() {
+        var fields: [Int: Set<String>] = [:]
+        for site in animations?.sites ?? [] where SceneObjectAnimation.keys.contains(site.key) {
+            if case .object(let id) = site.owner { fields[id, default: []].insert(site.key) }
+        }
+        animatedObjects = fields.keys.sorted().map { ($0, String($0), fields[$0] ?? []) }
+        objectAnimations.removeAll()
+        guard let animations else { return }
+        for object in animatedObjects {
+            objectAnimations[object.key] = SceneObjectAnimation(animations, object: object.id, keys: object.fields)
+        }
+    }
+
+    /// An animated texture's layer shares its texture's clock (§2.7), frame times in sheet order.
+    private func registerTextureAnimation(_ entry: PreparedLayer) {
+        guard let key = entry.layer.textureKey, let id = Int(entry.layer.id) else { return }
+        animations?.textures.register(object: id, texture: key, frameTimes: entry.frames.map(\.duration))
+    }
+
+    /// One frame of the instance's timelines (plan P1: before the scripts): every clock owner
+    /// advances by the frame's scene delta and every animated field is sampled. Returns the
+    /// events crossed, for the scripts.
+    private func advanceAnimations() -> [SceneAnimationEvent] {
+        spriteFrames.removeAll(keepingCapacity: true)
+        guard let animations else { return [] }
+        let frame = animations.advance(by: Float(clock.delta))
+        for object in animatedObjects {
+            objectAnimations[object.key] = SceneObjectAnimation(animations, object: object.id, keys: object.fields)
+        }
+        return frame.events
     }
 
     /// Builds an object a script created through the loader, off the main thread: a layer, a
@@ -444,6 +527,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 case .layer(let entry):
                     self.scriptLayers[id] = (entry, visible)
                     self.layers.append(entry)
+                    self.registerTextureAnimation(entry)
                 case .particles(let systems, let motion):
                     self.scriptParticles[id] = (systems, motion)
                     self.objectMotions[id] = motion
@@ -469,7 +553,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         case .layer(var layer):
             layer.order = Int.max
             guard let frames = makeTextureFrames(from: layer.source), !frames.isEmpty else { return nil }
-            return .layer(PreparedLayer(frames: frames, frameDuration: frames.reduce(0) { $0 + $1.duration }, layer: layer))
+            return .layer(PreparedLayer(frames: frames, layer: layer))
         case .particles(let systems, let motion):
             // Above every authored object, like WE's createLayer; the scripts' order places it.
             let runtimes: [ParticleSystemRuntime?] = systems.enumerated().map { index, system in
@@ -552,12 +636,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // density; placement scaling happens once, in the final composite pass.
         let drawableSize = SIMD2<Float>(Float(sceneTexture.width), Float(sceneTexture.height))
         let animationSpeed = WallpaperServices.shared.userPropertyValue("_owe_speed", fallback: 1)
-        clock.advance(to: CACurrentMediaTime(), speed: Double(animationSpeed))
+        clock.advance(to: wallTime(), speed: Double(animationSpeed))
         let sceneTime = clock.time
         let time = Float(sceneTime)
         // What a script frame that overran the last draw's wait left (they run on their own thread, §4.5).
         let orderBefore = scripts.state.order
         applyScriptEvents(scripts.beginFrame())
+        // WE writes every timeline before the scripts run; a script's calls act on the next advance.
+        let animationEvents = advanceAnimations()
         let cursorSample = cursorTracker.update(sceneCursor(in: view, drawableSize: realDrawableSize),
                                                 sceneSize: sceneSize)
         let cursor = cursorSample.position
@@ -572,7 +658,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // unless they overrun the wait (then they show from the next draw on).
             let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
             submitScriptFrame(view: view, drawableSize: realDrawableSize, cursor: cursorSample, leftDown: leftDown,
-                              time: time)
+                              animationEvents: animationEvents)
             scripts.record(since: start, newFrame: false)
             applyScriptEvents(scripts.finishFrame(waitingUpTo: scripts.frameWait))
             beginTransformFrame()
@@ -605,18 +691,18 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // Hidden layers keep their transforms (scripts and hit tests read them) but draw nothing.
             guard scripts.isVisible(entry.layer.id) else { continue }
             if entry.layer.text != nil {
-                let world = worldTransform(entry, time: time)
+                let world = worldTransform(entry)
                 let pixelsPerUnit = max(world.axisScale.x, world.axisScale.y) * renderPixelsPerUnit
-                textFrames[layerIndex] = layerTextFrame(entry, boxSize: layerBaseSize(entry, time: time),
-                                                        pixelsPerUnit: pixelsPerUnit, time: time)
+                textFrames[layerIndex] = layerTextFrame(entry, boxSize: layerBaseSize(entry),
+                                                        pixelsPerUnit: pixelsPerUnit)
             }
-            let draw = layerDraw(entry, baseSize: textFrames[layerIndex]?.baseSize ?? layerBaseSize(entry, time: time),
-                                 time: time, motion: motion)
+            let draw = layerDraw(entry, baseSize: textFrames[layerIndex]?.baseSize ?? layerBaseSize(entry),
+                                 motion: motion)
             draws[layerIndex] = draw
             // Layers that read the scene run inside the scene pass, once what's beneath them is drawn.
             if entry.layer.readsScene { continue }
             if !entry.layer.weEffects.isEmpty {
-                let input = textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)
+                let input = textFrames[layerIndex]?.frame ?? textureFrame(for: entry)
                 dynamicTextures[layerIndex] = runEffects(entry, draw: draw, input: input.texture,
                                                          snapshot: nil, frame: effectFrame, commandBuffer: commandBuffer)
             }
@@ -650,7 +736,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             let script = objectID.flatMap(scripts.object)
             let scripted = script.flatMap(SceneScriptInstanceOverrides.init)
             let base = particleInstances.count
-            let emitter = emitterWorld(system.configuration, time: time, motion: motion)
+            let emitter = emitterWorld(system.configuration, motion: motion)
             // `starttime`: the system's first frame comes after WE's pre-simulation.
             // WE's engine frame time and frame-rate limit steer drag and the operators' half steps
             // (`ParticleFrameInputs.dragDeltaTime`, `substeps`); the pre-simulation runs in this frame.
@@ -753,7 +839,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     }
                     particleMaterials?.draw(batch.system, encoder: encoder, commandBuffer: commandBuffer, context: .init(
                         sceneSize: sceneSize, frame: effectFrame,
-                        values: LiveSceneValueContext(time: sceneTime),
+                        values: LiveSceneValueContext(animations: animations),
                         assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
                         sceneSnapshot: snapshot))
                     drew = true
@@ -809,7 +895,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 layerSnapshot = snapshot
                 let input = entry.layer.sceneInput
                     ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, commandBuffer: commandBuffer) }
-                    : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry, time: time)).texture
+                    : (textFrames[layerIndex]?.frame ?? textureFrame(for: entry)).texture
                 dynamicTextures[layerIndex] = input.flatMap {
                     runEffects(entry, draw: draw, input: $0, snapshot: snapshot, frame: effectFrame, commandBuffer: commandBuffer)
                 }
@@ -835,7 +921,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             uniform.transform = SIMD4<Float>(materialEffects.transformAngle, materialEffects.transformOffset.x,
                                              materialEffects.transformOffset.y, materialEffects.transformScale.x)
             uniform.transformScaleY = materialEffects.transformScale.y
-            let textureFrame = textFrames[layerIndex]?.frame ?? self.textureFrame(for: entry, time: time)
+            let textureFrame = textFrames[layerIndex]?.frame ?? self.textureFrame(for: entry)
             uniform.uvOrigin = textureFrame.uvOrigin
             uniform.uvAxisX = textureFrame.uvAxisX
             uniform.uvAxisY = textureFrame.uvAxisY
@@ -852,7 +938,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                    texture: materialTexture, contentSize: entry.layer.source.contentSize,
                    uvOrigin: textureFrame.uvOrigin, uvAxisX: textureFrame.uvAxisX, uvAxisY: textureFrame.uvAxisY,
                    sceneSnapshot: layerSnapshot, frame: effectFrame,
-                   values: LiveSceneValueContext(time: sceneTime),
+                   values: LiveSceneValueContext(animations: animations),
                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
                    ignoredAdjustments: !ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: draw.brightness)),
                    pixelFormat: sceneTexture.pixelFormat, encoder: encoder, commandBuffer: commandBuffer) {
@@ -929,9 +1015,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// frame's time with the last drawn frame's transforms, text sizes and camera
     /// (docs/scenescript-plan.md §4.4). They run on their own thread; `finishFrame` waits for them.
     private func submitScriptFrame(view: MTKView, drawableSize: SIMD2<Float>,
-                                   cursor: (position: SIMD2<Float>, onDisplay: Bool), leftDown: Bool, time: Float) {
+                                   cursor: (position: SIMD2<Float>, onDisplay: Bool), leftDown: Bool,
+                                   animationEvents: [SceneAnimationEvent]) {
         var input = SceneScriptFrameInput()
         input.deltaTime = clock.delta
+        if let animations {
+            input.animationEvents = animationEvents
+            for site in animations.sites { input.animations[site] = animations.state(of: site) }
+            for id in animations.textures.objectIDs { input.textureAnimations[id] = animations.textures.state(object: id) }
+        }
         input.environment = SceneScriptEngineEnvironment(
             screenResolution: SIMD2(Double(drawableSize.x), Double(drawableSize.y)),
             canvasSize: SIMD2(Double(sceneSize.x), Double(sceneSize.y)), placement: placement,
@@ -946,26 +1038,27 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for entry in layers {
             guard let id = Int(entry.layer.id) else { continue }
             let script = scripts.object(entry.layer.id)
-            let base = baseValues(entry, time: time)
-            let own = entry.motion.local(at: time, script: script, scriptValues: false)
-            var animated = entry.motion.animatedFields
-            if entry.layer.opacityAnimation != nil { animated.insert(.alpha) }
+            let base = baseValues(entry)
+            let animation = objectAnimations[entry.layer.id]
+            let own = entry.motion.local(animation: animation, script: script, scriptValues: false)
             input.objects[id] = SceneScriptObjectFeedback(
                 origin: own.origin, scale: own.scale, angle: own.angle,
-                alpha: baseOpacity(entry, base: base, time: time, script: script),
-                color: SIMD3(base.color.x, base.color.y, base.color.z), brightness: base.brightness,
+                alpha: baseOpacity(entry, base: base),
+                color: animation?.color ?? SIMD3(base.color.x, base.color.y, base.color.z),
+                brightness: animation?.brightness ?? base.brightness,
                 visible: scripts.baseVisible(entry.layer.id),
-                size: lastTextSizes[entry.layer.id] ?? layerBaseSize(entry, time: time),
-                world: worldTransform(entry, time: time), animated: animated)
+                size: lastTextSizes[entry.layer.id] ?? layerBaseSize(entry),
+                world: worldTransform(entry), animated: animation?.fields ?? SceneScriptOwnedFields())
         }
         for (key, objectMotion) in objectMotions {
             guard let id = Int(key) else { continue }
-            let own = objectMotion.local(at: time, script: scripts.object(key), scriptValues: false)
+            let animation = objectAnimations[key]
+            let own = objectMotion.local(animation: animation, script: scripts.object(key), scriptValues: false)
             input.objects[id] = SceneScriptObjectFeedback(
                 origin: own.origin, scale: own.scale, angle: own.angle, alpha: nil, color: nil, brightness: nil,
                 visible: scripts.baseVisible(key), size: nil,
-                world: transforms.world(of: key) { [self] id in liveLocal(id, time: time) },
-                animated: objectMotion.animatedFields, playing: sounds.isPlaying(id))
+                world: transforms.world(of: key) { [self] id in liveLocal(id) },
+                animated: animation?.fields ?? SceneScriptOwnedFields(), playing: sounds.isPlaying(id))
         }
         scripts.submit(input)
     }
@@ -1020,7 +1113,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     /// The parallax offset of a layer: its root object's live origin and `parallaxDepth`.
-    private func parallaxOffset(_ entry: PreparedLayer, local: SceneLocalTransform, time: Float,
+    private func parallaxOffset(_ entry: PreparedLayer, local: SceneLocalTransform,
                                 motion: CameraMotion) -> SIMD2<Float> {
         guard let parallax = motion.parallax else { return .zero }
         let rootID = transforms.root(of: entry.layer.id)
@@ -1031,7 +1124,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                          amount: parallax.amount)
         }
         guard let node = transforms.nodes[rootID] else { return .zero }
-        let rootLocal = liveLocal(rootID, time: time) ?? node.local
+        let rootLocal = liveLocal(rootID) ?? node.local
         return parallax.state.offset(rootOrigin: rootLocal.origin, rootDepth: parallaxDepth(of: rootID, node: node),
                                      amount: parallax.amount)
     }
@@ -1043,55 +1136,53 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// A visible layer's opacity, colour and placed quad this frame: what scripts wrote, then the
     /// timeline, then authored (moved by user bindings).
-    private func layerDraw(_ entry: PreparedLayer, baseSize: SIMD2<Float>, time: Float,
+    private func layerDraw(_ entry: PreparedLayer, baseSize: SIMD2<Float>,
                            motion: CameraMotion) -> LayerDraw {
-        let base = baseValues(entry, time: time)
+        let base = baseValues(entry)
         let script = scripts.object(entry.layer.id)
-        var opacity = script?.scalar(.alpha) ?? baseOpacity(entry, base: base, time: time, script: script)
+        var opacity = script?.scalar(.alpha) ?? baseOpacity(entry, base: base)
         if entry.layer.text != nil {
             opacity *= WallpaperServices.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
         }
-        var local = evaluatedLocal(entry, time: time)
-        let parallaxOffset = parallaxOffset(entry, local: local, time: time, motion: motion)
+        var local = evaluatedLocal(entry)
+        let parallaxOffset = parallaxOffset(entry, local: local, motion: motion)
         let musicSyncLevel = entry.layer.musicSync?.levelSource.map { $0() } ?? motion.audioLevel
         local.scale *= 1 + (entry.layer.musicSync?.zoomAmount ?? 0) * Float(musicSyncLevel)
         local.angle += entry.layer.musicSync.map { $0.tiltAmount * Float(musicSyncLevel) * .pi / 180 } ?? 0
-        let quad = SceneQuadGeometry(world: parentWorld(entry, time: time) * SceneAffineTransform(local),
+        let quad = SceneQuadGeometry(world: parentWorld(entry) * SceneAffineTransform(local),
                                      size: baseSize, alignment: entry.layer.alignment)
         // WE draws a layer where its transform and the camera put it; an oversized layer (sized
         // to hide its edges while it moves) isn't pinned inside the scene.
         let center = quad.center + parallaxOffset - motion.shake
-        let color = script?.vector3(.color).map { SIMD4<Float>($0.x, $0.y, $0.z, base.color.w) } ?? base.color
-        return LayerDraw(opacity: opacity, color: color, brightness: script?.scalar(.brightness) ?? base.brightness,
+        let animation = objectAnimations[entry.layer.id]
+        let rgb = script?.vector3(.color) ?? animation?.color
+        let color = rgb.map { SIMD4<Float>($0.x, $0.y, $0.z, base.color.w) } ?? base.color
+        let brightness = script?.scalar(.brightness) ?? animation?.brightness ?? base.brightness
+        return LayerDraw(opacity: opacity, color: color, brightness: brightness,
                          quad: SceneQuadGeometry(center: center, axisX: quad.axisX, axisY: quad.axisY),
                          musicSyncLevel: musicSyncLevel)
     }
 
-    /// A layer's opacity before scripts: its timeline (at a script-controlled animation's own
-    /// time), else authored or user-bound.
-    private func baseOpacity(_ entry: PreparedLayer, base: SceneLayerBaseValues, time: Float,
-                             script: SceneScriptObjectState?) -> Float {
-        SceneTimeline.value(entry.layer.opacityAnimation, at: script?.animationTimes["alpha"].map(Float.init) ?? time,
-                            fallback: base.opacity)
+    /// A layer's opacity before scripts: its timeline's value this frame, else authored or user-bound.
+    private func baseOpacity(_ entry: PreparedLayer, base: SceneLayerBaseValues) -> Float {
+        objectAnimations[entry.layer.id]?.alpha ?? base.opacity
     }
 
     /// The layer's unscaled size this frame: a script bound to `size` (WE's image property is
     /// writable and drawn every frame, wallpaper64.exe 0x1401e8bb0), else its timeline, else authored.
-    private func layerBaseSize(_ entry: PreparedLayer, time: Float) -> SIMD2<Float> {
-        if let scripted = scripts.object(entry.layer.id)?.vector2(.size) { return scripted }
-        return vector2(SceneTimeline.vector3(entry.layer.sizeAnimation, at: time,
-                                             fallback: SIMD3<Float>(entry.layer.size.x, entry.layer.size.y, 0)))
+    private func layerBaseSize(_ entry: PreparedLayer) -> SIMD2<Float> {
+        scripts.object(entry.layer.id)?.vector2(.size) ?? objectAnimations[entry.layer.id]?.size ?? entry.layer.size
     }
 
     /// A text layer's current string (a script's, else authored), laid out and rasterised (through
     /// the text cache) at `pixelsPerUnit`, with the block size the layout settled on.
-    private func layerTextFrame(_ entry: PreparedLayer, boxSize: SIMD2<Float>, pixelsPerUnit: Float,
-                                time: Float) -> (frame: RenderTextureFrame, baseSize: SIMD2<Float>) {
-        guard let authored = entry.layer.text else { return (textureFrame(for: entry, time: time), boxSize) }
+    private func layerTextFrame(_ entry: PreparedLayer, boxSize: SIMD2<Float>,
+                                pixelsPerUnit: Float) -> (frame: RenderTextureFrame, baseSize: SIMD2<Float>) {
+        guard let authored = entry.layer.text else { return (textureFrame(for: entry), boxSize) }
         let scripted = scripts.text(authored, of: entry.layer.id)
         return makeTextFrame(scripted.text, value: scripted.value, pointSize: scripted.pointSize, boxSize: boxSize,
                              pixelsPerUnit: pixelsPerUnit, layerID: entry.layer.id)
-            ?? (textureFrame(for: entry, time: time), boxSize)
+            ?? (textureFrame(for: entry), boxSize)
     }
 
     // MARK: - Transforms
@@ -1104,47 +1195,47 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// A layer's authored values moved by its user bindings: the base that animations and scripts
     /// start from.
-    private func baseValues(_ entry: PreparedLayer, time: Float) -> SceneLayerBaseValues {
+    private func baseValues(_ entry: PreparedLayer) -> SceneLayerBaseValues {
         entry.layer.bindings.isEmpty
             ? SceneLayerBaseValues(entry.layer)
-            : entry.layer.bindings.baseValues(for: entry.layer, in: LiveSceneValueContext(time: Double(time)))
+            : entry.layer.bindings.baseValues(for: entry.layer, in: LiveSceneValueContext())
     }
 
-    private func evaluatedLocal(_ entry: PreparedLayer, time: Float) -> SceneLocalTransform {
-        objectLocal(entry.motion, id: entry.layer.id, time: time)
+    private func evaluatedLocal(_ entry: PreparedLayer) -> SceneLocalTransform {
+        objectLocal(entry.motion, id: entry.layer.id)
     }
 
     /// An object's own transform this frame (`SceneObjectMotion.local`, scripts' values
     /// included), evaluated once per frame.
-    private func objectLocal(_ motion: SceneObjectMotion, id: String, time: Float) -> SceneLocalTransform {
+    private func objectLocal(_ motion: SceneObjectMotion, id: String) -> SceneLocalTransform {
         if let cached = frameLocals[id] { return cached }
-        let local = motion.local(at: time, script: scripts.object(id))
+        let local = motion.local(animation: objectAnimations[id], script: scripts.object(id))
         frameLocals[id] = local
         return local
     }
 
     /// This frame's own transform of any object: a drawn layer's, or another object's (groups,
     /// particle systems) from its motion. Nil for an object without either.
-    private func liveLocal(_ id: String, time: Float) -> SceneLocalTransform? {
-        if let index = layerIndexByStateId[id] { return evaluatedLocal(layers[index], time: time) }
-        return objectMotions[id].map { objectLocal($0, id: id, time: time) }
+    private func liveLocal(_ id: String) -> SceneLocalTransform? {
+        if let index = layerIndexByStateId[id] { return evaluatedLocal(layers[index]) }
+        return objectMotions[id].map { objectLocal($0, id: id) }
     }
 
     /// The full transform of a layer's ancestors this frame. Every ancestor uses its live
     /// (scripted, animated) transform, so moving a parent moves its children.
-    private func parentWorld(_ entry: PreparedLayer, time: Float) -> SceneAffineTransform {
-        transforms.parentWorld(of: entry.layer.id) { [self] id in liveLocal(id, time: time) }
+    private func parentWorld(_ entry: PreparedLayer) -> SceneAffineTransform {
+        transforms.parentWorld(of: entry.layer.id) { [self] id in liveLocal(id) }
     }
 
     /// A particle system's emitter transform this frame: its object's, parents included, moved by
     /// camera parallax and shake as WE moves every object's model matrix (0x14018a0b3): the
     /// system's particles follow it unless it is `worldspace`; its children follow it through
     /// their links.
-    private func emitterWorld(_ configuration: SceneMetalParticleSystem, time: Float,
+    private func emitterWorld(_ configuration: SceneMetalParticleSystem,
                               motion: CameraMotion) -> SceneAffineTransform? {
         guard let id = configuration.objectID else { return nil }
-        var world = transforms.world(of: id) { [self] id in liveLocal(id, time: time) }
-        world.translation += particleParallaxOffset(id, time: time, motion: motion) - motion.shake
+        var world = transforms.world(of: id) { [self] id in liveLocal(id) }
+        world.translation += particleParallaxOffset(id, motion: motion) - motion.shake
         return world
     }
 
@@ -1179,17 +1270,17 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     /// The parallax offset of a particle object: its root object's live origin and `parallaxDepth`.
-    private func particleParallaxOffset(_ id: String, time: Float, motion: CameraMotion) -> SIMD2<Float> {
+    private func particleParallaxOffset(_ id: String, motion: CameraMotion) -> SIMD2<Float> {
         guard let parallax = motion.parallax else { return .zero }
         let rootID = transforms.root(of: id)
         guard let node = transforms.nodes[rootID] else { return .zero }
-        let rootLocal = liveLocal(rootID, time: time) ?? node.local
+        let rootLocal = liveLocal(rootID) ?? node.local
         return parallax.state.offset(rootOrigin: rootLocal.origin, rootDepth: parallaxDepth(of: rootID, node: node),
                                      amount: parallax.amount)
     }
 
-    private func worldTransform(_ entry: PreparedLayer, time: Float) -> SceneAffineTransform {
-        parentWorld(entry, time: time) * SceneAffineTransform(evaluatedLocal(entry, time: time))
+    private func worldTransform(_ entry: PreparedLayer) -> SceneAffineTransform {
+        parentWorld(entry) * SceneAffineTransform(evaluatedLocal(entry))
     }
 
     /// Hands the vertex stage the quad's full axes (parent rotation and non-uniform scale), in
@@ -1208,7 +1299,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard let effectGraph, !entry.layer.weEffects.isEmpty else { return nil }
         var context = EffectGraphRenderer.Context(
             frame: frame,
-            values: LiveSceneValueContext(time: frame.time),
+            values: LiveSceneValueContext(animations: animations),
             assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
             sceneSnapshot: snapshot,
             // The scripted/animated values the layer is drawn with this frame, not the authored ones.
@@ -1495,26 +1586,28 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return texture
     }
 
-    private func textureFrame(for entry: PreparedLayer, time: Float) -> RenderTextureFrame {
+    /// The layer's texture this frame: a video's current picture, or the sprite frame of an
+    /// animated texture from the instance's texture clocks (docs/timeline-plan.md §2.7, §3.2),
+    /// taken once per frame (a script's override advances each time it is asked).
+    private func textureFrame(for entry: PreparedLayer) -> RenderTextureFrame {
         // A video layer's texture is replaced every frame, so the decoded frame list is only a seed.
         if case let .video(stream) = entry.layer.source, let texture = stream.currentTexture() {
             return RenderTextureFrame(texture: texture, duration: .greatestFiniteMagnitude,
                                       uvOrigin: .zero, uvAxisX: SIMD2<Float>(1, 0), uvAxisY: SIMD2<Float>(0, 1))
         }
-        guard entry.frames.count > 1 else { return entry.frames[0] }
-        let duration = entry.frameDuration
-        guard duration > 0 else { return entry.frames[0] }
-        var frameTime = time.truncatingRemainder(dividingBy: duration)
-        for frame in entry.frames {
-            if frameTime < frame.duration { return frame }
-            frameTime -= frame.duration
+        guard entry.frames.count > 1, let id = Int(entry.layer.id) else { return entry.frames[0] }
+        let frame: Int32
+        if let drawn = spriteFrames[id] {
+            frame = drawn
+        } else {
+            frame = animations?.drawnTextureFrame(object: id, delta: Float(clock.delta)) ?? 0
+            spriteFrames[id] = frame
         }
-        return entry.frames[0]
+        // `setFrame(n)` isn't range-checked; a frame outside the sheet draws the first.
+        return frame >= 0 && Int(frame) < entry.frames.count ? entry.frames[Int(frame)] : entry.frames[0]
     }
 
-    private func vector2(_ value: SIMD3<Float>) -> SIMD2<Float> {
-        SIMD2<Float>(value.x, value.y)
-    }
+
     private func spriteSheetUV(for particle: Particle,
                                configuration: SceneMetalParticleSystem) -> (origin: SIMD2<Float>, size: SIMD2<Float>) {
         guard let sheet = configuration.spriteSheet, sheet.frames > 0 else {

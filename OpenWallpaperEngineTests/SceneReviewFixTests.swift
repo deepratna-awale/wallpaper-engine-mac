@@ -105,7 +105,7 @@ final class SceneReviewFixTests: XCTestCase {
         defer { engine.endFrame() }
         XCTAssertEqual(engine.audioLevel, 0)
         XCTAssertTrue(engine.isMusicSynced("p"))
-        XCTAssertEqual(LiveSceneValueContext(engine: engine, time: 0).userProperty("p").flatMap(Float.init), 0.4)
+        XCTAssertEqual(LiveSceneValueContext(engine: engine).userProperty("p").flatMap(Float.init), 0.4)
         XCTAssertEqual(engine.userPropertyValue("p", fallback: 0.4), 0.4)
     }
 

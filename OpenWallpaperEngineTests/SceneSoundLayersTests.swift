@@ -148,6 +148,5 @@ final class SceneSoundLayersTests: XCTestCase {
 
 /// No user properties: every binding takes its authored value.
 private struct StaticSceneValueContext: SceneValueContext {
-    let time: Double = 0
     func userProperty(_ name: String) -> String? { nil }
 }

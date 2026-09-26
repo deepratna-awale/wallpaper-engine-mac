@@ -3,9 +3,10 @@ import XCTest
 
 private struct MockValueContext: SceneValueContext {
     var properties: [String: String] = [:]
-    var time: Double = 0
+    var animations: [SceneAnimationSite: [Float]] = [:]
 
     func userProperty(_ name: String) -> String? { properties[name] }
+    func animationValue(_ site: SceneAnimationSite) -> [Float]? { animations[site] }
 }
 
 final class SceneValueTests: XCTestCase {
@@ -77,22 +78,38 @@ final class SceneValueTests: XCTestCase {
         XCTAssertEqual(try value(json).components, [1, 2])
     }
 
-    func testAnimation() throws {
-        let json: [String: Any] = ["value": 0, "animation": [
-            "c0": [["frame": 0, "value": 0], ["frame": 30, "value": 1]],
-            "options": ["fps": 30, "length": 60, "mode": "loop", "wraploop": true]
+    /// An animated value is its timeline's value this frame, over `user` and the literal (WE's
+    /// setter runs every frame, docs/timeline-plan.md §2.6); the timeline itself lives in the
+    /// instance's `SceneAnimationSet`, found by the site the loader binds.
+    func testAnimationBeatsUserAndLiteral() throws {
+        let json: [String: Any] = ["value": 0.3, "user": "fade", "animation": [
+            "c0": [["frame": 0, "value": 0], ["frame": 30, "value": 1]], "options": ["fps": 30, "length": 60]
         ]]
-        XCTAssertTrue(try source(json).isDynamic)
-        XCTAssertEqual(try value(json, MockValueContext(time: 0.5)).float, 0.5, accuracy: 1e-5)
-        XCTAssertEqual(try value(json, MockValueContext(time: 1.0)).float, 1, accuracy: 1e-5)
-        XCTAssertEqual(try value(json, MockValueContext(time: 1.5)).float, 0.5, accuracy: 1e-5, "wraploop returns to c0[0]")
-        XCTAssertEqual(try value(json, MockValueContext(time: 2.25)).float, 0.25, accuracy: 1e-5, "loops")
+        let site = SceneAnimationSite(owner: .material(object: 1, effect: 0, pass: 0), key: "alpha")
+        let parsed = try source(json)
+        XCTAssertTrue(parsed.isDynamic)
+        guard case .animation(nil, .user("fade", nil, .literal)) = parsed else { return XCTFail("\(parsed)") }
+        let bound = parsed.bindingAnimation(to: site)
+        let context = MockValueContext(properties: ["fade": "0.8"], animations: [site: [0.25]])
+        XCTAssertEqual(SceneValueResolver.resolve(bound, in: context).components, [0.25], "the timeline wins")
+        XCTAssertEqual(SceneValueResolver.resolve(parsed, in: context).components, [0.8], "unbound: user, then literal")
+        XCTAssertEqual(SceneValueResolver.resolve(bound, in: MockValueContext()).components, [0.3],
+                       "no timeline at the site (it didn't load): the other sources")
 
-        let paused: [String: Any] = ["value": 0, "animation": [
-            "c0": [["frame": 0, "value": 1], ["frame": 15, "value": 0]],
-            "options": ["fps": 15, "length": 15, "mode": "single", "startpaused": true]
-        ]]
-        XCTAssertEqual(try value(paused, MockValueContext(time: 5)).float, 1)
+        let scripted = try source(["value": 1, "script": "export function update(v) { return v; }",
+                                   "animation": ["c0": [], "options": ["fps": 30, "length": 60]]])
+        guard case .script(_, _, .animation(site, _)) = scripted.bindingAnimation(to: site) else {
+            return XCTFail("a script wraps the animation, whose return wins for its frame")
+        }
+
+        // The app's inspector edit is a user value: it replaces the literal, under the timeline.
+        let edited = SceneEffectPlanBuilder.applyingOverrides(
+            { _ in SceneEffectOverride(property: "edit", value: "0.9") }, to: ["Alpha": bound],
+            uniforms: [ShaderUniformDeclaration(type: "float", name: "g_Alpha", arrayCount: nil, annotation: ["material": "alpha"])])
+        guard case .animation(site, .literal(let value)) = try XCTUnwrap(edited["alpha"]) else {
+            return XCTFail("\(edited)")
+        }
+        XCTAssertEqual(value.components, [0.9])
     }
 
     // MARK: Constants

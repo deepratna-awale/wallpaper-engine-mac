@@ -16,11 +16,11 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
         var effectSlots: [Int]
     }
 
-    /// A placed animation, for the per-frame clock.
-    private struct Clock {
-        var slot: Int
-        var fps: Double
-        var frameCount: Int
+    /// What an animation slot shows scripts: a timeline of the instance's `SceneAnimationSet`, or
+    /// an image layer's texture animation.
+    private enum AnimationTarget {
+        case timeline(SceneAnimationSite)
+        case texture(objectID: Int)
     }
 
     let describer: SceneScriptSceneDescriber
@@ -39,11 +39,11 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
     /// Every live slot in draw order, bottom first, as `objects-scene.js` keeps `objects.order`.
     private var order: [Int] = []
     private var orderChanged = false
-    /// Animation slots a script controls (`play`, `pause`, `stop`, `setFrame`, a `rate` write).
-    private var controlled = Set<Int>()
-    /// Every placed animation; rebuilt when objects come and go.
-    private var clocks: [Clock] = []
-    private var clocksValid = false
+    /// Every placed animation slot and what it shows, in slot order; rebuilt when objects come and go.
+    private var animationTargets: [(slot: Int, target: AnimationTarget)] = []
+    /// The slot of each timeline site, for its events.
+    private var animationSlots: [SceneAnimationSite: Int] = [:]
+    private var animationTargetsValid = false
     /// The image and text layers in draw order, for the cursor pass; rebuilt with the order.
     private var hitTestable: [SceneScriptCursorLayer.TableEntry] = []
     private var hitTestableValid = false
@@ -82,7 +82,7 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
                                disablesPropagation: disablesPropagation,
                                effectSlots: model?.store?.effectBufferSlots(of: slot) ?? [])
         slotsByID[object.id] = slot
-        clocksValid = false
+        animationTargetsValid = false
         hitTestableValid = false
     }
 
@@ -123,7 +123,7 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
             configurations[object.id] = nil
             order.removeAll { $0 == slot }
             orderChanged = true
-            clocksValid = false
+            animationTargetsValid = false
             hitTestableValid = false
             state.objects[object.id] = nil
             events.append(.destroy(id: object.id))
@@ -154,20 +154,10 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
         case .emitParticles(let slot, let count):
             guard let id = objects[slot]?.id else { return }
             events.append(.emit(id: id, count: count))
-        case .animation(let reference, let action):
-            perform(action, on: reference)
-        }
-    }
-
-    private func perform(_ action: SceneScriptObjectCommand.AnimationAction, on reference: SceneScriptAnimationReference) {
-        guard reference.slot != nil, reference.effect == nil else {
-            reportOnce("IAnimation.effect", "animations of the scene, effects and materials are not script-controlled yet (WP12)")
-            return
-        }
-        if action == .join {
-            controlled.remove(reference.animationSlot)
-        } else {
-            controlled.insert(reference.animationSlot)
+        case .animation:
+            // `objects-animations.js` already applied the call to the animation buffer, in call
+            // order; `readBack` hands the slot's state to the renderer's set.
+            break
         }
     }
 
@@ -191,14 +181,20 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
 
     // MARK: - Frame
 
-    /// Before a frame: the renderer's values into the table, animation clocks, the cursor.
+    /// Before a frame: the renderer's values into the table, the timelines' states, the cursor.
     func prepare(_ input: SceneScriptFrameInput, cursor: SceneScriptCursorExtension?) {
         guard let sync else { return }
         for (id, feedback) in input.objects {
             guard let slot = slotsByID[id] else { continue }
-            sync.write(feedback, slot: slot, owned: state.objects[id]?.owned ?? SceneScriptOwnedFields())
+            let owned = state.objects[id]?.owned ?? SceneScriptOwnedFields()
+            sync.write(feedback, slot: slot, owned: owned)
+            // A script-owned field a timeline drives gets the timeline's value back each frame
+            // (§2.6): read the row back even if no script writes the object this frame.
+            if !feedback.animated.isEmpty, owned.bits & feedback.animated.bits != 0, let store = model?.store {
+                store.table.dirty[slot] = 1
+            }
         }
-        advanceAnimations(by: input.deltaTime)
+        publishAnimations(input)
         guard let cursor, let table = model?.store?.table else { return }
         if !hitTestableValid {
             hitTestableValid = true
@@ -216,20 +212,74 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
                                               parallax: input.parallax, layers: layers))
     }
 
-    /// WE runs timeline animations before scripts (§1.9 P1): every playing animation's frame
-    /// moves on by its fps and rate, wrapping at its length, so `getFrame()` follows the clock.
-    private func advanceAnimations(by deltaTime: Double) {
-        guard let store = model?.store, deltaTime > 0 else { return }
-        refreshClocks(store)
-        let buffer = store.animations
+    /// Writes every animation slot's state as the renderer's set left it this frame (the clocks
+    /// advanced before the scripts run, §1.9 P1), in `SceneScriptObjectStore.AnimationLayout`.
+    /// The slots stay clean: only a script's call marks one dirty.
+    private func publishAnimations(_ input: SceneScriptFrameInput) {
+        guard let store = model?.store else { return }
+        refreshAnimationTargets(store)
         typealias Layout = SceneScriptObjectStore.AnimationLayout
-        for clock in clocks where buffer[clock.slot, Layout.playing] != 0 {
-            var frame = Double(buffer[clock.slot, Layout.frame]) + deltaTime * clock.fps * Double(buffer[clock.slot, Layout.rate])
-            if clock.frameCount > 0, frame.isFinite {
-                frame = frame.truncatingRemainder(dividingBy: Double(clock.frameCount))
-                if frame < 0 { frame += Double(clock.frameCount) }
+        typealias Flags = SceneScriptObjectStore.AnimationFlags
+        let buffer = store.animations
+        for (slot, target) in animationTargets {
+            switch target {
+            case .timeline(let site):
+                guard let animation = input.animations[site] else { continue }
+                var flags = 0
+                if animation.flags.contains(.paused) { flags |= Flags.paused }
+                if animation.flags.contains(.finished) { flags |= Flags.finished }
+                if animation.flags.contains(.reversed) { flags |= Flags.backwards }
+                buffer[slot, Layout.rate] = animation.rate
+                buffer[slot, Layout.frame] = animation.frame
+                buffer[slot, Layout.playing] = animation.isPlaying ? 1 : 0
+                buffer[slot, Layout.flags] = Float(flags)
+                buffer[slot, Layout.time] = animation.time
+            case .texture(let id):
+                guard let texture = input.textureAnimations[id] else { continue }
+                let control = texture.control
+                buffer[slot, Layout.rate] = control.rate
+                buffer[slot, Layout.frame] = Float(control.frame)
+                buffer[slot, Layout.playing] = control.playing ? 1 : 0
+                buffer[slot, Layout.flags] = Float(control.overridden ? Flags.overridden : 0)
+                buffer[slot, Layout.time] = control.time
+                buffer[slot, Layout.sharedFrame] = Float(texture.sharedFrame)
+                buffer[slot, Layout.sharedTime] = texture.sharedTime
             }
-            buffer[clock.slot, Layout.frame] = Float(frame)
+        }
+    }
+
+    /// The `animationEvent` inbox events for this frame's timeline events, each for the slot of
+    /// its clock owner (docs/timeline-plan.md §3.3). Events of a site no script can reach are dropped.
+    func animationEvents(_ events: [SceneAnimationEvent]) -> [SceneScriptEvent] {
+        guard !events.isEmpty, let store = model?.store else { return [] }
+        refreshAnimationTargets(store)
+        return events.compactMap { event in
+            animationSlots[event.site].map {
+                SceneScriptEvent.animationEvent(animationSlot: $0, name: event.name, frame: Double(event.frame))
+            }
+        }
+    }
+
+    /// Maps each placed animation slot to its site: the record's owner (the scene, a layer, an
+    /// effect or a material) and property, as `SceneScriptSceneDescriber` named it.
+    private func refreshAnimationTargets(_ store: SceneScriptObjectStore) {
+        guard !animationTargetsValid else { return }
+        animationTargetsValid = true
+        animationTargets.removeAll(keepingCapacity: true)
+        animationSlots.removeAll(keepingCapacity: true)
+        for slot in store.animationReferences.keys.sorted() {
+            guard let reference = store.animationReferences[slot] else { continue }
+            let objectID = reference.slot.flatMap { objects[$0]?.id }
+            if reference.slot != nil, objectID == nil { continue }
+            if reference.isTextureAnimation {
+                if let objectID { animationTargets.append((slot, .texture(objectID: objectID))) }
+                continue
+            }
+            guard let property = store.animationDescriptions[slot]?.property,
+                  let site = SceneAnimationSite(scriptProperty: property, objectID: objectID,
+                                                effect: reference.effect, material: reference.material) else { continue }
+            animationTargets.append((slot, .timeline(site)))
+            animationSlots[site] = slot
         }
     }
 
@@ -264,29 +314,30 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
         return (state, events)
     }
 
-    private func refreshClocks(_ store: SceneScriptObjectStore) {
-        guard !clocksValid else { return }
-        clocksValid = true
-        clocks = store.animationDescriptions.map { Clock(slot: $0.key, fps: $0.value.fps, frameCount: $0.value.frameCount) }
-    }
-
-    /// A `rate` write makes an animation script-controlled; controlled ones publish where they stand.
+    /// The animation slots scripts called into this frame, as render events: a timeline's time,
+    /// run-time flags and rate, or a layer's whole texture override (§3.1, §3.2).
     private func readAnimations(_ store: SceneScriptObjectStore) {
         typealias Layout = SceneScriptObjectStore.AnimationLayout
+        typealias Flags = SceneScriptObjectStore.AnimationFlags
         let buffer = store.animations
-        refreshClocks(store)
-        for clock in clocks where buffer.dirty[clock.slot] != 0 {
-            buffer.dirty[clock.slot] = 0
-            controlled.insert(clock.slot)
-        }
-        guard !controlled.isEmpty else { return }
-        controlled = controlled.filter { store.animationReferences[$0] != nil }
-        for slot in controlled {
-            guard let reference = store.animationReferences[slot], let objectSlot = reference.slot,
-                  reference.effect == nil, let animation = store.animationDescriptions[slot],
-                  let key = reference.isTextureAnimation ? "texture" : animation.property else { continue }
-            let seconds = animation.fps > 0 ? Double(buffer[slot, Layout.frame]) / animation.fps : 0
-            update(objectSlot) { $0.animationTimes[key] = seconds }
+        refreshAnimationTargets(store)
+        for (slot, target) in animationTargets where buffer.dirty[slot] != 0 {
+            buffer.dirty[slot] = 0
+            let flags = Int(exactly: buffer[slot, Layout.flags]) ?? 0
+            switch target {
+            case .timeline(let site):
+                var clock: SceneTimelineClock.Flags = []
+                if flags & Flags.paused != 0 { clock.insert(.paused) }
+                if flags & Flags.finished != 0 { clock.insert(.finished) }
+                if flags & Flags.backwards != 0 { clock.insert(.reversed) }
+                events.append(.animation(site, time: buffer[slot, Layout.time], flags: clock, rate: buffer[slot, Layout.rate]))
+            case .texture(let id):
+                let control = SceneTextureAnimationControl(
+                    rate: buffer[slot, Layout.rate], frame: SceneTimelineClock.convertTruncating(buffer[slot, Layout.frame]),
+                    time: buffer[slot, Layout.time], playing: buffer[slot, Layout.playing] != 0,
+                    overridden: flags & Flags.overridden != 0)
+                events.append(.textureAnimation(id: id, control))
+            }
         }
     }
 

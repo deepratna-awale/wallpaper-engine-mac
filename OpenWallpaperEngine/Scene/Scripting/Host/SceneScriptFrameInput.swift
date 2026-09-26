@@ -20,6 +20,13 @@ struct SceneScriptFrameInput {
     var parallax: SceneScriptCursorFrame.Parallax?
     /// Every object the renderer drew or moved, by scene.json id.
     var objects: [Int: SceneScriptObjectFeedback] = [:]
+    /// The timeline events this frame's advance crossed, in firing order: each goes to the
+    /// scripts of its clock owner as `animationEvent` (docs/timeline-plan.md §3.3).
+    var animationEvents: [SceneAnimationEvent] = []
+    /// Every timeline's `IAnimation` state after this frame's advance, by site.
+    var animations: [SceneAnimationSite: SceneAnimationState] = [:]
+    /// Every image layer's `ITextureAnimation` state (its override and the shared clock), by id.
+    var textureAnimations: [Int: SceneTextureAnimations.State] = [:]
 }
 
 /// One object as the renderer last drew it, in the object table's units. A value is written into
@@ -40,7 +47,7 @@ struct SceneScriptObjectFeedback {
     var size: SIMD2<Float>?
     /// Parents included, without camera parallax or shake.
     var world: SceneAffineTransform
-    /// Fields a timeline animates this frame.
+    /// Fields a timeline animates this frame (`SceneObjectAnimation`).
     var animated = SceneScriptOwnedFields()
     /// A sound layer's `isPlaying()` as its playback stands; nil for other objects.
     var playing: Bool?

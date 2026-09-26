@@ -7,15 +7,22 @@ import Foundation
 /// - `{"value": v, "user": "name"}` → `.user(name, nil, fallback: v)`
 /// - `{"value": v, "user": {"name": n, "condition": c}}` → `.user(n, c, fallback: v)`
 /// - `{"value": v, "script": s, "scriptproperties": {…}}` → `.script(s, props, fallback: v)`
-/// - `{"value": v, "animation": {…}}` → `.animation(anim, fallback: v)`
+/// - `{"value": v, "animation": {…}}` → `.animation(site: nil, fallback: v)`
 ///
-/// When several keys are present they nest: `user` wraps `script`, which wraps `animation`,
-/// which wraps the literal `value`. A missing `value` falls back to 0.
+/// When several keys are present they nest: `script` wraps `animation`, which wraps `user`,
+/// which wraps the literal `value`. That is WE's precedence (docs/timeline-plan.md §2.6): the
+/// timeline's setter runs every frame over the static and user-bound value, and a script's return
+/// wins for its frame. A missing `value` falls back to 0.
+///
+/// The timeline itself lives in the wallpaper instance's `SceneAnimationSet`; the source only
+/// names its site, which the loader binds (`bindingAnimation(to:)`) where it knows the owner.
 indirect enum SceneValueSource: Equatable {
     case literal(ShaderValue)
     case user(name: String, condition: String?, fallback: SceneValueSource)
     case script(source: String, properties: SceneScriptProperties, fallback: SceneValueSource)
-    case animation(SceneValueAnimation, fallback: SceneValueSource)
+    /// The value of the timeline at `site` this frame; `fallback` while the site is unbound or
+    /// the instance has no such timeline (one that didn't load, logged by the set).
+    case animation(site: SceneAnimationSite?, fallback: SceneValueSource)
 
     /// True when the value can change after load (so it must be re-resolved every frame).
     var isDynamic: Bool {
@@ -55,20 +62,6 @@ indirect enum SceneValueSource: Equatable {
             source = .literal(.zero)
         }
 
-        if let raw = dictionary["animation"] {
-            guard let animation = SceneValueAnimation(json: raw) else { return nil }
-            source = .animation(animation, fallback: source)
-        }
-
-        if let raw = dictionary["script"] {
-            guard let script = raw as? String else {
-                OWELog.error(.scene, "SceneValueSource: 'script' is not a string")
-                return nil
-            }
-            let properties = SceneScriptProperties(json: dictionary["scriptproperties"] as? [String: Any] ?? [:])
-            source = .script(source: script, properties: properties, fallback: source)
-        }
-
         if let raw = dictionary["user"] {
             if let name = raw as? String {
                 source = .user(name: name, condition: nil, fallback: source)
@@ -88,6 +81,44 @@ indirect enum SceneValueSource: Equatable {
                 return nil
             }
         }
+
+        if let raw = dictionary["animation"] {
+            guard raw is [String: Any] else {
+                OWELog.error(.scene, "SceneValueSource: 'animation' is not an object")
+                return nil
+            }
+            source = .animation(site: nil, fallback: source)
+        }
+
+        if let raw = dictionary["script"] {
+            guard let script = raw as? String else {
+                OWELog.error(.scene, "SceneValueSource: 'script' is not a string")
+                return nil
+            }
+            let properties = SceneScriptProperties(json: dictionary["scriptproperties"] as? [String: Any] ?? [:])
+            source = .script(source: script, properties: properties, fallback: source)
+        }
         self = source
+    }
+
+    /// This source with its timeline bound to `site` (an animated constant's owner and key).
+    func bindingAnimation(to site: SceneAnimationSite) -> SceneValueSource {
+        switch self {
+        case .literal, .user: return self
+        case let .script(source, properties, fallback):
+            return .script(source: source, properties: properties, fallback: fallback.bindingAnimation(to: site))
+        case .animation(_, let fallback): return .animation(site: site, fallback: fallback)
+        }
+    }
+
+    /// This source with its static and user-bound part replaced by `base`, keeping a script and a
+    /// timeline over it; `base` itself when there is neither.
+    func replacingBase(with base: SceneValueSource) -> SceneValueSource {
+        switch self {
+        case .literal, .user: return base
+        case let .script(source, properties, fallback):
+            return .script(source: source, properties: properties, fallback: fallback.replacingBase(with: base))
+        case .animation(let site, let fallback): return .animation(site: site, fallback: fallback.replacingBase(with: base))
+        }
     }
 }

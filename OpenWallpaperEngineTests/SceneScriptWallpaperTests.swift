@@ -109,7 +109,7 @@ final class SceneScriptWallpaperTests: XCTestCase {
                 switch event {
                 case .create(let id, _): created.insert(id)
                 case .destroy(let id): destroyed.insert(id)
-                case .emit, .sound: break
+                case .emit, .sound, .animation, .textureAnimation: break
                 }
             }
         }
@@ -120,16 +120,55 @@ final class SceneScriptWallpaperTests: XCTestCase {
         XCTAssertEqual(slots, 2, "destroyed layers' slots are free again")
     }
 
-    /// A property animation a script controls comes back as the time the renderer evaluates it at;
-    /// animations nobody touched keep following scene time.
-    func testAScriptControlledAnimationPublishesItsTime() throws {
+    /// Scripts read a timeline as the renderer's set left it this frame (the clocks advance before
+    /// them, §1.9 P1), and what their `IAnimation` calls did comes back as a render event the
+    /// renderer restores before its next advance (docs/timeline-plan.md §3.1).
+    func testIAnimationStateGoesInAndCallsComeBack() throws {
         let alpha = #""alpha": {"value": 1, "animation": {"c0": [{"frame": 0, "value": 0}, {"frame": 20, "value": 1}], "options": {"fps": 10, "length": 20, "name": "fade"}}}"#
-        let script = "export function update(value) { const a = thisLayer.getAnimation('fade'); a.pause(); a.setFrame(5); return value; }"
+        let script = "export function update(value) { if (shared.done) return value; shared.done = true; "
+            + "const a = thisLayer.getAnimation('fade'); shared.before = a.getFrame(); "
+            + "shared.playing = a.isPlaying() ? 1 : 0; a.pause(); a.setFrame(5); a.rate = 2; return value; }"
+        let wallpaper = try make(objects: [object(id: 1, fields: #"\#(alpha), "origin": {"script": "\#(script)", "value": "0 0 0"}"#)])
+        let site = SceneAnimationSite(owner: .object(1), key: "alpha")
+        var input = SceneScriptFrameInput()
+        input.deltaTime = 1.0 / 60
+        input.animations[site] = SceneAnimationState(name: "fade", fps: 10, frameCount: 20, duration: 2, rate: 1,
+                                                     time: 0.3, flags: [], frame: 3)
+        wallpaper.submit(input)
+        wallpaper.waitUntilIdle()
+        let events = wallpaper.take().events
+        XCTAssertEqual(try shared(wallpaper, "before"), 3, "getFrame() is the set's frame")
+        XCTAssertEqual(try shared(wallpaper, "playing"), 1)
+        let restores = events.compactMap { event -> (SceneAnimationSite, Float, SceneTimelineClock.Flags, Float)? in
+            guard case let .animation(site, time, flags, rate) = event else { return nil }
+            return (site, time, flags, rate)
+        }
+        XCTAssertEqual(restores.count, 1, "\(events)")
+        XCTAssertEqual(restores.first?.0, site)
+        XCTAssertEqual(try XCTUnwrap(restores.first?.1), 0.5, accuracy: 1e-6, "frame 5 at 10 fps")
+        XCTAssertEqual(restores.first?.2, [.paused])
+        XCTAssertEqual(restores.first?.3, 2)
+
+        // A frame without calls sends nothing back.
+        wallpaper.submit(input)
+        wallpaper.waitUntilIdle()
+        XCTAssertFalse(wallpaper.take().events.contains { if case .animation = $0 { return true } else { return false } })
+    }
+
+    /// A timeline event reaches `animationEvent` of the scripts attached to the animation's owner,
+    /// before `update` in the same frame (§3.3, P1).
+    func testTimelineEventsReachTheOwnersScripts() throws {
+        let alpha = #""alpha": {"value": 1, "animation": {"c0": [{"frame": 0, "value": 0}], "options": {"fps": 10, "length": 20, "events": [{"name": "hit", "frame": 4}]}}}"#
+        let script = "shared.log = ''; export function animationEvent(event, value) { shared.log += event.name + '@' + event.frame + ';'; return value; } "
+            + "export function update(value) { shared.log += 'u;'; return value; }"
         let wallpaper = try make(objects: [object(id: 1, fields: #"\#(alpha), "origin": {"script": "\#(script)", "value": "0 0 0"}"#)])
         var input = SceneScriptFrameInput()
         input.deltaTime = 1.0 / 60
-        let state = try frame(wallpaper, input)
-        XCTAssertEqual(try XCTUnwrap(state.objects[1]?.animationTimes["alpha"]), 0.5, accuracy: 1e-6, "frame 5 at 10 fps")
+        input.animationEvents = [SceneAnimationEvent(site: SceneAnimationSite(owner: .object(1), key: "alpha"), name: "hit", frame: 4),
+                                 SceneAnimationEvent(site: SceneAnimationSite(owner: .object(9), key: "alpha"), name: "nobody", frame: 1)]
+        _ = try frame(wallpaper, input)
+        let log = wallpaper.thread.sync { wallpaper.scriptRuntime?.context.evaluateScript("shared.log")?.toString() }
+        XCTAssertEqual(log, "hit@4;u;")
     }
 
     /// `engine.isObjectValid` (undocumented, in scenescript64.dll): false once a layer is destroyed.

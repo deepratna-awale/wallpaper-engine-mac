@@ -32,10 +32,11 @@ final class SceneTextureAnimations {
     private var layers: [Int: Layer] = [:]
 
     /// Object `id` draws the animated texture `texture` (its path, the shared clock's key), whose
-    /// TEXS frames last `frameTimes` seconds. The first user creates the texture's clock.
+    /// TEXS frames last `frameTimes` seconds. The first user creates the texture's clock. A layer
+    /// registered again with the same texture (content rebuilt) keeps its override.
     func register(object id: Int, texture: String, frameTimes: [Float]) {
         if clocks[texture] == nil { clocks[texture] = SceneTextureAnimationClock(frameTimes: frameTimes) }
-        layers[id] = Layer(texture: texture)
+        if layers[id]?.texture != texture { layers[id] = Layer(texture: texture) }
     }
 
     /// The layer is gone; its texture's clock goes with its last user.

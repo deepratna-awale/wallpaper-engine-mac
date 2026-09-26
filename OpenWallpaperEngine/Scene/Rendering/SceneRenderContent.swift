@@ -48,18 +48,13 @@ struct SceneMetalLayer {
     let position: SIMD2<Float>
     let size: SIMD2<Float>
     let scale: SIMD2<Float>
-    let scaleAnimation: WEVectorKeyframeAnimation?
     let opacity: Float
-    let opacityAnimation: WEKeyframeAnimation?
     let brightness: Float
     let color: SIMD4<Float>
     let text: SceneMetalText?
     let parallaxDepth: SIMD3<Float>
     let perspective: Bool
-    let positionAnimation: WEVectorKeyframeAnimation?
-    let sizeAnimation: WEVectorKeyframeAnimation?
     let rotation: Float
-    let rotationAnimation: WEVectorKeyframeAnimation?
     let effects: SceneMaterialEffects
     /// Set for video layers so the picture can pulse with the music the way the AVKit path does.
     var musicSync: VideoMusicSyncVisuals? = nil
@@ -78,6 +73,9 @@ struct SceneMetalLayer {
     var bindings = SceneLayerBindings()
     /// The image object's own material, drawn through WE's shader; nil draws the layer natively.
     var imageMaterial: ImageMaterialPlan? = nil
+    /// An animated texture's name (`textures[0]` of the image's material): every layer drawing the
+    /// same texture shares its clock (docs/timeline-plan.md §2.7). Nil for a still one.
+    var textureKey: String? = nil
 
     /// The renderer must interrupt the scene pass for this layer to give it the scene so far.
     var readsScene: Bool {
@@ -166,6 +164,17 @@ struct SceneMetalContent {
     var objectIDs: [Int] = []
     /// The scene's SceneScripts; nil when it has none.
     var scripts: SceneScriptSceneContent?
+    /// The document the instance's timelines come from; nil for a preview or a video.
+    var timelines: SceneTimelineSource?
     /// The scene's sound layers.
     var sounds: [SceneSoundContent] = []
+}
+
+/// `scene.json` as the content was built from it, for the wallpaper instance's `SceneAnimationSet`
+/// (docs/timeline-plan.md §2.1). A renderer keeps its set, clocks and all, across content rebuilt
+/// from the same document (a user property changed a layer), as it keeps the scripts.
+struct SceneTimelineSource {
+    var wallpaperID: String
+    var document: SceneJSON
+    var signature: String
 }

@@ -6,21 +6,31 @@ protocol SceneValueContext {
     /// The user property's current value as WE stores it ("1", "0.5 0.2 1", "true", a combo value),
     /// or nil when the wallpaper has no such property.
     func userProperty(_ name: String) -> String?
-    /// Seconds since the scene started (drives `animation` values).
-    var time: Double { get }
+    /// The timeline at `site` as the wallpaper instance's `SceneAnimationSet` sampled it this
+    /// frame, one component per channel; nil when nothing animates it.
+    func animationValue(_ site: SceneAnimationSite) -> [Float]?
+}
+
+extension SceneValueContext {
+    func animationValue(_ site: SceneAnimationSite) -> [Float]? { nil }
 }
 
 /// `SceneValueContext` over the app's user property store.
 struct LiveSceneValueContext: SceneValueContext {
     let engine: WallpaperServices
-    let time: Double
+    /// The rendering instance's timelines; nil outside a frame (values resolve without them).
+    let animations: SceneAnimationSet?
     /// The wallpaper whose user properties to read; nil reads the wallpaper being rendered.
     let wallpaper: String?
 
-    init(engine: WallpaperServices = .shared, time: Double, wallpaper: String? = nil) {
+    init(engine: WallpaperServices = .shared, animations: SceneAnimationSet? = nil, wallpaper: String? = nil) {
         self.engine = engine
-        self.time = time
+        self.animations = animations
         self.wallpaper = wallpaper
+    }
+
+    func animationValue(_ site: SceneAnimationSite) -> [Float]? {
+        animations?.value(of: site)
     }
 
     /// Reads outside a frame (`wallpaper` set) are the stored value; reads while rendering follow

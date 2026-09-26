@@ -12,11 +12,8 @@ struct WESceneObject: Decodable {
     var parent: Int?
     var name: String?
     var origin: String?
-    var originAnimation: WEVectorKeyframeAnimation?
     var scale: String?
-    var scaleAnimation: WEVectorKeyframeAnimation?
     var angles: String?
-    var anglesAnimation: WEVectorKeyframeAnimation?
     var visible: Bool?
     var visibleCondition: String?
     var visibleUserProperty: String?
@@ -43,14 +40,12 @@ struct WESceneObject: Decodable {
     // Image objects
     var image: String?       // path to model JSON
     var alpha: Double?
-    var alphaAnimation: WEKeyframeAnimation?
     var brightness: Double?
     var color: String?
     var colorBlendMode: Int?
     /// Sample the image with clamp-to-edge rather than WE's default repeat.
     var clampuvs: Bool?
     var size: String?
-    var sizeAnimation: WEVectorKeyframeAnimation?
     var alignment: String?
     var solid: Bool?
     /// A cursor hit on this object stops cursor events from reaching objects under it, while it
@@ -137,13 +132,10 @@ struct WESceneObject: Decodable {
         // Fields that may be simple values or {"script":..,"value":..} objects
         let scriptedOrigin = try? c.decode(WEScriptedProperty.self, forKey: .origin)
         origin = (try? c.decodeIfPresent(String.self, forKey: .origin)) ?? scriptedOrigin?.stringValue
-        originAnimation = scriptedOrigin?.vectorAnimation
         let scriptedScale = try? c.decode(WEScriptedProperty.self, forKey: .scale)
         scale = (try? c.decodeIfPresent(String.self, forKey: .scale)) ?? scriptedScale?.stringValue
-        scaleAnimation = scriptedScale?.vectorAnimation
         let scriptedAngles = try? c.decode(WEScriptedProperty.self, forKey: .angles)
         angles = (try? c.decodeIfPresent(String.self, forKey: .angles)) ?? scriptedAngles?.stringValue
-        anglesAnimation = scriptedAngles?.vectorAnimation
         if let conditional = try? c.decode(WEConditionalBool.self, forKey: .visible) {
             visible = conditional.value
             visibleCondition = conditional.condition
@@ -153,12 +145,10 @@ struct WESceneObject: Decodable {
             visibleCondition = nil
             visibleUserProperty = nil
         }
-        if let scriptedAlpha = try? c.decode(WEAnimatedScalar.self, forKey: .alpha) {
-            alpha = scriptedAlpha.value
-            alphaAnimation = scriptedAlpha.animation
+        if let boundAlpha = try? c.decode(WEBoundScalar.self, forKey: .alpha) {
+            alpha = boundAlpha.value
         } else {
             alpha = try? c.decodeIfPresent(Double.self, forKey: .alpha)
-            alphaAnimation = nil
         }
         if let scriptedBrightness = try? c.decode(WEScriptedProperty.self, forKey: .brightness) {
             brightness = scriptedBrightness.stringValue.flatMap(Double.init)
@@ -174,7 +164,6 @@ struct WESceneObject: Decodable {
         clampuvs = c.decodeLogged(Bool.self, forKey: .clampuvs, userInfo: decoder.userInfo)
         let scriptedSize = try? c.decode(WEScriptedProperty.self, forKey: .size)
         size = (try? c.decodeIfPresent(String.self, forKey: .size)) ?? scriptedSize?.stringValue
-        sizeAnimation = scriptedSize?.vectorAnimation
         alignment = try? c.decodeIfPresent(String.self, forKey: .alignment)
         solid = try? c.decodeIfPresent(Bool.self, forKey: .solid)
         disablepropagation = c.decodeLogged(Bool.self, forKey: .disablepropagation, userInfo: decoder.userInfo)
@@ -290,112 +279,22 @@ struct WEConditionalBool: Decodable {
     }
 }
 
-struct WEKeyframeAnimation: Decodable {
-    let keyframes: [WEKeyframe]
-    let mode: String?
-    let duration: Double?
-    let startPaused: Bool?
-    let wrapLoop: Bool?
-
-    enum CodingKeys: String, CodingKey { case keyframes, frames, mode, seconds, duration, startPaused, startpaused, wrapLoop, wraploop }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        keyframes = ((try? container.decode([WEKeyframe].self, forKey: .keyframes))
-            ?? (try? container.decode([WEKeyframe].self, forKey: .frames)) ?? [])
-            .sorted { $0.frame < $1.frame }
-        mode = try? container.decodeIfPresent(String.self, forKey: .mode)
-        duration = (try? container.decodeIfPresent(Double.self, forKey: .seconds))
-            ?? (try? container.decodeIfPresent(Double.self, forKey: .duration))
-        startPaused = (try? container.decodeIfPresent(Bool.self, forKey: .startPaused))
-            ?? (try? container.decodeIfPresent(Bool.self, forKey: .startpaused))
-        wrapLoop = (try? container.decodeIfPresent(Bool.self, forKey: .wrapLoop))
-            ?? (try? container.decodeIfPresent(Bool.self, forKey: .wraploop))
-    }
-}
-
-struct WEKeyframe: Decodable {
-    let frame: Double
-    let value: Double
-    let easing: String?
-    let bezier: [Double]?
-    let inTangent: Double?
-    let outTangent: Double?
-
-    enum CodingKeys: String, CodingKey { case frame, value, easing, interpolation, bezier, curve, inTangent, outTangent, intangent, outtangent }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        frame = try container.decode(WEFlexibleDouble.self, forKey: .frame).wrappedValue ?? 0
-        value = try container.decode(WEFlexibleDouble.self, forKey: .value).wrappedValue ?? 0
-        easing = (try? container.decodeIfPresent(String.self, forKey: .easing)) ?? (try? container.decodeIfPresent(String.self, forKey: .interpolation))
-        bezier = (try? container.decodeIfPresent([Double].self, forKey: .bezier)) ?? (try? container.decodeIfPresent([Double].self, forKey: .curve))
-        inTangent = (try? container.decodeIfPresent(Double.self, forKey: .inTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .intangent))
-        outTangent = (try? container.decodeIfPresent(Double.self, forKey: .outTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .outtangent))
-    }
-}
-
-struct WEVectorKeyframeAnimation: Decodable {
-    let keyframes: [WEVectorKeyframe]
-    let mode: String?
-    let duration: Double?
-    let startPaused: Bool?
-    let wrapLoop: Bool?
-
-    enum CodingKeys: String, CodingKey { case keyframes, frames, mode, seconds, duration, startPaused, startpaused, wrapLoop, wraploop }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        keyframes = ((try? container.decode([WEVectorKeyframe].self, forKey: .keyframes))
-            ?? (try? container.decode([WEVectorKeyframe].self, forKey: .frames)) ?? [])
-            .sorted { $0.frame < $1.frame }
-        mode = try? container.decodeIfPresent(String.self, forKey: .mode)
-        duration = (try? container.decodeIfPresent(Double.self, forKey: .seconds))
-            ?? (try? container.decodeIfPresent(Double.self, forKey: .duration))
-        startPaused = (try? container.decodeIfPresent(Bool.self, forKey: .startPaused))
-            ?? (try? container.decodeIfPresent(Bool.self, forKey: .startpaused))
-        wrapLoop = (try? container.decodeIfPresent(Bool.self, forKey: .wrapLoop))
-            ?? (try? container.decodeIfPresent(Bool.self, forKey: .wraploop))
-    }
-}
-
-struct WEVectorKeyframe: Decodable {
-    let frame: Double
-    let value: WEFlexValue
-    let easing: String?
-    let bezier: [Double]?
-    let inTangent: Double?
-    let outTangent: Double?
-
-    enum CodingKeys: String, CodingKey { case frame, value, easing, interpolation, bezier, curve, inTangent, outTangent, intangent, outtangent }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        frame = try container.decode(WEFlexibleDouble.self, forKey: .frame).wrappedValue ?? 0
-        value = try container.decode(WEFlexValue.self, forKey: .value)
-        easing = (try? container.decodeIfPresent(String.self, forKey: .easing)) ?? (try? container.decodeIfPresent(String.self, forKey: .interpolation))
-        bezier = (try? container.decodeIfPresent([Double].self, forKey: .bezier)) ?? (try? container.decodeIfPresent([Double].self, forKey: .curve))
-        inTangent = (try? container.decodeIfPresent(Double.self, forKey: .inTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .intangent))
-        outTangent = (try? container.decodeIfPresent(Double.self, forKey: .outTangent)) ?? (try? container.decodeIfPresent(Double.self, forKey: .outtangent))
-    }
-}
-
-struct WEAnimatedScalar: Decodable {
+/// A scalar authored as `{"value", …}`: its value. A timeline (`animation`) on it is the wallpaper
+/// instance's (`SceneAnimationSet`, built from the document), a script the SceneScript runtime's.
+struct WEBoundScalar: Decodable {
     @WEFlexibleDouble var value: Double?
-    let animation: WEKeyframeAnimation?
 }
 
-/// A field authored as `{"value", "animation"?, "script"?}`: its value and animation. Its script
-/// runs in the wallpaper's SceneScript runtime (`SceneScriptSiteBuilder` finds it).
+/// A field authored as `{"value", "animation"?, "script"?}`: its value. Its script runs in the
+/// wallpaper's SceneScript runtime (`SceneScriptSiteBuilder` finds it); its timeline in the
+/// instance's `SceneAnimationSet` (docs/timeline-plan.md §2.1).
 struct WEScriptedProperty: Decodable {
     let stringValue: String?
-    let vectorAnimation: WEVectorKeyframeAnimation?
 
-    enum CodingKeys: String, CodingKey { case value, animation }
+    enum CodingKeys: String, CodingKey { case value }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        vectorAnimation = try? container.decodeIfPresent(WEVectorKeyframeAnimation.self, forKey: .animation)
         if let string = try? container.decode(String.self, forKey: .value) {
             stringValue = string
         } else if let number = try? container.decode(Double.self, forKey: .value) {

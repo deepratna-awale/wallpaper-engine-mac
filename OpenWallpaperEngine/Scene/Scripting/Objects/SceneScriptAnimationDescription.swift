@@ -1,8 +1,8 @@
 import Foundation
 
 /// A timeline or texture animation scripts can control (`IAnimation`, `ITextureAnimation`). Its
-/// state (rate, frame, playing) lives in the animation buffer of `SceneScriptObjectModel`, which the
-/// renderer keeps current; scripts change it through commands (WP12 evaluates the timelines).
+/// state lives in the animation buffer of `SceneScriptObjectModel`, which `SceneScriptSceneMirror`
+/// fills from the renderer's `SceneAnimationSet` each frame; this is what it is placed with.
 struct SceneScriptAnimationDescription {
     var name: String
     var fps: Double

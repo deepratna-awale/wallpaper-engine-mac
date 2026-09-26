@@ -5,7 +5,6 @@ import simd
 
 private struct Properties: SceneValueContext {
     var values: [String: String] = [:]
-    var time: Double = 0
     func userProperty(_ name: String) -> String? { values[name] }
     func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? { nil }
 }

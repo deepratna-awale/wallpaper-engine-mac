@@ -43,11 +43,14 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
     /// it.
     private func assertAnimatedParent(simulation: SceneMetalRenderer.ParticleSimulation,
                                       file: StaticString = #filePath, line: UInt = #line) throws {
-        let objects = try JSONDecoder().decode([WESceneObject].self, from: Data(#"""
-        [{"id": 1, "origin": {"value": "32 64 0", "animation": {"mode": "single", "duration": 0.5,
-            "keyframes": [{"frame": 0, "value": "32 64 0"}, {"frame": 30, "value": "96 64 0"}]}}},
+        let text = #"""
+        [{"id": 1, "origin": {"value": "32 64 0", "animation": {"options": {"mode": "single", "fps": 60, "length": 30},
+            "c0": [{"frame": 0, "value": 32}, {"frame": 30, "value": 96}],
+            "c1": [{"frame": 0, "value": 64}, {"frame": 30, "value": 64}]}}},
          {"id": 2, "parent": 1, "origin": "0 0 0", "particle": "p.json"}]
-        """#.utf8))
+        """#
+        let objects = try JSONDecoder().decode([WESceneObject].self, from: Data(text.utf8))
+        let document = try JSONDecoder().decode(SceneJSON.self, from: Data(#"{"objects": \#(text)}"#.utf8))
         let size = SIMD2<Float>(repeating: Float(Self.size))
         var system = dot().configuration
         system.order = 1
@@ -57,7 +60,8 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
             motions[String(object.id!)] = SceneObjectMotion(object: object, sceneSize: size, bindings: SceneLayerBindings())
         }
         let pixels = try render(simulation: simulation, systems: [system],
-                                transforms: SceneTransformHierarchy(objects: objects, sceneSize: size), motions: motions) {
+                                transforms: SceneTransformHierarchy(objects: objects, sceneSize: size), motions: motions,
+                                timelines: SceneTimelineSource(wallpaperID: "family", document: document, signature: "1")) {
             Self.isWhite($0, x: 96, y: 64) && Self.isRed($0, x: 32, y: 64)
         }
         XCTAssertTrue(Self.isWhite(pixels, x: 96, y: 64), "the dot moved with its group: \(Self.bgra(pixels, x: 96, y: 64))",
@@ -113,7 +117,7 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
     /// Frames over a red background until `done` holds for the drawn pixels (or 10 s pass).
     private func render(simulation: SceneMetalRenderer.ParticleSimulation, systems: [SceneMetalParticleSystem],
                         transforms: SceneTransformHierarchy = .empty, motions: [String: SceneObjectMotion] = [:],
-                        parallax: Bool = false, until done: ([UInt8]) -> Bool) throws -> [UInt8] {
+                        timelines: SceneTimelineSource? = nil, parallax: Bool = false, until done: ([UInt8]) -> Bool) throws -> [UInt8] {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         let view = MTKView(frame: CGRect(x: 0, y: 0, width: Self.size, height: Self.size), device: device)
         view.colorPixelFormat = .bgra8Unorm
@@ -128,6 +132,7 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
                                                                   tint: SIMD3(repeating: 1)))
         content.transforms = transforms
         content.motions = motions
+        content.timelines = timelines
         content.camera.parallax = parallax
         content.camera.parallaxAmount = 0.5
         content.camera.parallaxDelay = 0
@@ -150,10 +155,9 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
     private func background(_ scene: Float) -> SceneMetalLayer {
         var layer = SceneMetalLayer(
             id: "A", name: "A", source: .image(SceneWallpaperViewModel.pixelImage([1, 0, 0, 1])),
-            position: SIMD2(scene / 2, scene / 2), size: SIMD2(scene, scene), scale: SIMD2(1, 1),
-            scaleAnimation: nil, opacity: 1, opacityAnimation: nil,
+            position: SIMD2(scene / 2, scene / 2), size: SIMD2(scene, scene), scale: SIMD2(1, 1), opacity: 1,
             brightness: 1, color: SIMD4(repeating: 1), text: nil,
-            parallaxDepth: .zero, perspective: false, positionAnimation: nil, sizeAnimation: nil, rotation: 0, rotationAnimation: nil,
+            parallaxDepth: .zero, perspective: false, rotation: 0,
             effects: SceneMaterialEffects(brightness: 1, contrast: 1, saturation: 1, bloom: 0, blur: 0, exposure: 0,
                                           gamma: 1, hue: 0, bloomThreshold: 0.7, transformAngle: 0, transformOffset: .zero,
                                           transformScale: SIMD2(1, 1)))

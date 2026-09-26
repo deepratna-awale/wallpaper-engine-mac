@@ -168,10 +168,8 @@ final class SceneCameraMotionTests: XCTestCase {
         let scene = Float(size)
         var layer = SceneMetalLayer(
             id: "1", name: "halves", source: .image(try Self.halves()), position: SIMD2(40, scene / 2),
-            size: SIMD2(scene * 2, scene), scale: SIMD2(1, 1), scaleAnimation: nil, opacity: 1,
-            opacityAnimation: nil, brightness: 1, color: SIMD4(repeating: 1),
-            text: nil, parallaxDepth: depth, perspective: false, positionAnimation: nil, sizeAnimation: nil, rotation: 0,
-            rotationAnimation: nil, effects: .identity)
+            size: SIMD2(scene * 2, scene), scale: SIMD2(1, 1), opacity: 1, brightness: 1, color: SIMD4(repeating: 1),
+            text: nil, parallaxDepth: depth, perspective: false, rotation: 0, effects: .identity)
         layer.order = 0
         var content = SceneMetalContent(
             size: SIMD2(scene, scene), layers: [layer], particleSystems: [],

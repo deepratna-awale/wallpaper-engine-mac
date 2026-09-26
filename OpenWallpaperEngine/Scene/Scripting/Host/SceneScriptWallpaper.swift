@@ -241,6 +241,8 @@ final class SceneScriptWallpaper {
         scriptInput.shakeOffset = SIMD2(Double(frameInput.shakeOffset.x), Double(frameInput.shakeOffset.y))
         if engine.input != scriptInput { engine.input = scriptInput }
         mirror.prepare(frameInput, cursor: usesCursor ? cursor : nil)
+        // After the clocks advanced, before `__rt.frame` drains the inbox (§1.9 P1).
+        for event in mirror.animationEvents(frameInput.animationEvents) { runtime.inbox.post(event) }
         runtime.frame(deltaTime: frameInput.deltaTime)
         finish(runtime, frameStart: start)
     }

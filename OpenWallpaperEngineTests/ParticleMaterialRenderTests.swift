@@ -708,14 +708,12 @@ final class ParticleMaterialRenderTests: XCTestCase {
     struct NoValues: SceneValueContext {
         func userProperty(_ name: String) -> String? { nil }
         func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? { nil }
-        var time: Double { 0 }
     }
 
     struct UserValues: SceneValueContext {
         let values: [String: String]
         func userProperty(_ name: String) -> String? { values[name] }
         func evaluateScript(_ source: String, properties: SceneScriptProperties, current: ShaderValue) -> ShaderValue? { nil }
-        var time: Double { 0 }
     }
 
     /// Draws `particles` onto a target holding `scene` (black without one), which is also the

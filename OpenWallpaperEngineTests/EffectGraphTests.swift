@@ -71,7 +71,6 @@ final class EffectGraphTests: XCTestCase {
 
     struct FixedValues: SceneValueContext {
         func userProperty(_ name: String) -> String? { nil }
-        var time: Double { 1.5 }
     }
 
     /// Plans, runs and reads back; returns (input, output) pixels.

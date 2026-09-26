@@ -77,7 +77,7 @@ final class SceneUserPropertyStoreTests: XCTestCase {
         engine.endFrame()
 
         XCTAssertEqual(engine.userPropertyString("tint", wallpaper: a), "1 0 0")
-        let context = LiveSceneValueContext(engine: engine, time: 0, wallpaper: b)
+        let context = LiveSceneValueContext(engine: engine, wallpaper: b)
         XCTAssertEqual(SceneValueResolver.resolve(.user(name: "tint", condition: nil, fallback: .literal(.zero)),
                                                   in: context).components, [0, 1, 0])
     }
