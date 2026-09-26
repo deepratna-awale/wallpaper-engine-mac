@@ -44,6 +44,50 @@ final class SceneScriptCorpusReplayTests: XCTestCase {
         ExpectedFailure(key: "11844b104b6a", check: .change,
                         reason: "3677897732/3803728810 bind it to a constant authored as 0, which it multiplies by the "
                             + "audio level: constant in WE too"),
+        // Wallpapers downloaded on 2026-09-26 (docs/scenescript-replay-findings.md, "Expanded corpus").
+        ExpectedFailure(key: "9029e263e6d9", check: .exception,
+                        reason: "2321732083 calls getAnimation('origin') on ships whose origin timelines have no "
+                            + "options.name; WE's parse (0x1401a5300) names an animation only from options.name, and "
+                            + "whether the host also matches the property key is untraced (open, RF3)"),
+        ExpectedFailure(key: "98ec4669d182", check: .change,
+                        reason: "2350874185's bloom smooths at 2/s and returns the user value while the frame-420 flip "
+                            + "turns audio off, so the frozen tone-time level only starts decaying at 540: WE too"),
+        ExpectedFailure(key: "2dcaf14bfeae", check: .change,
+                        reason: "2350874185's user default (audioresponsiveshift off) puts it in its clock-driven "
+                            + "rainbow mode; it follows the audio only while the frame-420 flip lasts: WE too"),
+        ExpectedFailure(key: "f37b16c4d23a", check: .change,
+                        reason: "2350874185, the same script as 2dcaf14bfeae on another layer: clock-driven rainbow"),
+        ExpectedFailure(key: "dea9b46dfffe", check: .exception,
+                        reason: "3200298808 needs the layers of the Minimalistic Music Player asset (2499516781), "
+                            + "which the pack doesn't carry: getLayer('playeroutlineanim') is null in WE too"),
+        ExpectedFailure(key: "dea9b46dfffe", check: .change,
+                        reason: "3200298808: its init threw for the missing player layer, so the alpha never animates"),
+        ExpectedFailure(key: "4dad26fc1686", check: .exception,
+                        reason: "3200298808 needs 2499516781's 'playerbackgroundprogbarexception' and has no '.mp3' "
+                            + "sound layers, so init and the track list throw in WE too"),
+        ExpectedFailure(key: "490c24f986ce", check: .finite,
+                        reason: "3200298808: 4dad26fc1686's init threw before setting progbeginpos, so "
+                            + "Math.min(x, undefined) writes a NaN progress-bar scale in WE too"),
+        ExpectedFailure(key: "ecf70707afda", check: .exception,
+                        reason: "3200298808's Progress Bar is a child of the root, and getParent() of a root is "
+                            + "undefined (d.ts): the grandparent this script (from 3219510589) expects isn't there"),
+        ExpectedFailure(key: "87c158cf40fa", check: .change,
+                        reason: "3219510589's scriptproperties turn on media-based detection, so the scale follows "
+                            + "playback, not the tone, and each cursor enter/leave restarts its 1.25 s fade-out: WE too"),
+        ExpectedFailure(key: "ae3a4fdd17b7", check: .finite,
+                        reason: "3455121165 reads shared.an, which a later object's script sets in its first update: "
+                            + "NaN on frame 0 in scene order (P3, as f629892e644b)"),
+        ExpectedFailure(key: "123422e79a51", check: .finite,
+                        reason: "3455121165 reads shared.d and shared.an before the later objects set them: NaN on "
+                            + "frame 0 (P3)"),
+        ExpectedFailure(key: "454480144e55", check: .finite,
+                        reason: "3455121165 reads shared.d before a later object sets it: NaN on frame 0 (P3)"),
+        ExpectedFailure(key: "3657770939", check: .budget,
+                        reason: "3657770939 runs a rigid-body solver (7c2224f16732) over every sphere its click "
+                            + "handler spawns, 243 after the harness's clicks: the script's own work, not ours"),
+        ExpectedFailure(key: "0a3a85274f2b", check: .exception,
+                        reason: "our gap, not WE's: 3734636606 builds its geometry with IScene.createModelData, still "
+                            + "a stub returning null (roadmap WP12)"),
     ]
 
     // MARK: - Corpus
