@@ -154,6 +154,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     var effectPassesEncoded: Int { effectGraph?.passesEncoded ?? 0 }
     /// The last frame's scene target, before the post-process (tests, diagnostics).
     var lastSceneTarget: MTLTexture? { sceneRenderTarget }
+    /// The bytes of the frame's own targets, by holder (diagnostics, test-risks LR10); the effect
+    /// graph's layer and bloom buffers aren't among them.
+    var frameTargetBytes: [String: Int] {
+        ["scene target": sceneRenderTarget?.allocatedSize ?? 0,
+         "mip-mapped frame buffer": mipMappedFrameBuffer?.texture?.allocatedSize ?? 0,
+         "target pool (snapshots, regions)": renderTargetPool.residentBytes,
+         "volumetrics": volumetrics?.residentBytes ?? 0,
+         "prelit images": imageMaterials?.prelitBytes ?? 0]
+    }
     /// A drawn layer's effect plans (tests, diagnostics).
     func effectPlans(ofLayer id: String) -> [SceneEffectPlan] {
         layers.first { $0.layer.id == id }?.layer.weEffects ?? []

@@ -63,6 +63,13 @@ final class SceneVolumetrics: SceneFrameStage {
         pipelines = SceneVolumetricsPipelines(device: device)
     }
 
+    /// The bytes of the targets the stage holds (diagnostics, test-risks LR10).
+    var residentBytes: Int {
+        guard let targets else { return farBack?.allocatedSize ?? 0 }
+        return [targets.lightBuffer, targets.lightBufferB, targets.singleDepth, targets.single, targets.back, farBack]
+            .reduce(0) { $0 + ($1?.allocatedSize ?? 0) }
+    }
+
     func setContent(_ content: SceneMetalContent) {
         plan = content.volumetrics
         lastRecord = nil

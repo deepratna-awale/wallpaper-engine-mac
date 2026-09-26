@@ -34,6 +34,9 @@ final class ImageMaterialRenderer {
     /// when the layer's plan changes. Render thread only.
     private var programs: [String: Program] = [:]
 
+    /// The bytes of the layers' prelit images (diagnostics, test-risks LR10).
+    var prelitBytes: Int { programs.values.reduce(0) { $0 + ($1.prelit?.allocatedSize ?? 0) } }
+
     private final class Program {
         let plan: ImageMaterialPlan
         let uniforms: ImageMaterialUniforms
