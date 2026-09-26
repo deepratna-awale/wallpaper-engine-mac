@@ -6,8 +6,8 @@ import Foundation
 /// material's `LIGHTING` is on, `HDR`, `SCENE_ORTHO` and the like on every material.
 ///
 /// One value per content build, handed to every material plan builder (image, effect and particle
-/// materials), which lays `combos(for:)` over the material's resolved combos. It sets nothing yet:
-/// each combo arrives with the feature that provides its inputs.
+/// materials), which lays `combos(for:)` over the material's resolved combos. Each combo arrives
+/// with the feature that provides its inputs: the lighting ones are in, `HDR` is not yet.
 struct SceneEngineCombos: Equatable {
     /// The scene draws in HDR (`general.bloom` and `hdr`, and post-processing "ultra" or above).
     var hdr = false
