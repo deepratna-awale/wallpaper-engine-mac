@@ -9,6 +9,8 @@ import SwiftUI
 
 struct PerformancePage: SettingsPage {
     @ObservedObject var viewModel: GlobalSettingsViewModel
+    /// A display can show HDR, so "Ultra (Display HDR)" is offered (`DisplayHDRSupport`).
+    private let displayHDR = DisplayHDRSupport.isAvailable()
     
     init(globalSettings viewModel: GlobalSettingsViewModel) {
         self.viewModel = viewModel
@@ -114,11 +116,18 @@ struct PerformancePage: SettingsPage {
                     Text("Disabled").tag(GSPostProcessingQuality.disabled)
                     Text("Enabled").tag(GSPostProcessingQuality.enabled)
                     Text("Ultra").tag(GSPostProcessingQuality.ultra)
+                    if displayHDR {
+                        Text("Ultra (Display HDR)").tag(GSPostProcessingQuality.displayhdr)
+                    }
+                }
+                .onAppear {
+                    let kept = DisplayHDRSupport.coerced(viewModel.settings.postProcessing, available: displayHDR)
+                    if kept != viewModel.settings.postProcessing { viewModel.settings.postProcessing = kept }
                 }
                 .overlay {
                     HStack {
                         Spacer(); Spacer()
-                        if viewModel.settings.postProcessing == .ultra {
+                        if viewModel.settings.postProcessing.allowsHDR {
                             Image(systemName: "exclamationmark.triangle.fill")
                                 .foregroundStyle(.yellow)
                                 .help("Ultra mode adds HDR bloom to supported wallpapers and is only recommended for powerful high-end desktop graphics cards.")
