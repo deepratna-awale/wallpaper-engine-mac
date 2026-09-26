@@ -52,6 +52,9 @@ struct SceneLightDepth: Equatable {
 struct SceneLightingContent {
     var settings = SceneLightingSettings()
     var lights: [SceneLightObject] = []
+    /// The scene's camera (WE's ctx+0x930 and its eye, ctx+0x68, and forward, ctx+0x160):
+    /// `g_EyePosition`, the packer's sort direction and the volumetrics' view.
+    var camera = SceneVolumetricsCamera()
 }
 
 /// What the renderer hands the lighting each frame, after scripts and timelines ran.
@@ -71,6 +74,13 @@ struct SceneFrameLightingInput {
     var live: ((SceneLightObject) -> SceneLightObject)?
     /// The user's shadows setting isn't "disabled" (WE's ctx+0x1ac).
     var shadows = true
+    /// The camera shake this frame, in scene units. WE moves the camera's eye and centre by it
+    /// (0x140199580) while every world matrix stays; the renderer instead moves every object by
+    /// its negative, so the lights move with them and stay where the layers they light are.
+    /// Camera parallax isn't here: WE translates only the draws' model matrices by it
+    /// (0x14018b062…0x14018b14e), not the world matrices the packer reads (0x1401850a0), nor the
+    /// camera the volumetrics draw with (ctx+0x930), so a lit layer slides under its lights.
+    var cameraShake = SIMD2<Float>.zero
     var eyePosition: SIMD3<Float>
     var viewForward: SIMD3<Float>
 }
@@ -97,9 +107,10 @@ struct SceneFrameLighting: Equatable {
         let lights = content.lights.compactMap { built -> SceneLightPacker.Light? in
             guard let local = input.local(built.id) else { return nil }
             let object = input.live?(built) ?? built
+            var world = world(parent: input.parentWorld(object.id), local: local, depth: object.depth)
+            world.columns.3 -= SIMD4(lowHalf: input.cameraShake, highHalf: .zero)
             let light = SceneLightPacker.Light(
-                light: object.light,
-                world: world(parent: input.parentWorld(object.id), local: local, depth: object.depth),
+                light: object.light, world: world,
                 localOrigin: SIMD3(local.origin, object.depth.originZ),
                 visible: input.isVisible(object.id))
             objects.append(SceneFrameLightObject(id: object.id, world: light.world, visible: light.visible,

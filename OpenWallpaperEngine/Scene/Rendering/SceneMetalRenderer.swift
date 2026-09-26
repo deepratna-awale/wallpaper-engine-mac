@@ -771,7 +771,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.audio = WallpaperServices.shared.advanceAudioSpectrumFrame()
         let motion = cameraMotion(pointer: pointer, time: time, deltaTime: Float(clock.delta))
         effectFrame.parallax = parallaxEnabled ? cameraParallax.shaderPosition(sceneSize: sceneSize) : SIMD2(0.5, 0.5)
-        effectFrame.lighting = frameLighting(eye: effectFrame.eyePosition, forward: effectFrame.viewForward)
+        // WE's camera eye and forward (ctx+0x68, ctx+0x160); the renderer keeps the camera still
+        // and moves the objects by the shake instead (`SceneFrameLightingInput.cameraShake`).
+        effectFrame.eyePosition = lighting.camera.eye
+        effectFrame.viewForward = lighting.camera.forward
+        effectFrame.lighting = frameLighting(eye: effectFrame.eyePosition, forward: effectFrame.viewForward,
+                                             shake: motion.shake)
         drawProbe?.record(lighting: effectFrame.lighting)
         // Text is rasterised first so its effects run on the finished text, like an image layer's.
         var textFrames: [Int: (frame: RenderTextureFrame, baseSize: SIMD2<Float>)] = [:]
@@ -1108,7 +1113,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// This frame's lighting (`SceneFrameLighting`), from the objects' live transforms and
     /// visibility, the scripts' scene colours and the user's shadows setting.
-    private func frameLighting(eye: SIMD3<Float>, forward: SIMD3<Float>) -> SceneFrameLighting {
+    private func frameLighting(eye: SIMD3<Float>, forward: SIMD3<Float>, shake: SIMD2<Float>) -> SceneFrameLighting {
         let scene = scripts.state.scene
         return SceneFrameLighting.frame(lighting, input: SceneFrameLightingInput(
             local: { [unowned self] id in self.liveLocal(id) ?? self.transforms.nodes[id]?.local },
@@ -1119,7 +1124,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 object.live(script: self.scripts.object(object.id), animation: self.timelines.object(object.id),
                             timeline: { self.timelines.objectField(object.id, $0) })
             },
-            shadows: renderSettings.shadows != .disabled,
+            shadows: renderSettings.shadows != .disabled, cameraShake: shake,
             eyePosition: eye, viewForward: forward))
     }
 

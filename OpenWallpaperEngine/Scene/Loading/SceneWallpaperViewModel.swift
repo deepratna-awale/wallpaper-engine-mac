@@ -547,8 +547,9 @@ class SceneWallpaperViewModel: ObservableObject {
                                     document: $0.document, signature: $0.signature)
             }
             content.sounds = soundBuilder(wallpaperDir: wallpaperDir).sounds(in: scene.objects, context: valueContext)
-            content.lighting = SceneLightingContent(settings: lighting, lights: Self.lights(in: scene.objects, context: valueContext))
-            content.volumetrics = volumetricsPlan(content.lighting.lights, camera: SceneVolumetricsCamera(scene: scene, size: sceneSize),
+            content.lighting = SceneLightingContent(settings: lighting, lights: Self.lights(in: scene.objects, context: valueContext),
+                                                    camera: SceneVolumetricsCamera(scene: scene, size: sceneSize))
+            content.volumetrics = volumetricsPlan(content.lighting.lights, camera: content.lighting.camera,
                                                   wallpaperDir: wallpaperDir)
             content.engineCombos = sceneEngineCombos
             content.bloomChain = engineChain("WE's bloom", wallpaperDir: wallpaperDir, SceneBloomChain.build)

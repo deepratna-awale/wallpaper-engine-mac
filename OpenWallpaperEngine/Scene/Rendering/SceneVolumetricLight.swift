@@ -8,9 +8,11 @@ import simd
 ///   −2000 and far 2000, whatever `nearz`/`farz` say.
 /// - **Perspective scenes**: `SceneCamera`'s field of view, near and far planes.
 ///
-/// The view is `lookAt(eye, center, up)` of scene.json's `camera` [?: the orthographic eye's x and
-/// y weren't traced; the library's 2D scenes all author (0, 0, 1)]. Camera shake and parallax
-/// don't move it yet.
+/// The view is `lookAt(eye, center, up)`: scene.json's `camera` in a perspective scene; in an
+/// orthographic one WE resets it at load to the eye (0, 0, 0) looking down −z with +y up
+/// (0x14018866b, a scene without camera paths). Camera shake moves WE's eye and centre; the
+/// renderer moves the lights by it instead (`SceneFrameLightingInput.cameraShake`), as it moves
+/// the layers. Parallax moves neither (it translates the draws' model matrices only).
 struct SceneVolumetricsCamera: Equatable {
     enum Projection: Equatable {
         case orthographic(width: Float, height: Float)
@@ -38,13 +40,7 @@ struct SceneVolumetricsCamera: Equatable {
                       projection: .perspective(fieldOfViewDegrees: camera.fieldOfView,
                                                near: camera.nearPlane, far: camera.farPlane))
         } else {
-            func vector(_ text: String?, _ fallback: SIMD3<Float>) -> SIMD3<Float> {
-                guard let text else { return fallback }
-                let parsed = text.parseVector3()
-                return SIMD3(Float(parsed.0), Float(parsed.1), Float(parsed.2))
-            }
-            self.init(eye: vector(scene.camera.eye, SIMD3(0, 0, 1)), center: vector(scene.camera.center, .zero),
-                      up: vector(scene.camera.up, SIMD3(0, 1, 0)),
+            self.init(eye: .zero, center: SIMD3(0, 0, -1), up: SIMD3(0, 1, 0),
                       projection: .orthographic(width: size.x, height: size.y))
         }
     }

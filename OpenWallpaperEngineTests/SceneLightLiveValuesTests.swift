@@ -83,3 +83,38 @@ final class SceneLightLiveValuesTests: XCTestCase {
         XCTAssertEqual(Array(both.arrays["g_LTube_OriginB"]!.prefix(3)), [100, 600, 250], "world(controlpoint)")
     }
 }
+
+/// The camera's shake and parallax against the lights (test-risks LR12, LR21, LF6, LF10). WE moves
+/// the camera's eye and centre by the shake (0x140199580) and translates only the draws' model
+/// matrices by parallax (0x14018b062…0x14018b14e); the lights' world matrices (0x1401850a0) and the
+/// volumetrics' camera (ctx+0x930) take neither. The renderer keeps the camera still and moves
+/// every object by the negative shake, so the lights must move by it too, and not by parallax.
+final class SceneLightCameraTests: XCTestCase {
+    func testTheShakeMovesTheLightsAsItMovesTheLayers() {
+        var content = SceneLightingContent()
+        var point = SceneLight(kind: .legacyPoint)
+        point.intensity = 1
+        content.lights = [SceneLightObject(id: "1", authored: WESceneLight(kind: .legacyPoint), light: point,
+                                           depth: SceneLightDepth(originZ: 100))]
+        let local = SceneLocalTransform(origin: SIMD2(300, 200), scale: SIMD2(repeating: 1), angle: 0)
+        var input = SceneFrameLightingInput(local: { _ in local }, parentWorld: { _ in .identity }, isVisible: { _ in true },
+                                            sceneColor: { _ in nil }, eyePosition: .zero, viewForward: SIMD3(0, 0, -1))
+        input.cameraShake = SIMD2(12, -5)
+        let lighting = SceneFrameLighting.frame(content, input: input)
+        XCTAssertEqual(Array(lighting.arrays["g_LightsPosition"]!.prefix(3)), [288, 205, 100])
+        XCTAssertEqual(lighting.objects[0].world.columns.3, SIMD4(288, 205, 100, 1), "the volumetrics' light moves too")
+    }
+
+    /// An orthographic scene's camera is WE's reset one (0x14018866b): the eye at the origin,
+    /// looking down −z, whatever scene.json's `camera` says.
+    func testAnOrthographicCameraIsWEsReset() throws {
+        let scene = try decodeTolerant(WEScene.self, from: Data(#"""
+            {"camera": {"eye": "0 0 1", "center": "0 0 0", "up": "0 1 0"},
+             "general": {"orthogonalprojection": {"width": 1920, "height": 1080}}, "objects": []}
+            """#.utf8))
+        let camera = SceneVolumetricsCamera(scene: scene, size: SIMD2(1920, 1080))
+        XCTAssertEqual(camera.eye, .zero)
+        XCTAssertEqual(camera.forward, SIMD3(0, 0, -1))
+        XCTAssertTrue(camera.isOrthographic)
+    }
+}

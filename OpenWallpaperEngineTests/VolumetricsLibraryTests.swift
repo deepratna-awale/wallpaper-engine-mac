@@ -90,6 +90,62 @@ final class VolumetricsLibraryTests: XCTestCase {
         XCTAssertNil(stage.lastRecord, "disabled volumetrics draw nothing")
     }
 
+    /// LF6: with camera shake on, the shafts move with the scene. The renderer moves every object
+    /// by the negative shake (WE moves the camera by it), so the light's world position and its
+    /// volume in the light buffer move frame to frame by the same amount, and `g_EyePosition` is
+    /// WE's orthographic eye.
+    func testHinatasVolumeFollowsTheCameraShake() throws {
+        let (directory, project) = try wallpaper("3352730400")
+        let model = SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory))
+        defer { Fixtures.removeStoredSettings(for: directory) }
+        var content = try XCTUnwrap(model.metalContent())
+        content.camera.shake = true
+        content.camera.shakeAmplitude = 2
+        content.camera.shakeSpeed = 2
+        let authored = try XCTUnwrap(content.transforms.nodes["516"]).local.origin
+        let scene = try Scene(content: content, scripts: scripts)
+        defer { scene.close() }
+        let probe = SceneDrawProbe()
+        scene.renderer.drawProbe = probe
+        let stage = try XCTUnwrap(scene.renderer.volumetrics)
+        var samples: [(offset: SIMD2<Float>, centroid: SIMD2<Float>)] = []
+        for _ in 0..<60 {
+            scene.draw()
+            guard let record = stage.lastRecord, let light = probe.lighting?.objects.first(where: { $0.id == "516" })
+            else { continue }
+            let offset = SIMD2(light.world.columns.3.x, light.world.columns.3.y) - authored
+            samples.append((offset, try centroid(record.lightBuffer)))
+        }
+        XCTAssertGreaterThan(samples.count, 30)
+        let spread = samples.map { simd_length($0.offset - samples[0].offset) }.max() ?? 0
+        XCTAssertGreaterThan(spread, 20, "the shake moves the light")
+        // The buffer's first row is the scene's top: +y in the scene is −y in the buffer.
+        let buffer = try XCTUnwrap(stage.lastRecord).lightBuffer
+        let perUnit = SIMD2(Float(buffer.width), -Float(buffer.height)) / content.size
+        for sample in samples.dropFirst() {
+            let expected = (sample.offset - samples[0].offset) * perUnit
+            let moved = sample.centroid - samples[0].centroid
+            // The volume runs off the top of the frame, so its centroid follows y only partly.
+            XCTAssertEqual(moved.x, expected.x, accuracy: 1, "the volume follows the light: \(moved) vs \(expected)")
+            if abs(expected.y) > 1 { XCTAssertEqual(moved.y.sign, expected.y.sign, "\(moved) vs \(expected)") }
+        }
+    }
+
+    /// The light buffer's brightness-weighted centroid, in texels.
+    private func centroid(_ buffer: MTLTexture) throws -> SIMD2<Float> {
+        let drawn = try TextureUploadTests.read(buffer, device: buffer.device)
+        var sum: Float = 0, weighted = SIMD2<Float>.zero
+        for row in 0..<buffer.height {
+            for column in 0..<buffer.width {
+                let i = (row * buffer.width + column) * 4
+                let value = Float(drawn[i]) + Float(drawn[i + 1]) + Float(drawn[i + 2])
+                sum += value
+                weighted += value * SIMD2(Float(column) + 0.5, Float(row) + 0.5)
+            }
+        }
+        return weighted / max(sum, 1)
+    }
+
     /// Against WE itself (2.8.0.42 on Windows, 1920×1080, post-processing enabled): the mean of
     /// the frame over x 300–700, y 0–400, where Hinata's spot throws its wedge from the top left,
     /// is 15.4 with volumetrics disabled and 40.2, 40.4 and 40.3 at low, medium and high. The tiers
