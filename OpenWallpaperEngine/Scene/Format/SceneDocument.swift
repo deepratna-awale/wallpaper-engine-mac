@@ -93,21 +93,41 @@ struct WEScene: Decodable {
     var version: Int?
 }
 
-struct WECamera: Codable {
+/// scene.json's `camera` block (0x1401881fc): the static camera of a scene without camera layers
+/// or paths. WE's defaults for a missing vector are `SceneCameraDefaults`.
+struct WECamera: Decodable {
     var center: String?
     var eye: String?
     var up: String?
+    /// `paths`: camera-path files (`WESceneCameraPathFile`), played in order and looped.
+    var paths: [String]?
+
+    init(center: String? = nil, eye: String? = nil, up: String? = nil, paths: [String]? = nil) {
+        self.center = center
+        self.eye = eye
+        self.up = up
+        self.paths = paths
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyCodingKey.self)
+        let info = decoder.userInfo
+        center = c.decodeLogged(String.self, forKey: AnyCodingKey(stringValue: "center"), userInfo: info)
+        eye = c.decodeLogged(String.self, forKey: AnyCodingKey(stringValue: "eye"), userInfo: info)
+        up = c.decodeLogged(String.self, forKey: AnyCodingKey(stringValue: "up"), userInfo: info)
+        paths = c.decodeElements(String.self, forKey: AnyCodingKey(stringValue: "paths"), userInfo: info)
+    }
 }
 
 struct WESceneGeneral: Decodable {
     var orthogonalprojection: WEOrthogonalProjection?
-    /// `orthogonalprojection` is present but `null`: WE renders the scene with its perspective camera.
+    /// `orthogonalprojection` is present but `null`. The renderer's gate for its perspective path
+    /// today; WE's rule is `projection` (a missing key, a zero size and `auto` differ). M2 of
+    /// docs/models-plan.md moves the callers to `projection` and deletes this.
     var usesPerspectiveProjection = false
+    /// `orthogonalprojection` as WE reads it (docs/models-plan.md §2.1).
+    var projection = WESceneProjection.perspective
     var bloomtint: String?
-    var fov: Double?
-    var nearz: Double?
-    var farz: Double?
-    var zoom: Double?
     /// The light budget; nil when the scene has none, which leaves every new-style light unused.
     var lightconfig: WELightConfig?
     /// Every bindable field in its full authored form (literal, `user`, `script`, `animation`).
@@ -121,6 +141,10 @@ struct WESceneGeneral: Decodable {
     var bloomstrength: Double? { values[.bloomstrength]?.literalDouble }
     var bloomthreshold: Double? { values[.bloomthreshold]?.literalDouble }
     var hdr: Bool? { values[.hdr]?.literalBool }
+    var fov: Double? { values[.fov]?.literalDouble }
+    var nearz: Double? { values[.nearz]?.literalDouble }
+    var farz: Double? { values[.farz]?.literalDouble }
+    var zoom: Double? { values[.zoom]?.literalDouble }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: AnyCodingKey.self)
@@ -131,6 +155,7 @@ struct WESceneGeneral: Decodable {
             }
         }
         let projectionKey = AnyCodingKey(stringValue: "orthogonalprojection")
+        projection = WESceneProjection(json: container.decodeLogged(SceneJSON.self, forKey: projectionKey, userInfo: info))
         if container.contains(projectionKey), (try? container.decodeNil(forKey: projectionKey)) == true {
             // `try?`: decodeNil only fails when the key is missing, which `contains` just ruled out.
             usesPerspectiveProjection = true
@@ -138,10 +163,6 @@ struct WESceneGeneral: Decodable {
             orthogonalprojection = container.decodeLogged(WEOrthogonalProjection.self, forKey: projectionKey, userInfo: info)
         }
         bloomtint = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "bloomtint"), userInfo: info)?.literalString
-        fov = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "fov"), userInfo: info)?.literalDouble
-        nearz = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "nearz"), userInfo: info)?.literalDouble
-        farz = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "farz"), userInfo: info)?.literalDouble
-        zoom = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "zoom"), userInfo: info)?.literalDouble
         lightconfig = container.decodeLogged(WELightConfig.self, forKey: AnyCodingKey(stringValue: "lightconfig"), userInfo: info)
     }
 }

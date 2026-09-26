@@ -74,6 +74,19 @@ struct WESceneObject: Decodable {
     // Light objects (WE builds one when `"light"` is not null)
     var light: WESceneLight?
 
+    /// Model objects: WE builds one when `model` is a string, number or object, before any other
+    /// kind (docs/models-plan.md §2.6).
+    var model: WESceneModel?
+    /// Camera layers: WE builds one when `camera` is a string (docs/models-plan.md §2.3).
+    var cameraLayer: WESceneCameraLayer?
+    /// `sortorder`, `castshadow`, `reflected` and `depthtest` in their authored form.
+    var renderValues: [SceneObjectRenderField: SceneRawValue] = [:]
+    /// `dependencies`, element by element.
+    var dependencies: [WEObjectDependency]?
+    /// `animationlayers`, element by element: a model's, or a puppet image's (the same parser,
+    /// 0x1402230c0 and 0x1401fcc20). Empty when not authored.
+    var animationLayers: [WEAnimationLayer] = []
+
     /// Every value-bearing field in its full authored form (literal, `user`, `script`, `animation`).
     /// The typed fields above hold only the literal fallback.
     var values: [SceneObjectValueField: SceneRawValue] = [:]
@@ -120,6 +133,19 @@ struct WESceneObject: Decodable {
                 OWELog.error(.scene, "light object \(name ?? "?") can't be read: \(error)")
             }
         }
+        let keyed = try decoder.container(keyedBy: AnyCodingKey.self)
+        model = WESceneModel(object: keyed, userInfo: decoder.userInfo)
+        cameraLayer = WESceneCameraLayer(object: keyed, userInfo: decoder.userInfo)
+        for field in SceneObjectRenderField.allCases {
+            if let raw = keyed.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: field.rawValue),
+                                            userInfo: decoder.userInfo) {
+                renderValues[field] = raw
+            }
+        }
+        dependencies = keyed.decodeElements(WEObjectDependency.self, forKey: AnyCodingKey(stringValue: "dependencies"),
+                                            userInfo: decoder.userInfo)
+        animationLayers = keyed.decodeElements(WEAnimationLayer.self, forKey: AnyCodingKey(stringValue: "animationlayers"),
+                                               userInfo: decoder.userInfo) ?? []
         effects = c.decodeElements(WEObjectEffect.self, forKey: .effects, userInfo: decoder.userInfo)
         shape = try? c.decodeIfPresent(String.self, forKey: .shape)
         if let scriptedText = try? c.decode(WEScriptedProperty.self, forKey: .text) {

@@ -14,6 +14,39 @@ enum SceneGeneralValueField: String, CaseIterable {
     case ambientcolor, skylightcolor
     /// HDR bloom (docs/lighting-plan.md §1.2); WE turns HDR on only with `bloom` as well.
     case hdr, bloomhdrstrength, bloomhdrthreshold, bloomhdrfeather, bloomhdrscatter, bloomhdriterations
+    /// The camera and draw order (docs/models-plan.md §2.1; `SceneCameraSettings`).
+    case fov, perspectiveoverridefov, nearz, farz, zoom, camerafade
+    case transparentsorting, customsortorder
+}
+
+/// Fields any scene object may author that decide how it draws in a 3D scene
+/// (docs/models-plan.md §2.4, §2.6). The raw forms are kept in `WESceneObject.renderValues`.
+enum SceneObjectRenderField: String, CaseIterable {
+    /// `sortorder`: the key of `customsortorder` (base properties 0x1401e0530).
+    case sortorder
+    /// `castshadow`: the object draws into the shadow atlas (flag 0x800; on by default for models,
+    /// 0x1401901b1). On a light object the same key is the light's own (`SceneLightValueField`).
+    case castshadow
+    /// `reflected`: the object is on the planar-reflection list (default true, 0x14019086d).
+    case reflected
+    /// `depthtest` ("enabled" / "disabled"), authored on text objects in 3D scenes [I: it feeds
+    /// the text material like an image's material pass].
+    case depthtest
+}
+
+/// A model object's bindable fields (`WESceneModel.values`).
+enum SceneModelValueField: String, CaseIterable {
+    case skin, rootmotion
+}
+
+/// A camera layer's bindable fields (`WESceneCameraLayer.values`).
+enum SceneCameraLayerValueField: String, CaseIterable {
+    case fov, zoom
+}
+
+/// An animation layer's bindable fields (`WEAnimationLayer.values`).
+enum SceneAnimationLayerValueField: String, CaseIterable {
+    case visible, additive, blendin, blendout, rate, blend, blendtime
 }
 
 /// Value-bearing fields of a light object (`WESceneLight`), as `wallpaper64.exe` registers them
@@ -58,6 +91,12 @@ extension SceneRawValue {
         case .string(let s): return Double(s.trimmingCharacters(in: .whitespacesAndNewlines))
         case .object(let object): return object.value?.literalDouble
         }
+    }
+
+    /// The literal part as an int, truncated the way WE's `asInt` truncates. Nil when there is none
+    /// or it isn't numeric.
+    var literalInt: Int? {
+        literalDouble.map { Int(SceneTimelineDocument.asInt($0)) }
     }
 
     /// The literal part as a flag. Numbers are true when non-zero; strings "true"/"1".
