@@ -37,6 +37,8 @@ final class SceneAnimationSet {
     private var indices: [SceneAnimationSite: Int] = [:]
     /// Every animated site, in registration (evaluation) order: `index(of:)` counts in it.
     private(set) var sites: [SceneAnimationSite] = []
+    /// Sites whose value wasn't finite, reported once.
+    private var reportedNonFinite = Set<SceneAnimationSite>()
     /// Counts `advance(by:)` calls: WE's engine frame counter (`[engine+0x144]`).
     private(set) var frameCounter: UInt64 = 0
     /// The texture clocks and layer overrides of the same instance.
@@ -166,6 +168,27 @@ final class SceneAnimationSet {
 
     /// The value at `index` (in `sites`) as last sampled, 0 past its last channel.
     func components(at index: Int) -> SIMD4<Float> { entries[index].value }
+
+    /// What the renderer draws of the value at `index`: nil while a component isn't finite. WE's
+    /// maths keeps a NaN or infinite time (`setFrame(NaN)`, `rate = Infinity`) for good, and
+    /// scripts see it, but the GPU never gets it: the property draws its static or user-bound
+    /// value instead until the clock is finite again (`stop()`, `setFrame(0)`; test-risks TF6).
+    func drawnComponents(at index: Int) -> SIMD4<Float>? {
+        let value = entries[index].value
+        guard value.x.isFinite, value.y.isFinite, value.z.isFinite, value.w.isFinite else {
+            if reportedNonFinite.insert(entries[index].site).inserted {
+                OWELog.info(.scene, "\(wallpaperID): the timeline of \(entries[index].site) left a value that isn't finite; drawing its static value")
+            }
+            return nil
+        }
+        return value
+    }
+
+    /// `value(of:)` as the renderer draws it (`drawnComponents(at:)`).
+    func drawnValue(of site: SceneAnimationSite) -> [Float]? {
+        guard let index = indices[site], drawnComponents(at: index) != nil else { return nil }
+        return value(of: site)
+    }
 
     /// How many channels the timeline at `index` has (`c0`…), at most four.
     func channelCount(at index: Int) -> Int { min(entries[index].timeline.channels.count, 4) }

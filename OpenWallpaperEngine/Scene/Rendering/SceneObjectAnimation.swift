@@ -66,7 +66,7 @@ struct SceneObjectAnimation: Equatable {
 
     /// The fields at `indices` as `set` last sampled them.
     init(_ set: SceneAnimationSet, indices: Indices) {
-        func read(_ index: Int?) -> SIMD4<Float>? { index.map(set.components(at:)) }
+        func read(_ index: Int?) -> SIMD4<Float>? { index.flatMap(set.drawnComponents(at:)) }
         origin = read(indices.origin).map { SIMD3($0.x, $0.y, $0.z) }
         scale = read(indices.scale).map { SIMD3($0.x, $0.y, $0.z) }
         angles = read(indices.angles).map { SIMD3($0.x, $0.y, $0.z) }

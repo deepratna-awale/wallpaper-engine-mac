@@ -30,7 +30,7 @@ struct LiveSceneValueContext: SceneValueContext {
     }
 
     func animationValue(_ site: SceneAnimationSite) -> [Float]? {
-        animations?.value(of: site)
+        animations?.drawnValue(of: site)
     }
 
     /// Reads outside a frame (`wallpaper` set) are the stored value; reads while rendering follow
