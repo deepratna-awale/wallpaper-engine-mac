@@ -297,8 +297,9 @@ final class ParticleProgramTests: XCTestCase {
                 runtime, deltaTime: 0.1, cursor: .zero, frameTime: frameTime, frameRateLimit: limit))
             return runtime.particles[0].velocity.x
         }
-        XCTAssertEqual(velocity(frameTime: 0.1, limit: 60), 100 * (1 - 2 * 0.1 * pow(0.25, 0.7)), accuracy: 1e-3)
-        let half = 2 * 0.05 * pow(Float(0.25), 0.7)
+        let damped: Float = 100 * (1 - 2 * 0.1 * pow(Float(0.25), 0.7))
+        XCTAssertEqual(velocity(frameTime: 0.1, limit: 60), damped, accuracy: 1e-3)
+        let half: Float = 2 * 0.05 * pow(Float(0.25), 0.7)
         XCTAssertEqual(velocity(frameTime: 0.1, limit: 10), 100 * (1 - half) * (1 - half), accuracy: 1e-3,
                        "two half steps")
     }
