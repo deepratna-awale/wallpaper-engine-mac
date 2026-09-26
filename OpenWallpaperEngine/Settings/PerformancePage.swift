@@ -132,6 +132,14 @@ struct PerformancePage: SettingsPage {
                     Text("High Performance").tag(GSTextureResolutionQuality.highPerformance)
                     Text("Automatic").tag(GSTextureResolutionQuality.automatic)
                 }
+                Picker("Volumetrics", selection: $viewModel.settings.volumetrics) {
+                    Text("Disabled").tag(GSLightingQuality.disabled)
+                    Text("Low").tag(GSLightingQuality.low)
+                    Text("Medium").tag(GSLightingQuality.medium)
+                    Text("High").tag(GSLightingQuality.high)
+                    Text("Ultra").tag(GSLightingQuality.ultra)
+                }
+                .help("Light shafts from wallpapers' volumetric lights. Higher qualities march more samples at a finer resolution; low and medium blur a coarser buffer.")
                 HStack {
                     Text("FPS")
                     Spacer()
