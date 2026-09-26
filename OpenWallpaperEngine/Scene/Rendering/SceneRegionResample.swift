@@ -13,10 +13,15 @@ enum SceneRegionResample {
             && simd_length(mapping.axisY - SIMD2(0, 1)) < tolerance
     }
 
-    /// The region image's size: the quad at the scene target's density. nil when it covers no
-    /// pixel (zero, NaN or infinite extent).
-    static func targetSize(_ quad: SceneQuadGeometry, pixelsPerUnit: Float) -> SIMD2<Int>? {
-        let pixels = (quad.extent * pixelsPerUnit).rounded(.up)
+    /// The region image's size: the quad at the scene target's density, but never more than the
+    /// layer's own `size` (scene units) at it: WE's buffers for a composition layer are its size
+    /// (`wallpaper64.exe` 0x1402092d7), so a layer scaled up draws its effects at that size and
+    /// scales them with the quad, rather than at the scaled size. nil when it covers no pixel
+    /// (zero, NaN or infinite extent).
+    static func targetSize(_ quad: SceneQuadGeometry, layerSize: SIMD2<Float>? = nil, pixelsPerUnit: Float) -> SIMD2<Int>? {
+        var extent = quad.extent
+        if let layerSize, layerSize.x > 0, layerSize.y > 0 { extent = simd_min(extent, layerSize) }
+        let pixels = (extent * pixelsPerUnit).rounded(.up)
         guard pixels.x.isFinite, pixels.y.isFinite, pixels.x >= 1, pixels.y >= 1 else { return nil }
         let limit = SceneRenderResolution.maximumTextureDimension
         return SIMD2(Int(min(pixels.x, limit)), Int(min(pixels.y, limit)))

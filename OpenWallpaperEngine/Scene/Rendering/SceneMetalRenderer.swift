@@ -1554,7 +1554,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                              commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         let reduction = layer.fillsScene ? 1 : Float(renderSettings.textureReduction)
         if reduction == 1, SceneRegionResample.coversWholeScene(quad, sceneSize: sceneSize) { return snapshot }
-        guard let size = SceneRegionResample.targetSize(quad, pixelsPerUnit: renderPixelsPerUnit / reduction),
+        guard let size = SceneRegionResample.targetSize(quad, layerSize: layer.size, pixelsPerUnit: renderPixelsPerUnit / reduction),
               let region = renderTargetPool.texture(width: size.x, height: size.y,
                                                     pixelFormat: snapshot.pixelFormat, avoiding: snapshot) else { return nil }
         let pass = MTLRenderPassDescriptor()

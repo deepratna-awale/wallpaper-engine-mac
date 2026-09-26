@@ -179,6 +179,18 @@ final class SceneRegionResampleTests: XCTestCase {
         XCTAssertNil(SceneRegionResample.targetSize(broken, pixelsPerUnit: 2))
     }
 
+    /// A composition layer scaled up (3453730450's, 3742916237's 2000 × 2000 ring at 4.1×) draws its
+    /// effects at its own size, as WE's buffers are, not at the scaled quad's (67 megapixels).
+    func testAScaledUpLayerKeepsItsOwnSize() {
+        let scaled = SceneQuadGeometry(center: SIMD2(100, 100), axisX: SIMD2(8200, 0), axisY: SIMD2(0, 8200))
+        XCTAssertEqual(SceneRegionResample.targetSize(scaled, layerSize: SIMD2(2000, 2000), pixelsPerUnit: 1), SIMD2(2000, 2000))
+        XCTAssertEqual(SceneRegionResample.targetSize(scaled, layerSize: SIMD2(2000, 2000), pixelsPerUnit: 2), SIMD2(4000, 4000),
+                       "at the target's density")
+        let shrunk = SceneQuadGeometry(center: SIMD2(100, 100), axisX: SIMD2(500, 0), axisY: SIMD2(0, 250))
+        XCTAssertEqual(SceneRegionResample.targetSize(shrunk, layerSize: SIMD2(2000, 2000), pixelsPerUnit: 1), SIMD2(500, 250),
+                       "a smaller quad keeps its own pixels")
+    }
+
     func testWholeSceneQuadUsesTheSnapshotAsIs() {
         let whole = SceneQuadGeometry(center: Self.sceneSize / 2, axisX: SIMD2(Self.sceneSize.x, 0), axisY: SIMD2(0, Self.sceneSize.y))
         XCTAssertTrue(SceneRegionResample.coversWholeScene(whole, sceneSize: Self.sceneSize))
