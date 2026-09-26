@@ -51,21 +51,28 @@ final class SceneLightingSeamTests: XCTestCase {
 
     // MARK: - Frame lighting
 
-    /// The scene colours come from `general`, a script's colour winning; a light without
-    /// `lightconfig` packs no `LightingV1` array (`SceneLightPackerTests` has the packing).
-    func testFrameLightingCarriesTheSceneColours() {
+    func testFrameLightingCarriesTheSceneColoursOnly() {
         var content = SceneLightingContent()
         content.settings.ambient = SIMD3(0.3, 0.2, 0.1)
         content.settings.skylight = SIMD3(repeating: 0.4)
         content.lights = [SceneLightObject(id: "7", authored: WESceneLight(kind: .tube), light: SceneLight(kind: .tube))]
-        var input = SceneFrameLightingInput(local: { _ in .identity }, parentWorld: { _ in .identity }, isVisible: { _ in true },
-                                            sceneColor: { _ in nil }, eyePosition: .zero, viewForward: SIMD3(0, 0, -1))
+        var input = SceneFrameLightingInput(world: { _ in .identity }, isVisible: { _ in true }, sceneColor: { _ in nil },
+                                            eyePosition: .zero, viewForward: SIMD3(0, 0, -1))
         let lighting = SceneFrameLighting.frame(content, input: input)
         XCTAssertEqual(lighting.ambient, SIMD3(0.3, 0.2, 0.1))
         XCTAssertEqual(lighting.skylight, SIMD3(repeating: 0.4))
-        XCTAssertNil(lighting.arrays["g_LTube_Color"], "no lightconfig, no LightingV1 light")
+        XCTAssertTrue(lighting.arrays.isEmpty, "nothing is packed yet")
         input.sceneColor = { $0 == .ambientcolor ? SIMD3(1, 0, 0) : nil }
         XCTAssertEqual(SceneFrameLighting.frame(content, input: input).ambient, SIMD3(1, 0, 0), "a script's colour wins")
+    }
+
+    /// No uniform reads the frame lighting yet: the ambient built-ins keep their values.
+    func testBuiltinsIgnoreTheFrameLightingForNow() {
+        var frame = BuiltinFrameContext()
+        let before = BuiltinUniforms.value(named: "g_LightAmbientColor", frame: frame, pass: BuiltinPassContext(targetSize: SIMD2(1, 1)))
+        frame.lighting.ambient = SIMD3(1, 0, 0)
+        XCTAssertEqual(BuiltinUniforms.value(named: "g_LightAmbientColor", frame: frame, pass: BuiltinPassContext(targetSize: SIMD2(1, 1))),
+                       before)
     }
 
     // MARK: - Content
@@ -82,11 +89,6 @@ final class SceneLightingSeamTests: XCTestCase {
         XCTAssertEqual(content.lighting.lights.map(\.light.kind),
                        [.tube, .spot, .point, .point, .legacyPoint, .legacyPoint, .directional, .point])
         XCTAssertEqual(content.lighting.settings.lightConfig, WELightConfig(spot: 1, spotCookie: 1))
-        XCTAssertEqual(content.lighting.lights[0].depth, SceneLightDepth(originZ: 250), "the tube's own z")
-        let spot = content.lighting.lights[1].depth
-        XCTAssertEqual(spot.originZ, -421.09644, accuracy: 1e-3, "the spot's own z")
-        XCTAssertEqual(spot.anglesXY.x, -0.14119, accuracy: 1e-6, "and its tilt")
-        XCTAssertEqual(spot.anglesXY.y, 0.58229, accuracy: 1e-6)
         XCTAssertEqual(content.layers.map(\.id), ["1"], "lights draw nothing")
         XCTAssertEqual(content.transforms.nodes["285"]?.parentID, "1")
         XCTAssertNotNil(content.motions["116"], "a light moves like any other object")
