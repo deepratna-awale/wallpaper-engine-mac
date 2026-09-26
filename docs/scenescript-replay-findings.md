@@ -1,6 +1,6 @@
 # SceneScript corpus replay findings
 
-Status: 2026-09-25, branch `deepratna/feature-work`, HEAD `46daecc` plus the WP9 harness. This is what WP9's replay found in [`scenescript-plan.md`](scenescript-plan.md) §5. Paths are relative to `OpenWallpaperEngine/`. "Corpus" is `/Volumes/980Pro/dd-scenescript/corpus`, and a 12-hex name like `08861b7e67b4` is `corpus/scripts/<name>.js`.
+Status: 2026-09-25, branch `deepratna/feature-work`, HEAD `46daecc` plus the WP9 harness; the expanded corpus (65 wallpapers, 1239 sites) was triaged on 2026-09-26, see [Expanded corpus](#expanded-corpus-2026-09-26). This is what WP9's replay found in [`scenescript-plan.md`](scenescript-plan.md) §5. Paths are relative to `OpenWallpaperEngine/`. "Corpus" is `/Volumes/980Pro/dd-scenescript/corpus`, and a 12-hex name like `08861b7e67b4` is `corpus/scripts/<name>.js`.
 
 ## The harness
 
@@ -17,7 +17,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, HEAD `46daecc` plus the WP9
   - **Clock:** starts at 23:59:52 on 31 December. `Date` is stubbed to it and `Math.random` is seeded.
   - **Audio:** silence, then a moving two-channel tone with a kick every 0.5 s (frames 150–450), then silence.
   - **Cursor:** WP10's cursor pass over a stand-in for the renderer's table (world matrix from each object's origin and scale, 64 × 64 for an unsized image or text). The cursor moves on a path, and from frames 300 and 460 clicks each Solid layer with scripts in turn (§1.9 P7).
-  - **Media:** playing, paused, stopped without a thumbnail, then a new track.
+  - **Media:** playing, paused, stopped without a thumbnail, then a new track. The first track fills every `MediaPropertiesEvent` member (subtitle and album artist too) and the last one an album artist, so a text showing any of them follows the track.
   - **User properties:** every flag, slider and combo is changed at frame 420 and restored at frame 540.
 - The test assertions and their checks:
   - **exception:** a compile error or a runtime throw, with the script, line, callback and frame.
@@ -151,3 +151,58 @@ These are listed in `SceneScriptCorpusReplayTests.expectedFailures`, with reason
 - **`f86e0df8a16e`** (2963872291, the Solid 'playerplay'): there are no `.mp3` sound layers, so `cachedSongs` is empty and a click throws at lines 114 and 54, in WE too.
 - **`7d3bc214624c`** (3546971487): its `scriptproperties` clamp the scale to [2.7, 2.8], and a spectrum average never reaches 2.7, so the value is constant.
 - **`11844b104b6a`** (3677897732, 3803728810): bound to a constant authored as 0, which it multiplies by the audio level, so the value is constant.
+
+## Expanded corpus (2026-09-26)
+
+The corpus was re-extracted with the newly downloaded wallpapers: 1370 index entries, 65 wallpapers and 1239 sites in the replay. On HEAD `9c92f10` the new wallpapers gave 19 findings. One was a harness gap, 16 are WE's behaviour or follow from what the wallpaper lacks, one is our known gap, and one is open.
+
+| wallpaper | sites | load ms | mean ms/frame | p50 | p99 | CPU p50 | commands | created | stubs used | findings |
+|---|---|---|---|---|---|---|---|---|---|---|
+| owe/2079954552 | 1 | 17.46 | 0.040 | 0.036 | 0.078 | 0.036 | 126 | 63 | - | ok |
+| owe/2276071817 | 2 | 18.19 | 0.081 | 0.075 | 0.133 | 0.074 | 128 | 63 | - | ok |
+| owe/2321732083 | 3 | 22.82 | 0.058 | 0.047 | 0.125 | 0.046 | 150 | 8 | - | exception 1 (open, RF3) |
+| owe/2350874185 | 16 | 25.64 | 0.062 | 0.040 | 0.290 | 0.040 | 0 | 0 | - | change 3 (WE too) |
+| owe/2499516781 | 33 | 39.38 | 0.084 | 0.067 | 0.220 | 0.066 | 1760 | 7 | - | ok |
+| owe/2515150033 | 2 | 0.92 | 0.053 | 0.048 | 0.102 | 0.048 | 0 | 0 | - | ok |
+| owe/2868563343 | 4 | 4.73 | 0.059 | 0.053 | 0.119 | 0.052 | 6 | 0 | - | ok |
+| owe/3159348391 | 28 | 18.25 | 0.047 | 0.039 | 0.161 | 0.039 | 21 | 0 | - | ok |
+| owe/3200298808 | 42 | 52.41 | 0.070 | 0.056 | 0.397 | 0.055 | 675 | 0 | - | exception 6, finite 1, change 1 (WE too) |
+| owe/3219510589 | 184 | 170.14 | 0.266 | 0.186 | 0.830 | 0.184 | 5314 | 0 | - | change 1 (WE too) |
+| owe/3306828160 | 16 | 16.05 | 0.049 | 0.041 | 0.143 | 0.041 | 16 | 0 | - | ok |
+| owe/3378346807 | 106 | 144.67 | 0.081 | 0.065 | 0.350 | 0.065 | 13 | 0 | - | ok |
+| owe/3424038533 | 15 | 33.72 | 0.058 | 0.044 | 0.155 | 0.044 | 30 | 0 | - | ok |
+| owe/3455121165 | 127 | 129.30 | 0.219 | 0.196 | 0.630 | 0.196 | 297 | 0 | - | finite 3 (WE too) |
+| owe/3651835769 | 25 | 36.66 | 0.055 | 0.042 | 0.317 | 0.042 | 24 | 0 | - | ok |
+| owe/3657770939 | 9 | 155.04 | 1.347 | 1.313 | 3.082 | 1.311 | 250 | 243 | - | budget 1 (the script's own work) |
+| owe/3734636606 | 15 | 516.48 | 0.230 | 0.040 | 0.263 | 0.040 | 2250 | 1345 | IScene.createModelData | exception 1 (our gap) |
+
+2176097362, 2370927443, 2963872291 and 3074485715 now also replay from the `owe` library; their findings are the earlier ones.
+
+### Harness gap (fixed)
+
+- **`93f3620c981f`** (3200298808, 'Artist Name'): the text shows `event.albumArtist`, which the fake media never filled, so it stayed empty and "did not follow the media properties". The first track now fills every `MediaPropertiesEvent` member and the last one an album artist; the finding is gone.
+
+### Our gap
+
+- **`0a3a85274f2b`** (3734636606, "More Physics"): its geometry comes from `IScene.createModelData`, still a stub returning `null` (roadmap WP12), so `entry.modelData.applyData` throws at line 14424 on frame 0. This is ours, not WE's; it goes when WP12 implements model data.
+
+### Open: RF3. `getAnimation(name)` for an unnamed timeline
+
+- **`9029e263e6d9`** (2321732083): `ship.getAnimation('origin').play()` in a timer throws, because none of the three ships' `origin` timelines has `options.name`. The script also calls it on layers it creates from `getInitialLayerConfig`.
+- **What is traced:** WE's parse (`wallpaper64.exe` `0x1401a52f6`…`0x1401a5343`) sets the animation's name string (offset `0x68`, initialised empty) only when `options.name` is a string. The editor (`ui/dist/scripts/scripts.js`, `saveAnimationOptions`) deletes an empty name. So these animations are unnamed in WE too.
+- **What isn't:** the host's `IObject.getAnimation(name)` search. If it matches the property key as well as the name, the ships fly in WE and our `objects.resolveAnimation` must do the same. The wallpaper only works if it does, which suggests it, but that is not evidence.
+- **Until traced** it is an expected failure. Tracing the host search (the `scenescript64.dll` callback for `IObject.getAnimation` and the exe function it reaches) settles it.
+
+### WE's behaviour, or what the wallpaper lacks
+
+- **`98ec4669d182`** (2350874185, `general.bloomstrength`): smooths the audio level at 2/s (its `scriptproperties`). While the frame-420 property change turns `audiobloom` off, it returns the user value and doesn't update its smoothing, so the level from the tone only starts decaying at 540 and still moves at 570–600.
+- **`2dcaf14bfeae`, `f37b16c4d23a`** (2350874185, `color`): the user default (`audioresponsiveshift` off) selects the script's rainbow mode, a hue driven by `Date.now()`. It follows the audio only while the frame-420 change lasts, so under the final silence it cycles, as in WE.
+- **3200298808** (Music Info, an asset pack): its scripts expect the layers of the "Minimalistic Music Player" asset (2499516781), which the pack doesn't carry, and it has no `.mp3` sound layers.
+  - `dea9b46dfffe`: `getLayer("playeroutlineanim")` is `null` in `init` (line 111), so `update` throws at line 25 and the alpha never animates (the change finding).
+  - `4dad26fc1686`: `getLayer("playerbackgroundprogbarexception")` is `null` in `init` (line 234); a click then indexes the empty track list (lines 132 and 82), as `f86e0df8a16e` does.
+  - `490c24f986ce`: because that `init` threw before setting `progbeginpos`, `updateProgBar` writes `Math.min(x, undefined)`, a NaN scale, from frame 30.
+  - `ecf70707afda` (from 3219510589): reads `thisLayer.getParent().getParent()`, but here the Progress Bar is a child of the root, and a root's `getParent()` is `undefined` (d.ts), so `parent.scale` throws in `update`.
+- **`87c158cf40fa`** (3219510589, the Holder's `scale`): its `scriptproperties` turn on media-based detection, so the scale follows playback, not the tone. The harness's cursor path enters and leaves the Solid holder often, and each change restarts the 1.25 s fade-out timer, so it holds at its maximum until playback resumes. The same inputs give the same result in WE.
+- **`ae3a4fdd17b7`, `123422e79a51`, `454480144e55`** (3455121165): read `shared.an` and `shared.d`, which objects 11–16 set in their first `update`. The readers are object 1, so frame 0 is NaN in scene order, as for `f629892e644b` (P3; the order is P1's best guess).
+- **3657770939** (budget): `7c2224f16732` is a rigid-body solver (SAT box contacts, an octree, iterative constraints) over every sphere that `02a0ecf53833` spawns per click, 243 after the harness's clicks. The median of 1.3–1.7 ms of CPU per frame is the script's own work. The expectation fails if the median drops under 0.5 ms, so a real speed-up shows.
+
