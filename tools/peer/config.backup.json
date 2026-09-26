@@ -1,0 +1,306 @@
+{
+	"?installdirectory" : "C:/Program Files (x86)/Steam/steamapps/common/wallpaper_engine",
+	"kskam" : 
+	{
+		"general" : 
+		{
+			"browser" : 
+			{
+				"advertiseexplore" : false,
+				"advertisesendtomobile" : true,
+				"advertiseworkshop" : false,
+				"advertiseworkshoppopup" : false,
+				"authorblocklistnames" : [],
+				"defaultfilterconfig" : 
+				{
+					"Anime" : true,
+					"recommendedresolution" : false,
+					"showotherresolution" : true
+				},
+				"explore" : 
+				{
+					"custom" : [],
+					"disliked" : [],
+					"favorites" : [],
+					"liked" : []
+				},
+				"filterinfo" : 
+				{
+					"installed" : 
+					{
+						"categorytags" : 
+						{
+							"Preset" : true,
+							"Wallpaper" : true
+						},
+						"descending" : false,
+						"ratingtags" : 
+						{
+							"Everyone" : true,
+							"Mature" : true,
+							"Questionable" : true
+						},
+						"resolutiontags" : 
+						{
+							"1280 x 720" : true,
+							"1366 x 768" : true,
+							"1920 x 1080" : true,
+							"2560 x 1440" : true,
+							"3840 x 2160" : true,
+							"Dual 3840 x 1080" : true,
+							"Dual 5120 x 1440" : true,
+							"Dual 7680 x 2160" : true,
+							"Dual Standard Definition" : true,
+							"Dynamic resolution" : true,
+							"Other resolution" : true,
+							"Portrait 1080 x 1920" : true,
+							"Portrait 1440 x 2560" : true,
+							"Portrait 2160 x 3840" : true,
+							"Portrait 720 x 1280" : true,
+							"Portrait Standard Definition" : true,
+							"Standard Definition" : true,
+							"Triple 11520 x 2160" : true,
+							"Triple 4096 x 768" : true,
+							"Triple 5760 x 1080" : true,
+							"Triple 7680 x 1440" : true,
+							"Triple Standard Definition" : true,
+							"Ultrawide 2560 x 1080" : true,
+							"Ultrawide 3440 x 1440" : true,
+							"Ultrawide Standard Definition" : true
+						},
+						"sort" : "name",
+						"sourcetags" : 
+						{
+							"Local" : true,
+							"Official" : true,
+							"Workshop" : true
+						},
+						"tags" : 
+						{
+							"Abstract" : true,
+							"Animal" : true,
+							"Anime" : true,
+							"CGI" : true,
+							"Cartoon" : true,
+							"Cyberpunk" : true,
+							"Fantasy" : true,
+							"Game" : true,
+							"Girls" : true,
+							"Guys" : true,
+							"Landscape" : true,
+							"MMD" : true,
+							"Medieval" : true,
+							"Memes" : true,
+							"Music" : true,
+							"Nature" : true,
+							"Pixel art" : true,
+							"Relaxing" : true,
+							"Retro" : true,
+							"Sci-Fi" : true,
+							"Sports" : true,
+							"Technology" : true,
+							"Television" : true,
+							"Unspecified" : true,
+							"Vehicle" : true
+						},
+						"type" : "",
+						"typetags" : 
+						{
+							"Application" : true,
+							"Scene" : true,
+							"Video" : true,
+							"Web" : true
+						},
+						"utilitytags" : {}
+					},
+					"workshop" : 
+					{
+						"categorytags" : 
+						{
+							"Preset" : true,
+							"Wallpaper" : true
+						},
+						"descending" : false,
+						"filterTitle" : true,
+						"ratingtags" : 
+						{
+							"Everyone" : true,
+							"Mature" : false,
+							"Questionable" : false
+						},
+						"resolutiontags" : 
+						{
+							"1280 x 720" : true,
+							"1366 x 768" : true,
+							"1920 x 1080" : true,
+							"2560 x 1440" : true,
+							"3840 x 2160" : true,
+							"Dual 3840 x 1080" : true,
+							"Dual 5120 x 1440" : true,
+							"Dual 7680 x 2160" : true,
+							"Dual Standard Definition" : true,
+							"Dynamic resolution" : true,
+							"Other resolution" : true,
+							"Portrait 1080 x 1920" : true,
+							"Portrait 1440 x 2560" : true,
+							"Portrait 2160 x 3840" : true,
+							"Portrait 720 x 1280" : true,
+							"Portrait Standard Definition" : true,
+							"Standard Definition" : true,
+							"Triple 11520 x 2160" : true,
+							"Triple 4096 x 768" : true,
+							"Triple 5760 x 1080" : true,
+							"Triple 7680 x 1440" : true,
+							"Triple Standard Definition" : true,
+							"Ultrawide 2560 x 1080" : true,
+							"Ultrawide 3440 x 1440" : true,
+							"Ultrawide Standard Definition" : true
+						},
+						"sort" : "trend_year",
+						"sourcetags" : 
+						{
+							"Local" : true,
+							"Official" : true,
+							"Workshop" : true
+						},
+						"tags" : 
+						{
+							"Abstract" : true,
+							"Animal" : true,
+							"Anime" : true,
+							"CGI" : true,
+							"Cartoon" : true,
+							"Cyberpunk" : true,
+							"Fantasy" : true,
+							"Game" : true,
+							"Girls" : true,
+							"Guys" : true,
+							"Landscape" : true,
+							"MMD" : true,
+							"Medieval" : true,
+							"Memes" : true,
+							"Music" : true,
+							"Nature" : true,
+							"Pixel art" : true,
+							"Relaxing" : true,
+							"Retro" : true,
+							"Sci-Fi" : true,
+							"Sports" : true,
+							"Technology" : true,
+							"Television" : true,
+							"Unspecified" : false,
+							"Vehicle" : true
+						},
+						"type" : "",
+						"typetags" : 
+						{
+							"Application" : false,
+							"Scene" : true,
+							"Video" : true,
+							"Web" : true
+						},
+						"utilitytags" : {}
+					}
+				},
+				"folders" : [],
+				"lastselectedmonitor" : "Monitor1",
+				"paireddevices" : [],
+				"pairingguid" : "06419E30-7971-4704-9562-B92F3C61A756",
+				"resultsperpage" : 100,
+				"showmonitorselectiononstart" : true,
+				"viewiconsize" : "medium"
+			},
+			"editor" : 
+			{
+				"previewratio" : "free",
+				"recentfiles" : [],
+				"showgrid" : true,
+				"showonstartup" : true,
+				"showparticlecollision" : true,
+				"showselectionbox" : true,
+				"showstats" : false
+			},
+			"user" : 
+			{
+				"adjustdwmcolormode" : "accent",
+				"adjustdwmcolorwarning" : true,
+				"anticrash" : null,
+				"apprules" : null,
+				"audioinputdevice" : "default",
+				"audioinputthreshold" : 0,
+				"audioinputvolume" : 50,
+				"autostart" : true,
+				"autostartscheduler" : true,
+				"autostartx64" : true,
+				"browsetransition" : 
+				{
+					"transition" : "none",
+					"transitiontime" : 1500
+				},
+				"cefcommandline" : "",
+				"fps" : 15,
+				"hasshownhighprioritywarning" : true,
+				"hasshownwelcomedialog" : true,
+				"highprecisiontimer" : true,
+				"iconopacity" : 100,
+				"language" : "default",
+				"loglevel" : "error",
+				"mediablocklist" : null,
+				"mediaintegration" : true,
+				"monitordetection" : "managed",
+				"monitormap" : null,
+				"msaa" : "none",
+				"overridelockscreen" : false,
+				"overridewallpaper" : false,
+				"pausevram" : false,
+				"playbackaudio" : "run",
+				"playbackfocus" : "run",
+				"playbackfullscreen" : "pause",
+				"playbackmaximized" : "pause",
+				"playbackonbattery" : "run",
+				"playbacksleep" : "stop",
+				"plugins" : null,
+				"postprocessing" : "enabled",
+				"preset" : "medium",
+				"processpriority" : "normal",
+				"reflection" : true,
+				"reloadaudio" : true,
+				"resolution" : "full",
+				"safemode" : true,
+				"shadows" : "medium",
+				"slideshowkiller" : false,
+				"steamlanguage" : "english",
+				"uicmd" : "",
+				"uieffects" : null,
+				"uihardwareacceleration" : true,
+				"uiquality" : "medium",
+				"uiskin" : "dark",
+				"uiskinseasonal" : true,
+				"unpauseaero" : true,
+				"vdesktopenabled" : false,
+				"videoaudiooutput" : true,
+				"videoframework" : "mfEngine",
+				"videohardwareacceleration" : true,
+				"videoloopmode" : "default",
+				"videomfstutterhack" : false,
+				"videoreadmode" : "fromdisk",
+				"volumetrics" : "medium",
+				"webmframework" : null,
+				"windowupdaterate" : 1000
+			},
+			"wallpaperconfig" : 
+			{
+				"profile" : null,
+				"selectedwallpapers" : 
+				{
+					"Monitor1" : 
+					{
+						"file" : "C:/Program Files (x86)/Steam/steamapps/common/wallpaper_engine/projects/defaultprojects/corsair_o_tron/index.html"
+					}
+				}
+			}
+		},
+		"version" : 5,
+		"wproperties" : {}
+	}
+}
