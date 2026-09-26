@@ -1409,8 +1409,8 @@ The scenes used below:
 | LR6 | High | B1, EP | Bloom radius and HDR level count follow the scene target's size (Match display, Texture Resolution, desktop resolution, two displays) |
 | LR7 | High | B1, B2 | Bloom gates and live values: user-bound and scripted `bloom`, timelines on strength, `bloomhdr*` not live (**fixed**), `_owe_bloom` |
 | LR8 | High | B2 | HDR float targets through every stage |
-| LR9 | High | all | Cost at 5K (5120×2880), HDR and reflection on |
-| LR10 | High | all | Memory: full-size float targets, unused ping targets, targets kept after leaving HDR |
+| LR9 | High | all | Cost at 5K (5120×2880), HDR and reflection on (measured: "Optimisation pass") |
+| LR10 | High | all | Memory: full-size float targets, unused ping targets, targets kept after leaving HDR (copies cut, round trips guarded: "Optimisation pass") |
 | LR11 | Medium | A4 | A prelit layer whose chain renders nothing draws **unlit** (**fixed**, LF5) |
 | LR12 | Medium | A2, D1 | Lights (and volumetrics) don't move with camera parallax or shake; the layers they light do (**fixed** for shake; parallax doesn't move lights in WE either) |
 | LR13 | Medium | A2 | Light packing: overflowing groups, budgets, legacy slot collisions, sort ties |
@@ -1778,3 +1778,37 @@ Not done, with the evidence:
 - **`ccsimple`** (step 6): WE loads it with `COL` and/or `LUT` only when the user's colour correction differs from identity (0x1401826a2…0x1401826f3: the parameters at ctx+0x3110…0x3120, a `lut/<name>` at +0x3128 with its strength at +0x3148 > 0). At the defaults no pass is made, which is what the app draws. Where WE's UI sets those values wasn't traced, so the app's `_owe_saturation`/`_owe_hue` extras stay its own.
 - **The camera fade** (`fade.json`, step 7) is loaded only when `camerafade` is on **and** the scene has camera paths (0x140181bae…0x140181bda). The library has no camera paths, and the app doesn't play them, so nothing is missing.
 - **Script cameras** (`setCameraTransforms`) aren't read by the renderer at all yet (layers included), so the volumetrics don't follow them either.
+
+## Optimisation pass (lighting, bloom, HDR, reflection, volumetrics)
+
+`LightingFrameBenchmarkTests` (`OWE_LIGHTING_BENCH=1`) draws Hinata (3352730400, HDR and volumetrics), 3606529469 (HDR), witcher (3803167460, prelit and reflective), the Knight (2515150033, legacy lights and reflection), One piece girls (3270035750, tubes and bloom) and 3639372043 (bloom) at full scene detail on a 1920×1080 and a 5120×2880 drawable, under ultra, enabled, no post-processing, and ultra without reflection or volumetrics. It records the GPU time of 60 frames after 40 warm-up frames and the Metal memory the device holds, split by holder (`SceneMetalRenderer.frameTargetBytes`). The GPU was shared with other agents' test runs, so medians swing by 2× between runs; the minima and the memory are the numbers to read.
+
+**What was cut** (both byte-identical: six scenes' frames compared before and after):
+- `6ea7cfe`: where the frame's reflection copy runs and nothing reads `_rt_MipMappedFrameBuffer` in the scene pass after the first scene-reading layer, the scene snapshot goes into the buffer's level 0 (`SceneMipMappedFrameBuffer.snapshotCanShare`).
+- `e83b252`: a layer whose effects read the scene reads the paused scene target itself; only a material that reads the scene inside the resumed pass still gets a copy. This removes a full-size copy and its blit for every composition layer: Hinata's filmgrain `projectlayer`, 3639372043's, and One piece girls' largest.
+
+Memory held after drawing, ultra (MB; scene target at the drawable's density):
+
+| Scene | Target | Before | After | Change |
+|---|---|---|---|---|
+| Hinata (HDR) | 1920×1080 F16 | 197 | 181 | −16 (the F16 snapshot) |
+| Hinata (HDR) | 5280×2970 F16 | 666 | 544 | −122 |
+| witcher | 3840×2160 | 708 | 676 | −32 |
+| witcher | 5280×2970 | 950 | 888 | −62 |
+| One piece girls | 5280×2970 | 1258 | 1196 | −62 |
+| 3639372043 | 3840×2160 | 409 | 377 | −32 |
+| 3639372043 | 5280×2970 | 612 | 550 | −62 |
+| 3606529469 (HDR) | 5280×2970 F16 | 471 | 471 | 0 (its reader is a material) |
+| the Knight | 5280×2970 | 274 | 274 | 0 (no scene reader) |
+
+GPU, fastest frame of 60 at 5120×2880, ultra (ms, same session, A then B): Hinata 12.1 → 8.4, witcher 18.2 → 17.5, 3639372043 11.5 → 9.5; One piece girls was too noisy to read (27–39 ms either way).
+
+Stage costs at 5280×2970 after the cuts (fastest frame, ms, one run): Hinata ultra 8.4–9.5, enabled (LDR bloom) 6.6–7.6, no post-processing 5.9–6.1, so the HDR chain and float targets cost about 3 ms over no post-processing and the LDR chain about 1 ms; volumetrics 0.5–1 ms (ultra against ultra without them); the Knight's reflection copy and mips about 0.8 ms (5.45 against 4.64). At 1920×1080 every stage is under 1 ms.
+
+**What was checked and left:**
+- The mip-mapped buffer's copy and mips run every frame the setting is on, as WE's do; skipping them while no reader is visible would hand a reader that appears later a stale frame.
+- The HDR combine and the LDR combine each write a full-size frame the composite reads. Folding either into the composite changes the sampling of `_rt_Bloom` under a scaled placement, so both stay WE's passes.
+- The prelit images (witcher 49 MB) are needed every frame, and a layer whose chain renders nothing draws its own, so they can't be pooled across layers.
+- Memoryless targets: every lighting target is read after the pass that writes it (the volumetrics' depth is converted in a later pass), so none qualifies. The scene targets, the mip buffer, the snapshots, the prelit images and the volumetrics' light buffers are `private` render targets without `shaderWrite` or `pixelFormatView`, which Apple GPUs can compress losslessly; only the volumetrics' small R32F depth copies take `shaderWrite`.
+- `LightingMemoryTests`: switching one renderer between the HDR fixture and an LDR scene ten times returns within 5% of the first HDR visit, and the LDR content holds no float target nor the HDR combine's output.
+
