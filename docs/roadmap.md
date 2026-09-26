@@ -31,6 +31,7 @@ Each step: research → parallel agents by file ownership + tester → fix the t
    - A shader-compiler helper process (hung compile with no Homebrew fallback).
    - Music-sync settings keyed by stable identity, not the path.
    - Text with effects, blend modes or emoji through WE's font path.
+   - UI: stray line under the seek bar — fixed be620ce (a stepped `Slider` drew a tick mark per step; `NumericSliderInput` now snaps the value instead).
    - Anything the testers find.
 9. After each area: a performance pass (frame time, load time, memory) on the library, and bug fixes.
 
