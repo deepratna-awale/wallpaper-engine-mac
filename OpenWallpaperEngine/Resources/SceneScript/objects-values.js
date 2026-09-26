@@ -106,9 +106,96 @@
         return objects.read('degrees', t, i);
     }
 
-    function rememberDegrees(owner, offset, degrees, t, i) {
+    // Updates the remembered entry in place: an `angles` script writes every frame.
+    function rememberDegrees(owner, offset, x, y, z, t, i) {
         if (owner._deg === undefined) Object.defineProperty(owner, '_deg', { value: {} });
-        owner._deg[offset] = { d: degrees, r: [t[i], t[i + 1], t[i + 2]] };
+        let entry = owner._deg[offset];
+        if (entry === undefined) {
+            entry = { d: [0, 0, 0], r: [0, 0, 0] };
+            owner._deg[offset] = entry;
+        }
+        entry.d[0] = x; entry.d[1] = y; entry.d[2] = z;
+        entry.r[0] = t[i]; entry.r[1] = t[i + 1]; entry.r[2] = t[i + 2];
+    }
+
+    // Accessors per field type. They run for every field every script reads or writes, every
+    // frame, so each is a small function of its own that writes the table directly: no
+    // intermediate arrays, no switch on the type. The rules are `objects.convert`'s.
+    function getter(type, offset) {
+        switch (type) {
+        case 'number': return function () { return this._t[this._base + offset]; };
+        case 'bool': return function () { return this._t[this._base + offset] !== 0; };
+        case 'vec2': return function () { const t = this._t, i = this._base + offset; return objects.vec2(t[i], t[i + 1]); };
+        case 'vec3': return function () {
+            const t = this._t, i = this._base + offset;
+            return objects.vec3(t[i], t[i + 1], t[i + 2]);
+        };
+        case 'degrees': return function () { return readDegrees(this, offset, this._t, this._base + offset); };
+        default: return function () { return undefined; };
+        }
+    }
+
+    function setter(type, offset) {
+        switch (type) {
+        case 'number': return function (value) {
+            if (this._dead || typeof value !== 'number') return;
+            this._t[this._base + offset] = value;
+            this._d[this._di] = 1;
+        };
+        case 'bool': return function (value) {
+            if (this._dead) return;
+            let flag;
+            if (typeof value === 'boolean') flag = value ? 1 : 0;
+            else if (typeof value === 'number') flag = value !== 0 ? 1 : 0;
+            else return;
+            this._t[this._base + offset] = flag;
+            this._d[this._di] = 1;
+        };
+        case 'vec2': return function (value) {
+            if (this._dead) return;
+            let x, y;
+            if (typeof value === 'number') {
+                x = value; y = value;
+            } else {
+                if (value === null || typeof value !== 'object') return;
+                x = value.x;
+                if (typeof x !== 'number') return;
+                y = value.y;
+                if (typeof y !== 'number') return;
+            }
+            const t = this._t, i = this._base + offset;
+            t[i] = x; t[i + 1] = y;
+            this._d[this._di] = 1;
+        };
+        case 'vec3':
+        case 'degrees': {
+            const degrees = type === 'degrees';
+            return function (value) {
+                if (this._dead) return;
+                let x, y, z;
+                if (typeof value === 'number') {
+                    x = value; y = value; z = value;
+                } else {
+                    if (value === null || typeof value !== 'object') return;
+                    x = value.x;
+                    if (typeof x !== 'number') return;
+                    y = value.y;
+                    if (typeof y !== 'number') return;
+                    z = value.z;
+                    if (typeof z !== 'number') return;
+                }
+                const t = this._t, i = this._base + offset;
+                if (degrees) {
+                    t[i] = x * DEG2RAD; t[i + 1] = y * DEG2RAD; t[i + 2] = z * DEG2RAD;
+                    rememberDegrees(this, offset, x, y, z, t, i);
+                } else {
+                    t[i] = x; t[i + 1] = y; t[i + 2] = z;
+                }
+                this._d[this._di] = 1;
+            };
+        }
+        default: return function (value) {};
+        }
     }
 
     // Defines `name` on `proto` over a shared buffer. Instances carry `_t` (the Float32Array),
@@ -116,22 +203,11 @@
     // destroyed layer points them at a private snapshot, so a stale reference never touches a
     // reused slot. A read-only field ignores writes, like the rest of WE's inert members.
     objects.defineField = function (proto, name, offset, type, readOnly) {
-        const count = type === 'number' || type === 'bool' ? 1 : (type === 'vec2' ? 2 : 3);
         Object.defineProperty(proto, name, {
             configurable: true,
             enumerable: true,
-            get: type === 'degrees'
-                ? function () { return readDegrees(this, offset, this._t, this._base + offset); }
-                : function () { return objects.read(type, this._t, this._base + offset); },
-            set: readOnly ? function (value) {} : function (value) {
-                if (this._dead) return;
-                const c = objects.convert(type, value);
-                if (c === undefined) return;
-                const t = this._t, i = this._base + offset;
-                for (let k = 0; k < count; k++) t[i + k] = c[k];
-                if (type === 'degrees') rememberDegrees(this, offset, components(value, 3), t, i);
-                this._d[this._di] = 1;
-            },
+            get: getter(type, offset),
+            set: readOnly ? function (value) {} : setter(type, offset),
         });
     };
 

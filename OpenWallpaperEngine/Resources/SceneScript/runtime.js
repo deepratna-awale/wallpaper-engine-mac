@@ -151,6 +151,28 @@
         return result;
     }
 
+    // `run` for a callback of one argument (`init`, `update`): the same, without an arguments
+    // array, since `update` runs for every script every frame.
+    function runOne(record, name, fn, argument) {
+        if (!record.enabled || rt.halted) return undefined;
+        const previousPhase = rt.phase, previousCurrent = rt.current, previousCallback = rt.callback;
+        rt.phase = 'callback';
+        rt.current = record.id;
+        rt.callback = name;
+        let result;
+        try {
+            result = fn(argument);
+        } catch (error) {
+            rt.reportError(record, name, error);
+            record.failed[name] = true;
+            result = undefined;
+        }
+        rt.phase = previousPhase;
+        rt.current = previousCurrent;
+        rt.callback = previousCallback;
+        return result;
+    }
+
     // Runs `fn` as `record`'s code in `phase` ('global' or 'callback'): for timers and ended
     // callbacks. An exception is recorded on the error channel and swallowed, so one script never
     // stops another; like WE, it disables nothing. Returns undefined when it threw.
@@ -172,6 +194,21 @@
         if (typeof fn !== 'function') return undefined;
         return run(record, name, 'callback', fn, args, name);
     };
+
+    // `invoke` of a one-argument callback with the value it receives (`init`, `update`).
+    function invokeWithValue(record, name) {
+        const exports = record.exports;
+        if (!exports || record.failed[name] === true) return undefined;
+        let fn;
+        try {
+            fn = exports[name];
+        } catch (error) {
+            rt.reportError(record, name, error);
+            return undefined;
+        }
+        if (typeof fn !== 'function') return undefined;
+        return runOne(record, name, fn, rt.argument(record));
+    }
 
     rt.exports = function (record, name) {
         return record.exports ? record.exports[name] : undefined;
@@ -245,7 +282,9 @@
         const record = { id: id, factory: factory, exports: null, value: value, enabled: true,
             state: DEFINED, scriptProperties: scriptProperties, slot: slot, pendingDestroy: false,
             destroyed: false, failed: {}, url: typeof url === 'string' ? url : '',
-            binding: binding === undefined ? null : binding, late: rt.loadedOnce };
+            binding: binding === undefined ? null : binding, late: rt.loadedOnce,
+            // The property binding's cached access to the bound property (sceneScriptBinding.js).
+            access: undefined };
         rt.records.push(record);
         rt.byId.set(id, record);
     };
@@ -351,7 +390,7 @@
         for (let i = 0; i < records.length; i++) {
             const record = records[i];
             if (record.enabled && record.state === INJECTED) {
-                rt.apply(record, rt.invoke(record, 'init', [rt.argument(record)]));
+                rt.apply(record, invokeWithValue(record, 'init'));
                 record.state = INITIALIZED;
                 try {
                     rt.hooks.initialized(record);
@@ -500,7 +539,7 @@
         for (let i = 0; i < records.length; i++) {
             const record = records[i];
             if (record.enabled && record.state === READY && !record.pendingDestroy) {
-                rt.apply(record, rt.invoke(record, 'update', [rt.argument(record)]));
+                rt.apply(record, invokeWithValue(record, 'update'));
             }
         }
         runPhase('deferred', dt);

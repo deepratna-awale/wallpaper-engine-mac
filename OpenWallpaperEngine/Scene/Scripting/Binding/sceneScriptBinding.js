@@ -31,22 +31,32 @@
             if (value === null || value === undefined || typeof value === 'symbol') return undefined;
             return String(value);
         default: {
+            // Components read in order, the first non-number rejects (as the DLL's checks do);
+            // no intermediate array, since this runs for every bound vector every frame.
             const count = COMPONENTS[type];
             if (count === undefined) return undefined;
-            const c = new Array(count);
-            if (value !== null && (typeof value === 'object' || typeof value === 'function')) {
-                for (let i = 0; i < count; i++) {
-                    const component = value[KEYS[i]];
-                    if (typeof component !== 'number') return undefined;
-                    c[i] = component;
-                }
-            } else if (typeof value === 'number') {
-                for (let i = 0; i < count; i++) c[i] = value;
-            } else {
-                return undefined;
-            }
-            return vector(count, c);
+            if (typeof value === 'number') return vector4(count, value, value, value, value);
+            if (value === null || (typeof value !== 'object' && typeof value !== 'function')) return undefined;
+            const x = value.x;
+            if (typeof x !== 'number') return undefined;
+            const y = value.y;
+            if (typeof y !== 'number') return undefined;
+            if (count === 2) return vector4(2, x, y, 0, 0);
+            const z = value.z;
+            if (typeof z !== 'number') return undefined;
+            if (count === 3) return vector4(3, x, y, z, 0);
+            const w = value.w;
+            if (typeof w !== 'number') return undefined;
+            return vector4(4, x, y, z, w);
         }
+        }
+    }
+
+    function vector4(count, x, y, z, w) {
+        switch (count) {
+        case 2: return typeof Vec2 === 'function' ? new Vec2(x, y) : { x: x, y: y };
+        case 3: return typeof Vec3 === 'function' ? new Vec3(x, y, z) : { x: x, y: y, z: z };
+        default: return typeof Vec4 === 'function' ? new Vec4(x, y, z, w) : { x: x, y: y, z: z, w: w };
         }
     }
 
@@ -91,42 +101,66 @@
 
     // MARK: the bound property in the object model
 
-    // How to read and write the property through the object model, or null when it is not one of
-    // its members (then the record's own value is the property's value).
+    // How the property is read and written: a member of an object-model object, a material's
+    // constant, or a field only its bound script writes (`size`, objects-layers.js).
+    const MEMBER = 0, MATERIAL = 1, BOUND_ONLY = 2;
+    // A record whose property isn't a member of the object model (the record's own value is the
+    // property's value).
+    const NOT_A_MEMBER = { mode: -1, object: null, key: '', owner: null };
+
+    // The property's access for `record`, or null (the record keeps the value). Called twice per
+    // bound script per frame, so it is cached on the record while its object stands: a destroyed
+    // layer is detached (`_dead`) and its scripts go with it.
     function member(record) {
+        const cached = record.access;
+        if (cached !== undefined && (cached.owner === null || !cached.owner._dead)) {
+            return cached === NOT_A_MEMBER ? null : cached;
+        }
+        const found = resolve(record);
+        if (found !== undefined) record.access = found;
+        return found === undefined || found === NOT_A_MEMBER ? null : found;
+    }
+
+    // The access, NOT_A_MEMBER, or undefined while the target is missing (not cached).
+    function resolve(record) {
         const objects = rt.objects;
         const binding = record.binding;
-        if (!objects || binding === null || binding === undefined) return null;
+        if (!objects || binding === null || binding === undefined) return NOT_A_MEMBER;
         const target = objects.bindingTarget(binding);
-        if (target === null || target === undefined) return null;
+        if (target === null || target === undefined) return undefined;
+        const owner = binding.kind === 'scene' ? null : objects.bySlot.get(binding.slot) || null;
         const property = String(binding.property);
-        if (binding.kind === 'material') {
-            return {
-                read: function () { return target.getMaterialProperty(property); },
-                write: function (value) { target.setMaterialProperty(property, typeof value === 'boolean' ? (value ? 1 : 0) : value); },
-            };
-        }
+        if (binding.kind === 'material') return { mode: MATERIAL, object: target, key: property, owner: owner };
         let object = target, key = property;
         if (binding.kind === 'layer' && property.indexOf('instanceoverride.') === 0) {
             object = target.instance;
             key = property.slice('instanceoverride.'.length);
         }
-        if (object === null || object === undefined || !(key in object) || typeof object[key] === 'function') return null;
-        if (object === target && typeof objects.isBoundOnly === 'function' && objects.isBoundOnly(key)) {
-            return {
-                read: function () { return object[key]; },
-                write: function (value) { objects.writeBound(object, key, value); },
-            };
+        if (object === null || object === undefined || !(key in object) || typeof object[key] === 'function') return NOT_A_MEMBER;
+        const boundOnly = object === target && typeof objects.isBoundOnly === 'function' && objects.isBoundOnly(key);
+        return { mode: boundOnly ? BOUND_ONLY : MEMBER, object: object, key: key, owner: owner };
+    }
+
+    function read(access) {
+        return access.mode === MATERIAL ? access.object.getMaterialProperty(access.key) : access.object[access.key];
+    }
+
+    function write(access, value) {
+        switch (access.mode) {
+        case MATERIAL:
+            access.object.setMaterialProperty(access.key, typeof value === 'boolean' ? (value ? 1 : 0) : value);
+            break;
+        case BOUND_ONLY:
+            rt.objects.writeBound(access.object, access.key, value);
+            break;
+        default:
+            access.object[access.key] = value;
         }
-        return {
-            read: function () { return object[key]; },
-            write: function (value) { object[key] = value; },
-        };
     }
 
     function assign(record, value) {
         const access = member(record);
-        if (access !== null) access.write(value);
+        if (access !== null) write(access, value);
         record.value = value;
     }
 
@@ -137,7 +171,7 @@
         if (site === undefined) return record.value;
         const access = member(record);
         if (access !== null) {
-            const live = access.read();
+            const live = read(access);
             if (live !== undefined) return live;
         }
         return copy(site.type, record.value);
@@ -149,7 +183,7 @@
         const value = convert(site.type, returned);
         if (value === undefined) return undefined;
         const access = member(record);
-        if (access !== null) access.write(value);
+        if (access !== null) write(access, value);
         return value;
     };
 
