@@ -252,17 +252,41 @@ final class EffectPipelineArchiveTests: XCTestCase {
 
     /// Writes wait for the *last* addition, so a burst longer than the delay still writes once.
     func testABurstOfAdditionsWritesOnce() throws {
-        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.5, metalScratchDirectory: nil)
+        // A clock and timer driven by hand: under a loaded machine, real sleeps stretched the
+        // burst into two writes, or the write past the test's wait.
+        let clock = ManualClock()
+        let archive = EffectPipelineArchive(device: device, directory: directory, serializeDelay: 0.5,
+                                            metalScratchDirectory: nil, timing: clock.timing)
         let descriptors = try (0..<12).map { try descriptor(red: $0) }
         for (index, descriptor) in descriptors.enumerated() {
             archive.add(descriptor, key: "\(index)")
-            Thread.sleep(forTimeInterval: 0.1)
+            clock.advance(by: 0.1)
         }
-        let deadline = Date().addingTimeInterval(20)
-        while archive.writes == 0, Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
-        Thread.sleep(forTimeInterval: 0.8)
+        XCTAssertEqual(archive.writes, 0, "additions 0.1 s apart keep postponing the write")
+        clock.advance(by: 0.5)
+        XCTAssertEqual(archive.writes, 1)
+        clock.advance(by: 10)
         XCTAssertEqual(archive.writes, 1)
         XCTAssertEqual(archive.writeFailures, 0)
+    }
+
+    /// Time that only moves when the test says; scheduled work runs, in deadline order, as it
+    /// comes due.
+    private final class ManualClock {
+        private var now = DispatchTime(uptimeNanoseconds: 1_000_000_000)
+        private var pending: [(deadline: DispatchTime, work: () -> Void)] = []
+
+        var timing: EffectPipelineArchive.Timing {
+            EffectPipelineArchive.Timing(now: { [unowned self] in self.now },
+                                         schedule: { [unowned self] deadline, work in self.pending.append((deadline, work)) })
+        }
+
+        func advance(by seconds: TimeInterval) {
+            now = now + seconds
+            while let next = pending.indices.filter({ pending[$0].deadline <= now }).min(by: { pending[$0].deadline < pending[$1].deadline }) {
+                pending.remove(at: next).work()
+            }
+        }
     }
 
     /// Metal leaves a `gpuarchiver-*` build directory behind for every serialization. Old ones

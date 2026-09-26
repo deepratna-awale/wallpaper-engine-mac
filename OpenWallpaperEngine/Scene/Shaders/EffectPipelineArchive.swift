@@ -62,13 +62,24 @@ final class EffectPipelineArchive {
     private let serializeQueue = DispatchQueue(label: "owe.effect-pipeline-archive", qos: .utility)
     /// Writes wait until no pipeline was added for this long, so a burst of compiles writes once.
     let serializeDelay: TimeInterval
+    /// The debounce's clock and timer; nil is `DispatchTime.now()` and `serializeQueue`.
+    private let timing: Timing?
+
+    /// A clock and a timer for the debounced writes, which tests drive by hand so a loaded
+    /// machine can't stretch a burst of additions into two writes, or a write past a deadline.
+    struct Timing {
+        let now: () -> DispatchTime
+        /// Runs the work at the deadline or later, on any thread.
+        let schedule: (DispatchTime, @escaping () -> Void) -> Void
+    }
 
     /// `metalScratchDirectory` is where Metal leaves its serialization build directories
     /// (`defaultMetalScratchDirectory`); nil leaves them alone.
     init(device: MTLDevice, directory: URL, serializeDelay: TimeInterval = 2,
-         metalScratchDirectory: URL? = EffectPipelineArchive.defaultMetalScratchDirectory) {
+         metalScratchDirectory: URL? = EffectPipelineArchive.defaultMetalScratchDirectory, timing: Timing? = nil) {
         self.device = device
         self.serializeDelay = serializeDelay
+        self.timing = timing
         let prefix = Self.devicePrefix(device)
         url = directory.appending(path: "\(prefix)--\(Self.environmentKey).binarchive")
         do {
@@ -130,7 +141,7 @@ final class EffectPipelineArchive {
         guard record(descriptor, key: key) else { return }
         additionCount += 1
         written = false
-        lastAddition = .now()
+        lastAddition = now()
         guard !serializeScheduled, !writesStopped else { return }
         serializeScheduled = true
         scheduleSerialize(at: lastAddition + serializeDelay)
@@ -161,16 +172,23 @@ final class EffectPipelineArchive {
 
     /// Caller holds `lock` and has set `serializeScheduled`.
     private func scheduleSerialize(at deadline: DispatchTime) {
-        serializeQueue.asyncAfter(deadline: deadline) { [weak self] in
-            self?.serializeWhenIdle()
+        let work: () -> Void = { [weak self] in self?.serializeWhenIdle() }
+        if let timing {
+            timing.schedule(deadline, work)
+        } else {
+            serializeQueue.asyncAfter(deadline: deadline, execute: work)
         }
+    }
+
+    private func now() -> DispatchTime {
+        timing?.now() ?? .now()
     }
 
     /// Writes once no pipeline was added for `serializeDelay`; waits longer while they still come.
     private func serializeWhenIdle() {
         let due: Bool = lock.withLock {
             let deadline = lastAddition + serializeDelay
-            guard DispatchTime.now() >= deadline else {
+            guard now() >= deadline else {
                 scheduleSerialize(at: deadline)
                 return false
             }
