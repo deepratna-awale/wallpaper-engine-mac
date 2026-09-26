@@ -49,6 +49,8 @@ final class EffectGraphRenderer {
         var pingA: MTLTexture?
         var pingB: MTLTexture?
         var fbos: [[String: MTLTexture]] = []
+        /// FBOs made since the last frame, with the colour each starts as (`EffectFBO.clear`).
+        var pendingClears: [(texture: MTLTexture, color: MTLClearColor)] = []
         /// The size each target stands for when the chain is drawn below its size
         /// (`Context.inputStandInSize`), which the chain's built-ins report. Empty otherwise.
         var standInSizes: [ObjectIdentifier: SIMD2<Float>] = [:]
@@ -299,6 +301,7 @@ final class EffectGraphRenderer {
             recycleTargets(state)
             allocateTargets(state, effects: effects, width: width, height: height, standIn: standIn)
         }
+        clearNewTargets(state, commandBuffer: commandBuffer)
 
         // The leading effects that don't change over time, when later ones do: their output is kept
         // and the frame starts after them while it stays valid.
@@ -365,6 +368,9 @@ final class EffectGraphRenderer {
                     let a = fbos[first]
                     fbos[first] = fbos[second]
                     fbos[second] = a
+                    // A swapped pair carries this frame's buffers into the next (a simulation's
+                    // ping-pong): the chain's output changes every frame.
+                    reusable = false
                 case .render:
                     guard let variant = pass.variant, let program = state.programs[effectIndex][passIndex],
                           let format = state.formats[effectIndex][passIndex],
@@ -390,6 +396,8 @@ final class EffectGraphRenderer {
                     if pass.target == nil { current = output }
                 }
             }
+            // Swaps last: the next frame starts from the buffers this one left.
+            state.fbos[effectIndex] = fbos
         }
         guard didRender else { return nil }
         // A chain with no time, audio or pointer input produces the same image every frame while
@@ -411,6 +419,7 @@ final class EffectGraphRenderer {
     static func staticPrefix(_ effects: [SceneEffectPlan], programs: [[UniformProgram?]], hidden: Set<Int>) -> Int {
         func isStatic(_ index: Int) -> Bool {
             zip(effects[index].passes, programs[index]).allSatisfy { pass, program in
+                if case .swap = pass.command { return false }
                 guard case .render = pass.command else { return true }
                 return (program?.isReusable ?? true) && !pass.readsSceneSnapshot && !pass.readsMipMappedFrameBuffer
             }
@@ -717,11 +726,34 @@ final class EffectGraphRenderer {
                 let format = Self.pixelFormat(fbo.format, frameBuffer: state.targetFormats.frameBuffer)
                 let texture = target(width: size.x, height: size.y, format: format)
                 remember(texture, standsFor: Self.fboSize(fbo, width: standIn.x, height: standIn.y))
+                if let texture { state.pendingClears.append((texture, Self.clearColor(fbo.clear))) }
                 return texture.map { (fbo.name, $0) }
             }, uniquingKeysWith: { a, _ in a })
         }
     }
 
+
+    /// An FBO's `clear` ("r g b a"); transparent black when it has none. Pooled targets hold
+    /// whatever they last held, and a simulation's buffers (`effects/fluidsimulation`) read
+    /// themselves from the previous frame, so garbage (a NaN) would stay in them for good.
+    static func clearColor(_ authored: String?) -> MTLClearColor {
+        let parts = (authored ?? "").split(separator: " ").compactMap { Double($0) }
+        func part(_ index: Int) -> Double { index < parts.count && parts[index].isFinite ? parts[index] : 0 }
+        return MTLClearColor(red: part(0), green: part(1), blue: part(2), alpha: part(3))
+    }
+
+    /// Clears the FBOs made since the last frame to their start colour, before any pass reads one.
+    private func clearNewTargets(_ state: LayerState, commandBuffer: MTLCommandBuffer) {
+        for (texture, color) in state.pendingClears {
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = texture
+            pass.colorAttachments[0].loadAction = .clear
+            pass.colorAttachments[0].clearColor = color
+            pass.colorAttachments[0].storeAction = .store
+            commandBuffer.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        }
+        state.pendingClears.removeAll()
+    }
 
     /// The layer's first or `second` ping-pong target, made at the chain's size on first use.
     private func pingTarget(of state: LayerState, second: Bool) -> MTLTexture? {
