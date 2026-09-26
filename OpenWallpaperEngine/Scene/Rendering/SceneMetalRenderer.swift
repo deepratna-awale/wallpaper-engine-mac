@@ -1001,15 +1001,20 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard let draw = draws[layerIndex] else { continue }
             var layerSnapshot: MTLTexture?
             if entry.layer.readsScene {
-                // Metal can't sample the attachment it's drawing into: pause the scene pass, copy
-                // what's drawn so far (`_rt_FullFrameBuffer`), run this layer's effects on it, resume.
+                // Metal can't sample the attachment it's drawing into: pause the scene pass, run
+                // this layer's effects on what's drawn so far (`_rt_FullFrameBuffer`), resume. The
+                // effects read the target itself while the pass is paused; only a material that
+                // reads the scene from inside the resumed pass needs a copy of it.
                 encoder.endEncoding()
-                // A material or scene input reads the scene under its own quad; an effect anywhere.
-                let needed = entry.layer.effectsReadScene ? nil
-                    : SceneSnapshotTracker.pixelRect(of: draw.quad, sceneSize: sceneSize, targetSize: targetSize)
-                        ?? SceneSnapshotTracker.Rect.empty
-                let snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer, needing: needed)
-                layerSnapshot = snapshot
+                var snapshot: MTLTexture? = sceneTexture
+                if entry.layer.imageMaterial?.readsSceneSnapshot == true {
+                    // A material or scene input reads the scene under its own quad; an effect anywhere.
+                    let needed = entry.layer.effectsReadScene ? nil
+                        : SceneSnapshotTracker.pixelRect(of: draw.quad, sceneSize: sceneSize, targetSize: targetSize)
+                            ?? SceneSnapshotTracker.Rect.empty
+                    snapshot = sceneSnapshot(of: sceneTexture, commandBuffer: commandBuffer, needing: needed)
+                    layerSnapshot = snapshot
+                }
                 let input = entry.layer.sceneInput
                     ? snapshot.flatMap { sceneRegion(of: $0, under: draw.quad, reducedFor: entry.layer,
                                                      commandBuffer: commandBuffer) }

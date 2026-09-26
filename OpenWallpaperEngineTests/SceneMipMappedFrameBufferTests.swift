@@ -154,10 +154,15 @@ final class SceneMipMappedFrameBufferTests: XCTestCase {
     }
 
     /// Through the renderer: where the snapshot may share the target, the frame leases no
-    /// full-size target for it.
+    /// full-size target for it (a material that reads the scene draws inside the scene pass, so it
+    /// needs a copy); a layer whose effects alone read the scene needs no copy at all: they run
+    /// while the scene pass is paused and read the scene target itself.
     func testASharedSnapshotLeasesNoTargetOfItsOwn() throws {
         var reader = Self.layer("reader")
-        reader.weEffects = [SceneEffectPlan(file: "effects/test/effect.json", fbos: [], passes: [Self.snapshotPass()])]
+        reader.imageMaterial = ImageMaterialPlan(materialPath: "materials/test.json", pass: Self.snapshotPass(),
+                                                 usesSpriteSheetUniforms: false, liveFactors: [:])
+        var effectReader = Self.layer("effects")
+        effectReader.weEffects = [SceneEffectPlan(file: "effects/test/effect.json", fbos: [], passes: [Self.snapshotPass()])]
         var direct = Self.layer("direct")
         direct.imageMaterial = ImageMaterialPlan(materialPath: "materials/test.json", pass: Self.samplingPass(),
                                                  usesSpriteSheetUniforms: false, liveFactors: [:])
@@ -179,9 +184,9 @@ final class SceneMipMappedFrameBufferTests: XCTestCase {
                 renderer.draw(in: view)
                 renderer.lastCommandBuffer?.waitUntilCompleted()
             }
-            XCTAssertNotNil(renderer.mipMappedFrameBuffer?.texture)
             return renderer.frameTargetBytes["target pool (snapshots, regions)"] ?? 0
         }
+        XCTAssertEqual(try poolBytes([effectReader]), 0, "effects read the paused scene target")
         let target = 256 * 128 * 4
         let shared = try poolBytes([direct, reader]), separate = try poolBytes([reader, direct])
         XCTAssertGreaterThanOrEqual(separate - shared, target, "one full-size target fewer: \(shared) vs \(separate)")
