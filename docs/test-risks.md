@@ -842,6 +842,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 ## S17. Detached shared buffers (Critical, WP2, WP5)
 **Scenario.** `SceneScriptSharedBuffer` gives JavaScriptCore ownership of Swift's allocation (`JSObjectMakeTypedArrayWithBytesNoCopy` with a deallocator that frees it) and keeps the typed array alive, assuming that keeps the memory alive (`Runtime/SceneScriptSharedBuffer.swift:7-9`, `:20`). A script that calls `audio.left.buffer.transfer()` (available in JSC from macOS 14.4) detaches the original: the new `ArrayBuffer` takes the bytes, and when it is collected JSC calls the deallocator while `pointer` is still used by Swift. Every later `willRunFrame` write is a heap write after free. Confirmed, see Findings SF3. Audio buffers are handed to scripts by design (WP5); the object table and command ring are reachable through `__rt` (S28).
 **Test.** The probe in SF3 as a unit test: transfer a shared buffer's `ArrayBuffer`, drop it, force GC, then write through `pointer` under Address Sanitizer → no report.
+**Status.** Fixed (SF3, SF9); `SceneScriptObjectHardeningTests`.
 
 ## S18. Media sources (High, WP6)
 **Scenario.**
@@ -857,10 +858,12 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 - After the stop, the runtime is halted for good (P5): the wallpaper keeps rendering with frozen values and the only sign is one log line. The user needs a visible state or a reload.
 - The limit covers the whole frame (all 71 scripts of 3453730450 plus events and timers), not each outermost call like WE's; a legitimately slow load (99 `createLayer`s with synchronous asset loads, S12) shares one 15 s budget.
 - Measured on this Mac: the watchdog stops a catastrophic regex (`/^(a+)+$/` on 28 characters) but overshoots a 0.5 s limit to 1.17 s.
+**Status.** The mechanism is in (`16f9469`): `SceneScriptThread` runs a runtime on its own queue and `asyncFrame` skips frames while one is in flight (`testAHungScriptOnItsThreadLeavesTheMainThreadFree`); WP11 must create every runtime on one. The whole-frame budget and the halted-state UI remain open.
 **Test.** A scene with a `while(true)` in `update` of a script on display A: the main run loop stays responsive enough to open Settings (or document that it does not, and pick a shorter per-frame limit than WE's), display B keeps rendering after A's stop, one "dead lock" line names the script, and the wallpaper shows the halted state. Termination inside `load`, `frame` and `tearDown` each leave the runtime `halted` and the next wallpaper loadable.
 
 ## S20. Inbox overflow (Medium, WP2, WP6, WP10)
 **Scenario.** `SceneScriptInbox.post` drops the **oldest** events past 1024 (`Runtime/SceneScriptInbox.swift:14-16`). When frames stop (`metalView.isPaused` when `playRate == 0`, `Scene/Loading/SceneWallpaperView.swift:144`; occluded windows; a sleeping display), cursor moves (WP10) and media timeline events (WP6) keep arriving. A user-property change made in the sidebar while paused is then pushed out by mouse movement, and scripts never receive that `applyUserProperties`, a permanent desync. Confirmed by reading, Findings SF4.
+**Status.** Fixed with SF4/SF15; WP10 posts clicks as `.keep`.
 **Test.** Pause, change a user property, post 2000 cursor moves, resume → the script receives the property change. Cursor moves should be coalesced (keep the latest), and state events (properties, settings, media status, playback) never dropped.
 
 ## S21. `localStorage` (Medium, WP4)
@@ -914,6 +917,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 ## S28. Untrusted scripts reach the runtime (Medium, WP2, WP7)
 **Scenario.** `__rt` is a non-writable global, but its members are writable and reachable from every script. A Workshop script can replace `__rt.hooks.coerce`, clear `__rt.records`, set `__rt.halted`, or push arbitrary opcodes and targets through `__rt.push` or directly into `__rt.ring.records`. The ring bounds-checks number ranges (`Objects/SceneScriptCommandRing.swift:95-96`), but each handler must also bounds-check `target` against the object table. Combined with S17, the shared buffers are the only path from script to memory corruption.
 **Test.** A script that pushes opcode 400 with target `2^31-1`, negative targets and garbage counts → no crash, one log line. Handlers get `target` already validated or validate it themselves.
+**Status.** The memory-safety half is fixed (SF3, SF10: shared memory can't be freed, command numbers are validated). `__rt` itself is still reachable and writable from scripts.
 
 ---
 
@@ -923,28 +927,28 @@ Line numbers are at `94a9e6e` unless a commit is named. Each probe ran against t
 
 ### WP2: `3387d82` (per-instance runtime skeleton)
 
-**SF1. Errors thrown by runtime helpers report the helper's line as the script's. Medium (S4).**
+**SF1. Errors thrown by runtime helpers report the helper's line as the script's. Medium (S4).** **Fixed** in `16f9469`: lines come from the first stack frame in the script's `sourceURL`.
 - `describe` takes `error.line` from the error object (`Resources/SceneScript/runtime.js:55-65`), and `drainErrors` reports it as the script's line (`Runtime/SceneScriptRuntime.swift:256-259`). JavaScriptCore sets `line` where the `Error` was **constructed**, so every error built in `runtime.js` or an extension's JS carries that file's line.
 - Probe: a script whose line 3 calls `__rt.requireGlobalScope('registerAudioBuffers')` from `update` → reported `line: 135, column: 51` (the `throw` in `runtime.js:135`). This will hit every WE-message error of WP4/WP5 (`setTimeout cannot be called from global scope.`, `Resolution must be either 16, 32 or 64.`, `key not a string`).
 - **Fix direction:** take the line and column from the first `error.stack` frame whose URL is the script's `sourceURL` (`owe://script/…`), or `-1` when there is none.
 
-**SF2. `destroy()` that removes another script loses that script's `destroy()` and leaves it in `byId`. Medium (S11).**
+**SF2. `destroy()` that removes another script loses that script's `destroy()` and leaves it in `byId`. Medium (S11).** **Fixed** in `16f9469`: `__rt.destroyPending` repeats until nothing is pending.
 - `destroyPending` walks `records` once, then filters on `pendingDestroy` (`runtime.js:343-354`). A record marked during another record's `destroy()` and positioned **before** it is filtered out of `records` without its `destroy()` and without `byId.delete`.
 - Probe: records `c`, `b`; `b.destroy()` calls `__rt.remove('c')`; after the frame `c`'s `destroy` never ran, `records` no longer has `c`, `byId.has('c')` is true (so `isEnabled('c')` stays true and a new script with id `c` throws "Duplicate script id").
 - **Fix direction:** loop until no record is pending (or collect, destroy, and repeat), and delete from `byId` in the same pass that filters.
 
-**SF3. A script can free Swift's shared memory by detaching a typed array. Critical (S17).**
+**SF3. A script can free Swift's shared memory by detaching a typed array. Critical (S17).** **Fixed** in `0338833` and `16f9469`: memory reference counted with the deallocator, buffers pinned (JSC copies a pinned buffer on `transfer()`), and the runtime halts if a watched buffer is detached anyway.
 - `SceneScriptSharedBuffer` passes a deallocator that frees the allocation (`Runtime/SceneScriptSharedBuffer.swift:20`) and relies on holding the typed array to keep it alive (`:7-9`). `ArrayBuffer.prototype.transfer` exists in this JSC (`typeof … === 'function'`).
 - Probe (a Swift JSC program mirroring `SceneScriptSharedBuffer`): after `left.buffer.transfer()`, Swift's writes are visible through the new buffer; once it is dropped and GC runs, **the deallocator is called while Swift still holds `pointer`**. Every later write from `willRunFrame` or the command ring is a use after free.
 - Reachable today through `__rt.ring.header/records/args` (command ring), and after WP5 and WP7 through the audio buffers and `__rt.table.values`.
 - **Fix direction:** Swift owns the memory (no-op deallocator, freed in `deinit` after the context is gone), and `runtime.js` deletes `ArrayBuffer.prototype.transfer` and `transferToFixedLength` before any script runs; add the probe as a test.
 
-**SF4. The inbox drops the oldest events, including property changes, and teardown has no extension hook. Medium (S10, S20).**
+**SF4. The inbox drops the oldest events, including property changes, and teardown has no extension hook. Medium (S10, S20).** **Fixed** in `16f9469`: a full inbox coalesces by `SceneScriptEvent.Coalescing`; extensions get `tearDown(_:)`; `deinit` tears down on the runtime's thread.
 - `SceneScriptInbox.post` removes the oldest events past 1024 regardless of kind (`Runtime/SceneScriptInbox.swift:14-16`). Once WP10 posts cursor moves, a paused wallpaper loses the user's property changes.
 - `SceneScriptRuntimeExtension` has `install`, `willRunFrame` and `didRunFrame` only (`Runtime/SceneScriptRuntimeExtension.swift:12-25`), and `tearDown` neither drains the ring nor notifies extensions (`Runtime/SceneScriptRuntime.swift:168-177`). WP4 (storage flush, timers), WP5 and WP6 (unsubscribe) have nowhere to clean up; commands pushed in `destroy()` are never executed. `deinit` runs `tearDown` (`:124-126`), so `destroy()` callbacks run on the releasing thread.
 - **Fix direction:** coalesce cursor moves and never drop state events; add `willTearDown(_:)` (called after `__rt.teardown`, then drain the ring) to the extension protocol.
 
-**SF5. `load()` differs from P8 for scripts added later, and doesn't drain the ring. Low (S8, S13).**
+**SF5. `load()` differs from P8 for scripts added later, and doesn't drain the ring. Low (S8, S13).** **Fixed** in `16f9469`: later loads skip `applyUserProperties` and `load` drains the ring.
 - A second `load` sends `applyUserProperties(userProperties)` to the new records (`runtime.js:258-264`). P8's best guess is that runtime-created scripts get none; if WP11 calls `load()` with the default `[:]`, they get `{}`, and a script that reads `changed.x` without `hasOwnProperty` gets `undefined`.
 - `load()` does not call `commandRing.drain()` (`Runtime/SceneScriptRuntime.swift:144-151`), so `createLayer`, `sortLayer` and `play` from module bodies and `init` run only after the first frame's updates.
 - **Fix direction:** skip `applyUserProperties` for records defined after the first load (or document the choice), and drain after `load`.
@@ -966,13 +970,13 @@ Ran 33 adversarial snippets through `SceneScriptModuleTransformer` and JavaScrip
 
 **What the commits already cover.** S9: a cancel after the timer fired is a no-op (the timer object, not an id, is cancelled); timers added while timers run wait for the next frame; an interval resets to its period, so a resume after a pause fires it once; NaN, negative and missing delays fire next frame; timers die with their record. S10/S21: writes flush at most once per second of scene time and when the extension is released (after `destroy()` ran), and atomically; an unreadable file starts empty with one log line; one `SceneScriptStorage` serves every runtime, so two screens don't clobber `'global'`. S14: each `applyUserProperties` call gets its own converted object. S23: the native blocks capture `self` weakly.
 
-**SF6. `localStorage` keys are not counted against the 100 KB cap. Low.** `setValue` sizes an entry as `8 + value.utf8.count` (`Scene/Scripting/Engine/SceneScriptStorage.swift:54`, `:158-159`); the key is free. A script that uses data as keys (`localStorage.set(JSON.stringify(state), 1)` with a new state each frame) grows the file and the in-memory store without bound. Whether wallpaper64.exe counts keys should be checked at the same address as the value size; if it doesn't, cap the key length or the entry count anyway, because the file is ours.
+**SF6. `localStorage` keys are not counted against the 100 KB cap. Low.** `setValue` sizes an entry as `8 + value.utf8.count` (`Scene/Scripting/Engine/SceneScriptStorage.swift:54`, `:158-159`); the key is free. A script that uses data as keys (`localStorage.set(JSON.stringify(state), 1)` with a new state each frame) grows the file and the in-memory store without bound. Whether wallpaper64.exe counts keys should be checked at the same address as the value size; if it doesn't, cap the key length or the entry count anyway, because the file is ours. **Fixed** in `0972d84`: keys count toward the cap.
 - **Test:** 10 000 `set`s of distinct 1 KB keys → refused past the cap (or the documented WE behaviour), file size bounded.
 
-**SF7. Writes of the last second are lost when the app quits. Low.** Flushing happens in `didRunFrame` once a second (`Engine/SceneScriptEngineExtension.swift:99-101`) and in `deinit` (`:69`, `SceneScriptStorage.swift:40`). Nothing calls `SceneScriptStorage.flush()` from `applicationWillTerminate` (`App/SafeRestart.swift:80` is the existing hook), and runtimes are not released on quit. A counter a script stores on every click loses up to one second of clicks.
+**SF7. Writes of the last second are lost when the app quits. Low.** Flushing happens in `didRunFrame` once a second (`Engine/SceneScriptEngineExtension.swift:99-101`) and in `deinit` (`:69`, `SceneScriptStorage.swift:40`). Nothing calls `SceneScriptStorage.flush()` from `applicationWillTerminate` (`App/SafeRestart.swift:80` is the existing hook), and runtimes are not released on quit. A counter a script stores on every click loses up to one second of clicks. **Fixed** in `0972d84`: the storage flushes itself on `NSApplication.willTerminateNotification`.
 - **Fix direction:** WP11 flushes the shared storage from `applicationWillTerminate` (and on sleep).
 
-**SF8. `engine.runtime` is a Float32 and steps by more than a frame after 1.5 days. Low (verify against WE).** `frame[Slot.runtime] = Float(runtimeSeconds)` (`Engine/SceneScriptEngineExtension.swift:112`). Float32 spacing is 1/64 s at 2^17 s (36 h) and 1/32 s at 3 days, so `Math.sin(engine.runtime * k)` animations stutter on a wallpaper left running (the normal case). The commit says WE's is a float too; if that is right the behaviour is faithful, otherwise keep a Double (a getter over a `Float64Array` costs the same).
+**SF8. `engine.runtime` is a Float32 and steps by more than a frame after 1.5 days. Low (verify against WE).** `frame[Slot.runtime] = Float(runtimeSeconds)` (`Engine/SceneScriptEngineExtension.swift:112`). Float32 spacing is 1/64 s at 2^17 s (36 h) and 1/32 s at 3 days, so `Math.sin(engine.runtime * k)` animations stutter on a wallpaper left running (the normal case). The commit says WE's is a float too; if that is right the behaviour is faithful, otherwise keep a Double (a getter over a `Float64Array` costs the same). **Fixed** in `5c883fe`: `engine.runtime` reads a `Float64Array`.
 
 ### WP5: `5db500f` (WE's spectrum pipeline), `18e3bfb` (registerAudioBuffers)
 
@@ -988,19 +992,19 @@ Ran 33 adversarial snippets through `SceneScriptModuleTransformer` and JavaScrip
 
 **What the commits already cover.** S14: numeric setters copy into the table at once and getters return fresh `Vec`s, so `08861b7e67b4`'s one shared `scale` gives every bar its own value; strings are copied with `String()`. S11/S12: `createLayer` places the layer synchronously (a live slot the script can write before the `.create` command), a missing asset returns `null` with one log line, the table has a fixed capacity (2048 objects) instead of growing, and a destroyed layer is detached onto a private snapshot so a stale handle never writes a reused slot. S6/P3: `convert` writes NaN like WE and rejects non-numeric components and strings. `sortLayer` clamps its index and rejects NaN. Native blocks and ring handlers capture `self` weakly (S23).
 
-**SF10. A script can crash the app with a non-finite number in a command. Critical (S6, S28).**
+**SF10. A script can crash the app with a non-finite number in a command. Critical (S6, S28).** **Fixed** in `d7c3021`: `SceneScriptNumber` for every script Float→Int conversion (also the legacy engine's audio lookups); `emitParticles` floors and clamps.
 - `decode` converts ring floats with `Int(...)` (`Scene/Scripting/Objects/SceneScriptObjectModel.swift:188`, `:196-197`, `:201`, `:208`). `Int(Float)` traps on NaN, ±Infinity and values past `Int.max` ("Float value cannot be converted to Int because it is either infinite or NaN"; checked with `swiftc`).
 - Reachable without any adversarial intent: `ParticleSystem.emitParticles(count)` forwards any number (`Resources/SceneScript/objects-layers.js:223-226`), so `emitParticles(audio.average[64] * 10)` (NaN, the out-of-range read of S6) or `emitParticles(1e39)` (Infinity after the Float32 ring) kills the process. The other opcodes take internal indices, but any script can push them through `__rt.push` with NaN (S28).
 - **Fix direction:** decode with `Int(exactly:)` after an `isFinite` check (or clamp), and drop the command otherwise; `emitParticles` should also floor and clamp to a sane maximum in JS.
 - **Test:** `emitParticles(NaN)`, `emitParticles(Infinity)`, `emitParticles(1e30)`, and `__rt.push(opcode, slot, [NaN, NaN, 1], ['x'])` for every object opcode → no trap, one log line each.
 
-**SF11. `destroy()` runs after its layer was detached. Low.** The deferred handler detaches the layer and removes it from `order` before the runtime calls the scripts' `destroy()` (`Resources/SceneScript/objects-scene.js:230-234`, then `runtime.js` `destroyPending`). The d.ts says `destroy` runs "just before the object is destroyed": in ours, `destroy()` writes to `thisLayer` are ignored and `thisScene.getLayer(thisLayer.name)` returns `null`.
+**SF11. `destroy()` runs after its layer was detached. Low.** The deferred handler detaches the layer and removes it from `order` before the runtime calls the scripts' `destroy()` (`Resources/SceneScript/objects-scene.js:230-234`, then `runtime.js` `destroyPending`). The d.ts says `destroy` runs "just before the object is destroyed": in ours, `destroy()` writes to `thisLayer` are ignored and `thisScene.getLayer(thisLayer.name)` returns `null`. **Fixed** in `39ceef8`: the scripts' `destroy()` runs before the layer is detached.
 - **Fix direction:** mark the layer's scripts, run their `destroy()` inside the deferred step, then detach.
 
-**SF12. JS-side script removal leaves the id in Swift's `instanceIDs`. Low.** `destroyLayer` removes the layer's scripts with `rt.remove(record.id)` in JS (`objects-scene.js:231`); `SceneScriptRuntime.instanceIDs` only shrinks in the Swift `remove(scriptID:)` (`Runtime/SceneScriptRuntime.swift:180-184`). If WP8/WP11 give a re-created layer's scripts the same ids (object id plus field), `add` refuses them as "duplicate script id".
+**SF12. JS-side script removal leaves the id in Swift's `instanceIDs`. Low.** `destroyLayer` removes the layer's scripts with `rt.remove(record.id)` in JS (`objects-scene.js:231`); `SceneScriptRuntime.instanceIDs` only shrinks in the Swift `remove(scriptID:)` (`Runtime/SceneScriptRuntime.swift:180-184`). If WP8/WP11 give a re-created layer's scripts the same ids (object id plus field), `add` refuses them as "duplicate script id". **Fixed** in `16f9469`: removed ids come back through `__rt.removed`.
 - **Fix direction:** `destroyPending` reports removed ids back (the frame's return value or a drained list), or WP8 never reuses ids.
 
-**SF13. Angles read back in double precision are not the degrees written. Low (S15).** `read('degrees')` multiplies the Float32 radians by a double constant (`Resources/SceneScript/objects-values.js:89`): `angles = Vec3(0, 0, 90)` reads back `90.0000025`, 45 reads `45.0000013`. Computing the conversion in float (`Math.fround(r * Math.fround(180 / Math.PI))`) gives exactly 90, 45, 180, 360, 1 and 12.5, which is presumably what WE's C++ float conversion returns. `if (thisLayer.angles.z >= 90)` differs.
+**SF13. Angles read back in double precision are not the degrees written. Low (S15).** `read('degrees')` multiplies the Float32 radians by a double constant (`Resources/SceneScript/objects-values.js:89`): `angles = Vec3(0, 0, 90)` reads back `90.0000025`, 45 reads `45.0000013`. Computing the conversion in float (`Math.fround(r * Math.fround(180 / Math.PI))`) gives exactly 90, 45, 180, 360, 1 and 12.5, which is presumably what WE's C++ float conversion returns. `if (thisLayer.angles.z >= 90)` differs. **Fixed** in `39ceef8`: written degrees stay authoritative while the stored radians are unchanged; others convert in float.
 
 **Note (S25).** A material constant named like one of the instance's internals (`_t`, `_dead`, `_effect`, `_constants`, …) makes `new Material` throw (redefining a non-configurable property), so `getEffect` fails for the whole layer (`objects-effects.js:57-68` skips only names in `Material.prototype`). Scene.json constant names are shader-author strings, so it is unlikely; skipping names that are own properties too costs nothing.
 
@@ -1016,8 +1020,16 @@ Ran 33 adversarial snippets through `SceneScriptModuleTransformer` and JavaScrip
 - **Fix direction:** one app-wide source that fans out to extensions, or reference-count register/unregister.
 - **Test:** two sources started, the first stopped, a now-playing change posted → the second still publishes it.
 
-**SF15. A paused wallpaper loses media changes, not only property changes. Medium (S20, extends SF4).** While frames are stopped (`playRate 0`, occluded, display asleep), media events keep arriving (the timeline once a second), and the inbox drops the oldest past 1024 (`Runtime/SceneScriptInbox.swift:14-16`): after about 17 minutes of paused playback, the track change or artwork change that happened early in the pause is gone. Media changes are posted as deltas (one event per changed part), so nothing re-sends it: after resuming, `mediaPropertiesChanged` scripts show the old title and `thisObject.visible = event.hasThumbnail` stays stale until the next change.
+**SF15. A paused wallpaper loses media changes, not only property changes. Medium (S20, extends SF4).** While frames are stopped (`playRate 0`, occluded, display asleep), media events keep arriving (the timeline once a second), and the inbox drops the oldest past 1024 (`Runtime/SceneScriptInbox.swift:14-16`): after about 17 minutes of paused playback, the track change or artwork change that happened early in the pause is gone. Media changes are posted as deltas (one event per changed part), so nothing re-sends it: after resuming, `mediaPropertiesChanged` scripts show the old title and `thisObject.visible = event.hasThumbnail` stays stale until the next change. **Fixed** in `16f9469` with SF4: media kinds coalesce to their newest event (`.latest`).
 - **Fix direction:** coalesce media events per kind in the inbox (keep only the newest of each), like cursor moves.
 - **Test:** post a properties change, then 1100 timeline events, then run a frame → the script's last `mediaPropertiesChanged` has the new title.
 
 **SF16. Teardown blocks the render thread on artwork decoding. Low.** `stop()` runs `queue.sync` when called off the queue (`MacMediaSessionSource.swift:67`); if the queue is decoding and scoring a large artwork (`ArtworkPalette.colors(of:)` visits every pixel), the wallpaper switch waits for it on the main thread. Downscale the artwork before scoring (WE's helper works on the thumbnail) or stop asynchronously.
+
+### Runtime hardening: `d7c3021`, `0338833`, `16f9469`, `39ceef8`, `5c883fe`, `0972d84`, `cea1147`
+
+SF1–SF8, SF10–SF13 and SF15 are fixed, each with a regression test in `SceneScriptRuntimeHardeningTests` or `SceneScriptObjectHardeningTests`; S19 has its mechanism (`SceneScriptThread`). Still open:
+- SF14 and SF16 (WP6's `MacMediaSessionSource`). `SceneScriptMediaExtension` can now stop or unsubscribe in the new `tearDown(_:)` hook instead of `deinit`.
+- S28: `__rt` and its hooks stay reachable and writable from scripts; only the memory-safety half is closed.
+- S19: the watchdog still covers a whole frame, not each outermost call, and nothing shows the halted state to the user.
+- S11: a command handler that pushes into the ring while `drain` runs still loses that command (`resetRing`).

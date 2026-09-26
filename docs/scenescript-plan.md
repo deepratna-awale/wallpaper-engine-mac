@@ -1,6 +1,6 @@
 # SceneScript plan
 
-**Status: 2026-09-25, WP0 (from evidence), WP1 and WP2 done.** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
+**Status: 2026-09-25, WP0 (from evidence) and WP1–WP7 done; the runtime hardened against the WP2–WP7 findings (test-risks SF1–SF13, S19).** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
 
 Sources, in order of authority:
 
@@ -389,7 +389,7 @@ SceneRenderContent ──► SceneScriptRuntime (one per wallpaper instance, own
 
 ### 4.2 Modules without private API
 
-The corpus uses only `export function|let|var|const NAME` and `import * as X from 'Y'` (§2). Each script becomes a factory with public-API `evaluateScript(_:withSourceURL:)`:
+The corpus uses only `export function|let|var|const NAME` and `import * as X from 'Y'` (§2). Each script becomes a factory with public-API `evaluateScript(_:withSourceURL:)`. The sketch below is the original design; the contract WP3 implemented is in `Modules/SceneScriptModuleCompiling.swift` and `SceneScriptModuleTransformer.swift` (`(__rt, __scope) → frozen namespace`):
 
 ```js
 // header joined on line 1, so line numbers stay exact
@@ -399,11 +399,12 @@ The corpus uses only `export function|let|var|const NAME` and `import * as X fro
 })
 ```
 
-- A **tokenizer**, not regexes, finds `import` and `export` at the top level. It skips strings, comments, regex and template literals. Unsupported forms (`export default`, `export {…}`, re-exports, dynamic `import()`) are compile errors logged once. None occur in the corpus.
+- A **tokenizer**, not regexes, finds `import` and `export` at the top level. It skips strings, comments, regex and template literals.
+- **Export rules (WP3).** Accepted: `export function|let|var|const|class`, `export default <declaration or expression>` (bound to a hidden local), and `export { a, b as c }`. The exports object is a frozen, prototype-less namespace with one getter per exported name, so it exposes only exported names and `export let` stays live. Imports: `import * as X`, `import D`, `import { a as b }` from WE's jsmodules (resolved case-insensitively). Rejected, as compile errors logged once with their line: re-exports (`export * from …`), dynamic `import()`, `import.meta`, import attributes. None of the accepted extras occur in the corpus.
 - Export getters keep `export let` bindings live.
 - `sourceURL` = `owe://<workshopId>/<object name>#<id>/<field>`, so errors name the wallpaper, layer and field (CONTRIBUTING rule 2).
 - Global-scope rules (§1.1) are enforced in a phase flag: `__rt.phase = 'global'` while the factory body runs, then `'callback'`. `registerAudioBuffers`/`registerAsset` throw outside `global`; `setTimeout` and `localStorage` throw inside it. Access to `thisLayer` members at global scope is allowed (lenient superset); only the call rules WE errors on are enforced, because a script that does them is broken in WE too.
-- Real JSC modules exist only as SPI: `JSScript` with `kJSScriptTypeModule`, `-[JSContext evaluateJSScript:]` and `moduleLoaderDelegate` were all present in the probe. The wrapper covers 100 % of the corpus without them. Keep the SPI as a fallback if a script ever needs `export {…}`.
+- Real JSC modules exist only as SPI: `JSScript` with `kJSScriptTypeModule`, `-[JSContext evaluateJSScript:]` and `moduleLoaderDelegate` were all present in the probe. The wrapper covers 100 % of the corpus without them.
 
 ### 4.3 Live objects and state writeback
 
@@ -475,6 +476,12 @@ Each frame:
 - The limit applies per native→JS entry, so it covers the whole `__rt.frame`; WE's applies per outermost script call. On termination `__rt.current` names the running instance, the "dead lock was detected" message is logged once, and, like WE, the **whole runtime halts**: no callback, timer or new script runs until the wallpaper reloads (§1.9 P5).
 - Limit: WE's 15 s, at load and per frame.
 
+**Threading (S19).** A runtime is confined to one `SceneScriptThread`: a serial dispatch queue of its own, off the main thread (`.userInitiated`). The owner creates the runtime inside `thread.sync { … }` and afterwards reaches it only on that queue; `load`, `frame`, `add`, `remove` and `tearDown` check it (`dispatchPrecondition`). The renderer posts each frame with `thread.asyncFrame { runtime.frame(deltaTime:) }`, which skips the frame while the previous one is still queued or running, so a script that hangs until the 15 s watchdog fires stalls only its own wallpaper's scripts: the UI, other displays and the renderer (drawing with the last values) keep going. Other threads talk to a runtime only through its thread-safe `inbox`. Releasing the last reference elsewhere still runs `destroy()` on the runtime's queue (`deinit` hops there). JavaScriptCore locks a VM per API call, so the queue's worker threads may change between blocks. Without a thread (tests) the caller's thread is the runtime's; on the main thread that is logged once. The table and command read-back (WP11) happen on the script queue after the frame, handing the renderer a value snapshot.
+
+**Shared memory (SF3).** Every buffer scripts can reach (command ring, object table and slot buffers, engine frame and clock) is a `SceneScriptSharedBuffer`: the bytes are reference counted between Swift and the typed array's deallocator, and pinned at creation, so `buffer.transfer()` copies instead of detaching and no script can free memory Swift writes. The runtime `watch`es each buffer and stops the scripts if one ever reports `isDetached`.
+
+**Numbers (SF10).** Every Float/Double → Int conversion of a script-provided number goes through `SceneScriptNumber` (clamp or validate; `Int(_:)` traps on NaN and infinity). WP11's table readers (`maxrows`, `pointsize`, `limitrows`, frame indices) must too.
+
 **Sandbox.**
 
 - JSC contexts have no file system, network, `require` or DOM. We expose only the WE API. The invented globals of §3.3 are deleted, and no Swift block is callable except the runtime's own narrow ones.
@@ -541,15 +548,17 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 
 | File | What it is |
 |---|---|
-| `Runtime/SceneScriptRuntime.swift` | One `JSVirtualMachine` + one `JSContext` per wallpaper instance. `add(_:)`, `load(userProperties:generalSettings:)`, `frame(deltaTime:)`, `tearDown()`, `remove(scriptID:)`, and the inbox shortcuts `userPropertiesDidChange(_:)`, `screenDidResize(width:height:)`. |
+| `Runtime/SceneScriptRuntime.swift` | One `JSVirtualMachine` + one `JSContext` per wallpaper instance, optionally confined to a `SceneScriptThread`. `add(_:)`, `load(userProperties:generalSettings:)`, `frame(deltaTime:)`, `tearDown()`, `remove(scriptID:)`, `watch(_:)` (shared buffers), and the inbox shortcuts `userPropertiesDidChange(_:)`, `screenDidResize(width:height:)`. |
+| `Runtime/SceneScriptThread.swift` | The runtime's serial queue off the main thread: `sync`, `async`, `asyncFrame` (skips while a frame is in flight), `isCurrent` (§4.5). |
+| `Runtime/SceneScriptNumber.swift` | Trap-free integer conversion of script numbers (clamp, or validate an index). |
 | `Resources/SceneScript/runtime.js` | `__rt`: script records, the load and frame order, the phase flag, `__rt.call`/`invoke` isolation, the error channel, module registry, command-ring writer. |
 | `Runtime/SceneScriptWatchdog.swift` | `JSContextGroupSetExecutionTimeLimit` via `dlsym`; nil (and one `.info` line) when missing. Limit: WE's 15 s per load entry and per frame entry (`Configuration`). |
 | `Runtime/SceneScriptError*.swift` | `SceneScriptError` (compile/runtime/terminated/internal; id, callback, line, message; never source) and the once-per-distinct-error log. |
-| `Runtime/SceneScriptInstance.swift` | One attachment site: id, source, initial value, `scriptproperties` JSON, object slot. |
+| `Runtime/SceneScriptInstance.swift` | One attachment site: id, source, initial value, `scriptproperties` JSON, object slot, and `binding` (`SceneScriptObjectBinding`: what `thisObject` is; WP8 sets it). |
 | `Runtime/SceneScriptHost.swift` | What the owning wallpaper instance provides: `identity` (wallpaper id + screen id), `prelude`, an optional error callback. |
 | `Runtime/SceneScriptRuntimeExtension.swift` | The plug-in protocol (below). |
-| `Runtime/SceneScriptInbox.swift`, `SceneScriptEvent.swift` | The only thread-safe entry; events drained at the start of a frame. |
-| `Runtime/SceneScriptSharedBuffer.swift` | Swift memory seen by JS as a typed array (`JSObjectMakeTypedArrayWithBytesNoCopy`). |
+| `Runtime/SceneScriptInbox.swift`, `SceneScriptEvent.swift` | The only thread-safe entry; events drained at the start of a frame. Past 1024 undrained events (frames stopped) the inbox coalesces by each event's `Coalescing`: `.latest` (default: states such as media parts, resize, cursor moves) keeps the newest per kind and target, `.merge` (user properties, general settings) merges the dictionaries, `.keep` (WP10's clicks) is dropped oldest first only if still full. |
+| `Runtime/SceneScriptSharedBuffer.swift` | Swift memory seen by JS as a typed array, reference counted with the array's deallocator and pinned (§4.5); `isDetached`. |
 | `Runtime/SceneScriptPrelude.swift`, `SceneScriptResources.swift` | WE's `baseclasses.js` + jsmodules, unmodified; our bundled JS. |
 | `Modules/SceneScriptModuleCompiling.swift` | The compiler protocol and factory contract (WP3). |
 | `Objects/SceneScriptObjectTable.swift` | Slot layout + shared `Float32Array`/dirty bytes (WP7 fills). |
@@ -559,13 +568,15 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 
 - Creation: `baseclasses.js` → `runtime.js` → per extension `install(into:)` then its `scriptResources` → jsmodules through the compiler.
 - `load` (resumable; re-callable for scripts added later): every module body (phase `'global'`) → `scriptproperties` through `_Internal.updateScriptProperties` → every `init(value)` → every `applyUserProperties(all)` → every `applyGeneralSettings({language})`. All in `add` order, which is scene order.
-- `load` also calls `__rt.hooks.initialized(record)` right after each `init`.
-- `frame`: `frameGlobals` handlers → inbox events ordered by kind (`__rt.EVENT_ORDER`: resize, cursor, userProperties, generalSettings, media), then arrival → `animations` handlers → `timers` handlers → every `update(value)` → `deferred` handlers → `destroy()` of removed scripts. Then Swift drains the command ring and calls `didRunFrame`.
+- `load` also calls `__rt.hooks.initialized(record)` right after each `init`. Scripts defined after the first load get no `applyUserProperties` (P8's best guess; they read `engine.userProperties`). `load` drains the command ring before it returns, so `createLayer`/`sortLayer`/`play` from module bodies and `init` take effect before the first frame.
+- `frame`: `frameGlobals` handlers → inbox events ordered by kind (`__rt.EVENT_ORDER`: resize, cursor, userProperties, generalSettings, media), then arrival → `animations` handlers → `timers` handlers → every `update(value)` → `deferred` handlers → `__rt.destroyPending()`: `destroy()` of removed scripts, repeated until none is pending (a `destroy()` may remove more). Removed ids reach Swift (`__rt.removed`) and are free again. Then Swift drains the command ring and calls `didRunFrame`.
+- `tearDown`: every `destroy()` → the command ring → every extension's `tearDown(_:)` (flush, cancel, unsubscribe; also after a halt). Once only.
+- `__rt.current` is the running script's id, `__rt.callback` the running exported callback (null in module bodies and timers). Error lines come from the first stack frame in the script's own `sourceURL`, so an error a helper throws names the calling line.
 - A throw is recorded and swallowed; the callback that threw is never called again for that script (`record.failed`), its other callbacks keep running. `__rt.call` (timers, ended callbacks) logs but disables nothing. A throw in a module body or a compile error disables that script only. A watchdog stop halts the whole runtime (`state == .halted`, `__rt.halted`), naming the script from `__rt.current`.
 
 **Per package:**
 
-- **WP3 (module compiler).** Implement `SceneScriptModuleCompiling` in `Modules/`. The contract is in the protocol's doc comment: `factorySource` evaluates to `function (__rt, __scope) → exports`; `thisLayer`/`thisObject` come from `__scope`, imports from `__scope.require(name)`; exports are getters for every name in `__rt.CALLBACKS` plus `scriptProperties`; line N stays line N. Rejected forms throw `SceneScriptCompileError(message:line:)`. The same compiler turns WE's jsmodules into modules the runtime registers as `wemath`/`wevector`/`wecolor`. `TestSceneScriptCompiler` in the tests is the stand-in until then.
+- **WP3 (module compiler).** *Done (see WP3 below).* Implement `SceneScriptModuleCompiling` in `Modules/`. The contract is in the protocol's doc comment: `factorySource` evaluates to `function (__rt, __scope) → exports`; `thisLayer`/`thisObject` come from `__scope`, imports from `__scope.require(name)`; exports are getters for every name in `__rt.CALLBACKS` plus `scriptProperties`; line N stays line N. Rejected forms throw `SceneScriptCompileError(message:line:)`. The same compiler turns WE's jsmodules into modules the runtime registers as `wemath`/`wevector`/`wecolor`. `TestSceneScriptCompiler` in the tests is the stand-in until then.
 - **WP4 (engine, input, console, timers, storage).** A `SceneScriptRuntimeExtension` with its own `engine.js`, `timers.js`, `storage.js`. Timers register with `__rt.addPhaseHandler('timers', fn)` and run script callbacks through `__rt.call(record, label, 'callback', fn, args)` (errors stay attributed and isolated); the owning record at `setTimeout` time is `__rt.byId.get(__rt.current)`. Global-scope rules use `__rt.requireGlobalScope(what)` / `__rt.forbidGlobalScope(what)`, which produce WE's exact messages (§1.9). Timers follow §1.9 P1: per script, over a snapshot, an interval resets to its period (fires at most once per frame), a timeout is removed after firing. `_Internal.convertUserProperties` goes into `__rt.hooks.userProperties`. Per-frame numbers (`frametime`, `runtime`, cursor) belong in a `SceneScriptSharedBuffer` filled in `willRunFrame`. Storage keys come from `runtime.identity`.
 - **WP5 (audio).** An extension; one `SceneScriptSharedBuffer<Float>` per registered resolution, filled in place in `willRunFrame` (WE refreshes them in its tick, before timers and updates; §1.9 P1); `registerAudioBuffers` calls `__rt.requireGlobalScope('registerAudioBuffers')`.
 - **WP6 (media).** Declare kinds in its own file (`extension SceneScriptEvent.Kind { static let mediaPlayback = … }`), post with `runtime.inbox.post(_:)` from any thread, and handle them in JS with `__rt.addEventHandler(kind, __rt.EVENT_ORDER.media, e => __rt.broadcast('mediaPlaybackChanged', [e.payload]))`. The current media state for a new script goes in `__rt.hooks.initialized` (§1.9 P8).
@@ -573,18 +584,18 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 - **WP8 (binding).** Builds `SceneScriptInstance`s; `__rt.hooks.argument(record)` (the value `init`/`update` receive) and `__rt.hooks.coerce(record, returned)` (undefined keeps the value).
 - **WP10 (cursor).** Cursor events through the inbox with `target` = object slot; its own JS handler registered at `__rt.EVENT_ORDER.cursor`; only Solid objects (§1.9 P7).
 - **WP12 (animations).** Timeline evaluation and `animationEvent(event, value)` go in the `animations` phase.
-- **WP11 (integration).** The renderer (not a singleton) owns one runtime per wallpaper instance, which is what fixes two displays clobbering each other: `load` at scene load, `frame(deltaTime:)` per frame, `tearDown` on reconfigure, `screenDidResize`/`userPropertiesDidChange` from the view model. It builds the extension list, reads `SceneScriptPrelude.load()` once, and deletes the scripting half of `AudioReactiveScriptEngine`.
+- **WP11 (integration).** The renderer (not a singleton) owns one runtime per wallpaper instance, on its own `SceneScriptThread` (§4.5), which is what fixes two displays clobbering each other: `load` at scene load, `thread.asyncFrame { frame(deltaTime:) }` per frame, `tearDown` on reconfigure (on the thread), `screenDidResize`/`userPropertiesDidChange` from the view model. Instances carry `binding` from WP8. It builds the extension list, reads `SceneScriptPrelude.load()` once, and deletes the scripting half of `AudioReactiveScriptEngine`.
 
 **Bundle names.** The synchronized group copies `Resources/SceneScript/*.js` to the bundle root, so every runtime JS file name must be unique in the app bundle. `SceneScriptResources` looks in `SceneScript/` first, then the root.
 
 ### Step 1 (parallel; each owns the files listed)
 
-**WP3 — Module compiler.** `Scripting/Modules/SceneScriptTokenizer.swift`, `SceneScriptModuleTransformer.swift`.
+**WP3 — Module compiler.** *Done:* `Scripting/Modules/` (tokenizer, scanner, transformer). Export and import rules in §4.2; every corpus script but `8bb9b9a54120` compiles; `TestSceneScriptHost` can load the jsmodules through it. `Scripting/Modules/SceneScriptTokenizer.swift`, `SceneScriptModuleTransformer.swift`.
 
 - Tests: every corpus script compiles except `8bb9b9a54120`, which reports a compile error with its line; line numbers match the original; unsupported export forms are rejected; fixtures are synthetic snippets.
 - The full-corpus test reads `/Volumes/980Pro/dd-scenescript/corpus` and is skipped when absent (like `LibrarySweepTests`).
 
-**WP4 — Engine, input, console, timers, storage.** `Resources/SceneScript/engine.js`, `timers.js`, `storage.js`; `Scripting/Engine/SceneScriptStorage.swift`; `SceneScriptInput.swift`.
+**WP4 — Engine, input, console, timers, storage.** *Done:* `Scripting/Engine/` (`SceneScriptEngineExtension`, `SceneScriptStorage`, `SceneScriptInput`, `SceneScriptConsole`, `SceneScriptEngineEnvironment`) and `Resources/SceneScript/sceneScript{Engine,Timers,LocalStorage,Console}.js`. Best guesses: timers run on scene time and fire once per frame at most; the user-shortcut count resets per frame; storage writes flush once a second of scene time, at teardown and on app termination, and a store's cap counts keys too (SF6); `engine.runtime` is a double (SF8). Later packages extend `engine`, never replace it. WP11 wiring: one `SceneScriptStorage` app-wide; set `environment` on resize and `input` per frame on the script thread; `registerAsset` lives in the object model (an `IAssetHandle` whose `toConfigString()` is the path), `isObjectValid`/`requestFeatures` are still missing.
 
 - `engine.*` including the `is*()` functions and `userProperties` via `_Internal.convertUserProperties`.
 - `setTimeout`/`setInterval` returning cancel functions, global-scope rules, `localStorage` per §4.7, `openUserShortcut` (logs "unsupported" until user shortcuts exist).
@@ -598,7 +609,7 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 
 - Tests: a fake source drives all five events with WE's field names; the palette on fixture images; no AppleScript anywhere.
 
-**WP7 — Object model (layers, scene, effects, materials).** `Resources/SceneScript/layers.js`, `scene.js`; `Scripting/Objects/SceneScriptObjectTable.swift` (fill), `SceneScriptCommandRing.swift`.
+**WP7 — Object model (layers, scene, effects, materials).** *Done:* `Scripting/Objects/` and `Resources/SceneScript/objects-{values,animations,effects,layers,scene}.js`. Best guesses: destroying a parent destroys its children; `getLayer(number)` is a draw-order index, a string a name then an id; `createLayer` appends on top; a missing asset returns `null`. A layer's scripts get `destroy()` while it is still in the scene (SF11); written angles read back exactly (SF13). WP11 duties: keep `worldMatrix`, `size`, `playing` and animation state current in the tables, read them after each frame's commands on the script thread, clear the dirty bytes. Originally planned as `Resources/SceneScript/layers.js`, `scene.js`; `Scripting/Objects/SceneScriptObjectTable.swift` (fill), `SceneScriptCommandRing.swift`.
 
 - `getLayer*`, `enumerateLayers` and `getLayerIndex` in draw order with identity preserved; `getParent`/`getChildren`; degrees↔radians; copies on get; `getEffect(name|index).visible`; `getMaterial`/`setMaterialProperty` onto material constant slots; `getTextureAnimation`; particle `instance` and `emitParticles`; sound `play/stop/pause/volume`; scene settings.
 - Tests: headless, against a table: writes stick; `thisLayer === getLayer(name)`; the angles unit; effect visibility toggles; an unknown member is inert rather than throwing, where WE members are inert.
