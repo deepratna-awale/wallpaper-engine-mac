@@ -52,6 +52,8 @@ private struct RenderTextureFrame {
 
 final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let device: MTLDevice
+    /// The drawables' format, which the layer and copy pipelines draw in.
+    private let pixelFormat: MTLPixelFormat
     private let commandQueue: MTLCommandQueue
     private let renderPipeline: MTLRenderPipelineState
     private let additiveRenderPipeline: MTLRenderPipelineState
@@ -156,6 +158,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// The user's quality settings (post-processing, reflection, shadows, volumetrics); the view sets them.
     var renderSettings = SceneRenderSettings()
     private var sceneRenderTarget: MTLTexture?
+    /// A shared scene's finished frame, the scene target's size (`sharedFrame`).
+    private var sharedFrameTarget: MTLTexture?
     private var sceneRenderTargetSize = SIMD2<Int>.zero
     /// Render-target pixels per scene unit this frame (see `SceneRenderResolution`).
     private var renderPixelsPerUnit: Float = 1
@@ -173,6 +177,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var objectMotions: [String: SceneObjectMotion] = [:]
     /// The most recently committed frame, so state a removal frees can wait for it.
     private(set) var lastCommandBuffer: MTLCommandBuffer?
+    /// A shared scene's latest finished frame (`renderShared`), which its displays present.
+    private(set) var sharedFrame: MTLTexture?
+    /// The last `present(in:)`'s command buffer (tests and benchmarks).
+    private(set) var lastPresentCommandBuffer: MTLCommandBuffer?
     /// Destroyed script layers' ids, freed once the frame that last drew them completes.
     private var deferredReleases = SceneDeferredReleases()
     /// Where the cursor was last seen on this display, in display pixels from the top-left.
@@ -191,9 +199,20 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         case gpu, cpu
     }
 
-    /// `scriptServices` runs the scenes' SceneScripts (nil runs none); `screenID` names the display.
-    init?(view: MTKView, particleSimulation: ParticleSimulation = .gpu, scriptServices: SceneScriptServices? = nil,
-          screenID: String = "") {
+    /// A renderer that draws into `view` itself (`draw(in:)`). `scriptServices` runs the scenes'
+    /// SceneScripts (nil runs none); `screenID` names the display whose script storage they use.
+    convenience init?(view: MTKView, particleSimulation: ParticleSimulation = .gpu, scriptServices: SceneScriptServices? = nil,
+                      screenID: String = "") {
+        self.init(pixelFormat: view.colorPixelFormat, particleSimulation: particleSimulation,
+                  scriptServices: scriptServices, screenID: screenID)
+        configure(view)
+        view.delegate = self
+    }
+
+    /// A renderer for drawables of `pixelFormat`. A shared scene's displays each show its frames
+    /// through their own view (`configure`, `renderShared`, `present(in:)`).
+    init?(pixelFormat: MTLPixelFormat, particleSimulation: ParticleSimulation = .gpu,
+          scriptServices: SceneScriptServices? = nil, screenID: String = "") {
         guard let device = MTLCreateSystemDefaultDevice(),
               let commandQueue = device.makeCommandQueue(),
               let library = device.makeDefaultLibrary(),
@@ -208,7 +227,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.vertexFunction = vertex
         descriptor.fragmentFunction = fragment
-        descriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+        descriptor.colorAttachments[0].pixelFormat = pixelFormat
         descriptor.colorAttachments[0].isBlendingEnabled = true
         descriptor.colorAttachments[0].rgbBlendOperation = .add
         descriptor.colorAttachments[0].alphaBlendOperation = .add
@@ -235,7 +254,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let copyDescriptor = MTLRenderPipelineDescriptor()
         copyDescriptor.vertexFunction = vertex
         copyDescriptor.fragmentFunction = copyFragment
-        copyDescriptor.colorAttachments[0].pixelFormat = view.colorPixelFormat
+        copyDescriptor.colorAttachments[0].pixelFormat = pixelFormat
         guard let copyPipeline = try? device.makeRenderPipelineState(descriptor: copyDescriptor) else {
             return nil
         }
@@ -252,6 +271,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             particleSimulator = nil
         }
         self.device = device
+        self.pixelFormat = pixelFormat
         self.copyPipeline = copyPipeline
         self.postProcess = postProcess
         let frameStages = SceneFrameStages.make(device: device)
@@ -267,8 +287,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         sounds = SceneSoundLayers(label: screenID.isEmpty ? "sounds" : "sounds \(screenID)")
         super.init()
         memoryPressure = SceneMemoryPressure { [weak self] level in self?.trimMemory(level) }
+    }
+
+    /// Sets `view` up to show this renderer's frames: on its device, drawn by the view's own timer.
+    /// Its delegate is whoever draws it: this renderer, or a shared scene's presenter.
+    func configure(_ view: MTKView) {
         view.device = device
-        view.delegate = self
+        view.colorPixelFormat = pixelFormat
         view.framebufferOnly = false
         view.enableSetNeedsDisplay = false
         view.isPaused = false
@@ -355,6 +380,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.isCurrentContentGeneration(generation) else { return }
                 self.sceneSize = content.size
+                self.sharedFrame = nil
                 self.bloom = content.bloom
                 self.lighting = content.lighting
                 for stage in self.frameStages { stage.setContent(content) }
@@ -576,7 +602,85 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
+    /// Renders a frame for `view` alone and presents it there.
     func draw(in view: MTKView) {
+        renderFrame(.view(view))
+    }
+
+    /// Renders one frame for all the displays of a shared scene, at the largest scene target any
+    /// of them needs; the cursor comes from the display it is on. Each display then shows the
+    /// frame at its own size (`present(in:)`). The first viewport is the driving display, whose
+    /// resolution scripts see.
+    func renderShared(_ viewports: [SceneViewport]) {
+        guard !viewports.isEmpty else { return }
+        renderFrame(.shared(viewports))
+    }
+
+    /// Shows the latest shared frame (`renderShared`) on `view`, at its size and the user's
+    /// placement: one pass per display.
+    func present(in view: MTKView) {
+        guard let frame = sharedFrame, let descriptor = view.currentRenderPassDescriptor,
+              let drawable = view.currentDrawable, let commandBuffer = commandQueue.makeCommandBuffer(),
+              let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else { return }
+        let size = SIMD2<Float>(Float(drawable.texture.width), Float(drawable.texture.height))
+        let pixelsPerPoint = view.bounds.width > 0 ? size.x / Float(view.bounds.width) : 1
+        var uniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: size,
+                                   placement: placement, pixelsPerPoint: pixelsPerPoint)
+        encoder.setRenderPipelineState(copyPipeline)
+        encoder.setVertexBytes(&uniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
+        encoder.setFragmentTexture(frame, index: 0)
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        commandBuffer.present(drawable)
+        commandBuffer.commit()
+        lastPresentCommandBuffer = commandBuffer
+    }
+
+    /// Where a frame goes: one view's drawable, or a shared scene's finished frame.
+    private enum FrameOutput {
+        case view(MTKView)
+        case shared([SceneViewport])
+    }
+
+    /// The frame's pass onto `output` (nil for a shared frame until its size is known), its
+    /// viewports and the placement the post-process composites with.
+    private func frameDestination(_ output: FrameOutput) -> SceneFrameDestination? {
+        switch output {
+        case .view(let view):
+            guard let descriptor = view.currentRenderPassDescriptor, let drawable = view.currentDrawable else { return nil }
+            let size = SIMD2<Float>(Float(drawable.texture.width), Float(drawable.texture.height))
+            return SceneFrameDestination(descriptor: descriptor, drawable: drawable,
+                                         pixelFormat: drawable.texture.pixelFormat, placement: placement,
+                                         viewports: [SceneViewport(view, drawableSize: size)])
+        case .shared(let viewports):
+            // The finished frame keeps the scene's aspect; each display places it when presenting.
+            return SceneFrameDestination(descriptor: nil, drawable: nil, pixelFormat: pixelFormat, placement: .stretch,
+                                         viewports: viewports)
+        }
+    }
+
+    /// The pass onto a shared scene's finished frame, the size of `scene`.
+    private func sharedFramePass(matching scene: MTLTexture) -> MTLRenderPassDescriptor? {
+        if sharedFrameTarget?.width != scene.width || sharedFrameTarget?.height != scene.height {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: scene.width,
+                                                                      height: scene.height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            sharedFrameTarget = device.makeTexture(descriptor: descriptor)
+            if sharedFrameTarget == nil {
+                OWELog.error(.scene, "Could not allocate the \(scene.width)×\(scene.height) shared frame")
+            }
+        }
+        guard let target = sharedFrameTarget else { return nil }
+        let pass = MTLRenderPassDescriptor()
+        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = SceneFrameDestination.clearColor
+        pass.colorAttachments[0].storeAction = .store
+        return pass
+    }
+
+    private func renderFrame(_ output: FrameOutput) {
         let frameStart = CACurrentMediaTime()
         let frameSignpost = OWESignpost.begin(OWESignpost.render, "frame")
         WallpaperServices.shared.beginFrame(wallpaper: wallpaperKey)
@@ -592,17 +696,20 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             }
         }
 
-        guard let descriptor = view.currentRenderPassDescriptor,
-              let drawable = view.currentDrawable else {
+        guard let destination = frameDestination(output) else { return }
+        let viewports = destination.viewports
+        drawablePixelsPerPoint = viewports[0].pixelsPerPoint
+        // The largest target any display needs, so each shows the scene at its own density.
+        renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize,
+                                                                  drawableSize: SceneViewport.largestDrawable(viewports))
+        guard let sceneTexture = sceneRenderTarget(pixelFormat: destination.pixelFormat),
+              let commandBuffer = commandQueue.makeCommandBuffer(),
+              let descriptor = destination.descriptor ?? sharedFramePass(matching: sceneTexture) else {
             return
         }
-        let realDrawableSize = SIMD2<Float>(Float(drawable.texture.width), Float(drawable.texture.height))
-        drawablePixelsPerPoint = view.bounds.width > 0 ? realDrawableSize.x / Float(view.bounds.width) : 1
-        renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize, drawableSize: realDrawableSize)
-        guard let sceneTexture = sceneRenderTarget(matching: descriptor),
-              let commandBuffer = commandQueue.makeCommandBuffer() else {
-            return
-        }
+        // What the post-process composites onto: the drawable, or the shared frame.
+        let realDrawableSize = SIMD2<Float>(Float(descriptor.colorAttachments[0].texture?.width ?? sceneTexture.width),
+                                            Float(descriptor.colorAttachments[0].texture?.height ?? sceneTexture.height))
 
         // Layers and particles are drawn in scene units onto a target at the output's pixel
         // density; placement scaling happens once, in the final composite pass.
@@ -619,8 +726,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // WE writes every timeline before the scripts run; a script's calls act on the next advance.
         let animationEvents = timelines.advance(by: Float(clock.delta))
         drawProbe?.beginFrame()
-        let cursorSample = cursorTracker.update(sceneCursor(in: view, drawableSize: realDrawableSize),
-                                                sceneSize: sceneSize)
+        let cursorSample = cursorTracker.update(sceneCursor(viewports), sceneSize: sceneSize)
         let cursor = cursorSample.position
         // WE's scripts and `g_PointerState` see only clicks that land on the wallpaper.
         let leftDown = cursorSample.onDisplay
@@ -632,7 +738,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // frame's clock, cursor and animated values go in, and their results are drawn now
             // unless they overrun the wait (then they show from the next draw on).
             let start = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-            submitScriptFrame(view: view, drawableSize: realDrawableSize, cursor: cursorSample, leftDown: leftDown,
+            submitScriptFrame(viewports: viewports, cursor: cursorSample, leftDown: leftDown,
                               animationEvents: animationEvents)
             scripts.record(since: start, newFrame: false)
             applyScriptEvents(scripts.finishFrame(waitingUpTo: scripts.frameWait))
@@ -689,7 +795,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for (index, frame) in textFrames { lastTextSizes[layers[index].layer.id] = frame.baseSize }
         lastCameraMotion = motion
 
-        let clearColor = descriptor.colorAttachments[0].clearColor
+        let clearColor = destination.descriptor?.colorAttachments[0].clearColor ?? SceneFrameDestination.clearColor
         let sceneRenderPass = MTLRenderPassDescriptor()
         sceneRenderPass.colorAttachments[0].texture = sceneTexture
         sceneRenderPass.colorAttachments[0].loadAction = .clear
@@ -720,14 +826,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 ParticleFrameInputs.advance(system, deltaTime: $0, cursor: cursor, emitter: emitter, values: timelines.values,
                                             scripted: scripted,
                                             audio: effectFrame.audio, frameTime: Float(clock.delta),
-                                            frameRateLimit: view.preferredFramesPerSecond)
+                                            frameRateLimit: destination.frameRateLimit)
             }
             // A script's `pause()` holds the system as it is; `stop()` clears it until `play()`.
             let paused = script?.playback == .pause
             var inputs = ParticleFrameInputs.advance(system, deltaTime: paused ? 0 : Float(clock.delta), cursor: cursor,
                                                      emitter: emitter, values: timelines.values, scripted: scripted,
                                                      audio: effectFrame.audio,
-                                                     frameTime: Float(clock.delta), frameRateLimit: view.preferredFramesPerSecond)
+                                                     frameTime: Float(clock.delta), frameRateLimit: destination.frameRateLimit)
             Self.applyScriptPlayback(script?.playback, emitting: objectID.flatMap { pendingEmits.removeValue(forKey: $0) },
                                      to: &inputs)
             if particleSimulator != nil {
@@ -939,11 +1045,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         postProcess.encode(ScenePostProcess.Frame(
             scene: sceneTexture, output: descriptor, commandBuffer: commandBuffer,
             placement: layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
-                                    placement: placement),
+                                    placement: destination.placement),
             bloom: liveBloom(), extras: appExtras(), settings: renderSettings,
             effects: effectGraph, builtins: effectFrame, values: timelines.values))
 
-        commandBuffer.present(drawable)
+        if let drawable = destination.drawable {
+            commandBuffer.present(drawable)
+        } else {
+            sharedFrame = descriptor.colorAttachments[0].texture
+        }
         commandBuffer.commit()
         lastCommandBuffer = commandBuffer
     }
@@ -1003,9 +1113,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Hands the scripts this frame: the clock, the display and cursor, and every object at this
     /// frame's time with the last drawn frame's transforms, text sizes and camera
     /// (docs/scenescript-plan.md §4.4). They run on their own thread; `finishFrame` waits for them.
-    private func submitScriptFrame(view: MTKView, drawableSize: SIMD2<Float>,
+    private func submitScriptFrame(viewports: [SceneViewport],
                                    cursor: (position: SIMD2<Float>, onDisplay: Bool), leftDown: Bool,
                                    animationEvents: [SceneAnimationEvent]) {
+        let drawableSize = viewports[0].drawableSize
         var input = SceneScriptFrameInput()
         input.deltaTime = clock.delta
         timelines.describe(into: &input, events: animationEvents)
@@ -1013,8 +1124,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             screenResolution: SIMD2(Double(drawableSize.x), Double(drawableSize.y)),
             canvasSize: SIMD2(Double(sceneSize.x), Double(sceneSize.y)), placement: placement,
             pixelsPerPoint: Double(drawablePixelsPerPoint))
-        input.input = SceneScriptInput(cursorScreenPosition: cursorScreenPixels(in: view, drawableSize: drawableSize),
-                                       cursorLeftDown: leftDown)
+        input.input = SceneScriptInput(cursorScreenPosition: cursorScreenPixels(viewports), cursorLeftDown: leftDown)
         input.cursorScenePosition = cursor.position
         input.shakeOffset = lastCameraMotion?.shake ?? .zero
         if let parallax = lastCameraMotion?.parallax {
@@ -1048,17 +1158,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         scripts.submit(input)
     }
 
-    /// The cursor in display pixels from the top-left of this wallpaper's view
-    /// (`input.cursorScreenPosition`); where it was last seen while it is on another display.
-    private func cursorScreenPixels(in view: MTKView, drawableSize: SIMD2<Float>) -> SIMD2<Double> {
-        guard let window = view.window else { return lastCursorScreenPixels }
-        let mouse = view.convert(window.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
-        let bounds = view.bounds.size
-        guard bounds.width > 0, bounds.height > 0, window.screen?.frame.contains(NSEvent.mouseLocation) == true else {
-            return lastCursorScreenPixels
-        }
-        let pixels = SIMD2(Double(mouse.x) * Double(drawableSize.x) / Double(bounds.width),
-                           Double(bounds.height - mouse.y) * Double(drawableSize.y) / Double(bounds.height))
+    /// The cursor in display pixels from the top-left of the wallpaper's view on the display it is
+    /// on (`input.cursorScreenPosition`); where it was last seen while it is on none of them.
+    private func cursorScreenPixels(_ viewports: [SceneViewport]) -> SIMD2<Double> {
+        guard let pixels = viewports.lazy.compactMap(\.cursorScreenPixels).first else { return lastCursorScreenPixels }
         lastCursorScreenPixels = pixels
         return pixels
     }
@@ -1416,11 +1519,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
 
     /// The scene target, at `renderPixelsPerUnit` pixels per scene unit.
-    private func sceneRenderTarget(matching descriptor: MTLRenderPassDescriptor) -> MTLTexture? {
+    private func sceneRenderTarget(pixelFormat: MTLPixelFormat) -> MTLTexture? {
         let pixelSize = SceneRenderResolution.targetSize(sceneSize: sceneSize, pixelsPerUnit: renderPixelsPerUnit)
         if let sceneRenderTarget, sceneRenderTargetSize == pixelSize { return sceneRenderTarget }
 
-        let pixelFormat = descriptor.colorAttachments[0].texture?.pixelFormat ?? .bgra8Unorm
         // Owned outright, not pooled: the scene is drawn into for the whole frame, so a pooled
         // scratch request of the same size (a scene-input region) must never be handed it.
         let textureDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: pixelFormat, width: pixelSize.x,
@@ -1497,9 +1599,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     /// Maps a scene-unit position and size onto `drawableSize` pixels. Scene draws use
-    /// `.stretch` (the target has the scene's aspect); the composite uses the user's placement.
+    /// `.stretch` (the target has the scene's aspect); the composite uses the user's placement, at
+    /// `pixelsPerPoint` (the frame's display by default).
     private func layerUniform(position: SIMD2<Float>, size: SIMD2<Float>, opacity: Float,
-                              drawableSize: SIMD2<Float>, placement: WallpaperPlacement) -> LayerUniform {
+                              drawableSize: SIMD2<Float>, placement: WallpaperPlacement,
+                              pixelsPerPoint: Float? = nil) -> LayerUniform {
         let scale: Float
         switch placement {
         case .stretch:
@@ -1514,7 +1618,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                 transformScaleY: 1)
         case .fill, .zoom, .fit, .center:
             scale = ScenePlacementScale.scale(for: placement, sceneSize: sceneSize, drawableSize: drawableSize,
-                                              pixelsPerPoint: drawablePixelsPerPoint)
+                                              pixelsPerPoint: pixelsPerPoint ?? drawablePixelsPerPoint)
         }
         let offset = (drawableSize - sceneSize * scale) / 2
         return LayerUniform(position: SIMD2<Float>(position.x * scale + offset.x,
@@ -1527,19 +1631,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                             transformScaleY: 1)
     }
 
-    /// The cursor in scene units, or nil while it is on another display.
-    private func sceneCursor(in view: MTKView, drawableSize: SIMD2<Float>) -> SIMD2<Float>? {
-        guard let window = view.window,
-              let screen = window.screen,
-              screen.frame.contains(NSEvent.mouseLocation) else {
-            return nil
+    /// The cursor in scene units, mapped through the placement of the display it is on, or nil
+    /// while it is on none of this scene's displays.
+    private func sceneCursor(_ viewports: [SceneViewport]) -> SIMD2<Float>? {
+        for viewport in viewports {
+            guard let drawablePoint = viewport.cursorPixels else { continue }
+            return ScenePlacementScale.scenePoint(drawablePoint: drawablePoint, placement: placement, sceneSize: sceneSize,
+                                                  drawableSize: viewport.drawableSize, pixelsPerPoint: viewport.pixelsPerPoint)
         }
-        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
-        let mouse = view.convert(windowPoint, from: nil)
-        let drawablePoint = SIMD2<Float>(Float(mouse.x) * drawableSize.x / Float(max(view.bounds.width, 1)),
-                                         Float(mouse.y) * drawableSize.y / Float(max(view.bounds.height, 1)))
-        return ScenePlacementScale.scenePoint(drawablePoint: drawablePoint, placement: placement, sceneSize: sceneSize,
-                                              drawableSize: drawableSize, pixelsPerPoint: drawablePixelsPerPoint)
+        return nil
     }
 
     private func makeTextureFrames(from source: SceneMetalTextureSource) -> [RenderTextureFrame]? {
