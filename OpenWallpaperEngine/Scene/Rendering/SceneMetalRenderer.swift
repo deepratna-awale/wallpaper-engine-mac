@@ -82,16 +82,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// The wall clock `clock` follows (tests step it).
     var wallTime: () -> CFTimeInterval = { CACurrentMediaTime() }
     /// The wallpaper instance's timelines and texture clocks (docs/timeline-plan.md §2), advanced
-    /// once per frame by `clock`'s delta, before the scripts run; nil without a scene document.
-    private(set) var animations: SceneAnimationSet?
-    /// The document `animations` was built from (`SceneTimelineSource`).
-    private var timelineKey: (wallpaperID: String, signature: String)?
-    /// Objects whose own fields a timeline drives (with those fields' keys), and the fields'
-    /// values this frame, by id.
-    private var animatedObjects: [(id: Int, key: String, fields: Set<String>)] = []
-    private var objectAnimations: [String: SceneObjectAnimation] = [:]
-    /// Each animated layer's sprite frame this frame, by id (`textureFrame(for:)`).
-    private var spriteFrames: [Int: Int32] = [:]
+    /// once per frame by `clock`'s delta, before the scripts run.
+    let timelines = SceneRendererAnimations()
+    /// The instance's `SceneAnimationSet`; nil without a scene document.
+    var animations: SceneAnimationSet? { timelines.set }
     private let contentQueue = DispatchQueue(label: "SceneMetalRenderer.content", qos: .userInitiated)
     private let contentGenerationLock = NSLock()
     private var contentGeneration = 0
@@ -299,10 +293,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             particleSystems = []
             objectMotions = [:]
             scripts.stop()
-            animations = nil
-            timelineKey = nil
-            animatedObjects = []
-            objectAnimations = [:]
+            timelines.clear()
             sounds.stopAll()
             lastSoundTime = nil
             scriptParticles.removeAll()
@@ -359,8 +350,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 let running = self.scripts.wallpaper
                 self.scripts.setContent(content.scripts, visibility: content.visibility,
                                         parents: content.transforms.nodes.compactMapValues(\.parentID))
-                self.setTimelines(content.timelines,
-                                  restart: self.scripts.wallpaper != nil && self.scripts.wallpaper !== running)
+                self.timelines.setTimelines(content.timelines,
+                                            restart: self.scripts.wallpaper != nil && self.scripts.wallpaper !== running)
                 if self.scripts.wallpaper == nil || self.scripts.wallpaper !== running {
                     // New scripts: the old ones' layers are gone with them.
                     self.scriptLayers.removeAll()
@@ -408,8 +399,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for event in events {
             switch event {
             case .create(let id, let object):
-                animations?.addObject(object, id: id)
-                refreshAnimatedObjects()
+                timelines.addObject(object, id: id)
                 buildScriptLayer(String(id), object: object)
             case .destroy(let id):
                 let key = String(id)
@@ -425,17 +415,16 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     objectMotions.removeValue(forKey: key)
                 }
                 sounds.remove(id)
-                animations?.removeObject(id)
-                refreshAnimatedObjects()
+                timelines.removeObject(id)
                 removed.append(key)
             case .emit(let id, let count):
                 pendingEmits[String(id), default: 0] += count ?? 1
             case .sound(let id, let playback):
                 sounds.perform(playback, on: id)
             case let .animation(site, time, flags, rate):
-                animations?.restore(site, time: time, flags: flags, rate: rate)
+                timelines.restore(site, time: time, flags: flags, rate: rate)
             case .textureAnimation(let id, let control):
-                animations?.textures.restore(control, object: id)
+                timelines.restoreTexture(control, object: id)
             }
         }
         if !removed.isEmpty {
@@ -447,55 +436,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     // MARK: - Timelines
 
-    /// Takes the content's timelines: a new set for a new document, or when new scripts started
-    /// (`restart`: the old ones' created layers and calls are gone); otherwise the running set
-    /// keeps its clocks, as WE keeps a scene's across a user property change.
-    private func setTimelines(_ source: SceneTimelineSource?, restart: Bool) {
-        guard let source else {
-            animations = nil
-            timelineKey = nil
-            refreshAnimatedObjects()
-            return
-        }
-        if restart || animations == nil || timelineKey?.wallpaperID != source.wallpaperID
-            || timelineKey?.signature != source.signature {
-            animations = SceneAnimationSet(document: source.document, wallpaperID: source.wallpaperID)
-            timelineKey = (source.wallpaperID, source.signature)
-        }
-        refreshAnimatedObjects()
-    }
-
-    /// The objects with an animated field of their own, whose values `advanceAnimations` reads.
-    private func refreshAnimatedObjects() {
-        var fields: [Int: Set<String>] = [:]
-        for site in animations?.sites ?? [] where SceneObjectAnimation.keys.contains(site.key) {
-            if case .object(let id) = site.owner { fields[id, default: []].insert(site.key) }
-        }
-        animatedObjects = fields.keys.sorted().map { ($0, String($0), fields[$0] ?? []) }
-        objectAnimations.removeAll()
-        guard let animations else { return }
-        for object in animatedObjects {
-            objectAnimations[object.key] = SceneObjectAnimation(animations, object: object.id, keys: object.fields)
-        }
-    }
-
     /// An animated texture's layer shares its texture's clock (§2.7), frame times in sheet order.
     private func registerTextureAnimation(_ entry: PreparedLayer) {
         guard let key = entry.layer.textureKey, let id = Int(entry.layer.id) else { return }
-        animations?.textures.register(object: id, texture: key, frameTimes: entry.frames.map(\.duration))
-    }
-
-    /// One frame of the instance's timelines (plan P1: before the scripts): every clock owner
-    /// advances by the frame's scene delta and every animated field is sampled. Returns the
-    /// events crossed, for the scripts.
-    private func advanceAnimations() -> [SceneAnimationEvent] {
-        spriteFrames.removeAll(keepingCapacity: true)
-        guard let animations else { return [] }
-        let frame = animations.advance(by: Float(clock.delta))
-        for object in animatedObjects {
-            objectAnimations[object.key] = SceneObjectAnimation(animations, object: object.id, keys: object.fields)
-        }
-        return frame.events
+        timelines.registerTexture(object: id, texture: key, frameTimes: entry.frames.map(\.duration))
     }
 
     /// Builds an object a script created through the loader, off the main thread: a layer, a
@@ -643,7 +587,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let orderBefore = scripts.state.order
         applyScriptEvents(scripts.beginFrame())
         // WE writes every timeline before the scripts run; a script's calls act on the next advance.
-        let animationEvents = advanceAnimations()
+        let animationEvents = timelines.advance(by: Float(clock.delta))
         let cursorSample = cursorTracker.update(sceneCursor(in: view, drawableSize: realDrawableSize),
                                                 sceneSize: sceneSize)
         let cursor = cursorSample.position
@@ -839,7 +783,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                     }
                     particleMaterials?.draw(batch.system, encoder: encoder, commandBuffer: commandBuffer, context: .init(
                         sceneSize: sceneSize, frame: effectFrame,
-                        values: LiveSceneValueContext(animations: animations),
+                        values: timelines.values,
                         assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
                         sceneSnapshot: snapshot))
                     drew = true
@@ -938,7 +882,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                    texture: materialTexture, contentSize: entry.layer.source.contentSize,
                    uvOrigin: textureFrame.uvOrigin, uvAxisX: textureFrame.uvAxisX, uvAxisY: textureFrame.uvAxisY,
                    sceneSnapshot: layerSnapshot, frame: effectFrame,
-                   values: LiveSceneValueContext(animations: animations),
+                   values: timelines.values,
                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
                    ignoredAdjustments: !ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: draw.brightness)),
                    pixelFormat: sceneTexture.pixelFormat, encoder: encoder, commandBuffer: commandBuffer) {
@@ -1019,11 +963,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                    animationEvents: [SceneAnimationEvent]) {
         var input = SceneScriptFrameInput()
         input.deltaTime = clock.delta
-        if let animations {
-            input.animationEvents = animationEvents
-            for site in animations.sites { input.animations[site] = animations.state(of: site) }
-            for id in animations.textures.objectIDs { input.textureAnimations[id] = animations.textures.state(object: id) }
-        }
+        timelines.describe(into: &input, events: animationEvents)
         input.environment = SceneScriptEngineEnvironment(
             screenResolution: SIMD2(Double(drawableSize.x), Double(drawableSize.y)),
             canvasSize: SIMD2(Double(sceneSize.x), Double(sceneSize.y)), placement: placement,
@@ -1039,7 +979,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard let id = Int(entry.layer.id) else { continue }
             let script = scripts.object(entry.layer.id)
             let base = baseValues(entry)
-            let animation = objectAnimations[entry.layer.id]
+            let animation = timelines.object(entry.layer.id)
             let own = entry.motion.local(animation: animation, script: script, scriptValues: false)
             input.objects[id] = SceneScriptObjectFeedback(
                 origin: own.origin, scale: own.scale, angle: own.angle,
@@ -1052,7 +992,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
         for (key, objectMotion) in objectMotions {
             guard let id = Int(key) else { continue }
-            let animation = objectAnimations[key]
+            let animation = timelines.object(key)
             let own = objectMotion.local(animation: animation, script: scripts.object(key), scriptValues: false)
             input.objects[id] = SceneScriptObjectFeedback(
                 origin: own.origin, scale: own.scale, angle: own.angle, alpha: nil, color: nil, brightness: nil,
@@ -1154,7 +1094,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // WE draws a layer where its transform and the camera put it; an oversized layer (sized
         // to hide its edges while it moves) isn't pinned inside the scene.
         let center = quad.center + parallaxOffset - motion.shake
-        let animation = objectAnimations[entry.layer.id]
+        let animation = timelines.object(entry.layer.id)
         let rgb = script?.vector3(.color) ?? animation?.color
         let color = rgb.map { SIMD4<Float>($0.x, $0.y, $0.z, base.color.w) } ?? base.color
         let brightness = script?.scalar(.brightness) ?? animation?.brightness ?? base.brightness
@@ -1165,13 +1105,13 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// A layer's opacity before scripts: its timeline's value this frame, else authored or user-bound.
     private func baseOpacity(_ entry: PreparedLayer, base: SceneLayerBaseValues) -> Float {
-        objectAnimations[entry.layer.id]?.alpha ?? base.opacity
+        timelines.object(entry.layer.id)?.alpha ?? base.opacity
     }
 
     /// The layer's unscaled size this frame: a script bound to `size` (WE's image property is
     /// writable and drawn every frame, wallpaper64.exe 0x1401e8bb0), else its timeline, else authored.
     private func layerBaseSize(_ entry: PreparedLayer) -> SIMD2<Float> {
-        scripts.object(entry.layer.id)?.vector2(.size) ?? objectAnimations[entry.layer.id]?.size ?? entry.layer.size
+        scripts.object(entry.layer.id)?.vector2(.size) ?? timelines.object(entry.layer.id)?.size ?? entry.layer.size
     }
 
     /// A text layer's current string (a script's, else authored), laid out and rasterised (through
@@ -1209,7 +1149,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// included), evaluated once per frame.
     private func objectLocal(_ motion: SceneObjectMotion, id: String) -> SceneLocalTransform {
         if let cached = frameLocals[id] { return cached }
-        let local = motion.local(animation: objectAnimations[id], script: scripts.object(id))
+        let local = motion.local(animation: timelines.object(id), script: scripts.object(id))
         frameLocals[id] = local
         return local
     }
@@ -1299,7 +1239,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard let effectGraph, !entry.layer.weEffects.isEmpty else { return nil }
         var context = EffectGraphRenderer.Context(
             frame: frame,
-            values: LiveSceneValueContext(animations: animations),
+            values: timelines.values,
             assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
             sceneSnapshot: snapshot,
             // The scripted/animated values the layer is drawn with this frame, not the authored ones.
@@ -1596,13 +1536,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                       uvOrigin: .zero, uvAxisX: SIMD2<Float>(1, 0), uvAxisY: SIMD2<Float>(0, 1))
         }
         guard entry.frames.count > 1, let id = Int(entry.layer.id) else { return entry.frames[0] }
-        let frame: Int32
-        if let drawn = spriteFrames[id] {
-            frame = drawn
-        } else {
-            frame = animations?.drawnTextureFrame(object: id, delta: Float(clock.delta)) ?? 0
-            spriteFrames[id] = frame
-        }
+        let frame = timelines.spriteFrame(object: id, delta: Float(clock.delta))
         // `setFrame(n)` isn't range-checked; a frame outside the sheet draws the first.
         return frame >= 0 && Int(frame) < entry.frames.count ? entry.frames[Int(frame)] : entry.frames[0]
     }
