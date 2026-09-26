@@ -340,6 +340,12 @@ final class SceneScriptReplayHarness {
         }
     }
 
+    /// Every `MediaPropertiesEvent` member filled, so a script showing any of them (an album
+    /// artist, a subtitle) changes with the track.
+    private static let firstTrack = MediaSessionState.Properties(
+        title: "Replay Song", artist: "Replay Artist", subTitle: "Replay Subtitle", albumTitle: "Replay Album",
+        albumArtist: "Replay Album Artist", genres: "Pop", contentType: "audio")
+
     private func postMedia(frame: Int, to source: SceneScriptReplayMediaSource) {
         var state = MediaSessionState()
         state.enabled = true
@@ -349,14 +355,12 @@ final class SceneScriptReplayHarness {
         switch frame {
         case 30..<240:
             state.playback = .playing
-            state.properties = .init(title: "Replay Song", artist: "Replay Artist", albumTitle: "Replay Album",
-                                     genres: "Pop", contentType: "audio")
+            state.properties = Self.firstTrack
             state.thumbnail = .init(artwork: 1, colors: colors)
             state.timeline = .init(position: Double((frame - 30) / 60), duration: 200)
         case 240..<360:
             state.playback = .paused
-            state.properties = .init(title: "Replay Song", artist: "Replay Artist", albumTitle: "Replay Album",
-                                     genres: "Pop", contentType: "audio")
+            state.properties = Self.firstTrack
             state.thumbnail = .init(artwork: 1, colors: colors)
             state.timeline = .init(position: 3, duration: 200)
         case 360..<480:
@@ -365,7 +369,8 @@ final class SceneScriptReplayHarness {
             state.thumbnail = .init()
         case 480...:
             state.playback = .playing
-            state.properties = .init(title: "Third Song", artist: "Third Artist", albumTitle: "Third Album")
+            state.properties = .init(title: "Third Song", artist: "Third Artist", albumTitle: "Third Album",
+                                     albumArtist: "Third Album Artist")
             state.thumbnail = .init(artwork: 2, colors: ArtworkPalette.Colors(
                 primary: SIMD3(0.2, 0.7, 0.3), secondary: SIMD3(0.5, 0.5, 0.5), tertiary: SIMD3(0.1, 0.1, 0.1),
                 text: SIMD3(0, 0, 0), highContrast: SIMD3(1, 1, 1)))
