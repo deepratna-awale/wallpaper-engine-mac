@@ -32,8 +32,11 @@ enum SceneScriptReplayDescriptions {
                       copying: [String: Any]?) -> SceneScriptObjectDescription? {
         let json: [String: Any]
         switch source {
-        case .asset(let path):
-            guard let data = wallpaper.file(path),
+        case .asset(let written, let workshopID):
+            // Under the script's Workshop item first, then as written (RF1).
+            let found = SceneScriptLayerSource.assetPaths(written, workshopID: workshopID).lazy
+                .compactMap { path in wallpaper.file(path).map { (path, $0) } }.first
+            guard let (path, data) = found,
                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
                 // Optional: a missing or unreadable asset makes `createLayer` return null, as in WE.
                 return nil

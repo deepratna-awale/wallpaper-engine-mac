@@ -103,8 +103,8 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
     }
 
     private func installNativeFunctions(on objects: JSValue) {
-        let create: @convention(block) (String, String, Int32) -> Any = { [weak self] kind, payload, sourceSlot in
-            self?.createLayer(kind: kind, payload: payload, sourceSlot: Int(sourceSlot)) ?? NSNull()
+        let create: @convention(block) (String, String, Int32, String) -> Any = { [weak self] kind, payload, sourceSlot, workshopID in
+            self?.createLayer(kind: kind, payload: payload, sourceSlot: Int(sourceSlot), workshopID: workshopID) ?? NSNull()
         }
         let unsupported: @convention(block) (String) -> Void = { [weak self] member in
             guard let self, unsupportedMembers.insert(member).inserted else { return }
@@ -115,11 +115,12 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
     }
 
     /// `thisScene.createLayer`: describes and places the layer now, materializes it on `.create`.
-    private func createLayer(kind: String, payload: String, sourceSlot: Int) -> Any {
+    /// `workshopID` is the calling script's `__workshopId` ("" without one).
+    private func createLayer(kind: String, payload: String, sourceSlot: Int, workshopID: String) -> Any {
         guard let store, let host else { return NSNull() }
         let source: SceneScriptLayerSource
         switch kind {
-        case "asset": source = .asset(payload)
+        case "asset": source = .asset(payload, workshopID: workshopID.isEmpty ? nil : workshopID)
         case "configuration": source = .configuration(json: payload)
         case "copy":
             guard store.isLive(sourceSlot) else { return NSNull() }

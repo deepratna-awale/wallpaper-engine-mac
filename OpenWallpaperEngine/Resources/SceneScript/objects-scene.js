@@ -41,6 +41,19 @@
 
     function cameraVector(t, offset) { return objects.vec3(t[offset], t[offset + 1], t[offset + 2]); }
 
+    // The `__workshopId` a script exports ('' without one): WE's editor inserts it so the script's
+    // asset paths resolve under its Workshop item (RF1). Read when used, since a module body that
+    // calls `registerAsset` runs before its exports exist.
+    function workshopIDOf(record) {
+        if (record === undefined || record === null) return '';
+        const id = rt.exports(record, '__workshopId');
+        return id === undefined || id === null ? '' : String(id);
+    }
+
+    function callerWorkshopID() {
+        return rt.current === null ? '' : workshopIDOf(rt.byId.get(rt.current));
+    }
+
     class Scene {
         getLayer(nameOrIndex) { return resolve(nameOrIndex); }
 
@@ -76,7 +89,7 @@
         // A layer from an asset path or IAssetHandle, a configuration object in scene.json form
         // (serialized with WE's `_Internal.stringifyConfig`), or another layer as starting point.
         createLayer(configuration) {
-            let kind, payload = '', source = -1;
+            let kind, payload = '', source = -1, workshopID = callerWorkshopID();
             if (typeof configuration === 'string') {
                 kind = 'asset';
                 payload = configuration;
@@ -93,6 +106,7 @@
                 if (typeof configuration.toConfigString === 'function') {
                     kind = 'asset';
                     payload = String(configuration.toConfigString());
+                    if (configuration instanceof AssetHandle) workshopID = configuration._workshopID();
                 } else {
                     kind = 'configuration';
                     payload = global._Internal ? global._Internal.stringifyConfig(configuration) : JSON.stringify(configuration);
@@ -100,7 +114,7 @@
             } else {
                 return null;
             }
-            const record = native.create(kind, payload, source);
+            const record = native.create(kind, payload, source, workshopID);
             if (record === null || record === undefined) return null;
             const layer = register(record);
             objects.order.push(layer);
@@ -174,8 +188,12 @@
 
     // IAssetHandle: what `registerAsset` returns. `createLayer` and `_Internal.stringifyConfig`
     // take its path through `toConfigString()`, like WE's other handles (IModelData).
+    // `_workshopID()` is the `__workshopId` of the script that registered it, which places the path.
     class AssetHandle {
-        constructor(path) { Object.defineProperty(this, '_path', { value: path }); }
+        constructor(path, owner) {
+            Object.defineProperty(this, '_path', { value: path });
+            Object.defineProperty(this, '_workshopID', { value: function () { return workshopIDOf(owner); } });
+        }
         toConfigString() { return this._path; }
     }
     objects.AssetHandle = AssetHandle;
@@ -186,7 +204,7 @@
     if (global.engine === undefined) global.engine = {};
     global.engine.registerAsset = function (file, precache) {
         rt.requireGlobalScope('registerAsset');
-        return new AssetHandle(String(file));
+        return new AssetHandle(String(file), rt.current === null ? undefined : rt.byId.get(rt.current));
     };
 
     // MARK: thisLayer / thisObject

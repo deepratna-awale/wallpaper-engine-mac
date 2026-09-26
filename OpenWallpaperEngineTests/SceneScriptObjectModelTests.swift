@@ -33,7 +33,7 @@ final class SceneScriptObjectModelTests: XCTestCase {
     /// configuration has `text` (like WE).
     static func describe(_ source: SceneScriptLayerSource) -> SceneScriptObjectDescription? {
         switch source {
-        case .asset(let path):
+        case .asset(let path, _):
             guard path.hasSuffix("bar.json") else { return nil }
             return .make(.image, id: 100, name: "bar", values: [.scale: [1, 1, 1]])
         case .configuration(let json):

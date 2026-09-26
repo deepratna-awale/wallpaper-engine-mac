@@ -28,9 +28,6 @@ final class SceneScriptCorpusReplayTests: XCTestCase {
     static let expectedFailures: [ExpectedFailure] = [
         ExpectedFailure(key: "8bb9b9a54120", check: .exception,
                         reason: "3802509485's string literal broken across two lines: V8 rejects it too, so WE never runs it"),
-        ExpectedFailure(key: "08861b7e67b4", check: .exception,
-                        reason: "RF1: createLayer('models/bar.json') ignores the script's __workshopId, so the asset at "
-                            + "models/workshop/2935714170/bar.json is not found and the bars are null"),
         ExpectedFailure(key: "03f0db0a6dff", check: .exception,
                         reason: "3384308105 has no layer named '…Big…', so the mode the property change picks indexes an "
                             + "empty list and getLayer(undefined) is null: throws in WE too"),
