@@ -191,7 +191,8 @@ struct WallpaperPreview: SubviewOfContentView {
                             .help("Delete wallpaper")
                         }
                         Button {
-                            AppDelegate.shared.showSceneInspector(for: wallpaperViewModel.displayedWallpaper)
+                            AppDelegate.shared.showSceneInspector(for: wallpaperViewModel.displayedWallpaper,
+                                                                  scopes: wallpaperViewModel.editedPropertyScopes(of: wallpaperViewModel.displayedWallpaper))
                         } label: {
                             Label("Scene Inspector", systemImage: "square.stack.3d.up")
                                 .frame(maxWidth: .infinity)
@@ -270,8 +271,10 @@ struct WallpaperPreview: SubviewOfContentView {
                             }
                         }
                     }
-                    SceneUserPropertiesView(wallpaper: wallpaperViewModel.displayedWallpaper)
-                        .id(wallpaperViewModel.displayedWallpaper.wallpaperDirectory)
+                    SceneUserPropertiesView(wallpaper: wallpaperViewModel.displayedWallpaper,
+                                            scopes: wallpaperViewModel.editedPropertyScopes(of: wallpaperViewModel.displayedWallpaper))
+                        .id([wallpaperViewModel.displayedWallpaper.wallpaperDirectory.path]
+                            + wallpaperViewModel.editedPropertyScopes(of: wallpaperViewModel.displayedWallpaper).map(\.description))
                     VStack(spacing: 3) {
                         HStack(spacing: 3) {
                             Text("Your Presets")

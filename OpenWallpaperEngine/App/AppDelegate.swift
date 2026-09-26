@@ -107,6 +107,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     lazy var workshopDependencies = WorkshopDependencyService(steamCmd: contentViewModel.steamCmd)
     private var workshopDependencyCancellable: AnyCancellable?
     private var audioOutputCancellable: AnyCancellable?
+    private var syncPropertiesCancellable: AnyCancellable?
     
     var importOpenPanel: NSOpenPanel!
     
@@ -127,6 +128,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Settings → Audio Output silences every wallpaper (`WallpaperAudioRouting`).
         audioOutputCancellable = globalSettingsViewModel.$settings.map(\.audioOutput).removeDuplicates()
             .sink { [weak self] enabled in self?.wallpaperViewModel.audioOutputEnabled = enabled }
+        // Settings → General: one set of user properties for every display, or each display's own.
+        syncPropertiesCancellable = globalSettingsViewModel.$settings.map(\.syncPropertiesAcrossDisplays).removeDuplicates()
+            .sink { [weak self] synced in self?.wallpaperViewModel.syncsPropertiesAcrossDisplays = synced }
 
         // Before the wallpaper windows exist, so a wallpaper behind an unclean exit never loads.
         safeRestart.attach(to: wallpaperViewModel)

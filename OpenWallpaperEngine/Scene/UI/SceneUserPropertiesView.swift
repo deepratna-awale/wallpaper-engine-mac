@@ -58,16 +58,14 @@ private final class SceneUserPropertiesModel: ObservableObject {
     @Published var values: [String: String] = [:]
     @Published var textObjects: [SceneTextControl] = []
     @Published var authoredPropertyIDs: Set<String> = []
-    private let storageKey: String
-    private let explicitKey: String
+    /// The stores an edit goes to: the selected displays', or the shared one while synced.
+    private let targets: WallpaperPropertyTargets
     private var pendingSave: DispatchWorkItem?
     private let wallpaperPath: String
 
-    init(wallpaper: WEWallpaper) {
+    init(wallpaper: WEWallpaper, scopes: [WallpaperPropertyScope]) {
         wallpaperPath = wallpaper.wallpaperDirectory.path
-        let settings = WallpaperSettingsIdentity.resolve(wallpaper)
-        storageKey = settings.key(.userProperties)
-        explicitKey = settings.key(.explicitUserProperties)
+        targets = WallpaperPropertyTargets(wallpaper: wallpaper, scopes: scopes)
         load(wallpaper)
     }
 
@@ -79,14 +77,11 @@ private final class SceneUserPropertiesModel: ObservableObject {
         guard values[id] != value else { return }
         values[id] = value
         NotificationCenter.default.post(name: .wallpaperUserPropertyChanged, object: wallpaperPath,
-                                        userInfo: ["key": id, "value": value])
-        WallpaperServices.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
+                                        userInfo: ["key": id, "value": value, "stores": targets.runtimeKeys])
+        targets.publish(values)
         pendingSave?.cancel()
         let snapshot = values
-        let work = DispatchWorkItem { [storageKey, explicitKey] in
-            UserDefaults.standard.set(snapshot, forKey: storageKey)
-            UserDefaults.standard.set(true, forKey: explicitKey)
-        }
+        let work = DispatchWorkItem { [targets] in targets.save(snapshot) }
         pendingSave = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
@@ -184,11 +179,11 @@ private final class SceneUserPropertiesModel: ObservableObject {
             extra.precision = 3
             return extra
         }
-        values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        values = targets.storedValues
         for property in properties where values[property.id] == nil {
             values[property.id] = property.defaultValue
         }
-        WallpaperServices.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
+        targets.publish(values)
     }
 
     /// Simple on/off `visibleUserProperty` gates (no string variant condition) that the author never
@@ -236,9 +231,10 @@ struct SceneUserPropertiesView: View {
     @ObservedObject private var musicSync = VideoMusicSyncStore.shared
     private let wallpaper: WEWallpaper
 
-    init(wallpaper: WEWallpaper) {
+    /// `scopes`: whose properties it edits (`WallpaperViewModel.editedPropertyScopes`), the first shown.
+    init(wallpaper: WEWallpaper, scopes: [WallpaperPropertyScope] = [.shared]) {
         self.wallpaper = wallpaper
-        _model = StateObject(wrappedValue: SceneUserPropertiesModel(wallpaper: wallpaper))
+        _model = StateObject(wrappedValue: SceneUserPropertiesModel(wallpaper: wallpaper, scopes: scopes))
     }
 
     private var isVideo: Bool { SceneWallpaperViewModel.isVideoType(wallpaper.project.type) }

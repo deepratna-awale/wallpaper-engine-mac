@@ -82,6 +82,9 @@ class SceneWallpaperViewModel: ObservableObject {
     private var assetDataCache: [String: Data] = [:]
     /// Where the loaded wallpaper's settings are stored, and the directory it was resolved for.
     private var settings: (directory: URL, identity: WallpaperSettingsIdentity)?
+    /// Whose user properties this instance runs with: every display's, or one display's
+    /// (`WallpaperPropertyScope`, `WallpaperPropertyGroups`).
+    let propertyScope: WallpaperPropertyScope
     /// Other Workshop items' assets (`…/workshop/<id>/…`), loose or inside the item's `.pkg`.
     private var workshopAssets = WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots())
     /// WE's fixed copies of broken Workshop shaders (`assets/zcompat`).
@@ -168,8 +171,9 @@ class SceneWallpaperViewModel: ObservableObject {
     }
     private var registeredFontNames: [String: String] = [:]
 
-    init(wallpaper: WEWallpaper) {
+    init(wallpaper: WEWallpaper, propertyScope: WallpaperPropertyScope = .shared) {
         self.currentWallpaper = wallpaper
+        self.propertyScope = propertyScope
         Self.log("init: wallpaper=\(wallpaper.project.title) dir=\(wallpaper.wallpaperDirectory.path)")
         loadScene(from: wallpaper)
     }
@@ -248,7 +252,7 @@ class SceneWallpaperViewModel: ObservableObject {
         WorkshopDependencyResolver.linkInstalledDependencies(for: wallpaper)
         let dir = wallpaper.wallpaperDirectory
         let sceneFile = wallpaper.project.file  // e.g. "scene.json" or "gifscene.json"
-        let settingsKey = settingsIdentity(for: dir).key(.userProperties)
+        let settingsKey = settingsIdentity(for: dir).key(.userProperties, scope: propertyScope)
 
         // Derive PKG name from scene file: "scene.json" → "scene.pkg", "gifscene.json" → "gifscene.pkg"
         let pkgName = (sceneFile as NSString).deletingPathExtension + ".pkg"
@@ -409,6 +413,7 @@ class SceneWallpaperViewModel: ObservableObject {
     private func settingsIdentity(for directory: URL) -> WallpaperSettingsIdentity {
         if let settings, settings.directory == directory { return settings.identity }
         let identity = WallpaperSettingsIdentity.resolve(directory: directory)
+        identity.seed(propertyScope)
         settings = (directory, identity)
         return identity
     }
@@ -416,8 +421,8 @@ class SceneWallpaperViewModel: ObservableObject {
     private func prepareSceneUserPropertyDefaults(for wallpaper: WEWallpaper, scene: WEScene) {
         guard wallpaper.project.type.caseInsensitiveCompare("scene") == .orderedSame else { return }
         let identity = settingsIdentity(for: wallpaper.wallpaperDirectory)
-        let key = identity.key(.userProperties)
-        let explicitKey = identity.key(.explicitUserProperties)
+        let key = identity.key(.userProperties, scope: propertyScope)
+        let explicitKey = identity.key(.explicitUserProperties, scope: propertyScope)
         let defaults = UserDefaults.standard
         let stored = defaults.bool(forKey: explicitKey)
             ? defaults.dictionary(forKey: key) as? [String: String] ?? [:]
@@ -425,8 +430,10 @@ class SceneWallpaperViewModel: ObservableObject {
         let values = Self.userPropertyValues(stored: stored,
                                              declared: Self.declaredUserProperties(in: wallpaper.wallpaperDirectory),
                                              scene: scene)
-        defaults.set(values, forKey: key)
-        WallpaperServices.shared.setUserProperties(values, wallpaper: wallpaper.wallpaperDirectory.path,
+        // A display's own store keeps what the user saved, so displays whose properties are equal
+        // stay equal (`WallpaperPropertyGroups` compares the stores) whichever of them loaded.
+        if propertyScope == .shared { defaults.set(values, forKey: key) }
+        WallpaperServices.shared.setUserProperties(values, wallpaper: propertyScope.runtimeKey(directory: wallpaper.wallpaperDirectory),
                                                            replacing: true)
     }
 
@@ -1162,7 +1169,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     /// Key of this wallpaper instance's user properties in the script engine's store.
     var propertyStoreKey: String {
-        (loadedWallpaperDirectory ?? currentWallpaper.wallpaperDirectory).path
+        propertyScope.runtimeKey(directory: loadedWallpaperDirectory ?? currentWallpaper.wallpaperDirectory)
     }
 
     /// This wallpaper's current value of a user property.
@@ -1423,7 +1430,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func loadJSON<T: Decodable>(path: String, wallpaperDir: URL) -> T? {
         guard let original = assetData(named: path, wallpaperDir: wallpaperDir) else { return nil }
-        let storageKey = settingsIdentity(for: wallpaperDir).key(.userProperties)
+        let storageKey = settingsIdentity(for: wallpaperDir).key(.userProperties, scope: propertyScope)
         let overrideKey = "_owe_scene_asset_\(path)_json"
         let data: Data
         if let values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String],

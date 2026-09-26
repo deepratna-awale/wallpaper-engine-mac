@@ -15,9 +15,10 @@ struct WallpaperView: View {
 
     var body: some View {
         let wallpaper = viewModel.wallpaper(for: screenId)
-        // Scenes and videos run one shared instance per wallpaper; a display that switches
-        // wallpaper gets a new view, and with it the other wallpaper's instance.
-        let instance = WallpaperInstanceKey(wallpaper)
+        // Scenes and videos run one shared instance per wallpaper and properties; a display that
+        // switches wallpaper, or whose properties split from the others', gets a new view, and
+        // with it the other instance. An AVKit video has no properties: one player per video.
+        let instance = viewModel.instanceKey(for: screenId)
         switch wallpaper.project.type.lowercased() {
         // A remote video is the same pipeline as a local one; only the URL differs.
         case "video", "remote-video":
@@ -25,12 +26,13 @@ struct WallpaperView: View {
             if AppDelegate.shared.globalSettingsViewModel.settings.videoFramework == .metal {
                 SceneWallpaperView(wallpaperViewModel: viewModel, screenId: screenId).id(instance)
             } else {
-                AudioReactiveVideoWallpaperView(wallpaperViewModel: viewModel, screenId: screenId).id(instance)
+                AudioReactiveVideoWallpaperView(wallpaperViewModel: viewModel, screenId: screenId).id(instance.wallpaper)
             }
         case "scene":
             SceneWallpaperView(wallpaperViewModel: viewModel, screenId: screenId).id(instance)
         case "web":
             WebWallpaperView(wallpaperViewModel: viewModel, screenId: screenId)
+                .id(viewModel.propertyScope(for: screenId))
         case "remote-image":
             RemoteImageWallpaperView(url: URL(string: wallpaper.project.file))
         default:

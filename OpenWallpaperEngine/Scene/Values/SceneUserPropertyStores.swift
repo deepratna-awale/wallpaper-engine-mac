@@ -1,10 +1,12 @@
 import Foundation
 
-/// User properties of every running wallpaper instance, keyed by wallpaper directory path.
+/// User properties of every running wallpaper instance, keyed by its store
+/// (`WallpaperPropertyScope.runtimeKey`: the wallpaper's directory path, with a display's id when
+/// the display has its own properties).
 ///
-/// Two displays showing different scenes each have their own entry, so neither overwrites the
-/// other's properties, and switching a display to another wallpaper can't leak the previous
-/// wallpaper's keys into the new one. Not thread-safe: the owner (`SceneUserPropertyService`)
+/// Two displays showing different scenes, or one scene with different properties, each have their
+/// own entry, so neither overwrites the other's properties, and switching a display to another
+/// wallpaper can't leak the previous wallpaper's keys into the new one. Not thread-safe: the owner (`SceneUserPropertyService`)
 /// guards it with its lock.
 struct SceneUserPropertyStores {
     struct Entry: Equatable {

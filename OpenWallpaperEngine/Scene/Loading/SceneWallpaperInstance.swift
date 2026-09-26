@@ -40,9 +40,11 @@ final class SceneWallpaperInstance {
     private var scriptsNotice: SafeRestartNotice?
 
     /// `screenID` is the display that starts it; its scripts keep their per-display storage there.
-    init(wallpaper: WEWallpaper, environment: SceneWallpaperEnvironment, screenID: String) {
-        key = WallpaperInstanceKey(wallpaper)
-        viewModel = SceneWallpaperViewModel(wallpaper: wallpaper)
+    /// `properties` is the store of user properties it runs with (`WallpaperInstanceKey.properties`).
+    init(wallpaper: WEWallpaper, environment: SceneWallpaperEnvironment, screenID: String,
+         properties: WallpaperPropertyScope = .shared) {
+        key = WallpaperInstanceKey(wallpaper, properties: properties)
+        viewModel = SceneWallpaperViewModel(wallpaper: wallpaper, propertyScope: properties)
         self.environment = environment
         renderer = SceneMetalRenderer(pixelFormat: .bgra8Unorm, scriptServices: environment.scriptServices,
                                       screenID: screenID)
@@ -167,7 +169,7 @@ final class SceneWallpaperInstance {
               let wallpapers = environment.wallpapers else { return }
         viewModel.updateVideoPlayback(playRate: wallpapers.playRate, audioRate: wallpapers.audioPlayRate,
                                       audioLevel: WallpaperServices.shared.audioLevel,
-                                      audioEnabled: wallpapers.playsInstanceAudio, volume: wallpapers.playVolume)
+                                      audioEnabled: wallpapers.playsAudio(for: key), volume: wallpapers.playVolume)
     }
 
     private var sceneMusicEnabled: Bool {
@@ -183,9 +185,10 @@ final class SceneWallpaperInstance {
 
     /// The wallpaper's sound gain (its sound layers fade to it): the app's volume times this
     /// wallpaper's music volume, and 0 with the app's audio output off, or while muted, paused or
-    /// with its music turned off, as WE's wallpaper volume goes to 0 then.
+    /// with its music turned off, as WE's wallpaper volume goes to 0 then. A wallpaper running as
+    /// several instances (displays with different properties) plays from one of them.
     private var soundGain: Float {
-        guard let wallpapers = environment.wallpapers, wallpapers.playsInstanceAudio, sceneMusicEnabled,
+        guard let wallpapers = environment.wallpapers, wallpapers.playsAudio(for: key), sceneMusicEnabled,
               wallpapers.playRate != 0 else { return 0 }
         return wallpapers.playVolume * sceneMusicVolume
     }
@@ -232,8 +235,10 @@ final class SceneWallpaperInstance {
         let center = NotificationCenter.default
         observers.append(center.addObserver(forName: .sceneUserPropertiesDidChange, object: nil, queue: .main) { [weak self] notification in
             let keys = notification.userInfo?["keys"] as? [String] ?? []
+            let store = notification.userInfo?["wallpaper"] as? String
             MainActor.assumeIsolated {
-                guard let self else { return }
+                // Another wallpaper's, or another display's, properties.
+                guard let self, store == nil || store == self.viewModel.propertyStoreKey else { return }
                 // Scripts get every change (`applyUserProperties`); content is rebuilt only when it
                 // reads the property itself.
                 self.renderer?.scripts.userPropertiesDidChange(Set(keys))

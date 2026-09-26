@@ -153,6 +153,15 @@ struct GeneralPage: SettingsPage {
             } header: {
                 Label("Appearance", systemImage: "paintpalette.fill")
             }
+            // MARK: Displays
+            Section {
+                Toggle("Sync properties across displays", isOn: $viewModel.settings.syncPropertiesAcrossDisplays)
+            } header: {
+                Label("Displays", systemImage: "display.2")
+            } footer: {
+                Text("Off, a wallpaper shown on several displays keeps each display's properties, as "
+                     + "Wallpaper Engine does. On, one set of properties applies to every display.")
+            }
             // MARK: Audio
             Section {
                 Toggle(isOn: $viewModel.settings.audioOutput) {

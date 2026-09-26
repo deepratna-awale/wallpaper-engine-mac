@@ -9,9 +9,9 @@ import SwiftUI
 import MetalKit
 
 /// A scene (or Metal video) wallpaper on one display: a presenter of the wallpaper's shared
-/// instance (`SceneWallpaperInstance`), which every display showing the same wallpaper holds.
-/// A display switched to another wallpaper gets a new view (`WallpaperView` keys it by the
-/// wallpaper), and with it that wallpaper's instance.
+/// instance (`SceneWallpaperInstance`), which every display showing the same wallpaper with the
+/// same properties holds. A display switched to another wallpaper, or to other properties, gets a
+/// new view (`WallpaperView` keys it by the instance key), and with it that instance.
 struct SceneWallpaperView: NSViewRepresentable {
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
     let screenId: String
@@ -25,8 +25,10 @@ struct SceneWallpaperView: NSViewRepresentable {
                                                     settings: AppDelegate.shared.globalSettingsViewModel,
                                                     scriptServices: AppDelegate.shared.sceneScriptServices)
         let screenId = screenId
-        let lease = SceneWallpaperPresenter.Lease(wallpaperViewModel.sceneInstances, key: WallpaperInstanceKey(wallpaper)) {
-            SceneWallpaperInstance(wallpaper: wallpaper, environment: environment, screenID: screenId)
+        let key = wallpaperViewModel.instanceKey(for: screenId)
+        let lease = SceneWallpaperPresenter.Lease(wallpaperViewModel.sceneInstances, key: key) {
+            SceneWallpaperInstance(wallpaper: wallpaper, environment: environment, screenID: screenId,
+                                   properties: key.properties)
         }
         context.coordinator.show(lease, in: view)
         return view

@@ -91,16 +91,14 @@ private final class SceneInspectorModel: ObservableObject {
 
     private let directory: URL
     private let package: PKGParser?
-    private let storageKey: String
-    private let explicitKey: String
+    /// The stores its edits go to: the selected displays', or the shared one while synced.
+    private let targets: WallpaperPropertyTargets
     private var textureLoadGeneration = 0
     private var pendingSave: DispatchWorkItem?
 
-    init(wallpaper: WEWallpaper) {
+    init(wallpaper: WEWallpaper, scopes: [WallpaperPropertyScope]) {
         directory = wallpaper.wallpaperDirectory
-        let settings = WallpaperSettingsIdentity.resolve(wallpaper)
-        storageKey = settings.key(.userProperties)
-        explicitKey = settings.key(.explicitUserProperties)
+        targets = WallpaperPropertyTargets(wallpaper: wallpaper, scopes: scopes)
         let scenePath = wallpaper.project.file
         let packageURL = directory.appending(path: (scenePath as NSString).deletingPathExtension + ".pkg")
         package = try? PKGParser(url: packageURL)
@@ -127,7 +125,7 @@ private final class SceneInspectorModel: ObservableObject {
         }
                 sceneSize = Self.sceneSize(for: scene)
 
-        let storedValues = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        let storedValues = targets.storedValues
         items = scene.objects.enumerated().map { index, object in
             let objectID = object.id ?? index
             var rawObject = rawObjects.indices.contains(index) ? prettyJSON(rawObjects[index]) : "{}"
@@ -345,7 +343,7 @@ private final class SceneInspectorModel: ObservableObject {
         guard parts.count == 2, let objectID = Int(parts[0]), let effectIndex = Int(parts[1]) else { return }
         let key = sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: effectIndex,
                                                  parameter: control.key)
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values[key] = components.map { String($0) }.joined(separator: " ")
         persist(values)
     }
@@ -381,7 +379,7 @@ private final class SceneInspectorModel: ObservableObject {
         let parts = combo.effectID.split(separator: ":")
         guard parts.count == 2, let objectID = Int(parts[0]), let effectIndex = Int(parts[1]) else { return }
         let key = sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: effectIndex, parameter: SceneEffectParameters.comboOverrideKey(combo.combo))
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values[key] = String(value)
         persist(values)
     }
@@ -410,7 +408,7 @@ private final class SceneInspectorModel: ObservableObject {
         let parts = control.effectID.split(separator: ":")
         guard parts.count == 2, let objectID = Int(parts[0]), let effectIndex = Int(parts[1]) else { return }
         let key = sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: effectIndex, parameter: control.key)
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values[key] = rgb.map(String.init).joined(separator: " ")
         persist(values)
     }
@@ -421,12 +419,12 @@ private final class SceneInspectorModel: ObservableObject {
 
     func musicSyncEnabled(for control: SceneInspectorEffectControl) -> Bool {
         let key = musicSyncKey(for: control)
-        let values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        let values = targets.storedValues
         return (values[key] ?? "false").lowercased() == "true"
     }
 
     func setMusicSyncEnabled(_ enabled: Bool, for control: SceneInspectorEffectControl) {
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values[musicSyncKey(for: control)] = enabled ? "true" : "false"
         if values[musicAmountKey(for: control)] == nil {
             values[musicAmountKey(for: control)] = "0"
@@ -435,13 +433,13 @@ private final class SceneInspectorModel: ObservableObject {
     }
 
     func musicAmount(for control: SceneInspectorEffectControl) -> Double {
-        let values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        let values = targets.storedValues
         let raw = Double(values[musicAmountKey(for: control)] ?? "0") ?? 0
         return control.displaysDegrees ? raw * 180 / .pi : raw
     }
 
     func setMusicAmount(_ amount: Double, for control: SceneInspectorEffectControl) {
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values[musicAmountKey(for: control)] = String(control.displaysDegrees ? amount * .pi / 180 : amount)
         persist(values)
     }
@@ -472,14 +470,14 @@ private final class SceneInspectorModel: ObservableObject {
         let parts = effect.id.split(separator: ":")
         guard parts.count == 2, let objectID = Int(parts[0]), let effectIndex = Int(parts[1]) else { return }
         let key = sceneAuthoredEffectEnabledKey(objectID: objectID, effectIndex: effectIndex)
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values[key] = enabled ? "true" : "false"
         persist(values)
     }
 
     func setObjectVisible(_ visible: Bool, item: SceneInspectorItem) {
         let objectID = Int(item.id) ?? 0
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values[sceneObjectVisibilityKey(objectID: objectID)] = visible ? "true" : "false"
         persist(values)
         if let index = items.firstIndex(where: { $0.id == item.id }) {
@@ -551,7 +549,7 @@ private final class SceneInspectorModel: ObservableObject {
         let origin = Self.originString(updated)
         object["origin"] = origin
         items[index].rawObject = prettyJSON(object)
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values["_owe_scene_object_\(item.id)_origin"] = origin
         persist(values)
     }
@@ -577,7 +575,7 @@ private final class SceneInspectorModel: ObservableObject {
         let scale = Self.originString(updated)
         object["scale"] = scale
         items[index].rawObject = prettyJSON(object)
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values["_owe_scene_object_\(item.id)_scale"] = scale
         persist(values)
     }
@@ -684,7 +682,7 @@ private final class SceneInspectorModel: ObservableObject {
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               JSONSerialization.isValidJSONObject(object) else { return }
         let formatted = prettyJSON(object)
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values["_owe_scene_object_\(item.id)_json"] = formatted
         persist(values)
         if let index = items.firstIndex(where: { $0.id == item.id }) {
@@ -696,14 +694,14 @@ private final class SceneInspectorModel: ObservableObject {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               JSONSerialization.isValidJSONObject(object) else { return }
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values["_owe_scene_asset_\(path)_json"] = prettyJSON(object)
         persist(values)
     }
 
     func useVersion(_ item: SceneInspectorItem) {
         guard let value = item.versionValue else { return }
-        var values = UserDefaults.standard.dictionary(forKey: storageKey) as? [String: String] ?? [:]
+        var values = targets.storedValues
         values["version"] = value
         persist(values)
     }
@@ -768,21 +766,19 @@ private final class SceneInspectorModel: ObservableObject {
     }
 
     private func persist(_ values: [String: String]) {
-        WallpaperServices.shared.setUserProperties(values, wallpaper: directory.path, replacing: false)
+        targets.publish(values)
         pendingSave?.cancel()
-        let work = DispatchWorkItem {
-            UserDefaults.standard.set(values, forKey: self.storageKey)
-            UserDefaults.standard.set(true, forKey: self.explicitKey)
-        }
+        let work = DispatchWorkItem { [targets] in targets.save(values) }
         pendingSave = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
     }
 }
 
 extension AppDelegate {
-    func showSceneInspector(for wallpaper: WEWallpaper) {
+    /// `scopes`: whose properties its edits change (`WallpaperViewModel.editedPropertyScopes`).
+    func showSceneInspector(for wallpaper: WEWallpaper, scopes: [WallpaperPropertyScope] = [.shared]) {
         if let sceneInspectorWindow {
-            sceneInspectorWindow.contentView = NSHostingView(rootView: SceneInspectorView(wallpaper: wallpaper))
+            sceneInspectorWindow.contentView = NSHostingView(rootView: SceneInspectorView(wallpaper: wallpaper, scopes: scopes))
             sceneInspectorWindow.makeKeyAndOrderFront(nil)
             return
         }
@@ -794,7 +790,7 @@ extension AppDelegate {
         )
         window.title = "Scene Inspector"
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: SceneInspectorView(wallpaper: wallpaper))
+        window.contentView = NSHostingView(rootView: SceneInspectorView(wallpaper: wallpaper, scopes: scopes))
         window.center()
         window.makeKeyAndOrderFront(nil)
         sceneInspectorWindow = window
@@ -809,9 +805,9 @@ struct SceneInspectorView: View {
     @FocusState private var isSearchFocused: Bool
     private let wallpaperDirectory: URL
 
-    init(wallpaper: WEWallpaper) {
+    init(wallpaper: WEWallpaper, scopes: [WallpaperPropertyScope] = [.shared]) {
         wallpaperDirectory = wallpaper.wallpaperDirectory
-        _model = StateObject(wrappedValue: SceneInspectorModel(wallpaper: wallpaper))
+        _model = StateObject(wrappedValue: SceneInspectorModel(wallpaper: wallpaper, scopes: scopes))
     }
 
     private func matches(_ item: SceneInspectorItem) -> Bool {

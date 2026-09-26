@@ -19,30 +19,36 @@ final class SceneUserPropertyService {
         get { propertyStores.active.strings }
         set { propertyStores.active.strings = newValue }
     }
-    private var propertyNotificationWorkItem: DispatchWorkItem?
+    /// Per store: the pending change notification and the keys it reports (guarded by `levelLock`).
+    private var propertyNotificationWorkItems: [String: DispatchWorkItem] = [:]
+    private var pendingChangedKeys: [String: Set<String>] = [:]
 
     init(audioLevel: @escaping () -> Double) {
         self.audioLevel = audioLevel
     }
 
-    /// Sets the user properties of one wallpaper instance (keyed by its directory path). With
-    /// `replacing`, properties missing from `values` are dropped, so nothing from a previous
-    /// configuration of that wallpaper lingers.
+    /// Sets the user properties of one wallpaper instance (keyed by its store key,
+    /// `WallpaperPropertyScope.runtimeKey`). With `replacing`, properties missing from `values` are
+    /// dropped, so nothing from a previous configuration of that wallpaper lingers. A burst of
+    /// changes to one store is reported once, with every key it changed, and the store it changed
+    /// (`"wallpaper"`), so only the instances running that store react.
     func setUserProperties(_ values: [String: String], wallpaper: String, replacing: Bool) {
         levelLock.lock()
         let changedKeys = propertyStores.set(values, for: wallpaper, replacing: replacing)
         if frameSnapshot == nil { propertyStores.activeKey = wallpaper }
-        levelLock.unlock()
-        propertyNotificationWorkItem?.cancel()
+        pendingChangedKeys[wallpaper, default: []].formUnion(changedKeys)
+        propertyNotificationWorkItems[wallpaper]?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.levelLock.lock()
-            let keys = Array(changedKeys)
+            let keys = Array(self.pendingChangedKeys.removeValue(forKey: wallpaper) ?? [])
+            self.propertyNotificationWorkItems[wallpaper] = nil
             self.levelLock.unlock()
             NotificationCenter.default.post(name: .sceneUserPropertiesDidChange, object: nil,
-                                            userInfo: ["keys": keys])
+                                            userInfo: ["keys": keys, "wallpaper": wallpaper])
         }
-        propertyNotificationWorkItem = work
+        propertyNotificationWorkItems[wallpaper] = work
+        levelLock.unlock()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
     }
 

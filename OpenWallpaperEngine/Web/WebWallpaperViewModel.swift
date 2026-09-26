@@ -39,8 +39,12 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
     private var audioTimer: Timer?
     private var propertyObserver: NSObjectProtocol?
 
-    init(wallpaper: WEWallpaper) {
+    /// Whose user properties the page gets: its display's, or the shared ones while synced.
+    let propertyScope: WallpaperPropertyScope
+
+    init(wallpaper: WEWallpaper, propertyScope: WallpaperPropertyScope = .shared) {
         self.currentWallpaper = wallpaper
+        self.propertyScope = propertyScope
         super.init()
         propertyObserver = NotificationCenter.default.addObserver(
             forName: .wallpaperUserPropertyChanged, object: nil, queue: .main
@@ -125,8 +129,8 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
     /// Sends every declared property, as WE does once the page has loaded.
     private func applyAllProperties(to webView: WKWebView) {
         let properties = declaredProperties
-        let stored = UserDefaults.standard.dictionary(
-            forKey: WallpaperSettingsIdentity.resolve(currentWallpaper).key(.userProperties)) as? [String: String] ?? [:]
+        let stored = WallpaperSettingsIdentity.resolve(currentWallpaper)
+            .stored(.userProperties, scope: propertyScope) as? [String: String] ?? [:]
         let values = WebWallpaperPropertyBridge.currentValues(properties: properties, stored: stored)
         if let script = WebWallpaperPropertyBridge.applyUserPropertiesScript(
             WebWallpaperPropertyBridge.payload(properties: properties, values: values)) {
@@ -137,6 +141,9 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
 
     private func propertyChanged(_ notification: Notification) {
         guard let path = notification.object as? String, path == currentWallpaper.wallpaperDirectory.path,
+              // An edit of another display's properties doesn't reach this page.
+              (notification.userInfo?["stores"] as? [String])?
+                .contains(propertyScope.runtimeKey(directory: currentWallpaper.wallpaperDirectory)) ?? true,
               let key = notification.userInfo?["key"] as? String,
               let value = notification.userInfo?["value"] as? String,
               let webView else { return }

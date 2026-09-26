@@ -155,6 +155,12 @@ struct GlobalSettings: Codable, Equatable {
     // MARK: Appearance
     var appearance = GSAppearance.followSystem
     
+    // MARK: Displays
+    /// "Sync properties across displays": one set of user properties for a wallpaper on every
+    /// display. Off is WE's default: its "Wallpaper per display" layout keeps each display's
+    /// properties (`WallpaperPropertyScope`).
+    var syncPropertiesAcrossDisplays = false
+
     // MARK: Audio
     var audioOutput = true
     var reloadWhenChangingOutputDevice = true // Not putting in use
@@ -188,6 +194,7 @@ struct GlobalSettings: Codable, Equatable {
         case autoStart, safeMode, language, adjustMenuBarTint, appearance, audioOutput
         case reloadWhenChangingOutputDevice, videoFramework, processPiority, pauseOnVRAMExhausted
         case restartAfterCrashing, logLevel, autoRefresh, wallpaperEngineAssetsDirectory
+        case syncPropertiesAcrossDisplays
     }
 }
 
@@ -233,5 +240,6 @@ extension GlobalSettings {
         read(.logLevel, &logLevel)
         read(.autoRefresh, &autoRefresh)
         read(.wallpaperEngineAssetsDirectory, &wallpaperEngineAssetsDirectory)
+        read(.syncPropertiesAcrossDisplays, &syncPropertiesAcrossDisplays)
     }
 }

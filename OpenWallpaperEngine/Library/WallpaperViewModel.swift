@@ -42,6 +42,7 @@ class WallpaperViewModel: ObservableObject {
             if persistsWallpapers {
                 saveWallpapers()
             }
+            refreshInstanceKeys()
         }
     }
 
@@ -590,6 +591,81 @@ class WallpaperViewModel: ObservableObject {
     /// however many displays show it (`WallpaperAudioRouting`).
     var playsInstanceAudio: Bool { audioOutputEnabled }
 
+    /// Whether the instance `key` plays its wallpaper's sound: a wallpaper plays once, so when its
+    /// displays run it as several instances (different properties), only the instance on its
+    /// audible display does (`WallpaperAudioRouting.audibleInstance`).
+    func playsAudio(for key: WallpaperInstanceKey) -> Bool {
+        guard audioOutputEnabled else { return false }
+        guard persistsWallpapers else { return true }
+        let audible = WallpaperAudioRouting.audibleInstance(
+            of: key.wallpaper, instanceKeys: instanceKeys, enabledScreens: enabledScreens,
+            mainScreen: NSScreen.main.map(Self.screenId(for:)))
+        return audible.map { $0 == key } ?? true
+    }
+
+    // MARK: - User properties per display
+
+    /// "Sync properties across displays" (Settings → General); set by the app delegate.
+    @Published var syncsPropertiesAcrossDisplays = GlobalSettings().syncPropertiesAcrossDisplays {
+        didSet { if oldValue != syncsPropertiesAcrossDisplays { refreshInstanceKeys() } }
+    }
+
+    /// Each display's running instance: its wallpaper and the user properties it runs with
+    /// (`WallpaperPropertyGroups`). Refreshed when a display's wallpaper, the sync setting or saved
+    /// properties change; `WallpaperView` keys a display's view by it.
+    @Published private(set) var instanceKeys: [String: WallpaperInstanceKey] = [:]
+    private var settingsIdentities: [String: WallpaperSettingsIdentity] = [:]
+    private var propertiesSavedObserver: NSObjectProtocol?
+
+    /// The instance `screenId` shows.
+    func instanceKey(for screenId: String) -> WallpaperInstanceKey {
+        instanceKeys[screenId] ?? WallpaperInstanceKey(wallpaper(for: screenId))
+    }
+
+    /// Whose properties editing `screenId`'s wallpaper changes: the shared store while synced
+    /// (and in the Workshop preview, which has no real display), else the display's own.
+    func propertyScope(for screenId: String) -> WallpaperPropertyScope {
+        syncsPropertiesAcrossDisplays || !persistsWallpapers ? .shared : .display(screenId)
+    }
+
+    /// The scopes an edit of `wallpaper`'s properties in the sidebar or inspector goes to: the
+    /// selected display's, then those of the other selected displays showing it. The first is shown.
+    func editedPropertyScopes(of wallpaper: WEWallpaper) -> [WallpaperPropertyScope] {
+        let others = selectedScreenIds.sorted().filter {
+            $0 != selectedScreenId && self.wallpaper(for: $0).wallpaperDirectory == wallpaper.wallpaperDirectory
+        }
+        var scopes: [WallpaperPropertyScope] = []
+        for screen in [selectedScreenId] + others where !screen.isEmpty {
+            let scope = propertyScope(for: screen)
+            if !scopes.contains(scope) { scopes.append(scope) }
+        }
+        return scopes.isEmpty ? [.shared] : scopes
+    }
+
+    /// Regroups the displays by their properties. Each display showing a wallpaper with properties
+    /// unsynced gets its own store, started from the shared one (`WallpaperSettingsIdentity.seed`).
+    func refreshInstanceKeys() {
+        let synced = syncsPropertiesAcrossDisplays || !persistsWallpapers
+        let assignments = wallpapers.mapValues { WallpaperInstanceKey($0) }
+        let keys = WallpaperPropertyGroups.instanceKeys(assignments: assignments, synced: synced) { [self] key, scope in
+            guard let identity = settingsIdentity(directory: key.directory) else { return [:] }
+            identity.seed(scope)
+            return identity.stored(.userProperties, scope: scope) as? [String: String] ?? [:]
+        }
+        if keys != instanceKeys { instanceKeys = keys }
+    }
+
+    /// The settings identity of the wallpaper in `directory`, resolved once; nil for a folder
+    /// without a project.json (the placeholder), which has no properties.
+    private func settingsIdentity(directory: String) -> WallpaperSettingsIdentity? {
+        if let identity = settingsIdentities[directory] { return identity }
+        let url = URL(fileURLWithPath: directory, isDirectory: true)
+        guard FileManager.default.fileExists(atPath: url.appending(path: "project.json").path) else { return nil }
+        let identity = WallpaperSettingsIdentity.resolve(directory: url)
+        settingsIdentities[directory] = identity
+        return identity
+    }
+
     /// Whether `screenId`'s view of its wallpaper plays the sound, for wallpapers that keep a view
     /// per display (web): only the one on the wallpaper's audible display does.
     func shouldPlayAudio(on screenId: String) -> Bool {
@@ -597,7 +673,7 @@ class WallpaperViewModel: ObservableObject {
         guard persistsWallpapers else { return true }
         let key = WallpaperInstanceKey(wallpaper(for: screenId))
         let audible = WallpaperAudioRouting.audibleScreen(
-            of: key, assignments: wallpapers.mapValues(WallpaperInstanceKey.init),
+            of: key, assignments: wallpapers.mapValues { WallpaperInstanceKey($0) },
             enabledScreens: enabledScreens, mainScreen: NSScreen.main.map(Self.screenId(for:)))
         return audible == screenId
     }
@@ -688,9 +764,14 @@ class WallpaperViewModel: ObservableObject {
            let placement = WallpaperPlacement(rawValue: storedPlacement) {
             wallpaperPlacement = placement
         }
+        propertiesSavedObserver = NotificationCenter.default.addObserver(
+            forName: .wallpaperPropertiesDidSave, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshInstanceKeys() }
+        }
         guard persistsWallpapers else {
             self.selectedScreenId = "preview"
             self.selectedScreenIds = [selectedScreenId]
+            refreshInstanceKeys()
             return
         }
 
@@ -736,6 +817,7 @@ class WallpaperViewModel: ObservableObject {
         // Load recent wallpapers
         loadRecents()
         restartPlaylistTimer()
+        refreshInstanceKeys()
     }
 
     // MARK: - Screen ID helpers
