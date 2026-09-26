@@ -56,6 +56,8 @@ final class ShaderVariantCacheTests: XCTestCase {
     /// Translated output changed: bump `revision` (CLAUDE.md) and add the new hash here.
     static let goldenCorpusHashes: [Int: String] = [
         6: "46033e7a708b9df4b268e1f4e9be409c228d6ad367b7b6455c036729440ad2af",
+        // The effects corpus has no lit pass: `LightingV1` changed lit variants only.
+        7: "46033e7a708b9df4b268e1f4e9be409c228d6ad367b7b6455c036729440ad2af",
     ]
 
     /// Fails when translated output changes without a `revision` bump, which would let users keep

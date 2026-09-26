@@ -49,6 +49,12 @@ struct ShaderSource {
 
     /// `ShaderPrelude.SourceAnalysis` of `text`, computed on first use.
     var preludeAnalysis: ShaderPrelude.SourceAnalysis { preludeAnalysisCache.value(for: text) }
+
+    /// `text` for one variant: each `#require LightingV1` replaced by the source WE generates for
+    /// `combos` (`LightingV1Require`).
+    func text(combos: [String: Int]) -> String {
+        ShaderSourceLoader.expandRequires(in: text, combos: combos)
+    }
 }
 
 /// Holds one source's prelude analysis. Thread-safe: `lock` owns `analysis`.
@@ -149,7 +155,7 @@ struct ShaderSourceLoader {
             return result
         }
         var main = try collect(text)
-        main = dropUnmatchedEndifs(in: stubRequires(in: main))
+        main = dropUnmatchedEndifs(in: commentUnknownRequires(in: main, path: path))
         guard !bodies.isEmpty else { return main }
         let blob = "\n" + bodies.joined(separator: "\n") + "\n"
         let insertion = includeInsertionOffset(in: main)
@@ -208,16 +214,29 @@ struct ShaderSourceLoader {
         return min(insertion, text.utf16.count)
     }
 
-    /// `#require LightingV1` asks WE for its lighting helper; like linux-wallpaperengine, provide a
-    /// neutral stand-in so the shader compiles (lighting is a later phase).
-    static func stubRequires(in text: String) -> String {
+    /// WE knows one `#require`, `LightingV1`, whose source depends on the variant's combos: it
+    /// stays in the text until `expandRequires(in:combos:)`. Any other name is an error in WE's
+    /// preprocessor too (0x14016c0ec); it becomes a comment and is logged.
+    static func commentUnknownRequires(in text: String, path: String) -> String {
         var result = text
         for match in requirePattern.matches(in: text, range: NSRange(text.startIndex..., in: text)).reversed() {
             let name = String(text[Range(match.range(at: 1), in: text)!])
-            let replacement = name == "LightingV1"
-                ? "vec3 PerformLighting_V1(vec3 worldPos, vec3 color, vec3 normal, vec3 viewVector, vec3 specularTint, vec3 ambient, float roughness, float metallic) { return color * ambient; }"
-                : "// (unsupported) #require \(name)"
-            result.replaceSubrange(Range(match.range, in: result)!, with: replacement)
+            guard name != LightingV1Require.name else { continue }
+            OWELog.error(.shader, "\(path): unknown #require \(name); WE generates only \(LightingV1Require.name)")
+            result.replaceSubrange(Range(match.range, in: result)!, with: "// (unsupported) #require \(name)")
+        }
+        return result
+    }
+
+    /// `text` with each `#require LightingV1` replaced by WE's generated source for `combos`, which
+    /// is empty unless `LIGHTING` is on (docs/lighting-plan.md §2.1).
+    static func expandRequires(in text: String, combos: [String: Int]) -> String {
+        let matches = requirePattern.matches(in: text, range: NSRange(text.startIndex..., in: text))
+        guard !matches.isEmpty else { return text }
+        let source = LightingV1Require.source(combos: combos)
+        var result = text
+        for match in matches.reversed() where text[Range(match.range(at: 1), in: text)!] == LightingV1Require.name {
+            result.replaceSubrange(Range(match.range, in: result)!, with: source)
         }
         return result
     }

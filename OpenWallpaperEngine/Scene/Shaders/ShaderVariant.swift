@@ -51,7 +51,7 @@ enum ShaderVariantError: Error, CustomStringConvertible {
 /// hundreds of thousands possible, so nothing is precompiled.
 final class ShaderVariantTranslator {
     /// Bump whenever translated output for the same input can change.
-    static let revision = 6
+    static let revision = 7
 
     let compiler: ShaderCompiler
     /// Root of the disk cache; variants go into its `generationDirectory`.
@@ -197,9 +197,9 @@ final class ShaderVariantTranslator {
         // The input of the step running now, kept for `recordFailure`.
         var step: (source: ShaderSource, text: String)?
         do {
-            step = (vertex, ShaderPrelude.text(for: .vertex, combos: combos, analysis: vertex.preludeAnalysis) + vertex.text)
+            step = (vertex, ShaderPrelude.text(for: .vertex, combos: combos, analysis: vertex.preludeAnalysis) + vertex.text(combos: combos))
             let vertexText = try compiler.preprocess(step!.text, stage: .vertex)
-            step = (fragment, ShaderPrelude.text(for: .fragment, combos: combos, analysis: fragment.preludeAnalysis) + fragment.text)
+            step = (fragment, ShaderPrelude.text(for: .fragment, combos: combos, analysis: fragment.preludeAnalysis) + fragment.text(combos: combos))
             let fragmentText = try compiler.preprocess(step!.text, stage: .fragment)
             let pair = ShaderPairRewriter.rewrite(vertex: ShaderPrelude.fixupAfterPreprocess(vertexText),
                                                   fragment: ShaderPrelude.fixupAfterPreprocess(fragmentText))
