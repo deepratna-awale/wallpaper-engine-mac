@@ -69,6 +69,10 @@ struct SceneMetalParticleSystem {
     /// The `instanceoverride` again when a field is bound to a user property: resolved every
     /// frame instead of `overrides`.
     var liveOverrides: WEInstanceOverride? = nil
+    /// The user's particle budget's factor on the maximum and every emitter's rate (`ParticleBudget`),
+    /// applied like the `count` and `rate` overrides but never switched off by the system's flags;
+    /// 1 when the scene fits the budget.
+    var budgetScale: Float = 1
     /// The instance overrides the system's `flags` switch off (`SceneParticleOverrides.Parts`).
     var ignoredOverrides: SceneParticleOverrides.Parts = []
     /// A child that keeps its own colours (link flag 2): the overrides' tint and brightness skip it.

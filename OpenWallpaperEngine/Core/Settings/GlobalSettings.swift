@@ -45,6 +45,23 @@ enum GSLightingQuality: String, CaseIterable, Identifiable, Codable {
     }
 }
 
+/// The most particles one scene may hold (`ParticleBudget`); a scene authored with more is thinned
+/// to it, every system alike.
+enum GSParticleBudget: String, CaseIterable, Identifiable, Codable {
+    var id: Self { self }
+    case low, medium, high, unlimited
+
+    /// The budget in particles; nil for no limit.
+    var limit: Int? {
+        switch self {
+        case .low: return 10_000
+        case .medium: return 25_000
+        case .high: return 50_000
+        case .unlimited: return nil
+        }
+    }
+}
+
 enum GSTextureResolutionQuality: String, CaseIterable, Identifiable, Codable {
     var id: Self { self }
     case highQuality, highPerformance, automatic
@@ -100,6 +117,8 @@ struct GlobalSettings: Codable, Equatable {
     /// WE's `volumetrics` setting, on the same scale as `shadows` [?: default taken as shadows'].
     var volumetrics = GSLightingQuality.medium
     var fps: Double = 30
+    /// The particle budget per scene (`ParticleBudget`).
+    var particleBudget = GSParticleBudget.medium
     
     // MARK: Automatic Setup
     var autoStart = false
@@ -140,7 +159,7 @@ struct GlobalSettings: Codable, Equatable {
     /// (post-processing then defaulted to "disabled"), so they are left behind.
     enum CodingKeys: String, CodingKey {
         case otherApplicationFocused, otherApplicationFullscreen, otherApplicationPlayingAudio, displayAsleep
-        case laptopOnBattery, antiAliasing, textureResolution, shadows, volumetrics, fps
+        case laptopOnBattery, antiAliasing, textureResolution, shadows, volumetrics, fps, particleBudget
         case postProcessing = "postProcessingQuality"
         case reflections = "reflection"
         case autoStart, safeMode, language, adjustMenuBarTint, appearance, audioOutput
@@ -174,6 +193,7 @@ extension GlobalSettings {
         read(.shadows, &shadows)
         read(.volumetrics, &volumetrics)
         read(.fps, &fps)
+        read(.particleBudget, &particleBudget)
         read(.autoStart, &autoStart)
         read(.safeMode, &safeMode)
         read(.language, &language)

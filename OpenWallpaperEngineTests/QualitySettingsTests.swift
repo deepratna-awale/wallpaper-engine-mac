@@ -33,6 +33,26 @@ final class QualitySettingsTests: XCTestCase {
         XCTAssertTrue(settings.reflections)
     }
 
+    /// The particle budget is stored, read back, reaches the renderer's settings (a change rebuilds
+    /// the content), and settings saved before it existed get the default.
+    func testParticleBudgetPersists() throws {
+        XCTAssertEqual(GlobalSettings().particleBudget, .medium)
+        XCTAssertEqual(GSParticleBudget.allCases.map(\.limit), [10_000, 25_000, 50_000, nil])
+        var settings = GlobalSettings()
+        settings.particleBudget = .low
+        let data = try JSONEncoder().encode(settings)
+        let stored = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(stored["particleBudget"] as? String, "low")
+        let read = try JSONDecoder().decode(GlobalSettings.self, from: data)
+        XCTAssertEqual(read.particleBudget, .low)
+        XCTAssertEqual(SceneRenderSettings(read).particleBudget, .low)
+        XCTAssertNotEqual(SceneRenderSettings(read), SceneRenderSettings(GlobalSettings()))
+        let older = try JSONDecoder().decode(GlobalSettings.self, from: Data(#"{"fps":45}"#.utf8))
+        XCTAssertEqual(older.particleBudget, .medium)
+        let unknown = try JSONDecoder().decode(GlobalSettings.self, from: Data(#"{"particleBudget":"huge"}"#.utf8))
+        XCTAssertEqual(unknown.particleBudget, .medium, "an unknown value keeps the default")
+    }
+
     func testSettingsRoundTrip() throws {
         var settings = GlobalSettings()
         settings.postProcessing = .displayhdr

@@ -1,13 +1,15 @@
 import Foundation
 
 /// The user's quality settings that change how WE draws a scene (`wallpaper64.exe` 0x14010ed80;
-/// docs/lighting-plan.md §2.2, §2.6). The app hands them to each wallpaper instance: the view model
+/// docs/lighting-plan.md §2.2, §2.6), and the app's particle budget (`ParticleBudget`). The app hands them to each wallpaper instance: the view model
 /// (for what is decided at load, like HDR and the engine combos) and the renderer (per frame).
 struct SceneRenderSettings: Equatable {
     var postProcessing = GSPostProcessingQuality.enabled
     var reflection = true
     var shadows = GSLightingQuality.medium
     var volumetrics = GSLightingQuality.medium
+    /// The most particles a scene may hold (`ParticleBudget`); the content is built for it.
+    var particleBudget = GSParticleBudget.medium
 
     init() {}
 
@@ -16,6 +18,7 @@ struct SceneRenderSettings: Equatable {
         reflection = settings.reflections
         shadows = settings.shadows
         volumetrics = settings.volumetrics
+        particleBudget = settings.particleBudget
     }
 }
 

@@ -155,6 +155,13 @@ struct PerformancePage: SettingsPage {
                     }
                     
                 }
+                Picker("Particle Budget", selection: $viewModel.settings.particleBudget) {
+                    Text("Low (10,000)").tag(GSParticleBudget.low)
+                    Text("Medium (25,000)").tag(GSParticleBudget.medium)
+                    Text("High (50,000)").tag(GSParticleBudget.high)
+                    Text("Unlimited").tag(GSParticleBudget.unlimited)
+                }
+                .help("The most particles one wallpaper may hold. A wallpaper made with more draws every particle system thinner, keeping its look.")
                 HStack {
                     Text("Reflections")
                     Spacer()

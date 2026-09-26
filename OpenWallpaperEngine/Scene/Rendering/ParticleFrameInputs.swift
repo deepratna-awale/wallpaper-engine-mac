@@ -33,7 +33,7 @@ struct ParticleFrameInputs {
     /// 0x1401114f1). At 1…20 the operators run twice, in half steps (`substeps`).
     var frameRateLimit = 0
     /// The most particles the system (each instance, when instanced) may hold: the authored
-    /// maximum times the `count` override.
+    /// maximum times the `count` override and the particle budget's factor.
     var maximum = 0
     /// The instance overrides spawned particles take: size, alpha, lifetime and speed factors.
     var spawnScale = SIMD4<Float>(repeating: 1)
@@ -225,7 +225,10 @@ struct ParticleFrameInputs {
         let authored = configuration.liveOverrides.map {
             SceneParticleOverrides($0, in: values, object: configuration.objectID.flatMap { Int($0) })
         } ?? configuration.overrides
-        let overrides = (scripted?.applied(to: authored) ?? authored).ignoring(configuration.ignoredOverrides)
+        var overrides = (scripted?.applied(to: authored) ?? authored).ignoring(configuration.ignoredOverrides)
+        // The particle budget thins the system as the `count` and `rate` overrides do.
+        overrides.count *= configuration.budgetScale
+        overrides.rate *= configuration.budgetScale
         maximum = max(Int((Float(configuration.maximumParticleCount) * overrides.count).rounded()), 0)
         // Negative multipliers would invert the ranges; WE treats them as 0.
         spawnScale = SIMD4(overrides.size, max(overrides.alpha, 0), max(overrides.lifetime, 0), overrides.speed)

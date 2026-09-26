@@ -50,6 +50,11 @@ class SceneWallpaperViewModel: ObservableObject {
     private var renderSettings = SceneRenderSettings()
     /// The engine combos of the content being built, for every material plan built with it.
     private var sceneEngineCombos = SceneEngineCombos()
+    /// The factor the particle budget put on the scene's systems (`ParticleBudget`); systems
+    /// scripts create later are thinned by it too.
+    private var particleBudgetScale: Float = 1
+    /// The budget scaling last logged, so a rebuild of the same scene doesn't log it again.
+    private var loggedParticleBudget: (directory: URL, report: ParticleBudget.Report)?
     /// Retained for video wallpapers rendered through the scene pipeline.
     private var videoStream: VideoTextureStream?
     private var builtVideoFrameSize: SIMD2<Float>?
@@ -521,6 +526,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 particleSystems.append(system)
             }
         }
+        applyParticleBudget(to: &particleSystems, wallpaperDir: wallpaperDir)
         // A scene of scripts alone (groups whose scripts create layers) runs too.
         if !layers.isEmpty || !particleSystems.isEmpty || hasScriptSites {
             var transforms = authoredTransforms
@@ -681,10 +687,14 @@ class SceneWallpaperViewModel: ObservableObject {
         let context = userValueContext
         let resolved = object.resolvingUserBindings(in: context)
         if resolved.particle != nil {
-            let systems = buildParticleFamily(resolved, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
+            var systems = buildParticleFamily(resolved, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
                                               pixelUnits: loadedScene.map(Self.particlesUsePixelUnits) ?? true,
                                               transforms: SceneTransformHierarchy(objects: [resolved], sceneSize: sceneSize))
             guard !systems.isEmpty else { return nil }
+            // The scene's factor, or the family's own if it alone exceeds the budget.
+            let own = ParticleBudget.scale(authored: systems.reduce(0) { $0 + ParticleBudget.capacity(of: $1) },
+                                           budget: renderSettings.particleBudget.limit)
+            for index in systems.indices { systems[index].budgetScale = min(particleBudgetScale, own) }
             let motion = SceneObjectMotion(object: resolved, sceneSize: sceneSize,
                                            bindings: SceneLayerBindings(object: resolved, builtWith: context))
             return .particles(systems, motion: motion)
@@ -1216,6 +1226,17 @@ class SceneWallpaperViewModel: ObservableObject {
                                             bindings: SceneLayerBindings(object: object, builtWith: context))
         }
         return motions
+    }
+
+    /// Thins the scene's particle systems to the user's budget (`ParticleBudget`), logging it once
+    /// per scene and budget.
+    private func applyParticleBudget(to systems: inout [SceneMetalParticleSystem], wallpaperDir: URL) {
+        let report = ParticleBudget.apply(renderSettings.particleBudget.limit, to: &systems)
+        particleBudgetScale = report?.scale ?? 1
+        guard let report, loggedParticleBudget?.directory != wallpaperDir || loggedParticleBudget?.report != report else { return }
+        loggedParticleBudget = (wallpaperDir, report)
+        OWELog.info(.scene, String(format: "%@: %d particles authored over the budget of %d; every system's maximum and rate × %.3f",
+                                   wallpaperDir.lastPathComponent, report.authored, report.budget, report.scale))
     }
 
     /// A particle object's system followed by its children (`ParticleFamilyBuilder`).

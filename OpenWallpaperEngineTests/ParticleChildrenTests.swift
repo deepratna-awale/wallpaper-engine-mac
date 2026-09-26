@@ -294,6 +294,39 @@ final class ParticleChildrenTests: XCTestCase {
         XCTAssertGreaterThan(cpu.runtimes[5].particles.count, 0)
     }
 
+    /// A family over the particle budget is thinned alike on both simulations: every system, the
+    /// event children's instances included, holds the scaled maximum and emits at the scaled rate.
+    func testABudgetThinsAFamilyTheSameOnTheGPU() throws {
+        var trail = ParticleTestSystem()
+        trail.emissionRate = 120
+        trail.maximum = 60
+        trail.lifetime = 0.5...0.8
+        let links: [(ParticleTestSystem.Linked, Int)] = [(staticGlow(), 0), (trail.link(.follow, instances: 6, probability: 1), 0)]
+        var root = rocketTestSystem()
+        root.maximum = 200
+        let authored = try Family(root: root, children: links).runtimes.reduce(0) { $0 + ParticleBudget.capacity(of: $1.configuration) }
+        let budget = authored / 4
+        let cpu = try Family(root: root, children: links, budget: budget)
+        let gpu = try Family(root: root, children: links, budget: budget)
+        XCTAssertEqual(cpu.runtimes.map(\.configuration.budgetScale), Array(repeating: Float(budget) / Float(authored), count: 3))
+        let moving: (Int) -> SceneAffineTransform = { frame in
+            SceneAffineTransform(SceneLocalTransform(origin: SIMD2(400 + Float(frame) * 2, 300), scale: SIMD2(1, 1), angle: 0))
+        }
+        cpu.stepCPU(frames: 150, root: moving)
+        try gpu.stepGPU(frames: 150, root: moving)
+        var total = 0
+        for index in cpu.runtimes.indices {
+            let expected = cpu.runtimes[index].particles
+            let actual = gpu.simulator.snapshot(gpu.runtimes[index], queue: gpu.queue)
+            XCTAssertEqual(actual.count, expected.count, "system \(index)")
+            XCTAssertEqual(actual.map(\.identity.x), expected.map(\.serial), "system \(index): the same particles")
+            XCTAssertGreaterThan(expected.count, 0, "system \(index) still draws")
+            total += expected.count
+        }
+        // Each system's maximum is rounded, instance by instance.
+        XCTAssertLessThanOrEqual(total, budget + cpu.runtimes.count + 6)
+    }
+
     /// Each instance keeps its own emitter clock: a periodic follow child, and under it a delayed,
     /// time-limited static child that emits 8 a period (WE's thunderbolt beam).
     func testTimedChildInstancesRunTheSameOnTheGPU() throws {
@@ -549,7 +582,8 @@ private final class Family {
     let queue: MTLCommandQueue
     let simulator: ParticleGPUSimulator
 
-    convenience init(root: ParticleTestSystem, children: [(ParticleTestSystem.Linked, Int)]) throws {
+    /// `budget`: the particle budget the family is thinned to (`ParticleBudget`).
+    convenience init(root: ParticleTestSystem, children: [(ParticleTestSystem.Linked, Int)], budget: Int? = nil) throws {
         var systems = [root.configuration]
         for (child, parent) in children {
             var configuration = child.system.configuration
@@ -557,6 +591,7 @@ private final class Family {
             systems[parent].hasEventChildren = systems[parent].hasEventChildren || child.kind != .static
             systems.append(configuration)
         }
+        ParticleBudget.apply(budget, to: &systems)
         try self.init(systems)
     }
 
