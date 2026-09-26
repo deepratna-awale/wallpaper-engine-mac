@@ -146,7 +146,7 @@ Particle systems now compile their initializers and operators into records the w
 | system `maxcount` | ?? 1000 | no default: 0 | fixed |
 | `starttime` | not read | pre-simulated in 0.05 s steps (0.2 s from 500 particles; 0x14022f2e0) | fixed |
 | system `flags` 8…0x80 | not read | switch off the colour, speed, count, lifetime and size overrides | fixed |
-| a second emitter | ignored silently | WE runs every emitter | **open**: logged; 4 corpus systems |
+| a second emitter | ignored (logged) | WE runs every emitter record in order, each with its own rate, carry, burst, clock and per-period count, counting what the earlier ones spawned (0x1402378a0) | fixed (CPU, GPU, instances) |
 
 **Initializers:** lifetime is set; size, colour and alpha multiply WE's base values (lifetime 1, size 0.5, the instance colour and alpha; 0x14023b340); velocity, rotation and spin add. Two of a kind both apply.
 
@@ -174,12 +174,13 @@ Particle systems now compile their initializers and operators into records the w
 | Operator | Was | WE's value | Verdict |
 |---|---|---|---|
 | `movement` `gravity` | ⚠ z if non-zero, else y | "0 0 0", in the system's space; flag 1 gives it in the scene | fixed |
-| `drag` | linear `1 − drag·dt` | `v·(1 − min(drag·dt, 1))`, after the position step | fixed; WE's low-frame-rate factor `pow(min(0.025/x, 1), 0.7)` is **open** (x unidentified) |
+| `drag` | linear `1 − drag·dt` | `v·(1 − min(drag·dt', 1))`, after the position step; dt' = dt·`pow(min(0.025 / frame time, 1), 0.7)`, the engine's frame time [engine+0x14c] (SceneScript's `engine.frametime`). `angularmovement` damps, and `controlpointattract`, `turbulence`, `vortex`, `vortex_v2`'s spin and `boids` push, by dt' too. At an fps limit ([engine+0x148], the settings' `fps`, 0x1401114f1) of 1…20 the VM runs twice with dt/2 (0x140237724…0x140237793) | fixed |
 | `alphafade` | fadeout ?? 1 (none) | 0.5 / 0.5, fractions of the life | fixed |
 | `sizechange` / `alphachange` / `colorchange` | 0 → 1, values 1 | start 1 (colour "1 1 1"), end 0 ("0 0 0"), times 0 → 1 | fixed |
 | `angularmovement` | integrated always | force 0, drag 0; only this operator spins | fixed |
 | `oscillate*` | ⚠ range middles | one random per particle for frequency, phase and scale; frequency 1…5 / 1…10, scale 0…10 (0.5) / 0…1 / 0.8…1.2 | fixed |
 | `remapvalue` | ⚠ drives alpha unless velocity | multiply, `lifetimefraction` → `size`; every input, output and transform (FastNoise2 simplex and fBm) | fixed |
+| remap control points | outputs 7, 8, 16…18 not written; inputs 17/18 particle → point | outputs move the particle (distance, fraction between the output points, delta, direction) or write the point into the shared array, once per group of four particles in the operator (0x140246781); inputs run particle → point; the initializer's point inputs zero the point first (0x14023d31d); written points persist as the next step's previous points; reductions leave vector outputs alone | fixed (CPU; GPU in one thread for such programs) |
 | `vortex` | distanceouter 1000 | 500 / 1 … 650 / 2, speed 2500 / 1 … 0, axis "0 0 1" | fixed |
 | `vortex_v2` | = vortex | adds centre force (flag 2) and a ring (flag 4): radius 300, width 50, pull 50 / 10 | fixed |
 | `boids` | threshold 150; ~256 neighbours | separation 20, neighbours 50, maxspeed 500, factors 15 / 1 / 2; WE's time slicing | fixed |
@@ -201,9 +202,10 @@ Particle systems now compile their initializers and operators into records the w
 | built-in trail | `speed · 0.08` | WE's stretch, as the shader | fixed |
 | particle size | the shaders read half | WE's size (the base 0.5 × the random) is the quad's width everywhere | fixed |
 | refract-amount opacity 0.04…1 | heuristic | built-in draw only | keep (it only affects the fallback draw) |
-| `orientation`, rope `uvsmoothing` / `uvscale` / `uvscrolling` | not read | ORIENTATION combo and rope UV options | **open** |
+| `orientation`, `axis`, `flags` | not read | screen / upright / fixed axes for `g_Orientation*` (0x1402298b0; flag 1: the axis in the scene), the rope's ORIENTATION combo | fixed |
+| rope `uvscale` / `uvsmoothing` / `uvscrolling` | not read | the rope builder's layout (0x14023099e): expected points rate × lifetime (capped at the fps limit while filling), smoothing (default on) slides the texture as the oldest point dies, scrolling shifts it by the dead, the count ÷ uvscale; a scrolling `ropetrail` takes TRAILSCROLLALPHA and WE's `g_RenderVar0` | fixed |
 
-**Control points** (0x14022e3e0): read by index (WE ignores `id` and `locktopointer`); flag 1 follows the cursor, flag 2 is a scene position (not for control point 0), flag 4 copies the parent system's `parentcontrolpoint`. Flag 16 is set by 10 WE assets, but no runtime test of it was found: **open**.
+**Control points** (0x14022e3e0): read by index (WE ignores `id` and `locktopointer`); flag 1 follows the cursor, flag 2 is a scene position (not for control point 0), flag 4 copies the parent system's `parentcontrolpoint`. Flag 16 is set by 10 WE assets (the dripping-water presets, on the points their instance override drives), but the runtime never reads it: the point's flags are tested only for 1, 2, 4, 8 and the parser's 0x10000 (0x14022e461, 0x14022a08c, 0x14022e66e, 0x14022a765, 0x14022bf26). It is a plain point here too.
 
 **Units:** the particles simulate in their system's space (WE's model matrix, 0x14023761b…0x14023767a): velocities, gravity, forces and every distance scale and turn with the object. A `worldspace` system simulates in the scene; its spawn offsets and velocity initializers turn with the emitter (the control point matrix).
 
@@ -229,4 +231,4 @@ Particle systems now compile their initializers and operators into records the w
   - the inspector combo override
   - `createScriptProperties` defaults and `scriptproperties` injection, run against WE's own `baseclasses.js`
 
-`OpenWallpaperEngineTests/ParticleProgramTests.swift` checks WE's particle defaults per element (2D and 3D), two operators of a kind, the oscillators' per-particle random, `hsvcolorrandom`'s hue steps, the remap default, movement in the object's units, sequences restarting each period and `starttime`. `ParticleSimulationParityTests` runs every operator and initializer kind on both simulations.
+`OpenWallpaperEngineTests/ParticleProgramTests.swift` checks WE's particle defaults per element (2D and 3D), two operators of a kind, the oscillators' per-particle random, `hsvcolorrandom`'s hue steps, the remap default, movement in the object's units, sequences restarting each period and `starttime`. `ParticleSimulationParityTests` runs every operator and initializer kind on both simulations, several emitters and the low-frame-rate drag and half steps among them. `ParticleRendererOptionsTests` checks the orientations and the rope layout; `ParticleRemapControlPointTests` the remap's control point inputs and outputs and their write-back, on both simulations.

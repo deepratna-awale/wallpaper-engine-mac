@@ -55,4 +55,15 @@ final class ParticleControlPointTests: XCTestCase {
         XCTAssertEqual(parsed[2].offset, SIMD2(1, 2))
         XCTAssertEqual(parsed[3].parentControlPoint, 3)
     }
+
+    /// Flag 16 changes nothing at run time: `wallpaper64.exe` reads a control point's flags only for
+    /// 1, 2, 4, 8 and its own 0x10000 (0x14022e461, 0x14022a08c, 0x14022e66e, 0x14022a765), never 16.
+    /// WE's dripping-water presets set it on the points their instance override drives.
+    func testFlagSixteenIsAPlainPoint() throws {
+        let points = try JSONDecoder().decode([WEParticleControlPoint].self, from: Data(#"""
+            [{"id": 0}, {"id": 1, "flags": 16, "offset": "40 -10 0"}, {"id": 2, "offset": "40 -10 0"}]
+            """#.utf8))
+        let parsed = ParticleSystemBuilder.controlPoints(points)
+        XCTAssertEqual(parsed[1], parsed[2])
+    }
 }
