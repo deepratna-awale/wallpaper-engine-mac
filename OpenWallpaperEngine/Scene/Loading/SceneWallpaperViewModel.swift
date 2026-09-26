@@ -795,12 +795,17 @@ class SceneWallpaperViewModel: ObservableObject {
         layer.fillsScene = model.fullscreen == true
         // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
         if sceneInput, effectPlans.plans.isEmpty { return nil }
-        if !sceneInput { layer.imageMaterial = buildImageMaterial(materialPath, object: object, wallpaperDir: wallpaperDir) }
+        if !sceneInput {
+            layer.imageMaterial = buildImageMaterial(materialPath, object: object, wallpaperDir: wallpaperDir,
+                                                     prelit: !(object.effects ?? []).isEmpty || model.puppet != nil)
+        }
         return layer
     }
 
     /// The image's own material through WE's shader; nil (logged when it's a failure) keeps the native draw.
-    private func buildImageMaterial(_ materialPath: String, object: WESceneObject, wallpaperDir: URL) -> ImageMaterialPlan? {
+    /// `prelit`: the layer has effects or is a puppet, so WE lights it after them (`ImageMaterialPlanBuilder.build`).
+    private func buildImageMaterial(_ materialPath: String, object: WESceneObject, wallpaperDir: URL,
+                                    prelit: Bool = false) -> ImageMaterialPlan? {
         guard let translator = Self.effectTranslator else { return nil }
         let builder = ImageMaterialPlanBuilder(
             translator: translator,
@@ -809,7 +814,7 @@ class SceneWallpaperViewModel: ObservableObject {
             sceneEngineCombos: sceneEngineCombos)
         do {
             return try builder.build(materialPath: materialPath, colorBlendMode: object.colorBlendMode,
-                                     clampUVs: object.clampuvs)
+                                     clampUVs: object.clampuvs, prelit: prelit)
         } catch {
             OWELog.error(.scene, "Image layer \(object.id ?? -1) draws natively, material \(materialPath): \(error)")
             return nil

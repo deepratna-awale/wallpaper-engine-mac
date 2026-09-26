@@ -61,26 +61,25 @@ struct ImageMaterialPlanBuilder {
     /// The combos WE's engine lays over every material of the scene (`SceneEngineCombos`).
     var sceneEngineCombos = SceneEngineCombos()
 
-    /// Combos whose inputs (scene lights, reflection targets) the renderer does not provide yet.
-    private static let unsupportedCombos = ["LIGHTING", "REFLECTION"]
-
     /// nil when the material has no image to draw: no texture in slot 0 (solid layers' `flat`) or a
     /// render target there (composition layers), which keep their own paths.
     /// `colorBlendMode` is the object's WE blend mode (`BLENDMODE` combo), when authored; `clampUVs`
-    /// is the object's `clampuvs`.
-    func build(materialPath: String, colorBlendMode: Int?, clampUVs: Bool? = nil) throws -> ImageMaterialPlan? {
-        try build(materialPath: materialPath, colorBlendMode: colorBlendMode, clampUVs: clampUVs, listsItsImage: true)
+    /// is the object's `clampuvs`. `prelit` is set for a layer with effects or a puppet, whose
+    /// lighting and reflection WE applies in a pass after them (docs/lighting-plan.md §2.3).
+    func build(materialPath: String, colorBlendMode: Int?, clampUVs: Bool? = nil, prelit: Bool = false) throws -> ImageMaterialPlan? {
+        try build(materialPath: materialPath, colorBlendMode: colorBlendMode, clampUVs: clampUVs, listsItsImage: true,
+                  prelit: prelit)
     }
 
     /// A text object's font material (`materials/fonts/basefont*.json`, WE's `font` shader). It
     /// lists no texture: `g_Texture0` is the rasterised text, a coverage mask the shader tints with
     /// `g_Color4` (the text's colour, brightness and alpha). Clamped, since it is exactly the text.
     func buildText(materialPath: String) throws -> ImageMaterialPlan? {
-        try build(materialPath: materialPath, colorBlendMode: nil, clampUVs: true, listsItsImage: false)
+        try build(materialPath: materialPath, colorBlendMode: nil, clampUVs: true, listsItsImage: false, prelit: false)
     }
 
     private func build(materialPath: String, colorBlendMode: Int?, clampUVs: Bool?,
-                       listsItsImage: Bool) throws -> ImageMaterialPlan? {
+                       listsItsImage: Bool, prelit: Bool) throws -> ImageMaterialPlan? {
         guard let data = readFile(materialPath) else { throw ImageMaterialPlanError.missing(materialPath) }
         let material: MaterialDocument
         do {
@@ -111,8 +110,11 @@ struct ImageMaterialPlanBuilder {
         if let colorBlendMode { overrides.append(["BLENDMODE": colorBlendMode]) }
         let combos = sceneEngineCombos.applied(to: ShaderVariantTranslator.resolveCombos(
             vertex: vertex, fragment: fragment, overrides: overrides, boundTextureSlots: Set(inputs.keys).union([0])))
-        for combo in Self.unsupportedCombos where (combos[combo] ?? 0) != 0 {
-            throw ImageMaterialPlanError.unsupported("\(combo) needs scene lights (roadmap area 5)")
+        if (combos["LIGHTING"] ?? 0) != 0 {
+            throw ImageMaterialPlanError.unsupported("LIGHTING needs scene lights (roadmap area 5)")
+        }
+        if prelit, (combos["REFLECTION"] ?? 0) != 0 {
+            throw ImageMaterialPlanError.unsupported("REFLECTION on a layer with effects or a puppet needs the prelighting pass (roadmap area 5)")
         }
 
         let variant = try translator.variant(vertex: vertex, fragment: fragment, combos: combos)
