@@ -32,6 +32,19 @@ enum SceneMetalTextureSource {
         }
     }
 
+    /// The texture's pixels that a `.tex-json` sprite-sheet frame size is measured in: the whole
+    /// allocated texture (TEXS frame rects include the .tex padding). An image's pixels come from
+    /// its bitmap: an `NSImage` made from a `CGImage` reports its representation's `pixelsWide` at
+    /// the screen's backing scale (twice the bitmap on a Retina display). Nil without an image.
+    var sheetPixelSize: SIMD2<Double>? {
+        let size: SIMD2<Float>
+        switch self {
+        case let .dxt(texture): size = SIMD2(Float(texture.width), Float(texture.height))
+        case .image, .animated, .video: size = pixelSize
+        }
+        return size.x > 0 && size.y > 0 ? SIMD2<Double>(size) : nil
+    }
+
     static func pixelSize(of image: NSImage) -> SIMD2<Float> {
         if let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
             return SIMD2(Float(cgImage.width), Float(cgImage.height))

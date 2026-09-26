@@ -1410,26 +1410,9 @@ class SceneWallpaperViewModel: ObservableObject {
             guard let data, let metadata = try? JSONDecoder().decode(TextureMetadata.self, from: data),
                   let sequence = metadata.spritesheetsequences?.first, sequence.frames > 0,
                   sequence.width > 0, sequence.height > 0 else { continue }
-            let textureSize: (width: Double, height: Double)
-            switch source {
-            case let .dxt(texture):
-                textureSize = (Double(texture.width), Double(texture.height))
-            case let .image(image):
-                let representation = image.representations.first
-                textureSize = (Double(representation?.pixelsWide ?? Int(image.size.width)),
-                               Double(representation?.pixelsHigh ?? Int(image.size.height)))
-            case let .animated(animation):
-                guard let image = animation.images.first else { continue }
-                let representation = image.representations.first
-                textureSize = (Double(representation?.pixelsWide ?? Int(image.size.width)),
-                               Double(representation?.pixelsHigh ?? Int(image.size.height)))
-            case let .video(stream):
-                textureSize = (Double(stream.frameSize.x), Double(stream.frameSize.y))
-            }
-            let columns = max(1, min(sequence.frames, Int((textureSize.width / sequence.width).rounded())))
-            let authoredRows = max(1, Int((textureSize.height / sequence.height).rounded()))
-            let rows = max(authoredRows, Int(ceil(Double(sequence.frames) / Double(columns))))
-            return SpriteSheet(columns: columns, rows: rows, frames: sequence.frames, duration: Float(sequence.duration))
+            guard let textureSize = source.sheetPixelSize else { continue }
+            return SpriteSheet(frames: sequence.frames, frameSize: SIMD2(sequence.width, sequence.height),
+                               duration: Float(sequence.duration), textureSize: textureSize)
         }
         return nil
     }
