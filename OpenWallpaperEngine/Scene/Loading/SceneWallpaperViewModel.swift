@@ -808,14 +808,16 @@ class SceneWallpaperViewModel: ObservableObject {
         // A layer whose image is the scene only exists to run effects on it; WE skips it without any.
         if sceneInput, effectPlans.plans.isEmpty { return nil }
         if !sceneInput {
+            // WE prelights a puppet too (0x140209540), drawing its mesh lit; its mesh isn't drawn
+            // here, and its atlas is lit where it is drawn, as the still mesh would be.
             layer.imageMaterial = buildImageMaterial(materialPath, object: object, wallpaperDir: wallpaperDir,
-                                                     prelit: !(object.effects ?? []).isEmpty || model.puppet != nil)
+                                                     prelit: !effectPlans.plans.isEmpty)
         }
         return layer
     }
 
     /// The image's own material through WE's shader; nil (logged when it's a failure) keeps the native draw.
-    /// `prelit`: the layer has effects or is a puppet, so WE lights it after them (`ImageMaterialPlanBuilder.build`).
+    /// `prelit`: the layer has effects, so WE lights it before them (`ImageMaterialPlan.prelighting`).
     private func buildImageMaterial(_ materialPath: String, object: WESceneObject, wallpaperDir: URL,
                                     prelit: Bool = false) -> ImageMaterialPlan? {
         guard let translator = Self.effectTranslator else { return nil }

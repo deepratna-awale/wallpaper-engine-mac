@@ -37,6 +37,9 @@ final class ImageMaterialRenderer {
     private final class Program {
         let plan: ImageMaterialPlan
         let uniforms: ImageMaterialUniforms
+        /// The prelighting pass's uniforms and its target (`prelight`).
+        let prelightUniforms: ImageMaterialUniforms?
+        var prelit: MTLTexture?
         /// Ignored native adjustments have been logged for this layer.
         var reportedIgnoredAdjustments = false
 
@@ -44,11 +47,16 @@ final class ImageMaterialRenderer {
             self.plan = plan
             uniforms = ImageMaterialUniforms(layout: plan.pass.variant?.uniforms, constants: plan.pass.constants,
                                              liveFactors: plan.liveFactors)
+            prelightUniforms = plan.prelighting.map {
+                ImageMaterialUniforms(layout: $0.variant?.uniforms, constants: $0.constants, liveFactors: plan.liveFactors)
+            }
         }
     }
 
     /// Layers drawn through their material, for tests and diagnostics.
     private(set) var drawsEncoded = 0
+    /// Prelighting passes encoded (`prelight`), for tests and diagnostics.
+    private(set) var prelitDraws = 0
     /// Layer instances holding uniform state, for tests and diagnostics.
     var programCount: Int { programs.count }
     /// Compiled pipelines, shared by every layer drawing the same variant, format and blending.
@@ -118,33 +126,12 @@ final class ImageMaterialRenderer {
     /// an input is missing. Leaves the encoder's pipeline state changed.
     func draw(_ plan: ImageMaterialPlan, _ draw: Draw, pixelFormat: MTLPixelFormat,
               encoder: MTLRenderCommandEncoder, commandBuffer: MTLCommandBuffer) -> Bool {
-        guard let variant = plan.pass.variant, let pipeline = pipeline(for: plan, pixelFormat: pixelFormat) else { return false }
+        guard plan.pass.variant != nil,
+              let pipeline = pipeline(for: plan.pass, material: plan.materialPath, pixelFormat: pixelFormat) else { return false }
         let extent = draw.quad.extent
         // A zero-area quad covers no pixels; nothing to draw, and nothing for a fallback to draw either.
         guard extent.x > 0, extent.y > 0, extent.x.isFinite, extent.y.isFinite else { return true }
-
-        var textureInfo: [(slot: Int, texture: MTLTexture, sampler: MTLSamplerState, contentSize: SIMD2<Float>?,
-                           sprite: BuiltinSpriteFrame?)] = []
-        for slot in variant.textureSlots {
-            // The plan binds every slot the variant reads; one it leaves out is declared but unused.
-            guard let input = plan.pass.textures[slot] else { continue }
-            let sampler = plan.clampedSlots.contains(slot) ? clampSampler : repeatSampler
-            switch input {
-            case .current, .previous:
-                textureInfo.append((slot, draw.texture, sampler, draw.contentSize, nil))
-            case .sceneSnapshot:
-                guard let snapshot = draw.sceneSnapshot else { return false }
-                textureInfo.append((slot, snapshot, clampSampler, nil, nil))
-            case .mipMappedFrameBuffer:
-                guard let target = draw.mipMappedFrameBuffer else { return false }
-                textureInfo.append((slot, target, clampSampler, nil, nil))
-            case .asset(let key, let source):
-                guard let texture = draw.assetTexture(key, source) else { return false }
-                textureInfo.append((slot, texture, sampler, source.contentSize, draw.assetSprite?(key, source)))
-            case .fbo:
-                return false
-            }
-        }
+        guard let textureInfo = textures(of: plan.pass, plan: plan, draw) else { return false }
 
         let program = program(for: plan, layerID: draw.layerID)
         if draw.ignoredAdjustments, !program.reportedIgnoredAdjustments {
@@ -213,6 +200,136 @@ final class ImageMaterialRenderer {
         return true
     }
 
+    /// The prelit image's format: WE's LDR effect buffers are RGBA8.
+    static let prelitFormat = MTLPixelFormat.rgba8Unorm
+
+    /// WE's prelighting pass (0x140209540; docs/lighting-plan.md §2.3) for a lit or reflective
+    /// layer with effects: `plan.prelighting`, the material with its lighting and `PRELIGHTING`,
+    /// draws `draw.texture` texel for texel into a texture of its size, which the layer's effects
+    /// then start from. The layer's place in the scene reaches the shader as `g_AltModelMatrix`,
+    /// `g_AltNormalModelMatrix` and `g_AltViewProjectionMatrix` (0x14020656b, 0x140207dc3), so each
+    /// texel is lit, and reflects the scene, where it lies in the scene, while
+    /// `g_ModelViewProjectionMatrix` maps it into the texture. `g_Color4` is white: the layer's
+    /// colour, alpha and brightness are applied once, by its own draw after the effects. nil (the
+    /// effects take the image unlit) while the pipeline compiles or an input is missing. Encodes its
+    /// own render pass.
+    func prelight(_ plan: ImageMaterialPlan, _ draw: Draw, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        guard let pass = plan.prelighting,
+              let pipeline = pipeline(for: pass, material: plan.materialPath, pixelFormat: Self.prelitFormat) else { return nil }
+        let extent = draw.quad.extent
+        guard extent.x > 0, extent.y > 0, extent.x.isFinite, extent.y.isFinite,
+              let textureInfo = textures(of: pass, plan: plan, draw) else { return nil }
+        let program = program(for: plan, layerID: draw.layerID)
+        let width = draw.texture.width, height = draw.texture.height
+        if program.prelit?.width != width || program.prelit?.height != height {
+            let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: Self.prelitFormat, width: width,
+                                                                      height: height, mipmapped: false)
+            descriptor.usage = [.renderTarget, .shaderRead]
+            descriptor.storageMode = .private
+            program.prelit = device.makeTexture(descriptor: descriptor)
+        }
+        guard let target = program.prelit else { return nil }
+
+        // The image (its content, inside a padded texture) is the layer's quad in model space:
+        // `extent` wide and tall, centred, y up. Every texel of the texture is drawn.
+        let size = SIMD2(Float(width), Float(height))
+        let content = (draw.contentSize ?? size) / size
+        var positions = Self.corners.flatMap { uv -> [Float] in
+            [(uv.x / content.x - 0.5) * extent.x, (0.5 - uv.y / content.y) * extent.y, 0]
+        }
+        // Model space onto the whole texture: texture row 0 at GL clip y = −1, as for the scene target.
+        let intoTexture = simd_float4x4(columns: (SIMD4(2 * content.x / extent.x, 0, 0, 0),
+                                                  SIMD4(0, -2 * content.y / extent.y, 0, 0),
+                                                  SIMD4(0, 0, 1, 0),
+                                                  SIMD4(content.x - 1, content.y - 1, 0, 1)))
+        if let uniforms = program.prelightUniforms, uniforms.size > 0 {
+            let alt = Self.modelMatrix(draw.quad)
+            let key = ImageMaterialUniforms.PassKey(
+                model: alt, viewProjection: intoTexture, color: SIMD3(repeating: 1), alpha: 1, brightness: 1,
+                spriteRotation: SIMD4(1, 0, 0, 1), spriteTranslation: .zero, screen: draw.frame.screenSize,
+                textures: textureInfo.map { SIMD4(Float($0.texture.width), Float($0.texture.height),
+                                                  $0.contentSize?.x ?? 0, $0.contentSize?.y ?? 0) },
+                sprites: textureInfo.compactMap(\.sprite))
+            uniforms.update(key: key, frame: draw.frame, values: draw.values) {
+                // The buffer's own view-projection, in the scene target's convention.
+                let view = Self.viewProjection(sceneSize: size)
+                var context = BuiltinPassContext(targetSize: size)
+                context.viewProjection = view
+                context.modelViewProjection = intoTexture
+                context.modelMatrix = view.inverse * intoTexture
+                context.altModelMatrix = alt
+                context.altViewProjection = Self.viewProjection(sceneSize: draw.sceneSize)
+                for entry in textureInfo {
+                    var info = EffectGraphRenderer.textureInfo(for: entry.texture, contentSize: entry.contentSize)
+                    if let sprite = entry.sprite, entry.slot != 0 {
+                        info.spriteRotation = sprite.rotation
+                        info.spriteTranslation = sprite.translation
+                    }
+                    context.textures[entry.slot] = info
+                }
+                return context
+            }
+        }
+
+        let renderPass = MTLRenderPassDescriptor()
+        renderPass.colorAttachments[0].texture = target
+        renderPass.colorAttachments[0].loadAction = .clear
+        renderPass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        renderPass.colorAttachments[0].storeAction = .store
+        guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: renderPass) else { return nil }
+        encoder.setRenderPipelineState(pipeline)
+        var texCoords = Self.corners
+        encoder.setVertexBytes(&positions, length: MemoryLayout<Float>.stride * positions.count,
+                               index: EffectGraphRenderer.positionBuffer)
+        encoder.setVertexBytes(&texCoords, length: MemoryLayout<SIMD2<Float>>.stride * texCoords.count,
+                               index: EffectGraphRenderer.texCoordBuffer)
+        encoder.setVertexBuffer(zeroAttributes, offset: 0, index: EffectGraphRenderer.zeroBuffer)
+        for entry in textureInfo {
+            encoder.setFragmentTexture(entry.texture, index: entry.slot)
+            encoder.setFragmentSamplerState(entry.sampler, index: entry.slot)
+            encoder.setVertexTexture(entry.texture, index: entry.slot)
+            encoder.setVertexSamplerState(entry.sampler, index: entry.slot)
+        }
+        if let uniforms = program.prelightUniforms, uniforms.size > 0 {
+            uniforms.bytes.withUnsafeBytes { raw in
+                uniformArena.bind(raw, index: 0, to: encoder, commandBuffer: commandBuffer)
+            }
+        }
+        encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+        encoder.endEncoding()
+        prelitDraws += 1
+        return target
+    }
+
+    private typealias BoundTexture = (slot: Int, texture: MTLTexture, sampler: MTLSamplerState, contentSize: SIMD2<Float>?,
+                                      sprite: BuiltinSpriteFrame?)
+
+    /// The textures `pass` reads for this draw; nil when one isn't there this frame.
+    private func textures(of pass: SceneEffectPassPlan, plan: ImageMaterialPlan, _ draw: Draw) -> [BoundTexture]? {
+        var textureInfo: [BoundTexture] = []
+        for slot in pass.variant?.textureSlots ?? [] {
+            // The plan binds every slot the variant reads; one it leaves out is declared but unused.
+            guard let input = pass.textures[slot] else { continue }
+            let sampler = plan.clampedSlots.contains(slot) ? clampSampler : repeatSampler
+            switch input {
+            case .current, .previous:
+                textureInfo.append((slot, draw.texture, sampler, draw.contentSize, nil))
+            case .sceneSnapshot:
+                guard let snapshot = draw.sceneSnapshot else { return nil }
+                textureInfo.append((slot, snapshot, clampSampler, nil, nil))
+            case .mipMappedFrameBuffer:
+                guard let target = draw.mipMappedFrameBuffer else { return nil }
+                textureInfo.append((slot, target, clampSampler, nil, nil))
+            case .asset(let key, let source):
+                guard let texture = draw.assetTexture(key, source) else { return nil }
+                textureInfo.append((slot, texture, sampler, source.contentSize, draw.assetSprite?(key, source)))
+            case .fbo:
+                return nil
+            }
+        }
+        return textureInfo
+    }
+
     /// Whether `sceneFragment`'s per-layer adjustments (legacy material heuristics, music sync) leave
     /// this layer unchanged, i.e. whether the native draw would apply nothing besides the object's
     /// own `brightness`, which the material applies.
@@ -279,39 +396,44 @@ final class ImageMaterialRenderer {
 
     // MARK: - Pipelines
 
-    static func pipelineKey(_ plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat) -> String {
-        "image|\(plan.pass.variantKey)|\(pixelFormat.rawValue)|\(plan.pass.blending.lowercased())"
+    static func pipelineKey(_ pass: SceneEffectPassPlan, pixelFormat: MTLPixelFormat) -> String {
+        "image|\(pass.variantKey)|\(pixelFormat.rawValue)|\(pass.blending.lowercased())"
     }
 
     /// The ready pipeline, or nil while it compiles (the compile is started here) or after it failed.
-    private func pipeline(for plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat) -> MTLRenderPipelineState? {
-        let key = Self.pipelineKey(plan, pixelFormat: pixelFormat)
+    private func pipeline(for pass: SceneEffectPassPlan, material: String, pixelFormat: MTLPixelFormat) -> MTLRenderPipelineState? {
+        let key = Self.pipelineKey(pass, pixelFormat: pixelFormat)
         let state: (pipeline: MTLRenderPipelineState?, busy: Bool) = pipelineLock.withLock {
             if pipelines[key] != nil { usedPipelines.insert(key) }
             return (pipelines[key], pending.contains(key) || failed.contains(key))
         }
         if let pipeline = state.pipeline { return pipeline }
-        if !state.busy, let variant = plan.pass.variant { compile(plan, variant: variant, pixelFormat: pixelFormat, key: key) }
+        if !state.busy, let variant = pass.variant {
+            compile(variant, blending: pass.blending, material: material, pixelFormat: pixelFormat, key: key)
+        }
         return nil
     }
 
-    /// Blocks until the plan's pipeline compiled or failed (tests, prewarming). True when it is ready.
+    /// Blocks until the plan's pipelines (its prelighting pass's too, into `prelitFormat`) compiled
+    /// or failed (tests, prewarming). True when they are ready.
     func waitUntilReady(_ plan: ImageMaterialPlan, pixelFormat: MTLPixelFormat, timeout: TimeInterval = 60) -> Bool {
-        let key = Self.pipelineKey(plan, pixelFormat: pixelFormat)
         let deadline = Date().addingTimeInterval(timeout)
-        while pipeline(for: plan, pixelFormat: pixelFormat) == nil {
-            if pipelineLock.withLock({ failed.contains(key) }) || Date() > deadline { return false }
-            Thread.sleep(forTimeInterval: 0.005)
+        let passes = [(plan.pass, pixelFormat)] + (plan.prelighting.map { [($0, Self.prelitFormat)] } ?? [])
+        for (pass, format) in passes {
+            let key = Self.pipelineKey(pass, pixelFormat: format)
+            while pipeline(for: pass, material: plan.materialPath, pixelFormat: format) == nil {
+                if pipelineLock.withLock({ failed.contains(key) }) || Date() > deadline { return false }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
         }
         return true
     }
 
-    private func compile(_ plan: ImageMaterialPlan, variant: TranslatedShaderVariant, pixelFormat: MTLPixelFormat, key: String) {
+    private func compile(_ variant: TranslatedShaderVariant, blending: String, material: String, pixelFormat: MTLPixelFormat,
+                         key: String) {
         pipelineLock.withLock { _ = pending.insert(key) }
         let device = self.device
         let archive = self.archive
-        let blending = plan.pass.blending
-        let material = plan.materialPath
         compileQueue.async { [weak self] in
             let result: MTLRenderPipelineState?
             do {

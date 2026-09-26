@@ -71,7 +71,7 @@ final class SceneMipMappedFrameBuffer: SceneFrameStage {
             textures.values.contains { if case .mipMappedFrameBuffer = $0 { return true } else { return false } }
         }
         return content.layers.contains { layer in
-            (layer.imageMaterial.map { samples($0.pass.textures) } ?? false)
+            (layer.imageMaterial.map { samples($0.pass.textures) || samples($0.prelighting?.textures ?? [:]) } ?? false)
                 || layer.weEffects.contains { $0.passes.contains { samples($0.textures) } }
         } || content.particleSystems.contains { system in
             system.material?.stages.contains { samples($0.textures) } ?? false

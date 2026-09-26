@@ -11,6 +11,11 @@ final class ImageMaterialPlan {
     let materialPath: String
     /// `variant`, textures (slot 0 is `.current`, the layer image), constants and blending.
     let pass: SceneEffectPassPlan
+    /// WE's prelighting pass (docs/lighting-plan.md §2.3), for a lit or reflective layer with
+    /// effects: the material with its `LIGHTING`/`REFLECTION` and `PRELIGHTING` = 1, which draws
+    /// the layer image, lit where the layer is, into the texture its effects start from. `pass`
+    /// then has both combos off. nil for every other layer.
+    let prelighting: SceneEffectPassPlan?
     /// The shader reads its UVs through `g_Texture0Rotation/Translation` (`SPRITESHEET`), so the
     /// quad carries plain 0...1 texture coordinates.
     let usesSpriteSheetUniforms: Bool
@@ -21,10 +26,11 @@ final class ImageMaterialPlan {
     /// `clampuvs` for the layer image); every other slot repeats, as in WE.
     let clampedSlots: Set<Int>
 
-    init(materialPath: String, pass: SceneEffectPassPlan, usesSpriteSheetUniforms: Bool, liveFactors: [String: Float],
-         clampedSlots: Set<Int> = [0]) {
+    init(materialPath: String, pass: SceneEffectPassPlan, prelighting: SceneEffectPassPlan? = nil, usesSpriteSheetUniforms: Bool,
+         liveFactors: [String: Float], clampedSlots: Set<Int> = [0]) {
         self.materialPath = materialPath
         self.pass = pass
+        self.prelighting = prelighting
         self.usesSpriteSheetUniforms = usesSpriteSheetUniforms
         self.liveFactors = liveFactors
         self.clampedSlots = clampedSlots
@@ -64,8 +70,8 @@ struct ImageMaterialPlanBuilder {
     /// nil when the material has no image to draw: no texture in slot 0 (solid layers' `flat`) or a
     /// render target there (composition layers), which keep their own paths.
     /// `colorBlendMode` is the object's WE blend mode (`BLENDMODE` combo), when authored; `clampUVs`
-    /// is the object's `clampuvs`. `prelit` is set for a layer with effects or a puppet, whose
-    /// lighting and reflection WE applies in a pass after them (docs/lighting-plan.md §2.3).
+    /// is the object's `clampuvs`. `prelit` is set for a layer with effects, whose
+    /// lighting and reflection WE applies in a pass before them (`ImageMaterialPlan.prelighting`).
     func build(materialPath: String, colorBlendMode: Int?, clampUVs: Bool? = nil, prelit: Bool = false) throws -> ImageMaterialPlan? {
         try build(materialPath: materialPath, colorBlendMode: colorBlendMode, clampUVs: clampUVs, listsItsImage: true,
                   prelit: prelit)
@@ -157,15 +163,21 @@ struct ImageMaterialPlanBuilder {
                                        variant: variant, blending: blending, target: nil, textures: inputs, constants: constants)
         }
 
-        let drawn = combos(colorBlendMode.map { [["BLENDMODE": $0]] } ?? [])
+        var drawn = combos(colorBlendMode.map { [["BLENDMODE": $0]] } ?? [])
+        var prelighting: SceneEffectPassPlan?
         if prelit, (drawn["LIGHTING"] ?? 0) != 0 || (drawn["REFLECTION"] ?? 0) != 0 {
-            throw ImageMaterialPlanError.unsupported("LIGHTING or REFLECTION on a layer with effects or a puppet needs the prelighting pass (roadmap area 5)")
+            // WE's prelighting (0x140209540, docs/lighting-plan.md §2.3): the material, lit, with
+            // `PRELIGHTING` (and `cullmode` nocull) draws the layer image into the buffer its effects
+            // start from; the layer itself draws with both combos off. Neither takes the object's
+            // blend mode into the buffer.
+            prelighting = try pass(combos([["PRELIGHTING": 1]]), blending: "disabled")
+            drawn = combos([["LIGHTING": 0, "REFLECTION": 0]] + (colorBlendMode.map { [["BLENDMODE": $0]] } ?? []))
         }
         guard let layerPass = try pass(drawn, blending: materialPass.blending ?? "normal") else { return nil }
 
         var clampedSlots = Set<Int>()
         if clampUVs == true || image.map({ textureClamps($0, materialPath: materialPath) }) ?? true { clampedSlots.insert(0) }
-        for (slot, input) in layerPass.textures {
+        for (slot, input) in layerPass.textures.merging(prelighting?.textures ?? [:], uniquingKeysWith: { a, _ in a }) {
             switch input {
             case .sceneSnapshot, .mipMappedFrameBuffer: clampedSlots.insert(slot)
             case .asset(let key, _):
@@ -175,7 +187,7 @@ struct ImageMaterialPlanBuilder {
             default: break
             }
         }
-        return ImageMaterialPlan(materialPath: materialPath, pass: layerPass,
+        return ImageMaterialPlan(materialPath: materialPath, pass: layerPass, prelighting: prelighting,
                                  usesSpriteSheetUniforms: (layerPass.variant?.combos["SPRITESHEET"] ?? 0) != 0,
                                  liveFactors: liveFactors, clampedSlots: clampedSlots)
     }

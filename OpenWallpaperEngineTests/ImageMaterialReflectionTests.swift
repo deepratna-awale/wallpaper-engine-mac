@@ -83,14 +83,6 @@ final class ImageMaterialReflectionTests: XCTestCase {
         }
     }
 
-    /// A layer with effects (or a puppet) is lit and reflected by WE in a pass after them, which
-    /// doesn't exist yet: it keeps the native draw.
-    func testReflectionOnAPrelitLayerFallsBack() throws {
-        XCTAssertThrowsError(try builder().build(materialPath: "materials/reflection.json", colorBlendMode: nil, prelit: true)) { error in
-            guard case ImageMaterialPlanError.unsupported = error else { return XCTFail("\(error)") }
-        }
-    }
-
     /// Through the whole renderer: the reflective layer reads the last frame's copy, and turning
     /// the setting off takes the reflection away again.
     func testRendererBindsTheCopyAndHonoursTheSetting() throws {
@@ -282,7 +274,7 @@ final class ImageMaterialReflectionTests: XCTestCase {
         return Array(rgba[start..<start + 4])
     }
 
-    private static func image(width: Int, height: Int, pixels: [UInt8]) throws -> NSImage {
+    static func image(width: Int, height: Int, pixels: [UInt8]) throws -> NSImage {
         let provider = try XCTUnwrap(CGDataProvider(data: Data(pixels) as CFData))
         let image = try XCTUnwrap(CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
                                           bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),

@@ -130,6 +130,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private var pendingEmits: [String: Int] = [:]
     /// How many particle systems are drawn (tests, diagnostics).
     var particleSystemCount: Int { particleSystems.count }
+    /// Layers drawn through their material, and prelighting passes run (tests, diagnostics).
+    var imageMaterialDraws: Int { imageMaterials?.drawsEncoded ?? 0 }
+    var imageMaterialPrelitDraws: Int { imageMaterials?.prelitDraws ?? 0 }
     /// A drawn layer's effect plans (tests, diagnostics).
     func effectPlans(ofLayer id: String) -> [SceneEffectPlan] {
         layers.first { $0.layer.id == id }?.layer.weEffects ?? []
@@ -1411,8 +1414,24 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         context.hiddenEffects = scripted.hidden
         context.constantWrites = scripted.writes
         context.scriptRevision = scripted.revision
-        return effectGraph.apply(entry.layer.weEffects, to: input, layerID: entry.layer.id,
-                                 context: context, commandBuffer: commandBuffer)
+        return effectGraph.apply(entry.layer.weEffects, to: prelit(entry, draw: draw, input: input, snapshot: snapshot,
+                                                                   frame: frame, commandBuffer: commandBuffer) ?? input,
+                                 layerID: entry.layer.id, context: context, commandBuffer: commandBuffer)
+    }
+
+    /// A lit or reflective layer's image as its effects start from it: lit by its material's
+    /// prelighting pass (`ImageMaterialRenderer.prelight`); nil for any other layer.
+    private func prelit(_ entry: PreparedLayer, draw: LayerDraw, input: MTLTexture, snapshot: MTLTexture?,
+                        frame: BuiltinFrameContext, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
+        guard let plan = entry.layer.imageMaterial, plan.prelighting != nil, let imageMaterials else { return nil }
+        return imageMaterials.prelight(plan, ImageMaterialRenderer.Draw(
+            layerID: entry.layer.id, quad: draw.quad, sceneSize: sceneSize, color: SIMD3(repeating: 1), alpha: 1,
+            brightness: 1, texture: input, contentSize: entry.layer.source.contentSize, uvOrigin: .zero,
+            uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1), sceneSnapshot: snapshot, mipMappedFrameBuffer: mipMappedTarget,
+            frame: frame, values: timelines.values,
+            assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
+            assetSprite: { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) }),
+            commandBuffer: commandBuffer)
     }
 
     /// Continues the scene pass after a pause (a snapshot of it, or effects run in between).
