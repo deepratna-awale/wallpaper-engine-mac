@@ -121,6 +121,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
+        wallpaperViewModel.keepWorkshopPreview = { [steamCmd = contentViewModel.steamCmd] in try steamCmd.keepPreview($0) }
+
         // Before the wallpaper windows exist, so a wallpaper behind an unclean exit never loads.
         safeRestart.attach(to: wallpaperViewModel)
 

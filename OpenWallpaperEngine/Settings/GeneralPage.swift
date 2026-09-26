@@ -58,6 +58,11 @@ struct GeneralPage: SettingsPage {
                         chooseStorageDirectory()
                     }
                 }
+                if let volume = WallpaperStorage.unmountedVolume(of: WallpaperStorage.directory) {
+                    Text("\(volume.lastPathComponent) isn't connected. Workshop downloads fail until you connect it or choose another folder.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
                 if WallpaperStorage.usesCustomDirectory {
                     Button("Use Default Location") {
                         WallpaperStorage.resetToDefault()
@@ -71,7 +76,7 @@ struct GeneralPage: SettingsPage {
             } header: {
                 Label("Wallpaper Storage", systemImage: "externaldrive")
             } footer: {
-                Text("Choose a folder for downloaded and imported wallpapers. You can move the current library to the new location.")
+                Text("Workshop downloads, their dependencies and imported wallpapers go into this folder. You can move the current library to the new location.")
             }
             Section {
                 HStack {

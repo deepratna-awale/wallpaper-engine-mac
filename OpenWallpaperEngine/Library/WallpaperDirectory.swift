@@ -20,6 +20,53 @@ enum WallpaperStorage {
         UserDefaults.standard.string(forKey: customPathKey) != nil
     }
 
+    /// The storage folder can't be used: it is on a volume that isn't connected, or can't be created.
+    enum Unavailable: LocalizedError {
+        case volumeNotMounted(directory: URL, volume: URL)
+        case notCreatable(directory: URL, reason: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .volumeNotMounted(let directory, let volume):
+                return "The Wallpaper Storage folder \(directory.path) is on \(volume.lastPathComponent), which isn't connected. "
+                    + "Connect it, or choose another folder in Settings → General."
+            case .notCreatable(let directory, let reason):
+                return "Can't create the Wallpaper Storage folder \(directory.path): \(reason)"
+            }
+        }
+    }
+
+    /// The `/Volumes/<name>` a folder lives on when that volume isn't mounted; nil otherwise.
+    /// Creating the folder then would put it on the startup disk instead, under a stale mount point.
+    static func unmountedVolume(of directory: URL, fileManager: FileManager = .default) -> URL? {
+        let components = directory.standardizedFileURL.pathComponents
+        guard components.count >= 3, components[0] == "/", components[1] == "Volumes" else { return nil }
+        let volume = URL(fileURLWithPath: "/Volumes", isDirectory: true).appending(path: components[2], directoryHint: .isDirectory)
+        guard fileManager.fileExists(atPath: volume.path) else { return volume }
+        let resolved = volume.resolvingSymlinksInPath()
+        // `/Volumes/Macintosh HD` links to `/`, which is a volume too.
+        do {
+            return try resolved.resourceValues(forKeys: [.isVolumeKey]).isVolume == true ? nil : volume
+        } catch {
+            OWELog.error(.library, "Can't tell whether \(volume.path) is mounted: \(error)")
+            return volume
+        }
+    }
+
+    /// The storage folder, created when it is missing. Throws instead of falling back to another
+    /// place, so nothing is ever downloaded anywhere but the folder the user chose.
+    static func availableDirectory(_ directory: URL = directory, fileManager: FileManager = .default) throws -> URL {
+        if let volume = unmountedVolume(of: directory, fileManager: fileManager) {
+            throw Unavailable.volumeNotMounted(directory: directory, volume: volume)
+        }
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        } catch {
+            throw Unavailable.notCreatable(directory: directory, reason: error.localizedDescription)
+        }
+        return directory
+    }
+
     static func setDirectory(_ newDirectory: URL, moveExisting: Bool) throws -> (source: URL, destination: URL)? {
         let fileManager = FileManager.default
         let sourceDirectory = directory.standardizedFileURL
@@ -33,17 +80,15 @@ enum WallpaperStorage {
                 includingPropertiesForKeys: nil,
                 options: [.skipsHiddenFiles]
             )
+            var moved = Set<String>()
             for item in items {
                 let destination = destinationDirectory.appending(path: item.lastPathComponent)
                 guard !fileManager.fileExists(atPath: destination.path) else { continue }
                 try fileManager.moveItem(at: item, to: destination)
+                moved.insert(item.lastPathComponent)
             }
             // Hidden, so the loop above skips it; it lists which of the moved items are dependencies.
-            let dependencyIndex = sourceDirectory.appending(path: WorkshopDependencyIndex.fileName)
-            let movedIndex = destinationDirectory.appending(path: WorkshopDependencyIndex.fileName)
-            if fileManager.fileExists(atPath: dependencyIndex.path), !fileManager.fileExists(atPath: movedIndex.path) {
-                try fileManager.moveItem(at: dependencyIndex, to: movedIndex)
-            }
+            try WorkshopDependencyIndex.carry(from: sourceDirectory, to: destinationDirectory, movedItems: moved)
         }
         UserDefaults.standard.set(destinationDirectory.path, forKey: customPathKey)
         return moveExisting ? (sourceDirectory, destinationDirectory) : nil
@@ -61,10 +106,15 @@ final class DownloadedWallpaperIndex: ObservableObject {
     private let storageKey = "DownloadedWorkshopWallpaperIds"
     private let dateStorageKey = "DownloadedWorkshopWallpaperDates"
     private var downloadDates: [String: Date]
+    private let defaults: UserDefaults
+    private let libraryDirectory: () -> URL
 
-    private init() {
-        ids = Set(UserDefaults.standard.stringArray(forKey: storageKey) ?? [])
-        downloadDates = Self.decodeDates(UserDefaults.standard.dictionary(forKey: dateStorageKey))
+    init(defaults: UserDefaults = .standard,
+         libraryDirectory: @escaping () -> URL = { FileManager.default.wallpapersDirectory }) {
+        self.defaults = defaults
+        self.libraryDirectory = libraryDirectory
+        ids = Set(defaults.stringArray(forKey: storageKey) ?? [])
+        downloadDates = Self.decodeDates(defaults.dictionary(forKey: dateStorageKey))
         if ids.isEmpty || downloadDates.isEmpty {
             rebuildFromLibrary()
         }
@@ -105,7 +155,7 @@ final class DownloadedWallpaperIndex: ObservableObject {
 
     private func rebuildFromLibrary() {
         guard let directories = try? FileManager.default.contentsOfDirectory(
-            at: FileManager.default.wallpapersDirectory,
+            at: libraryDirectory(),
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else { return }
@@ -129,8 +179,8 @@ final class DownloadedWallpaperIndex: ObservableObject {
     }
 
     private func save() {
-        UserDefaults.standard.set(ids.sorted(), forKey: storageKey)
-        UserDefaults.standard.set(
+        defaults.set(ids.sorted(), forKey: storageKey)
+        defaults.set(
             downloadDates.mapValues(\.timeIntervalSince1970),
             forKey: dateStorageKey
         )
@@ -206,10 +256,15 @@ func projectHasCustomizableProperties(at wallpaperDirectory: URL) -> Bool {
 
 extension FileManager {
     /// The configured directory for storing wallpaper packages.
+    /// Created when missing, unless its volume isn't connected; code that writes into it checks
+    /// `WallpaperStorage.availableDirectory()` for the reason.
     var wallpapersDirectory: URL {
         let dir = WallpaperStorage.directory
-        if !fileExists(atPath: dir.path) {
-            try? createDirectory(at: dir, withIntermediateDirectories: true)
+        guard !fileExists(atPath: dir.path) else { return dir }
+        do {
+            _ = try WallpaperStorage.availableDirectory(dir, fileManager: self)
+        } catch {
+            OWELog.error(.library, "\(error.localizedDescription)")
         }
         return dir
     }

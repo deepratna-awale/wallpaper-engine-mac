@@ -106,6 +106,9 @@ class WallpaperViewModel: ObservableObject {
     var confirmApply: ((WEWallpaper) -> Bool)?
     /// Set by `SafeRestart`: whether a wallpaper is flagged, so auto-advance can pass it over.
     var isFlaggedBySafeRestart: ((WEWallpaper) -> Bool)?
+    /// Moves a Workshop preview being applied into the storage folder and returns it there; nil
+    /// when the wallpaper isn't a preview. Set by the app delegate.
+    var keepWorkshopPreview: ((WEWallpaper) throws -> WEWallpaper?)?
     /// Receives wallpaper frame times. Set by `SafeRestart`.
     var renderWatchdog: RenderWatchdog?
     private var playlistIndex = 0
@@ -195,7 +198,15 @@ class WallpaperViewModel: ObservableObject {
     }
 
     func applyInspectedWallpaper() {
-        let wallpaper = promotePreviewIfNeeded(displayedWallpaper)
+        let wallpaper: WEWallpaper
+        do {
+            wallpaper = try keepWorkshopPreview?(displayedWallpaper) ?? displayedWallpaper
+        } catch {
+            // Applying it from the preview cache would lose it at the next cache trim.
+            OWELog.error(.workshop, "Can't keep Workshop preview \(displayedWallpaper.wallpaperDirectory.lastPathComponent): \(error)")
+            NSAlert(error: error).runModal()
+            return
+        }
         inspectedWallpaper = wallpaper
         nextCurrentWallpaper = wallpaper
     }
@@ -213,26 +224,6 @@ class WallpaperViewModel: ObservableObject {
         recentWallpapers = recentWallpapers.map(relocated)
         inspectedWallpaper = inspectedWallpaper.map(relocated)
         saveRecents()
-    }
-
-    private func promotePreviewIfNeeded(_ wallpaper: WEWallpaper) -> WEWallpaper {
-        let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appending(path: "Open Wallpaper Engine/WorkshopPreviews/steamapps/workshop/content/431960")
-        let source = wallpaper.wallpaperDirectory
-        guard source.path.hasPrefix(cacheRoot.path + "/") else { return wallpaper }
-
-        let workshopId = source.lastPathComponent
-        let destination = FileManager.default.wallpapersDirectory.appending(path: workshopId)
-        do {
-            if !FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.moveItem(at: source, to: destination)
-            }
-            DownloadedWallpaperIndex.shared.insert(workshopId)
-            return WEWallpaper(using: wallpaper.project, where: destination)
-        } catch {
-            OWELog.error(.workshop, "Failed to promote Workshop preview: \(error)")
-            return wallpaper
-        }
     }
 
     /// Get wallpaper for a specific screen.

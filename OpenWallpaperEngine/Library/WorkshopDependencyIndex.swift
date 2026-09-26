@@ -69,6 +69,24 @@ final class WorkshopDependencyIndex {
         }
     }
 
+    /// The library moved from `source` to `destination`: the moved items keep their standing. The
+    /// list moves along, or, when `destination` already has one, the moved dependency ids join it.
+    static func carry(from source: URL, to destination: URL, movedItems: Set<String>,
+                      fileManager: FileManager = .default) throws {
+        let sourceIndex = source.appending(path: fileName)
+        let destinationIndex = destination.appending(path: fileName)
+        guard fileManager.fileExists(atPath: sourceIndex.path) else { return }
+        guard fileManager.fileExists(atPath: destinationIndex.path) else {
+            try fileManager.moveItem(at: sourceIndex, to: destinationIndex)
+            return
+        }
+        let sourceIds = Set(try JSONDecoder().decode([String].self, from: Data(contentsOf: sourceIndex)))
+        let destinationIds = Set(try JSONDecoder().decode([String].self, from: Data(contentsOf: destinationIndex)))
+        let merged = destinationIds.union(sourceIds.intersection(movedItems))
+        guard merged != destinationIds else { return }
+        try JSONEncoder().encode(merged.sorted()).write(to: destinationIndex, options: .atomic)
+    }
+
     /// Call with `lock` held.
     private func loadedIds() -> Set<String> {
         let directory = libraryDirectory().standardizedFileURL

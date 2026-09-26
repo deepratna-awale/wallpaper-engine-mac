@@ -40,12 +40,32 @@ class SteamCmdService: ObservableObject {
     /// Which library items came in only as another wallpaper's dependency.
     let dependencyIndex: WorkshopDependencyIndex
 
+    /// Every item that came into the storage folder (or was already there when downloaded again),
+    /// on the main queue.
+    let itemInstalled = PassthroughSubject<URL, Never>()
+
     private let runner: SteamCmdRunning
+    /// The Wallpaper Storage folder every download goes into; throws when it can't be used.
+    private let storageDirectory: () throws -> URL
+    private let previewCacheRoot: URL
+    private let downloadedIndex: DownloadedWallpaperIndex
+    private let presentPreview: @MainActor (WEWallpaper) -> Void
 
     init(dependencyIndex: WorkshopDependencyIndex = WorkshopDependencyIndex(),
-         runner: SteamCmdRunning = ProcessSteamCmdRunner()) {
+         runner: SteamCmdRunning = ProcessSteamCmdRunner(),
+         storageDirectory: @escaping () throws -> URL = { try WallpaperStorage.availableDirectory() },
+         previewCacheRoot: URL = WorkshopItemInstaller.previewCacheRoot,
+         downloadedIndex: DownloadedWallpaperIndex = .shared,
+         presentPreview: @escaping @MainActor (WEWallpaper) -> Void = { AppDelegate.shared.showWorkshopPreview($0) },
+         restoresSession: Bool = true) {
         self.dependencyIndex = dependencyIndex
         self.runner = runner
+        self.storageDirectory = storageDirectory
+        self.previewCacheRoot = previewCacheRoot
+        self.downloadedIndex = downloadedIndex
+        self.presentPreview = presentPreview
+        // Without it the service starts with no steamcmd and logged out, for the caller to set up.
+        guard restoresSession else { return }
         detectSteamCmd()
         attemptCachedLogin()
     }
@@ -267,116 +287,98 @@ class SteamCmdService: ObservableObject {
 
         downloadQueue.async { [weak self] in
             guard let self = self else { return }
-            defer {
-                DispatchQueue.main.async {
-                    self.queuedDownloadIds.removeAll { $0 == workshopId }
-                    if self.activeDownloadId == workshopId {
-                        self.activeDownloadId = nil
-                    }
-                }
-            }
-
             DispatchQueue.main.async {
                 self.activeDownloadId = workshopId
                 self.downloadStartedAt[workshopId] = .now
                 self.downloadProgress[workshopId] = .downloading(status: "Starting steamcmd...")
             }
-
-            let steamCmdInstallDirectory = FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "SteamCMD-Workshop")
-
-            do {
-                try FileManager.default.createDirectory(
-                    at: steamCmdInstallDirectory,
-                    withIntermediateDirectories: true
-                )
-            } catch {
-                DispatchQueue.main.async {
-                    self.downloadProgress[workshopId] = .failed("Could not prepare download directory: \(error.localizedDescription)")
-                    onCompleted?(nil)
-                }
-                return
-            }
-
-            let script: SteamCmdScript
-            do {
-                script = try Self.workshopDownloadScript(
-                    installDirectory: steamCmdInstallDirectory,
-                    username: self.steamUsername,
-                    workshopId: workshopId,
-                    validate: true
-                )
-            } catch {
-                DispatchQueue.main.async {
-                    self.downloadProgress[workshopId] = .failed(error.localizedDescription)
-                    onCompleted?(nil)
-                }
-                return
-            }
-
-            // Output arrives in chunks as steamcmd reports progress.
-            let run = self.runner.run(executable: URL(fileURLWithPath: cmdPath), script: script, timeout: nil) { [weak self] chunk in
-                let status = self?.parseProgress(chunk)
-                let percentage = self?.parseDownloadPercentage(chunk)
-                guard status != nil || percentage != nil else { return }
-                DispatchQueue.main.async {
-                    if let status { self?.downloadProgress[workshopId] = .downloading(status: status) }
-                    if let percentage { self?.downloadPercentages[workshopId] = percentage }
-                }
-            }
-            let fullOutput = run.output
-
-            let exitCode = run.exitCode
-            OWELog.info(.workshop, "steamcmd download [\(workshopId)] exit=\(exitCode)\n\(fullOutput)")
-
-            // Find downloaded content
-            let sourcePath = steamCmdInstallDirectory
-                .appending(path: "steamapps/workshop/content/431960/\(workshopId)")
-
+            let result = Result { try self.downloadIntoStorage(workshopId, steamCmd: URL(fileURLWithPath: cmdPath)) }
             DispatchQueue.main.async {
-                self.downloadProgress[workshopId] = .downloading(status: "Copying to library...")
-                self.downloadPercentages[workshopId] = 1
-
-                let fm = FileManager.default
-                if fm.fileExists(atPath: sourcePath.path) {
-                    let dest = fm.wallpapersDirectory.appending(path: workshopId)
-                    let copiedIntoLibrary = !fm.fileExists(atPath: dest.path)
-                    if copiedIntoLibrary {
-                        do {
-                            try fm.copyItem(at: sourcePath, to: dest)
-                            DispatchQueue.global(qos: .utility).async {
-                                WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: dest)
-                            }
-                        } catch {
-                            self.downloadProgress[workshopId] = .failed("Copy failed: \(error.localizedDescription)")
-                            onCompleted?(nil)
-                            return
-                        }
-                    }
-                    if asDependency {
-                        self.dependencyIndex.recordDependencyDownload(workshopId, copiedIntoLibrary: copiedIntoLibrary)
-                    } else {
-                        self.dependencyIndex.recordUserDownload(workshopId)
-                    }
-                    self.downloadProgress[workshopId] = .completed
-                    DownloadedWallpaperIndex.shared.insert(workshopId)
-                    onCompleted?(dest)
-                    return
+                self.queuedDownloadIds.removeAll { $0 == workshopId }
+                if self.activeDownloadId == workshopId {
+                    self.activeDownloadId = nil
                 }
-
-                if fullOutput.contains("ERROR") || fullOutput.contains("FAILED") {
-                    let errorLine = fullOutput.components(separatedBy: "\n")
-                        .first(where: { $0.contains("ERROR") || $0.contains("FAILED") })
-                        ?? "Unknown error"
-                    self.downloadProgress[workshopId] = .failed(errorLine)
-                } else if exitCode != 0 {
-                    self.downloadProgress[workshopId] = .failed("Exit code \(exitCode)")
-                } else {
-                    self.downloadProgress[workshopId] = .failed("Files not found at expected path")
-                }
-                onCompleted?(nil)
+                self.finishDownload(workshopId, asDependency: asDependency, result: result, onCompleted: onCompleted)
             }
         }
+    }
+
+    /// Runs steamcmd into a staging folder inside the storage folder and moves the finished item to
+    /// `<storage>/<id>`. Call on `downloadQueue`: downloads share the one staging folder.
+    private func downloadIntoStorage(_ workshopId: String, steamCmd: URL) throws -> WorkshopItemInstaller.Outcome {
+        // No fallback: without the storage folder the download doesn't start.
+        let storage = try storageDirectory()
+        let staging = WorkshopItemInstaller.stagingDirectory(in: storage)
+        defer { WorkshopItemInstaller.removeStaging(staging) }
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+
+        let script = try Self.workshopDownloadScript(installDirectory: staging, username: steamUsername,
+                                                     workshopId: workshopId, validate: true)
+        // Output arrives in chunks as steamcmd reports progress.
+        let run = runner.run(executable: steamCmd, script: script, timeout: nil) { [weak self] chunk in
+            let status = self?.parseProgress(chunk)
+            let percentage = self?.parseDownloadPercentage(chunk)
+            guard status != nil || percentage != nil else { return }
+            DispatchQueue.main.async {
+                if let status { self?.downloadProgress[workshopId] = .downloading(status: status) }
+                if let percentage { self?.downloadPercentages[workshopId] = percentage }
+            }
+        }
+        OWELog.info(.workshop, "steamcmd download [\(workshopId)] exit=\(run.exitCode)\n\(run.output)")
+
+        let downloaded = WorkshopItemInstaller.contentDirectory(inSteamCmdRoot: staging, workshopId: workshopId)
+        guard FileManager.default.fileExists(atPath: downloaded.path) else {
+            throw DownloadError.steamCmdFailed(Self.failureMessage(output: run.output, exitCode: run.exitCode))
+        }
+        DispatchQueue.main.async {
+            self.downloadProgress[workshopId] = .downloading(status: "Moving into Wallpaper Storage...")
+            self.downloadPercentages[workshopId] = 1
+        }
+        // The storage folder as it is now, in case it changed while steamcmd ran.
+        return try WorkshopItemInstaller.install(itemAt: downloaded, workshopId: workshopId, into: storageDirectory())
+    }
+
+    private func finishDownload(_ workshopId: String, asDependency: Bool,
+                                result: Result<WorkshopItemInstaller.Outcome, Error>,
+                                onCompleted: ((URL?) -> Void)?) {
+        let outcome: WorkshopItemInstaller.Outcome
+        switch result {
+        case .success(let installed):
+            outcome = installed
+        case .failure(let error):
+            OWELog.error(.workshop, "Workshop item \(workshopId) didn't download: \(error.localizedDescription)")
+            downloadProgress[workshopId] = .failed(error.localizedDescription)
+            onCompleted?(nil)
+            return
+        }
+        let destination = outcome.directory
+        let isNew = outcome.isNewInstall
+        if isNew {
+            DispatchQueue.global(qos: .utility).async {
+                WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: destination)
+            }
+        }
+        if asDependency {
+            dependencyIndex.recordDependencyDownload(workshopId, copiedIntoLibrary: isNew)
+        } else {
+            dependencyIndex.recordUserDownload(workshopId)
+        }
+        downloadProgress[workshopId] = .completed
+        downloadedIndex.insert(workshopId)
+        itemInstalled.send(destination)
+        onCompleted?(destination)
+    }
+
+    /// The line of steamcmd's output that says why no item came out of it.
+    private static func failureMessage(output: String, exitCode: Int32) -> String {
+        let lines = output.components(separatedBy: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+        if let errorLine = lines.first(where: { $0.contains("ERROR") || $0.contains("FAILED") }) {
+            return errorLine
+        }
+        if exitCode != 0 {
+            return lines.last(where: { !$0.isEmpty }) ?? "steamcmd exited with code \(exitCode)"
+        }
+        return "steamcmd finished without downloading the item."
     }
 
     func previewWorkshopItem(workshopId: String) {
@@ -395,9 +397,8 @@ class SteamCmdService: ObservableObject {
         previewQueue.async { [weak self] in
             guard let self = self else { return }
 
-            let cacheRoot = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appending(path: "Open Wallpaper Engine/WorkshopPreviews")
-            let sourcePath = cacheRoot.appending(path: "steamapps/workshop/content/431960/\(workshopId)")
+            let cacheRoot = self.previewCacheRoot
+            let sourcePath = WorkshopItemInstaller.contentDirectory(inSteamCmdRoot: cacheRoot, workshopId: workshopId)
 
             do {
                 try FileManager.default.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
@@ -448,6 +449,26 @@ class SteamCmdService: ObservableObject {
         }
     }
 
+    /// Moves a Workshop preview the user chose to keep out of the preview cache into the storage
+    /// folder, as the user's own download. Returns nil when `wallpaper` isn't a cached preview.
+    func keepPreview(_ wallpaper: WEWallpaper) throws -> WEWallpaper? {
+        let source = wallpaper.wallpaperDirectory
+        guard WorkshopItemInstaller.isPreview(source, cacheRoot: previewCacheRoot) else { return nil }
+        let workshopId = source.lastPathComponent
+        let outcome = try WorkshopItemInstaller.install(itemAt: source, workshopId: workshopId, into: storageDirectory())
+        let destination = outcome.directory
+        if outcome.isNewInstall {
+            DispatchQueue.global(qos: .utility).async {
+                WallpaperPackageConverter.convertIfNeeded(wallpaperDirectory: destination)
+            }
+        }
+        dependencyIndex.recordUserDownload(workshopId)
+        downloadedIndex.insert(workshopId)
+        itemInstalled.send(destination)
+        OWELog.info(.workshop, "Kept Workshop preview \(workshopId) in \(destination.path)")
+        return WEWallpaper(using: wallpaper.project, where: destination)
+    }
+
     /// Logs in with the cached session and downloads one Wallpaper Engine workshop item.
     private static func workshopDownloadScript(
         installDirectory: URL,
@@ -474,7 +495,7 @@ class SteamCmdService: ObservableObject {
             switch result {
             case .success(let wallpaper):
                 if presentWhenReady, self.requestedPreviewId == workshopId {
-                    AppDelegate.shared.showWorkshopPreview(wallpaper)
+                    self.presentPreview(wallpaper)
                 }
             case .failure(let error):
                 if presentWhenReady, self.requestedPreviewId == workshopId {
@@ -485,7 +506,7 @@ class SteamCmdService: ObservableObject {
     }
 
     private func trimPreviewCache(at cacheRoot: URL, keeping workshopId: String) throws {
-        let contentDirectory = cacheRoot.appending(path: "steamapps/workshop/content/431960")
+        let contentDirectory = WorkshopItemInstaller.contentRoot(inSteamCmdRoot: cacheRoot)
         guard FileManager.default.fileExists(atPath: contentDirectory.path) else { return }
 
         var cacheSize = try directorySize(at: cacheRoot)
@@ -570,6 +591,16 @@ class SteamCmdService: ObservableObject {
         return min(max(percentage / 100, 0), 1)
     }
 
+}
+
+private enum DownloadError: LocalizedError {
+    case steamCmdFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .steamCmdFailed(let message): return message
+        }
+    }
 }
 
 private enum PreviewError: LocalizedError {

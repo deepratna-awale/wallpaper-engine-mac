@@ -42,16 +42,9 @@ final class WorkshopDependencyService: ObservableObject {
          makeResolver: @escaping () -> WorkshopAssetResolver = { WorkshopAssetResolver(roots: WorkshopAssetResolver.defaultRoots()) }) {
         self.steamCmd = steamCmd
         self.makeResolver = makeResolver
-        // Any finished download (from the Workshop tab too) may itself need dependencies.
-        steamCmd.$downloadProgress.sink { [weak self] progress in
-            let completed = progress.compactMap { $0.value == .completed ? $0.key : nil }
-            Task { @MainActor [weak self] in
-                guard let self else { return }
-                for id in completed {
-                    let directory = FileManager.default.wallpapersDirectory.appending(path: id, directoryHint: .isDirectory)
-                    self.ensureDependencies(ofItemAt: directory)
-                }
-            }
+        // Any item that reaches the storage folder (from the Workshop tab too) may itself need dependencies.
+        steamCmd.itemInstalled.sink { [weak self] directory in
+            Task { @MainActor [weak self] in self?.ensureDependencies(ofItemAt: directory) }
         }.store(in: &cancellables)
         // Wallpapers that were waiting on a login get another try once there is one.
         steamCmd.$isLoggedIn.removeDuplicates().filter { $0 }.sink { [weak self] _ in
