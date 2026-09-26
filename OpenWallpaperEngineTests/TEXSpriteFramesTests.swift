@@ -1,8 +1,9 @@
+import CryptoKit
 import XCTest
 @testable import OpenWallpaperEngine
 
 /// The `TEXS` block of animated `.tex` files (docs/timeline-plan.md §1.2): every version, every
-/// frame kept (0 s ones included), and the library's 31 animated textures.
+/// frame kept (0 s ones included), and the library's animated textures.
 final class TEXSpriteFramesTests: XCTestCase {
     private struct Frame {
         var image: UInt32 = 0
@@ -67,6 +68,10 @@ final class TEXSpriteFramesTests: XCTestCase {
         let frameCount: Int
         let frameTimes: [Float]
         let duration: Float
+        /// The SHA-256 of the texture's bytes when the fixture was written.
+        let sha256: String
+
+        var key: String { "\(root) \(item) \(file)" }
     }
 
     private static var roots: [String: URL] {
@@ -87,24 +92,82 @@ final class TEXSpriteFramesTests: XCTestCase {
         return try PKGParser(url: file).extractFile(named: parts[1])
     }
 
-    /// Every animated `.tex` of the library (`Tests/Fixtures/Library/texs-frames.json`, read from
-    /// the files with a Python reader): its frame count and frame times, in float, 0 s frames
-    /// included, and the duration they sum to. Skipped when neither library root is present (CI).
+    private func check(_ data: Data, _ texture: LibraryTexture) throws {
+        let label = "\(texture.item) \(texture.file)"
+        let frames = try XCTUnwrap(TEXSpriteFrames.frames(Array(data)), label)
+        XCTAssertEqual(frames.count, texture.frameCount, label)
+        XCTAssertEqual(frames.map(\.duration), texture.frameTimes, label)
+        XCTAssertEqual(SceneTextureAnimationClock(frames: frames).duration, texture.duration, label)
+    }
+
+    /// Every animated `.tex` of the library (`Tests/Fixtures/Library/texs-frames.json`, from
+    /// `Scripts/texs-frames.py`, a reader of its own): its frame count and frame times, in float,
+    /// 0 s frames included, and the duration they sum to. A texture the fixture lists is checked
+    /// against it while its bytes are the ones it read. The library keeps gaining and updating
+    /// wallpapers: the script is run now to find the animated textures that are new or changed,
+    /// and they are checked against its output; without a python3 they are skipped, and the
+    /// attachment says so. A texture that left the library is skipped. Skipped when neither
+    /// library root is present (CI).
     func testEveryLibrarySpriteTextureParses() throws {
         let textures = try JSONDecoder().decode([LibraryTexture].self, from: Fixtures.data("Library/texs-frames.json"))
-        XCTAssertEqual(textures.count, 31)
+        XCTAssertFalse(textures.isEmpty)
         try XCTSkipUnless(Self.roots.values.contains { FileManager.default.fileExists(atPath: $0.path) },
                           "wallpaper library not present")
         var checked = 0
+        var removed: [String] = [], changed: [String] = []
         for texture in textures {
-            let label = "\(texture.item) \(texture.file)"
-            guard let data = try bytes(of: texture) else { continue }
+            guard let data = try bytes(of: texture) else {
+                removed.append(texture.key)
+                continue
+            }
+            guard Self.digest(data) == texture.sha256 else {
+                changed.append(texture.key)
+                continue
+            }
+            try check(data, texture)
             checked += 1
-            let frames = try XCTUnwrap(TEXSpriteFrames.frames(Array(data)), label)
-            XCTAssertEqual(frames.count, texture.frameCount, label)
-            XCTAssertEqual(frames.map(\.duration), texture.frameTimes, label)
-            XCTAssertEqual(SceneTextureAnimationClock(frames: frames).duration, texture.duration, label)
         }
+
+        var notes: [String] = []
+        if ReferenceScript.python != nil {
+            let output = FileManager.default.temporaryDirectory.appending(path: "owe-texs-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: output) } // scratch cleanup
+            try ReferenceScript.run("texs-frames.py", arguments: ["--out", output.path],
+                                    environment: ["OWE_LIBRARY": Self.roots["storage"]?.path ?? "",
+                                                  "OWE_WORKSHOP": Self.roots["workshop"]?.path ?? ""])
+            let current = try JSONDecoder().decode([LibraryTexture].self, from: Data(contentsOf: output))
+            let known = Dictionary(textures.map { ($0.key, $0.sha256) }, uniquingKeysWith: { first, _ in first })
+            let currentKeys = Set(current.map(\.key))
+            let beyond = current.filter { known[$0.key] != $0.sha256 }
+            for texture in beyond {
+                let data = try XCTUnwrap(bytes(of: texture), "\(texture.key): listed by the script, not readable here")
+                try check(data, texture)
+                checked += 1
+            }
+            for texture in textures where !removed.contains(texture.key) && !changed.contains(texture.key)
+            && !currentKeys.contains(texture.key) {
+                XCTFail("\(texture.key): unchanged since the fixture, but Scripts/texs-frames.py no longer finds a TEXS block")
+            }
+            if !beyond.isEmpty {
+                notes.append("\(beyond.count) animated textures new or changed since texs-frames.json, checked against "
+                             + "Scripts/texs-frames.py run now: \(beyond.map(\.key).joined(separator: ", "))")
+            }
+        } else {
+            if !changed.isEmpty {
+                notes.append("\(changed.count) textures changed since texs-frames.json NOT checked (no python3 to run "
+                             + "Scripts/texs-frames.py): \(changed.joined(separator: ", "))")
+            }
+            notes.append("animated textures new since texs-frames.json not looked for: no python3 to run Scripts/texs-frames.py")
+        }
+        if !removed.isEmpty {
+            notes.append("\(removed.count) textures of the fixture no longer in the library, skipped: \(removed.joined(separator: ", "))")
+        }
+        if !notes.isEmpty { notes.append("Refresh the fixture: Scripts/texs-frames.py") }
+        LibraryReport.attach("Animated textures: beyond texs-frames.json", notes)
         try XCTSkipIf(checked == 0, "no library texture found")
+    }
+
+    private static func digest(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }
