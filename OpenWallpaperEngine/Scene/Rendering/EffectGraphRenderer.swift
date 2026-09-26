@@ -64,10 +64,14 @@ final class EffectGraphRenderer {
         let alpha: Float
         /// `Context.scriptRevision`: script-set visibility or constants changed.
         let scriptRevision: Int
+        /// The chain's live-bound constants this frame (timelines, user properties), in pass
+        /// order: a paused or finished timeline's chain is reused like a static one (TF4).
+        let dynamicValues: [Float]
 
         func matches(_ other: StaticChainKey) -> Bool {
             input === other.input && inputVersion == other.inputVersion
                 && color == other.color && alpha == other.alpha && scriptRevision == other.scriptRevision
+                && dynamicValues == other.dynamicValues
         }
     }
 
@@ -224,9 +228,13 @@ final class EffectGraphRenderer {
             allocateTargets(state, effects: effects, width: width, height: height)
         }
 
+        var dynamicValues: [Float] = []
+        for (effectIndex, programs) in state.programs.enumerated() where !context.hiddenEffects.contains(effectIndex) {
+            for program in programs { program?.appendDynamicValues(to: &dynamicValues, values: context.values) }
+        }
         let staticKey = StaticChainKey(input: input, inputVersion: context.inputVersion,
                                        color: context.layerColor, alpha: context.layerAlpha,
-                                       scriptRevision: context.scriptRevision)
+                                       scriptRevision: context.scriptRevision, dynamicValues: dynamicValues)
         // A scene snapshot keeps its texture identity while its contents change every frame.
         let readsScene = context.sceneSnapshot != nil
         if !readsScene, let cached = state.staticOutput, cached.key.matches(staticKey) {
@@ -237,7 +245,7 @@ final class EffectGraphRenderer {
 
         var current = input
         var didRender = false
-        var isStatic = true
+        var reusable = true
         for (effectIndex, effect) in effects.enumerated() where !context.hiddenEffects.contains(effectIndex) {
             let previous = current
             var fbos = state.fbos[effectIndex]
@@ -264,7 +272,7 @@ final class EffectGraphRenderer {
                     } else {
                         output = current === pingA ? pingB : pingA
                     }
-                    isStatic = isStatic && program.isStatic && !pass.readsSceneSnapshot
+                    reusable = reusable && program.isReusable && !pass.readsSceneSnapshot
                     encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
                            current: current, previous: previous, fbos: fbos, context: context,
                            scriptWrites: context.constantWrites[effect.effectIndex] ?? [],
@@ -275,9 +283,10 @@ final class EffectGraphRenderer {
             }
         }
         guard didRender else { return nil }
-        // A chain with no time, audio, pointer or live-bound input produces the same image
-        // every frame; skip it until the input changes (bandwidth is the main per-frame cost).
-        state.staticOutput = isStatic && !readsScene ? (staticKey, current) : nil
+        // A chain with no time, audio or pointer input produces the same image every frame while
+        // its input and live-bound values stay; skip it until they change (bandwidth is the main
+        // per-frame cost).
+        state.staticOutput = reusable && !readsScene ? (staticKey, current) : nil
         return current
     }
 
@@ -607,8 +616,9 @@ final class EffectGraphRenderer {
 final class UniformProgram {
     private(set) var bytes: [UInt8]
     let size: Int
-    /// True when nothing changes between frames (no time/audio/pointer/live-bound value).
-    let isStatic: Bool
+    /// True when only the live-bound constants can change between frames (no time, audio or
+    /// pointer built-in): an output is reusable while their values (`appendDynamicValues`) stay.
+    let isReusable: Bool
     let needsTextureInfo: Bool
     private let dynamic: [(member: UniformMember, constant: ShaderConstantResolver.DynamicConstant)]
     /// Members scripts can set, by the lower-cased scene.json key they answer to.
@@ -652,7 +662,15 @@ final class UniformProgram {
         frameBuiltins = builtins.filter(varies)
         passBuiltins = builtins.filter { !varies($0) }
         needsTextureInfo = builtins.contains { $0.name.hasPrefix("g_Texture") }
-        isStatic = dynamic.isEmpty && frameBuiltins.isEmpty
+        isReusable = frameBuiltins.isEmpty
+    }
+
+    /// Appends the live-bound constants' values this frame, as `update` writes them.
+    func appendDynamicValues(to values: inout [Float], values context: SceneValueContext) {
+        for (_, constant) in dynamic {
+            values += ShaderConstantResolver.shape(SceneValueResolver.resolve(constant.source, in: context),
+                                                   count: constant.count, isInt: constant.isInt).components
+        }
     }
 
     /// Writes what scripts set (`setMaterialProperty`, `IMaterial` members) over the constants,

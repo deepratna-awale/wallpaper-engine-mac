@@ -74,6 +74,38 @@ final class EffectGraphReuseTests: XCTestCase {
         XCTAssertEqual(renderer.passesEncoded - encoded, 4, "a different texture object re-renders")
     }
 
+    /// TF4: a chain whose only live input is a timeline is reused while the timeline's value
+    /// stays (a paused, finished or start-paused one), and re-rendered when it moves.
+    func testAnAnimatedConstantsChainIsReusedWhileItsValueStays() throws {
+        let json = #"{"file": "effects/tint/effect.json", "passes": [{"constantshadervalues": {"color": {"value": "1 1 1", "#
+            + #""animation": {"c0": [{"frame": 0, "value": 1}], "options": {"fps": 30, "length": 30}}}}}]}"#
+        let effect = try JSONDecoder().decode(WEObjectEffect.self, from: Data(json.utf8))
+        let plan = try builder.build(effect, owner: (object: 1, effect: 0))
+        XCTAssertTrue(renderer.waitUntilReady([plan], width: 64, height: 64))
+        let input = try texture(64, 64)
+        let timeline = Timeline()
+        var context = context()
+        context = EffectGraphRenderer.Context(frame: context.frame, values: timeline, assetTexture: { _, _ in nil },
+                                              sceneSnapshot: nil, layerColor: context.layerColor, layerAlpha: context.layerAlpha)
+        try apply(plan, input, context)
+        try apply(plan, input, context)
+        XCTAssertEqual(renderer.layersReused, 1, "paused: reused")
+        let encoded = renderer.passesEncoded
+        timeline.value = [0.5, 0.5, 0.5]
+        try apply(plan, input, context)
+        XCTAssertEqual(renderer.passesEncoded - encoded, 1, "moved: re-rendered")
+        try apply(plan, input, context)
+        XCTAssertEqual(renderer.layersReused, 2, "held again: reused")
+    }
+
+    private final class Timeline: SceneValueContext {
+        var value: [Float] = [1, 0, 0]
+        func userProperty(_ name: String) -> String? { nil }
+        func animationValue(_ site: SceneAnimationSite) -> [Float]? {
+            site == SceneAnimationSite(owner: .material(object: 1, effect: 0, pass: 0), key: "color") ? value : nil
+        }
+    }
+
     func testAlternatingInputSizesReuseTargets() throws {
         let plan = try tintPlan()
         XCTAssertTrue(renderer.waitUntilReady([plan], width: 64, height: 64))
