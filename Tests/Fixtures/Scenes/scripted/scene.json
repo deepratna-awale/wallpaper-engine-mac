@@ -85,7 +85,7 @@
 				"value" : ""
 			},
 			"font" : "systemfont_arial",
-			"pointsize" : 24,
+			"pointsize": 8,
 			"color" : "1 1 1",
 			"horizontalalign" : "center",
 			"verticalalign" : "center"

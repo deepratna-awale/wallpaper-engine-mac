@@ -135,6 +135,10 @@ final class SceneScriptRenderTests: XCTestCase {
     func testScriptsDriveSoundsCreatedObjectsBrightnessAndSize() throws {
         let scene = try Scene(fixture: "scripted-objects", services: services(), size: SIMD2(64, 64))
         defer { scene.close() }
+        // WE applies `brightness` only under ultra post-processing (`SceneRenderSettings.appliesBrightness`).
+        var settings = SceneRenderSettings()
+        settings.postProcessing = .ultra
+        scene.renderer.renderSettings = settings
         let pixels = try scene.render(frames: 8) { _ in scene.renderer.particleSystemCount > 0 }
 
         let sounds = scene.renderer.sounds
