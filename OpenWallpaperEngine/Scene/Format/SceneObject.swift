@@ -69,6 +69,9 @@ struct WESceneObject: Decodable {
     // Sound objects (WE builds one when `"sound"` is not null)
     var sound: WESceneSound?
 
+    // Light objects (WE builds one when `"light"` is not null)
+    var light: WESceneLight?
+
     /// Every value-bearing field in its full authored form (literal, `user`, `script`, `animation`).
     /// The typed fields above hold only the literal fallback.
     var values: [SceneObjectValueField: SceneRawValue] = [:]
@@ -80,7 +83,7 @@ struct WESceneObject: Decodable {
         case padding, maxwidth, maxrows, limitwidth, limitrows, limituseellipsis, anchor, blockalign
         case image, alpha, brightness, color, colorBlendMode, clampuvs, size, alignment, shape
         case solid, disablepropagation, copybackground, parallaxDepth, perspective
-        case particle, instanceoverride, sound
+        case particle, instanceoverride, sound, light
     }
 
     init(from decoder: Decoder) throws {
@@ -105,6 +108,14 @@ struct WESceneObject: Decodable {
                 sound = try WESceneSound(from: decoder)
             } catch {
                 OWELog.error(.scene, "sound object \(name ?? "?") can't be read: \(error)")
+            }
+        }
+        // `decodeNil` throws only for a missing key, which `contains` ruled out.
+        if c.contains(.light), (try? c.decodeNil(forKey: .light)) == false {
+            do {
+                light = try WESceneLight(from: decoder)
+            } catch {
+                OWELog.error(.scene, "light object \(name ?? "?") can't be read: \(error)")
             }
         }
         effects = c.decodeElements(WEObjectEffect.self, forKey: .effects, userInfo: decoder.userInfo)

@@ -105,6 +105,8 @@ struct WESceneGeneral: Decodable {
     var nearz: Double?
     var farz: Double?
     var zoom: Double?
+    /// The light budget; nil when the scene has none, which leaves every new-style light unused.
+    var lightconfig: WELightConfig?
     /// Every bindable field in its full authored form (literal, `user`, `script`, `animation`).
     var values: [SceneGeneralValueField: SceneRawValue] = [:]
 
@@ -115,6 +117,7 @@ struct WESceneGeneral: Decodable {
     var bloom: Bool? { values[.bloom]?.literalBool }
     var bloomstrength: Double? { values[.bloomstrength]?.literalDouble }
     var bloomthreshold: Double? { values[.bloomthreshold]?.literalDouble }
+    var hdr: Bool? { values[.hdr]?.literalBool }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: AnyCodingKey.self)
@@ -136,6 +139,7 @@ struct WESceneGeneral: Decodable {
         nearz = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "nearz"), userInfo: info)?.literalDouble
         farz = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "farz"), userInfo: info)?.literalDouble
         zoom = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "zoom"), userInfo: info)?.literalDouble
+        lightconfig = container.decodeLogged(WELightConfig.self, forKey: AnyCodingKey(stringValue: "lightconfig"), userInfo: info)
     }
 }
 

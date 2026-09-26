@@ -208,6 +208,16 @@ final class WEAuthoredValuesTests: XCTestCase {
         XCTAssertEqual(camera.shakeSpeed, 3)
         XCTAssertEqual(camera.shakeAmplitude, 0.5)
         XCTAssertEqual(camera.shakeRoughness, 1)
+        XCTAssertFalse(bloom.hdr.enabled)
+        XCTAssertEqual(bloom.hdr.strength, 2, "wallpaper64.exe 0x1401870c2")
+        XCTAssertEqual(bloom.hdr.threshold, 1)
+        XCTAssertEqual(bloom.hdr.feather, 0.1, accuracy: 1e-6)
+        XCTAssertEqual(bloom.hdr.scatter, 1.619, accuracy: 1e-6)
+        XCTAssertEqual(bloom.hdr.iterations, 8)
+        let lighting = SceneLightingSettings(scene.general, in: context)
+        XCTAssertEqual(lighting.ambient, .zero, "the constructor zeroes the scene colours (0x140186f68)")
+        XCTAssertEqual(lighting.skylight, .zero)
+        XCTAssertNil(lighting.lightConfig)
     }
 
     func testAuthoredGeneralValuesWin() throws {

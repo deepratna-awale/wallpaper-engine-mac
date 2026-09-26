@@ -142,6 +142,8 @@ struct SceneBloomSettings {
     let strength: Float
     let threshold: Float
     let tint: SIMD3<Float>
+    /// `hdr` and `bloomhdr*`; HDR also needs `enabled` and the user's post-processing setting.
+    var hdr = SceneHDRBloomSettings()
 }
 
 struct SceneMetalContent {

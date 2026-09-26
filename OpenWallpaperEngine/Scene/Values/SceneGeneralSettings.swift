@@ -22,6 +22,60 @@ enum SceneGeneralDefaults {
     static let cameraParallaxAmount: Float = 0.5
     static let cameraParallaxDelay: Float = 0.1
     static let cameraParallaxMouseInfluence: Float = 0.5
+    /// HDR bloom (0x1401870c2…0x1401870ee); `bloomhdriterations` is an int.
+    static let bloomHDRStrength: Float = 2
+    static let bloomHDRThreshold: Float = 1
+    static let bloomHDRFeather: Float = 0.1
+    static let bloomHDRScatter: Float = 1.619
+    static let bloomHDRIterations = 8
+    /// The constructor zeroes both colours (0x140186f68…0x140186f7d). Every library scene authors
+    /// them (mostly 0.3 grey), so the zero is rarely seen.
+    static let ambientColor = SIMD3<Float>(repeating: 0)
+    static let skylightColor = SIMD3<Float>(repeating: 0)
+}
+
+/// `general.hdr` and `bloomhdr*`, resolved against the user properties. WE turns HDR on at load
+/// only when `bloom` and `hdr` are both true and the user's post-processing setting allows it
+/// (docs/lighting-plan.md §2.6).
+struct SceneHDRBloomSettings: Equatable {
+    var enabled = false
+    var strength = SceneGeneralDefaults.bloomHDRStrength
+    var threshold = SceneGeneralDefaults.bloomHDRThreshold
+    var feather = SceneGeneralDefaults.bloomHDRFeather
+    var scatter = SceneGeneralDefaults.bloomHDRScatter
+    var iterations = SceneGeneralDefaults.bloomHDRIterations
+
+    init() {}
+
+    init(_ general: WESceneGeneral, in context: SceneValueContext) {
+        func float(_ field: SceneGeneralValueField, _ fallback: Float) -> Float {
+            general.value(field, in: context)?.float ?? fallback
+        }
+        enabled = float(.hdr, 0) != 0
+        strength = float(.bloomhdrstrength, SceneGeneralDefaults.bloomHDRStrength)
+        threshold = float(.bloomhdrthreshold, SceneGeneralDefaults.bloomHDRThreshold)
+        feather = float(.bloomhdrfeather, SceneGeneralDefaults.bloomHDRFeather)
+        scatter = float(.bloomhdrscatter, SceneGeneralDefaults.bloomHDRScatter)
+        let authoredIterations = float(.bloomhdriterations, Float(SceneGeneralDefaults.bloomHDRIterations))
+        iterations = authoredIterations.isFinite ? Int(authoredIterations) : SceneGeneralDefaults.bloomHDRIterations
+    }
+}
+
+/// `general.ambientcolor`, `skylightcolor` and `lightconfig`, resolved against the user
+/// properties: the scene-wide lighting inputs (docs/lighting-plan.md §1.2, §2.2).
+struct SceneLightingSettings: Equatable {
+    var ambient = SceneGeneralDefaults.ambientColor
+    var skylight = SceneGeneralDefaults.skylightColor
+    /// The light budget; nil packs no new-style light.
+    var lightConfig: WELightConfig?
+
+    init() {}
+
+    init(_ general: WESceneGeneral, in context: SceneValueContext) {
+        ambient = general.value(.ambientcolor, in: context)?.vec3 ?? SceneGeneralDefaults.ambientColor
+        skylight = general.value(.skylightcolor, in: context)?.vec3 ?? SceneGeneralDefaults.skylightColor
+        lightConfig = general.lightconfig
+    }
 }
 
 extension SceneBloomSettings {
@@ -31,7 +85,7 @@ extension SceneBloomSettings {
         self.init(enabled: (general.value(.bloom, in: context)?.float ?? 0) != 0,
                   strength: general.value(.bloomstrength, in: context)?.float ?? SceneGeneralDefaults.bloomStrength,
                   threshold: general.value(.bloomthreshold, in: context)?.float ?? SceneGeneralDefaults.bloomThreshold,
-                  tint: tint)
+                  tint: tint, hdr: SceneHDRBloomSettings(general, in: context))
     }
 }
 

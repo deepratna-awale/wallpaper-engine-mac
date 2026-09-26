@@ -12,6 +12,16 @@ enum SceneGeneralValueField: String, CaseIterable {
     case camerashake, camerashakeamplitude, camerashakespeed, camerashakeroughness
     case cameraparallax, cameraparallaxamount, cameraparallaxdelay, cameraparallaxmouseinfluence
     case ambientcolor, skylightcolor
+    /// HDR bloom (docs/lighting-plan.md §1.2); WE turns HDR on only with `bloom` as well.
+    case hdr, bloomhdrstrength, bloomhdrthreshold, bloomhdrfeather, bloomhdrscatter, bloomhdriterations
+}
+
+/// Value-bearing fields of a light object (`WESceneLight`), as `wallpaper64.exe` registers them
+/// (0x14025da80). The raw forms are kept in `WESceneLight.values`.
+enum SceneLightValueField: String, CaseIterable {
+    case color, intensity, radius, exponent, innercone, outercone, controlpoint
+    case castshadow, usecookie, castvolumetrics, density, volumetricsexponent
+    case cascadedistance0, cascadedistance1, cascadedistance2, lightsourcesize
 }
 
 /// Fields of a particle object's `instanceoverride`. Each multiplies (or, for colours, replaces)
