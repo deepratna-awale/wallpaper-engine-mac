@@ -3,7 +3,7 @@ import XCTest
 @testable import OpenWallpaperEngine
 
 /// The object-model bugs the corpus replay found (docs/scenescript-replay-findings.md): RF1, asset
-/// paths under the script's Workshop item.
+/// paths under the script's Workshop item, and RF2, strings flushed although unchanged.
 final class SceneScriptReplayFindingTests: XCTestCase {
     private func objectFixture(_ objects: [SceneScriptObjectDescription]) throws -> (FakeSceneScriptObjectHost, SceneScriptRuntime) {
         let host = FakeSceneScriptObjectHost(scene: SceneScriptSceneDescription(objects: objects)) { source in
@@ -43,5 +43,33 @@ final class SceneScriptReplayFindingTests: XCTestCase {
                        ["models/workshop/2935714170/bar.json", "models/bar.json"])
         XCTAssertEqual(SceneScriptLayerSource.assetPaths("models/bar.json", workshopID: nil), ["models/bar.json"])
         XCTAssertEqual(SceneScriptLayerSource.assetPaths("bar.json", workshopID: "1"), ["bar.json"])
+    }
+
+    // MARK: - RF2
+
+    func testUnchangedStringsAreNotFlushedAgain() throws {
+        let (host, runtime) = try objectFixture([.make(.text, id: 1, name: "Clock", strings: [.text: "start"])])
+        runtime.add(SceneScriptInstance(id: "s", source: """
+            let frame = 0;
+            export function update() {
+                frame++;
+                thisLayer.text = frame < 3 ? 'start' : 'hello';
+                if (frame === 5) { thisLayer.text = 'other'; thisLayer.text = 'hello'; }
+                if (frame === 6) thisLayer.name = 'Clock';
+            }
+            """, objectSlot: 0))
+        runtime.load()
+        for _ in 0..<600 { runtime.frame(deltaTime: 1.0 / 60) }
+        XCTAssertEqual(host.takeCommands(), [.setString(slot: 0, field: .text, value: "hello")],
+                       "the initial text, a repeated text, A → B → A in one frame and the same name send nothing")
+    }
+
+    func testABoundTextReturningAConstantIsFlushedOnce() throws {
+        let f = try SceneScriptBindingFixture(objects: [.make(.text, id: 2, name: "Clock", strings: [.text: "<Clock>"])])
+        try f.load("""
+            {"objects": [{"id": 2, "name": "Clock", "text": {"script": "export function update(value) { return '12:00'; }", "value": "<Clock>"}}]}
+            """)
+        f.frames(600)
+        XCTAssertEqual(f.objectHost.takeCommands(), [.setString(slot: 0, field: .text, value: "12:00")])
     }
 }

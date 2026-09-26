@@ -16,6 +16,17 @@
 
     // Strings written this frame, flushed as one command per (slot, field) in the deferred phase.
     const pendingStrings = new Map();
+    // Layer → {field: the value the renderer has}: a flush that would send the same value again
+    // sends nothing (a clock returning its text every frame relays it out once a second).
+    const flushed = new WeakMap();
+
+    function lastFlushed(layer, field) {
+        const values = flushed.get(layer);
+        if (values !== undefined && Object.prototype.hasOwnProperty.call(values, field)) return values[field];
+        if (field === 'name') return String(layer._record.name);
+        const initial = layer._record.strings[field];
+        return initial === undefined ? '' : String(initial);
+    }
 
     function writeString(layer, field, value) {
         if (value === undefined || value === null || layer._dead) return;
@@ -23,12 +34,20 @@
         pendingStrings.set(layer._slot + ':' + field, { layer: layer, field: field });
     }
 
+    // Compared at the flush, not at each write, so A → B → A within a frame sends nothing.
     objects.flushStrings = function () {
         pendingStrings.forEach(function (entry) {
-            if (!entry.layer._dead) {
-                const value = entry.field === 'name' ? entry.layer._name : entry.layer._strings[entry.field];
-                objects.push(OP.setString, entry.layer._slot, undefined, [entry.field, value]);
+            const layer = entry.layer;
+            if (layer._dead) return;
+            const value = entry.field === 'name' ? layer._name : layer._strings[entry.field];
+            if (value === lastFlushed(layer, entry.field)) return;
+            if (!objects.push(OP.setString, layer._slot, undefined, [entry.field, value])) return;
+            let values = flushed.get(layer);
+            if (values === undefined) {
+                values = {};
+                flushed.set(layer, values);
             }
+            values[entry.field] = value;
         });
         pendingStrings.clear();
     };
