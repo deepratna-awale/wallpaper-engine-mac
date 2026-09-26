@@ -111,6 +111,11 @@ class WallpaperViewModel: ObservableObject {
     var keepWorkshopPreview: ((WEWallpaper) throws -> WEWallpaper?)?
     /// Receives wallpaper frame times. Set by `SafeRestart`.
     var renderWatchdog: RenderWatchdog?
+    /// The scenes (and Metal videos) running on this model's displays, one per wallpaper however
+    /// many displays show it (docs/architecture.md "Wallpaper instances").
+    let sceneInstances = WallpaperInstanceRegistry<WallpaperInstanceKey, SceneWallpaperInstance>(teardown: { $0.shutdown() })
+    /// The AVKit videos running on this model's displays, one player per video.
+    let videoInstances = WallpaperInstanceRegistry<WallpaperInstanceKey, VideoWallpaperViewModel>(teardown: { $0.stop() })
     private var playlistIndex = 0
 
     private func loadRecents() {
@@ -578,37 +583,23 @@ class WallpaperViewModel: ObservableObject {
         enabledScreens.contains(screenId)
     }
 
+    /// The app's "Audio Output" setting; off silences every wallpaper. Set by the app delegate.
+    @Published var audioOutputEnabled = true
+
+    /// Whether a running wallpaper instance (scene, video) plays its sound: each plays it once,
+    /// however many displays show it (`WallpaperAudioRouting`).
+    var playsInstanceAudio: Bool { audioOutputEnabled }
+
+    /// Whether `screenId`'s view of its wallpaper plays the sound, for wallpapers that keep a view
+    /// per display (web): only the one on the wallpaper's audible display does.
     func shouldPlayAudio(on screenId: String) -> Bool {
+        guard audioOutputEnabled else { return false }
         guard persistsWallpapers else { return true }
-
-        let wallpaper = wallpaper(for: screenId)
-        let type = wallpaper.project.type.lowercased()
-        guard type == "video" || type == "remote-video" else { return false }
-        let sourceKey = type == "remote-video"
-            ? wallpaper.project.file
-            : wallpaper.wallpaperDirectory.appending(path: wallpaper.project.file).standardizedFileURL.path
-        let matchingScreens = wallpapers.compactMap { assignedScreen, assignedWallpaper -> String? in
-            guard enabledScreens.contains(assignedScreen) else { return nil }
-            let assignedType = assignedWallpaper.project.type.lowercased()
-            guard assignedType == "video" || assignedType == "remote-video" else { return nil }
-            let assignedSource = assignedType == "remote-video"
-                ? assignedWallpaper.project.file
-                : assignedWallpaper.wallpaperDirectory.appending(path: assignedWallpaper.project.file).standardizedFileURL.path
-            return assignedSource == sourceKey ? assignedScreen : nil
-        }.sorted()
-        guard let firstMatchingScreen = matchingScreens.first else { return false }
-        let primaryScreenId = NSScreen.main.map(Self.screenId(for:))
-        return screenId == (matchingScreens.contains(primaryScreenId ?? "") ? primaryScreenId : firstMatchingScreen)
-    }
-
-    func shouldPlaySceneAudio(on screenId: String) -> Bool {
-        guard persistsWallpapers else { return true }
-        let enabledSceneScreens = wallpapers.compactMap { id, wallpaper in
-            enabledScreens.contains(id) && wallpaper.project.type.lowercased() == "scene" ? id : nil
-        }.sorted()
-        guard !enabledSceneScreens.isEmpty else { return false }
-        let primary = NSScreen.main.map(Self.screenId(for:))
-        return screenId == (enabledSceneScreens.contains(primary ?? "") ? primary : enabledSceneScreens[0])
+        let key = WallpaperInstanceKey(wallpaper(for: screenId))
+        let audible = WallpaperAudioRouting.audibleScreen(
+            of: key, assignments: wallpapers.mapValues(WallpaperInstanceKey.init),
+            enabledScreens: enabledScreens, mainScreen: NSScreen.main.map(Self.screenId(for:)))
+        return audible == screenId
     }
 
     func toggleScreen(_ screenId: String) {

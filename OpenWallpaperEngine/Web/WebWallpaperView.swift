@@ -85,6 +85,8 @@ struct WebWallpaperView: NSViewRepresentable {
             Self.loadWallpaper(nsView, viewModel: viewModel)
         }
         applyPlacement(wallpaperViewModel.wallpaperPlacement, to: nsView)
+        // A page per display, so only the one on the wallpaper's audible display plays sound.
+        viewModel.setMuted(!wallpaperViewModel.shouldPlayAudio(on: screenId) || wallpaperViewModel.playVolume == 0)
     }
 
     private func applyPlacement(_ placement: WallpaperPlacement, to webView: WKWebView) {

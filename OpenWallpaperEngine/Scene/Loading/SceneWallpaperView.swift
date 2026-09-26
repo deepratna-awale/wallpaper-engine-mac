@@ -5,263 +5,38 @@
 //  Created by Haren on 2023/8/13.
 //
 
-import Cocoa
 import SwiftUI
 import MetalKit
-import AVKit
-import Combine
 
+/// A scene (or Metal video) wallpaper on one display: a presenter of the wallpaper's shared
+/// instance (`SceneWallpaperInstance`), which every display showing the same wallpaper holds.
+/// A display switched to another wallpaper gets a new view (`WallpaperView` keys it by the
+/// wallpaper), and with it that wallpaper's instance.
 struct SceneWallpaperView: NSViewRepresentable {
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
-    @StateObject var viewModel: SceneWallpaperViewModel
     let screenId: String
 
-    init(wallpaperViewModel: WallpaperViewModel, screenId: String) {
-        self.wallpaperViewModel = wallpaperViewModel
-        self.screenId = screenId
-        self._viewModel = StateObject(wrappedValue: SceneWallpaperViewModel(wallpaper: wallpaperViewModel.wallpaper(for: screenId)))
-    }
-
-    private func sceneMusicEnabled(for wallpaper: WEWallpaper) -> Bool {
-        let key = "SceneMusicEnabled.\(wallpaper.wallpaperDirectory.path)"
-        return UserDefaults.standard.object(forKey: key) == nil ? true : UserDefaults.standard.bool(forKey: key)
-    }
-
-    private func sceneMusicVolume(for wallpaper: WEWallpaper) -> Float {
-        let key = "SceneMusicVolume.\(wallpaper.wallpaperDirectory.path)"
-        guard UserDefaults.standard.object(forKey: key) != nil else { return 1 }
-        return Float(UserDefaults.standard.double(forKey: key))
-    }
-
-    /// The wallpaper's sound gain (its sound layers fade to it): the app's volume times this
-    /// wallpaper's music volume, on the one display that plays the wallpaper's sound, and 0 while
-    /// muted, paused or with its music turned off, as WE's wallpaper volume goes to 0 then.
-    private func sceneSoundGain(for wallpaper: WEWallpaper) -> Float {
-        guard wallpaperViewModel.shouldPlaySceneAudio(on: screenId), sceneMusicEnabled(for: wallpaper),
-              wallpaperViewModel.playRate != 0 else { return 0 }
-        return wallpaperViewModel.playVolume * sceneMusicVolume(for: wallpaper)
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    /// `videoStream` is only built asynchronously inside `contentAsync`, so the very first
-    /// playback update after switching to a video wallpaper finds it still nil and no-ops.
-    /// Called again once that build lands (and on every update) so playback actually starts.
-    private func kickVideoPlaybackIfNeeded() {
-        guard SceneWallpaperViewModel.isVideoType(viewModel.currentWallpaper.project.type) else { return }
-        viewModel.updateVideoPlayback(playRate: wallpaperViewModel.playRate,
-                                      audioRate: wallpaperViewModel.audioPlayRate,
-                                      audioLevel: WallpaperServices.shared.audioLevel,
-                                      audioEnabled: wallpaperViewModel.shouldPlayAudio(on: screenId),
-                                      volume: wallpaperViewModel.playVolume)
-    }
+    func makeCoordinator() -> SceneWallpaperPresenter { SceneWallpaperPresenter() }
 
     func makeNSView(context: Context) -> MTKView {
-        let metalView = MTKView(frame: .zero)
-        context.coordinator.renderer = SceneMetalRenderer(view: metalView, scriptServices: AppDelegate.shared.sceneScriptServices,
-                                                          screenID: screenId)
-        context.coordinator.renderer?.sounds.setTargetGain(sceneSoundGain(for: viewModel.currentWallpaper))
-        context.coordinator.renderer?.scripts.onHalt = { [weak coordinator = context.coordinator,
-                                                         weak sceneViewModel = viewModel] error in
-            guard let coordinator, let sceneViewModel else { return }
-            // `take()` reports it from the renderer's draw, on the main thread.
-            MainActor.assumeIsolated { coordinator.showScriptsHalted(sceneViewModel, error: error) }
+        let view = MTKView(frame: .zero)
+        let wallpaper = wallpaperViewModel.wallpaper(for: screenId)
+        let environment = SceneWallpaperEnvironment(wallpapers: wallpaperViewModel,
+                                                    settings: AppDelegate.shared.globalSettingsViewModel,
+                                                    scriptServices: AppDelegate.shared.sceneScriptServices)
+        let screenId = screenId
+        let lease = SceneWallpaperPresenter.Lease(wallpaperViewModel.sceneInstances, key: WallpaperInstanceKey(wallpaper)) {
+            SceneWallpaperInstance(wallpaper: wallpaper, environment: environment, screenID: screenId)
         }
-        if let watchdog = wallpaperViewModel.renderWatchdog {
-            context.coordinator.renderer?.frameTimeObserver = { watchdog.recordFrame(duration: $0) }
-        }
-        context.coordinator.propertyObserver = NotificationCenter.default.addObserver(
-            forName: .sceneUserPropertiesDidChange, object: nil, queue: .main
-        ) { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] notification in
-            let keys = notification.userInfo?["keys"] as? [String] ?? []
-            guard let coordinator, let sceneViewModel else { return }
-            // Scripts get every change (`applyUserProperties`); content is rebuilt only when it
-            // reads the property itself.
-            coordinator.renderer?.scripts.userPropertiesDidChange(Set(keys))
-            let impact = sceneViewModel.impact(of: keys)
-            guard impact > .none else { return }
-            coordinator.scheduleSceneUpdate(impact, for: sceneViewModel)
-        }
-        context.coordinator.assetsObserver = NotificationCenter.default.addObserver(
-            forName: .wallpaperEngineAssetsDirectoryDidChange, object: nil, queue: .main
-        ) { [weak renderer = context.coordinator.renderer, weak sceneViewModel = viewModel] _ in
-            sceneViewModel?.reloadSharedAssets()
-            let revision = sceneViewModel?.metalRevision ?? -1
-            sceneViewModel?.contentAsync { content in
-                renderer?.setContent(content)
-                context.coordinator.metalRevision = revision
-            }
-        }
-        context.coordinator.dependencyObserver = NotificationCenter.default.addObserver(
-            forName: .workshopDependenciesDidInstall, object: nil, queue: .main
-        ) { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] notification in
-            guard let coordinator, let sceneViewModel,
-                  let directory = notification.userInfo?["wallpaperDirectory"] as? URL,
-                  directory == sceneViewModel.currentWallpaper.wallpaperDirectory.standardizedFileURL else { return }
-            coordinator.scheduleSceneUpdate(.reloadScene, for: sceneViewModel)
-        }
-        context.coordinator.sceneMusicObserver = NotificationCenter.default.addObserver(
-            forName: .sceneMusicSettingsDidChange, object: nil, queue: .main
-        ) { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] notification in
-            guard let sceneViewModel else { return }
-            let path = notification.userInfo?["path"] as? String
-            guard path == nil || path == sceneViewModel.currentWallpaper.wallpaperDirectory.path else { return }
-            coordinator?.renderer?.sounds.setTargetGain(sceneSoundGain(for: sceneViewModel.currentWallpaper))
-        }
-        // Zoom/tilt/saturation amounts are baked into the layer when content is built, so the
-        // toggles do nothing until the content is rebuilt.
-        context.coordinator.videoMusicSyncObserver = NotificationCenter.default.addObserver(
-            forName: .videoMusicSyncSettingsDidChange, object: nil, queue: .main
-        ) { [weak sceneViewModel = viewModel] notification in
-            guard let sceneViewModel else { return }
-            let path = notification.userInfo?["path"] as? String
-            guard path == nil || path == sceneViewModel.currentWallpaper.wallpaperDirectory.path else { return }
-            sceneViewModel.invalidateContent()
-        }
-        // The user's quality settings: the renderer reads them per frame, the content is built for them.
-        let globalSettings = AppDelegate.shared.globalSettingsViewModel
-        let renderSettings = SceneRenderSettings(globalSettings.settings)
-        context.coordinator.renderer?.renderSettings = renderSettings
-        viewModel.setRenderSettings(renderSettings)
-        context.coordinator.renderSettingsObserver = globalSettings.$settings
-            .map(SceneRenderSettings.init)
-            .removeDuplicates()
-            .dropFirst()
-            .sink { [weak coordinator = context.coordinator, weak sceneViewModel = viewModel] settings in
-                guard let coordinator, let sceneViewModel else { return }
-                coordinator.renderer?.renderSettings = settings
-                sceneViewModel.setRenderSettings(settings)
-                coordinator.scheduleSceneUpdate(.rebuildContent, for: sceneViewModel)
-            }
-        context.coordinator.renderer?.setPlacement(wallpaperViewModel.wallpaperPlacement)
-        context.coordinator.metalRevision = viewModel.metalRevision
-        viewModel.contentAsync { [weak coordinator = context.coordinator] content in
-            coordinator?.renderer?.setContent(content)
-            kickVideoPlaybackIfNeeded()
-        }
-        metalView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
-        return metalView
+        context.coordinator.show(lease, in: view)
+        return view
     }
 
-    func updateNSView(_ metalView: MTKView, context: Context) {
-        let selectedWallpaper = wallpaperViewModel.wallpaper(for: screenId)
-        let currentWallpaper = viewModel.currentWallpaper
-
-        // Update scene if wallpaper changed
-        if selectedWallpaper.wallpaperDirectory.appending(path: selectedWallpaper.project.file)
-            != currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file) {
-            viewModel.currentWallpaper = selectedWallpaper
-        }
-
-        if context.coordinator.metalRevision != viewModel.metalRevision {
-            context.coordinator.metalRevision = viewModel.metalRevision
-            viewModel.contentAsync { [weak coordinator = context.coordinator] content in
-                coordinator?.renderer?.setContent(content)
-                kickVideoPlaybackIfNeeded()
-            }
-        }
-        context.coordinator.renderer?.setPlacement(wallpaperViewModel.wallpaperPlacement)
-        // A video wallpaper on the Metal path has no scene audio; its own stream owns playback.
-        kickVideoPlaybackIfNeeded()
-        context.coordinator.renderer?.sounds.setTargetGain(sceneSoundGain(for: viewModel.currentWallpaper))
-        metalView.preferredFramesPerSecond = Int(AppDelegate.shared.globalSettingsViewModel.settings.fps)
-        metalView.isPaused = wallpaperViewModel.playRate == 0
+    func updateNSView(_ view: MTKView, context: Context) {
+        context.coordinator.instance?.update()
     }
 
-    final class Coordinator {
-        var renderer: SceneMetalRenderer?
-        var metalRevision = -1
-        var propertyObserver: NSObjectProtocol?
-        var assetsObserver: NSObjectProtocol?
-        var sceneMusicObserver: NSObjectProtocol?
-        var dependencyObserver: NSObjectProtocol?
-        var videoMusicSyncObserver: NSObjectProtocol?
-        /// Follows the user's quality settings (`SceneRenderSettings`).
-        var renderSettingsObserver: AnyCancellable?
-
-        private var pendingImpact: SceneChangeImpact = .none
-        private var pendingUpdate: DispatchWorkItem?
-        private var scriptsNotice: SafeRestartNotice?
-
-        /// The watchdog stopped this wallpaper's scripts (a script ran past WE's 15 s): the
-        /// wallpaper keeps showing their last values. Says so without blocking, like SafeRestart;
-        /// Retry reloads the wallpaper, which starts its scripts again.
-        @MainActor
-        func showScriptsHalted(_ viewModel: SceneWallpaperViewModel, error: SceneScriptError?) {
-            let title = viewModel.currentWallpaper.project.title
-            OWELog.error(.script, "\(title): scripts stopped by the watchdog\(error.map { " in \($0.scriptID)" } ?? "")")
-            let message = String(localized: """
-            The scripts of “\(title)” were stopped because one of them ran for too long. The wallpaper \
-            keeps showing, without its scripted animations.
-            """)
-            scriptsNotice?.close()
-            scriptsNotice = SafeRestartNotice(
-                message: message,
-                onRetry: { [weak self, weak viewModel] in
-                    self?.dismissScriptsNotice()
-                    guard let self, let viewModel else { return }
-                    // A new document signature is not needed: dropping the content stops the
-                    // halted scripts, and the reload starts new ones.
-                    self.renderer?.releaseContent()
-                    self.scheduleSceneUpdate(.reloadScene, for: viewModel)
-                },
-                onDismiss: { [weak self] in self?.dismissScriptsNotice() })
-            scriptsNotice?.show()
-        }
-
-        @MainActor
-        private func dismissScriptsNotice() {
-            scriptsNotice?.close()
-            scriptsNotice = nil
-        }
-
-        /// Coalesces bursts of property changes (e.g. dragging a slider) into one rebuild,
-        /// escalating to a full re-parse only when some key in the burst demands it.
-        func scheduleSceneUpdate(_ impact: SceneChangeImpact, for viewModel: SceneWallpaperViewModel) {
-            pendingImpact = Swift.max(pendingImpact, impact)
-            pendingUpdate?.cancel()
-            let work = DispatchWorkItem { [weak self, weak viewModel] in
-                guard let self, let viewModel else { return }
-                let resolved = self.pendingImpact
-                self.pendingImpact = .none
-                if resolved == .reloadScene {
-                    viewModel.reloadCurrentScene()
-                } else {
-                    // Content is memoised against metalRevision, so without this the rebuild
-                    // would just hand back the pre-change scene.
-                    viewModel.invalidateContent()
-                }
-                self.metalRevision = viewModel.metalRevision
-                viewModel.contentAsync { [weak self] content in
-                    self?.renderer?.setContent(content)
-                }
-            }
-            pendingUpdate = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
-        }
-
-        deinit {
-            pendingUpdate?.cancel()
-            if let propertyObserver {
-                NotificationCenter.default.removeObserver(propertyObserver)
-            }
-            if let assetsObserver {
-                NotificationCenter.default.removeObserver(assetsObserver)
-            }
-            if let dependencyObserver {
-                NotificationCenter.default.removeObserver(dependencyObserver)
-            }
-            if let sceneMusicObserver {
-                NotificationCenter.default.removeObserver(sceneMusicObserver)
-            }
-            if let videoMusicSyncObserver {
-                NotificationCenter.default.removeObserver(videoMusicSyncObserver)
-            }
-            if let scriptsNotice { MainActor.assumeIsolated { scriptsNotice.close() } }
-            // Built layers hold the video stream and the sound layers, so the renderer has to let
-            // go of them or the soundtrack outlives this view.
-            renderer?.releaseContent()
-            renderer = nil
-        }
+    static func dismantleNSView(_ view: MTKView, coordinator: SceneWallpaperPresenter) {
+        coordinator.stop()
     }
 }

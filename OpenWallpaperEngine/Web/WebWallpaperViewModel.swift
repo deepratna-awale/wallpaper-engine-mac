@@ -158,6 +158,16 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         audioTimer = timer
     }
 
+    /// Whether this display's page is silent: it isn't on the wallpaper's audible display, audio
+    /// output is off, or the volume is 0 (`WallpaperAudioRouting`).
+    private(set) var isMuted = false
+
+    func setMuted(_ muted: Bool) {
+        guard muted != isMuted else { return }
+        isMuted = muted
+        if let webView { WebPageAudio.setMuted(muted, on: webView) }
+    }
+
     func stopAudio() {
         audioTimer?.invalidate()
         audioTimer = nil
@@ -172,6 +182,8 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         let javascriptStyle = "var css = '*{-webkit-touch-callout:none;-webkit-user-select:none}'; var head = document.head || document.getElementsByTagName('head')[0]; var style = document.createElement('style'); style.type = 'text/css'; style.appendChild(document.createTextNode(css)); head.appendChild(style);"
         webView.evaluateJavaScript(javascriptStyle, completionHandler: nil)
         applyAllProperties(to: webView)
+        // A new page starts unmuted by script.
+        if isMuted { WebPageAudio.setMuted(true, on: webView) }
         
         if AppDelegate.shared.globalSettingsViewModel.settings.adjustMenuBarTint {
             webView.takeSnapshot(with: nil) { [weak self] nsImage, error in

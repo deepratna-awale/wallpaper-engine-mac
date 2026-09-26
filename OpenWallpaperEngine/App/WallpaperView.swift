@@ -15,17 +15,20 @@ struct WallpaperView: View {
 
     var body: some View {
         let wallpaper = viewModel.wallpaper(for: screenId)
+        // Scenes and videos run one shared instance per wallpaper; a display that switches
+        // wallpaper gets a new view, and with it the other wallpaper's instance.
+        let instance = WallpaperInstanceKey(wallpaper)
         switch wallpaper.project.type.lowercased() {
         // A remote video is the same pipeline as a local one; only the URL differs.
         case "video", "remote-video":
             // The Metal path draws video as a scene layer so the effect stack applies to it.
             if AppDelegate.shared.globalSettingsViewModel.settings.videoFramework == .metal {
-                SceneWallpaperView(wallpaperViewModel: viewModel, screenId: screenId)
+                SceneWallpaperView(wallpaperViewModel: viewModel, screenId: screenId).id(instance)
             } else {
-                AudioReactiveVideoWallpaperView(wallpaperViewModel: viewModel, screenId: screenId)
+                AudioReactiveVideoWallpaperView(wallpaperViewModel: viewModel, screenId: screenId).id(instance)
             }
         case "scene":
-            SceneWallpaperView(wallpaperViewModel: viewModel, screenId: screenId)
+            SceneWallpaperView(wallpaperViewModel: viewModel, screenId: screenId).id(instance)
         case "web":
             WebWallpaperView(wallpaperViewModel: viewModel, screenId: screenId)
         case "remote-image":

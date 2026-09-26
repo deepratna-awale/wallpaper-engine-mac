@@ -9,10 +9,14 @@ import AVKit
 import SwiftUI
 import Combine
 
+/// One video wallpaper (AVKit path), running once for every display that shows it
+/// (`WallpaperViewModel.videoInstances`): one player decodes the video, which each display's
+/// `AVPlayerView` shows, and one plays its sound.
 @MainActor
 class VideoWallpaperViewModel: ObservableObject {
-    private let playsAudio: Bool
-    private let wallpaperViewModel: WallpaperViewModel
+    /// Whether the soundtrack plays: the app's audio output (`WallpaperAudioRouting`).
+    private var playsAudio: Bool
+    private unowned let wallpaperViewModel: WallpaperViewModel
 
     @Published var currentWallpaper: WEWallpaper {
         didSet {
@@ -52,13 +56,9 @@ class VideoWallpaperViewModel: ObservableObject {
     private static let rateEpsilon: Float = 0.01
     private static let audioSmoothing = 0.25
 
-    init(
-        wallpaper currentWallpaper: WEWallpaper,
-        playsAudio: Bool = true,
-        wallpaperViewModel: WallpaperViewModel
-    ) {
+    init(wallpaper currentWallpaper: WEWallpaper, wallpaperViewModel: WallpaperViewModel) {
         self.currentWallpaper = currentWallpaper
-        self.playsAudio = playsAudio
+        self.playsAudio = wallpaperViewModel.playsInstanceAudio
         self.wallpaperViewModel = wallpaperViewModel
         self.player = AVPlayer(url: currentWallpaper.mediaURL)
         self.audioPlayer = AVPlayer(url: currentWallpaper.mediaURL)
@@ -100,6 +100,25 @@ class VideoWallpaperViewModel: ObservableObject {
                 self?.playVolume = volume
             }
             .store(in: &cancellables)
+        wallpaperViewModel.$audioOutputEnabled
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] enabled in
+                self?.setAudioEnabled(enabled)
+            }
+            .store(in: &cancellables)
+        playVolume = wallpaperViewModel.playVolume
+        playRate = wallpaperViewModel.playRate
+    }
+
+    /// Stops playback for good: no display shows the video any more.
+    func stop() {
+        cancellables.removeAll()
+        probeTimer?.invalidate()
+        probeTimer = nil
+        player.pause()
+        audioPlayer.pause()
+        player.replaceCurrentItem(with: nil)
+        audioPlayer.replaceCurrentItem(with: nil)
     }
 
     deinit {
@@ -136,6 +155,7 @@ class VideoWallpaperViewModel: ObservableObject {
     }
 
     func setAudioEnabled(_ enabled: Bool) {
+        playsAudio = enabled
         player.isMuted = true
         audioPlayer.isMuted = !enabled
         updatePlaybackRates(audioLevel: WallpaperServices.shared.audioLevel)

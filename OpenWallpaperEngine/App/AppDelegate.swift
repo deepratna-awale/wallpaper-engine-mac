@@ -106,6 +106,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// Fetches the Workshop items shown wallpapers borrow assets from.
     lazy var workshopDependencies = WorkshopDependencyService(steamCmd: contentViewModel.steamCmd)
     private var workshopDependencyCancellable: AnyCancellable?
+    private var audioOutputCancellable: AnyCancellable?
     
     var importOpenPanel: NSOpenPanel!
     
@@ -122,6 +123,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
 
         wallpaperViewModel.keepWorkshopPreview = { [steamCmd = contentViewModel.steamCmd] in try steamCmd.keepPreview($0) }
+
+        // Settings → Audio Output silences every wallpaper (`WallpaperAudioRouting`).
+        audioOutputCancellable = globalSettingsViewModel.$settings.map(\.audioOutput).removeDuplicates()
+            .sink { [weak self] enabled in self?.wallpaperViewModel.audioOutputEnabled = enabled }
 
         // Before the wallpaper windows exist, so a wallpaper behind an unclean exit never loads.
         safeRestart.attach(to: wallpaperViewModel)

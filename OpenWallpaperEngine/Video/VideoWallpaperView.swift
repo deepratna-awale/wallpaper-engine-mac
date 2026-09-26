@@ -33,19 +33,9 @@ struct VideoWallpaperView: NSViewRepresentable {
         return view
     }
 
+    /// Playback, volume and sound follow the app's controls in the shared view model; a display
+    /// only places the picture.
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
-        let selectedWallpaper = wallpaperViewModel.wallpaper(for: screenId)
-        let currentWallpaper = viewModel.currentWallpaper
-
-        if selectedWallpaper.wallpaperDirectory.appending(path: selectedWallpaper.project.file) != currentWallpaper.wallpaperDirectory.appending(path: currentWallpaper.project.file) {
-            viewModel.currentWallpaper = selectedWallpaper
-        }
-
-        viewModel.playRate = wallpaperViewModel.playRate
-        viewModel.playVolume = wallpaperViewModel.shouldPlayAudio(on: screenId)
-            ? wallpaperViewModel.playVolume
-            : 0
-        viewModel.setAudioEnabled(wallpaperViewModel.shouldPlayAudio(on: screenId))
         nsView.videoGravity = videoGravity(for: wallpaperViewModel.wallpaperPlacement)
     }
 
@@ -61,20 +51,27 @@ struct VideoWallpaperView: NSViewRepresentable {
     }
 }
 
+/// A video wallpaper (AVKit path) on one display: a view of the video's shared player
+/// (`WallpaperViewModel.videoInstances`), so the video decodes and plays its sound once however
+/// many displays show it. `WallpaperView` keys it by the wallpaper, so a display switched to
+/// another video gets that video's player.
 struct AudioReactiveVideoWallpaperView: View {
+    typealias Lease = WallpaperInstanceLease<WallpaperInstanceKey, VideoWallpaperViewModel>
+
     @ObservedObject var wallpaperViewModel: WallpaperViewModel
-    @StateObject private var viewModel: VideoWallpaperViewModel
+    @StateObject private var lease: Lease
     let screenId: String
 
     init(wallpaperViewModel: WallpaperViewModel, screenId: String) {
         self.wallpaperViewModel = wallpaperViewModel
         self.screenId = screenId
-        self._viewModel = StateObject(wrappedValue: VideoWallpaperViewModel(
-            wallpaper: wallpaperViewModel.wallpaper(for: screenId),
-            playsAudio: wallpaperViewModel.shouldPlayAudio(on: screenId),
-            wallpaperViewModel: wallpaperViewModel
-        ))
+        let wallpaper = wallpaperViewModel.wallpaper(for: screenId)
+        self._lease = StateObject(wrappedValue: Lease(wallpaperViewModel.videoInstances, key: WallpaperInstanceKey(wallpaper)) {
+            VideoWallpaperViewModel(wallpaper: wallpaper, wallpaperViewModel: wallpaperViewModel)
+        })
     }
+
+    private var viewModel: VideoWallpaperViewModel { lease.instance }
 
     var body: some View {
         TimelineView(.animation) { _ in
