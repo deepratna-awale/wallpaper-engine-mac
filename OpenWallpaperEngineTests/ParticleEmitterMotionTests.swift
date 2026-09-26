@@ -22,8 +22,7 @@ final class ParticleEmitterMotionTests: XCTestCase {
         system.minimumVelocity = .zero
         system.maximumVelocity = .zero
         system.lifetime = 50...50
-        system.minimumAngularVelocity = 0
-        system.maximumAngularVelocity = 0
+        system.angularVelocity = 0...0
         system.worldSpace = worldSpace
         return ParticleSystemRuntime(texture: texture, configuration: system.configuration, seed: 3)
     }

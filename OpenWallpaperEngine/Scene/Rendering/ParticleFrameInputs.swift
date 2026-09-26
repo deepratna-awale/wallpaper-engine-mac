@@ -1,13 +1,26 @@
 import simd
 
 /// What a particle system's simulation step reads from outside the particles: the time step,
-/// script-evaluated values, the emitter's transform this frame and control points. Both
-/// simulations (CPU and GPU) step from the same inputs, evaluated once per frame on the CPU.
+/// script-evaluated values, the system's space this frame, control points and the encoded
+/// program. Both simulations (CPU and GPU) step from the same inputs, evaluated once per frame on
+/// the CPU.
+///
+/// WE simulates a system in its object's space unless the system is `worldspace` (flag 1), and
+/// draws it through the object's model matrix (`wallpaper64.exe` 0x14023761b…0x14023767a; the
+/// particle vertex shaders expand in that space). The particles here are kept in the scene;
+/// `space` takes the system's space to the scene, and every initializer and operator runs in the
+/// system's space (`ParticleProgramCPU`, `ParticleProgram.h`), so velocities, gravity and every
+/// distance scale and turn with the object as they do in WE.
 struct ParticleFrameInputs {
     var deltaTime: Float = 0
-    /// Seconds since the system started (after this step).
+    /// Seconds since the system started (after this step): WE's system time.
     var elapsedTime: Float = 0
-    /// Steps taken, this one included; seeds per-frame random draws.
+    /// Seconds since the scene started: WE's engine time, which `turbulence`,
+    /// `turbulentvelocityrandom` and `positionoffsetrandom` read.
+    var engineTime: Float = 0
+    /// The fraction of the day that has passed (`remapvalue`'s `timeofday`).
+    var timeOfDay: Float = 0
+    /// Steps taken, this one included.
     var frameIndex: UInt32 = 0
     var emissionRate: Float = 0
     /// The most particles the system (each instance, when instanced) may hold: the authored
@@ -15,18 +28,10 @@ struct ParticleFrameInputs {
     var maximum = 0
     /// The instance overrides spawned particles take: size, alpha, lifetime and speed factors.
     var spawnScale = SIMD4<Float>(repeating: 1)
-    /// The overrides' tint times brightness, on spawned particles' colour.
+    /// The overrides' tint times brightness: spawned particles' base colour.
     var colorScale = SIMD3<Float>(repeating: 1)
-    /// Audio responses (`ParticleAudioResponse`): of an audio-responsive `turbulentvelocityrandom`,
-    /// of `turbulence`'s and `vortex`'s speeds. 1 without one.
-    var audioVelocityScale: Float = 1
-    var turbulenceScale: Float = 1
-    var vortexScale: Float = 1
-    /// Collision shapes in scene space this step, in operator order.
+    /// Collision shapes in the scene this step (`ParticleOperatorKind.collision` records index them).
     var collisions: [ParticleCollisionPlacement] = []
-    var drag: Float = 0
-    var fadeIn: Float = 0
-    var fadeOut: Float = 1
     /// The system emits nothing and shows nothing this frame: every particle is removed.
     var clears = false
     /// Particles emitted at once this step on top of the rate: the emitter's `instantaneous`
@@ -39,42 +44,23 @@ struct ParticleFrameInputs {
     var periodLimit: Int?
     /// The rate emits at most one particle a step.
     var onePerFrame = false
-    /// Where particles spawn: the emitter, or its cursor-locked control point.
-    var spawnOrigin = SIMD2<Float>.zero
-    var attractorOrigin = SIMD2<Float>.zero
-    /// `mapsequencebetweencontrolpoints` end points, when the system has a sequence.
-    var sequenceStart: SIMD2<Float>?
-    var sequenceEnd: SIMD2<Float>?
-    /// `remapinitialvalue`'s control point.
-    var remapAnchor = SIMD2<Float>.zero
 
-    // The emitter's space this frame (`SceneParticleEmitterSpace` of its live transform).
-    /// Scales the spawn shape's emitter-space extent.
-    var extentScale = SIMD2<Float>(1, 1)
-    /// Places emitter-space offsets given y down (position offsets, control points).
-    var offsetLinear = matrix_identity_float2x2
-    /// Turns emitter-space velocities into scene space.
-    var velocityRotation = matrix_identity_float2x2
-    /// Gravity in scene space.
-    var gravity = SIMD2<Float>.zero
-    var vortexOrigin = SIMD2<Float>.zero
-    var reductionOrigin = SIMD2<Float>.zero
-    var constraintOrigin = SIMD2<Float>.zero
-    /// The operators' offsets from their control points, in the scene (`linked(_:start:controlPoints:)`).
-    var attractorOffset = SIMD2<Float>.zero
-    var reductionOffset = SIMD2<Float>.zero
-    var constraintOffset = SIMD2<Float>.zero
-    /// Points that come from the cursor rather than the emitter: they stay put in every instance
-    /// of an instanced system (`placed(at:)`).
-    var absolutePoints: AbsolutePoints = []
-
-    struct AbsolutePoints: OptionSet {
-        let rawValue: UInt32
-        static let spawnOrigin = AbsolutePoints(rawValue: 1 << 0), attractor = AbsolutePoints(rawValue: 1 << 1)
-        static let sequenceStart = AbsolutePoints(rawValue: 1 << 2), sequenceEnd = AbsolutePoints(rawValue: 1 << 3)
-        static let remapAnchor = AbsolutePoints(rawValue: 1 << 4), vortex = AbsolutePoints(rawValue: 1 << 5)
-        static let reduction = AbsolutePoints(rawValue: 1 << 6), constraint = AbsolutePoints(rawValue: 1 << 7)
-    }
+    /// The system's space in the scene: the emitter's transform, identity for a `worldspace`
+    /// system (which simulates in the scene).
+    var space = SceneAffineTransform.identity
+    /// The emitter's scale and rotation as the system's space sees them: identity for a system in
+    /// its emitter's space, the emitter's own for a `worldspace` one. Spawn offsets and the
+    /// velocity initializers turn with it (WE's control point matrix, 0x140237c14, 0x14023b364).
+    var emitterLinear = matrix_identity_float2x2
+    /// The control points in the system's space, by index, and where they were last step.
+    var controlPoints = [SIMD2<Float>](repeating: .zero, count: ParticleControlPoint.count)
+    var previousControlPoints = [SIMD2<Float>](repeating: .zero, count: ParticleControlPoint.count)
+    /// Control points that sit in the scene (the cursor, scene-space and linked ones): an instance
+    /// of an instanced system doesn't carry them (`placed(at:)`). Bit n is control point n.
+    var absolutePoints: UInt32 = 0
+    /// This step's program: every record with its scripts and audio evaluated.
+    var initializers: [ParticleProgramOp] = []
+    var operators: [ParticleProgramOp] = []
 
     /// How the emitter moved since the last step, for systems whose particles live in its space:
     /// applied to every particle alive before this step's spawns. Nil when it did not move.
@@ -95,6 +81,9 @@ struct ParticleFrameInputs {
     /// `drawLinear`: its area scale's square root (`ParticleSystemRuntime.drawSizeScale`).
     var drawSizeScale: Float = 1
 
+    /// The system's space to the scene's inverse linear part (identity when it collapses).
+    var toSpace: simd_float2x2 { space.inverse?.linear ?? matrix_identity_float2x2 }
+
     /// Advances `system`'s clock and evaluates this step's inputs. `emitter` is the emitter's
     /// world transform this frame; nil keeps the authored one.
     static func advance(_ system: ParticleSystemRuntime, deltaTime: Float, cursor: SIMD2<Float>,
@@ -106,12 +95,15 @@ struct ParticleFrameInputs {
         var inputs = ParticleFrameInputs()
         inputs.deltaTime = deltaTime
         inputs.elapsedTime = system.elapsedTime
+        inputs.engineTime = values.map { Float($0.time) } ?? system.elapsedTime
         inputs.frameIndex = system.frameIndex
+        inputs.timeOfDay = ParticleProgramCPU.fractionOfDay()
         let world = emitter ?? childEmitter(system) ?? configuration.authoredWorld
         inputs.motion = motion(of: system, to: world)
         let time = Double(system.elapsedTime)
-        inputs.applyOverrides(configuration, values: values ?? LiveSceneValueContext(time: time, scriptTime: time))
-        let rate = configuration.emissionRate * inputs.overrideRate
+        let context = values ?? LiveSceneValueContext(time: time, scriptTime: time)
+        let overrides = inputs.applyOverrides(configuration, values: context)
+        let rate = configuration.emissionRate * overrides.rate
         inputs.emissionRate = configuration.emissionRateScript.map {
             AudioReactiveScriptEngine.shared.evaluate($0, fallback: rate, time: time)
         } ?? rate
@@ -119,12 +111,10 @@ struct ParticleFrameInputs {
         let idle = inputs.emissionRate <= 0.0001 && configuration.instantaneous <= 0
         if idle || configuration.opacityMultiplier <= 0.0001 {
             inputs.clears = true
-            inputs.fadeIn = system.fadeIn
-            inputs.fadeOut = system.fadeOut
             return inputs
         }
         let timing = configuration.emitterTiming
-        inputs.periodLimit = timing.periodLimit(countScale: inputs.overrideCount)
+        inputs.periodLimit = timing.periodLimit(countScale: overrides.count)
         inputs.onePerFrame = timing.onePerFrame
         // An instanced system times each instance instead (`ParticleCPUSimulation.updateInstances`).
         if !configuration.isInstanced {
@@ -133,48 +123,34 @@ struct ParticleFrameInputs {
             inputs.startsPeriod = step.startsPeriod
             if !step.emits { inputs.emissionRate = 0 }
         }
-        inputs.drag = configuration.dragScript.map {
-            AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.drag, time: time)
-        } ?? configuration.drag
-        system.fadeIn = configuration.fadeInScript.map {
-            AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeIn, time: time)
-        } ?? configuration.fadeIn
-        system.fadeOut = configuration.fadeOutScript.map {
-            AudioReactiveScriptEngine.shared.evaluate($0, fallback: configuration.fadeOut, time: time)
-        } ?? configuration.fadeOut
-        inputs.fadeIn = system.fadeIn
-        inputs.fadeOut = system.fadeOut
         // Silence stops an audio-responsive emitter without clearing what it emitted.
         if let response = configuration.rateAudio { inputs.emissionRate *= response.response(audio) }
-        inputs.audioVelocityScale = configuration.velocityAudio?.response(audio) ?? 1
-        inputs.turbulenceScale = configuration.turbulenceAudio?.response(audio) ?? 1
-        inputs.vortexScale = configuration.vortexAudio?.response(audio) ?? 1
-        let space = SceneParticleEmitterSpace(world: world)
-        inputs.place(configuration, in: space, cursor: cursor)
+        inputs.space = configuration.worldSpace ? .identity : world
+        inputs.emitterLinear = configuration.worldSpace ? world.linear : matrix_identity_float2x2
+        if configuration.worldSpace {
+            let linear = world.linear
+            inputs.spawnSizeScale = sqrt(abs(simd_determinant(linear)))
+            inputs.spawnTurn = atan2(linear.columns.0.y, linear.columns.0.x)
+        }
         system.drawLinear = configuration.worldSpace ? matrix_identity_float2x2 : world.linear
         inputs.drawLinear = system.drawLinear
         inputs.drawSizeScale = system.drawSizeScale
-        inputs.collisions = configuration.collisions.flatMap { collision in
-            collision.placed(in: space) { id in
-                controlPointPosition(id, configuration: configuration, space: space, cursor: cursor)
-            }
-        }
+        inputs.placeControlPoints(system, world: world, cursor: cursor, overrides: overrides)
+        inputs.encodeProgram(system, time: time, audio: audio, countScale: overrides.count)
         return inputs
     }
 
-    /// The instance overrides' rate and count factors (`applyOverrides`).
-    private var overrideRate: Float = 1
-    private var overrideCount: Float = 1
-
-    /// The system's instance overrides this frame: resolved again when bound to user properties.
-    private mutating func applyOverrides(_ configuration: SceneMetalParticleSystem, values: SceneValueContext) {
-        let overrides = configuration.liveOverrides.map { SceneParticleOverrides($0, in: values) } ?? configuration.overrides
-        overrideRate = overrides.rate
-        overrideCount = overrides.count
+    /// The system's instance overrides this frame, less the parts its flags switch off; bound to
+    /// user properties, they resolve again.
+    private mutating func applyOverrides(_ configuration: SceneMetalParticleSystem,
+                                         values: SceneValueContext) -> SceneParticleOverrides {
+        let authored = configuration.liveOverrides.map { SceneParticleOverrides($0, in: values) } ?? configuration.overrides
+        let overrides = authored.ignoring(configuration.ignoredOverrides)
         maximum = max(Int((Float(configuration.maximumParticleCount) * overrides.count).rounded()), 0)
         // Negative multipliers would invert the ranges; WE treats them as 0.
         spawnScale = SIMD4(overrides.size, max(overrides.alpha, 0), max(overrides.lifetime, 0), overrides.speed)
         colorScale = configuration.keepsOwnColors ? SIMD3(repeating: 1) : overrides.tint * overrides.brightness
+        return overrides
     }
 
     /// A child's emitter this frame: from its parent's, which stepped first.
@@ -192,80 +168,97 @@ struct ParticleFrameInputs {
         return world * undo
     }
 
-    /// The emitter-space values of `configuration` placed in `space`.
-    private mutating func place(_ configuration: SceneMetalParticleSystem, in space: SceneParticleEmitterSpace,
-                                cursor: SIMD2<Float>) {
-        let origin = space.origin
-        extentScale = space.world.axisScale
-        if configuration.worldSpace {
-            let linear = space.world.linear
-            spawnSizeScale = sqrt(abs(simd_determinant(linear)))
-            spawnTurn = atan2(linear.columns.0.y, linear.columns.0.x)
+    /// The control points this frame, as `wallpaper64.exe` 0x14022e3e0 updates them: on the
+    /// cursor (flag 1), at a scene position (flag 2, control points 1…7), on the parent system's
+    /// control point `parentcontrolpoint` (flag 4) or at their offset in the emitter's space. The
+    /// object's `controlpoint<n>` override replaces the offset.
+    private mutating func placeControlPoints(_ system: ParticleSystemRuntime, world: SceneAffineTransform,
+                                             cursor: SIMD2<Float>, overrides: SceneParticleOverrides) {
+        let configuration = system.configuration
+        let toSpace = self.space.inverse ?? .identity
+        let emitterToSpace = toSpace * world
+        for index in 0..<ParticleControlPoint.count {
+            let point = index < configuration.controlPoints.count ? configuration.controlPoints[index] : ParticleControlPoint()
+            let offset = overrides.controlPoints[index].map { SIMD2($0.x, $0.y) } ?? point.offset
+            let scene: SIMD2<Float>?
+            if point.followsCursor {
+                scene = cursor
+            } else if point.worldSpace, index != 0 {
+                scene = offset
+            } else if let parentIndex = point.parentControlPoint, let parent = system.parent,
+                      parentIndex >= 0, parentIndex < parent.lastControlPoints.count {
+                scene = parent.lastControlPoints[parentIndex]
+            } else {
+                scene = nil
+            }
+            if let scene {
+                controlPoints[index] = toSpace.apply(scene)
+                absolutePoints |= 1 << UInt32(index)
+            } else {
+                controlPoints[index] = emitterToSpace.apply(offset)
+            }
+            system.lastControlPoints[index] = space.apply(controlPoints[index])
         }
-        offsetLinear = space.offsetLinear
-        velocityRotation = space.rotation
-        gravity = configuration.worldGravity ? configuration.gravity : space.direction(configuration.gravity)
-        func locked(_ id: Int) -> Bool { configuration.controlPoints.first { $0.id == id }?.locksToCursor == true }
-        /// Control point `id` plus an emitter-space `offset`; a cursor-locked one stays put in every instance.
-        func point(_ id: Int, offset: SIMD2<Float>, _ absolute: AbsolutePoints) -> SIMD2<Float> {
-            if locked(id) { absolutePoints.insert(absolute) }
-            return Self.controlPointPosition(id, configuration: configuration, space: space, cursor: cursor) + space.offset(offset)
+        previousControlPoints = system.previousControlPoints ?? controlPoints
+        system.previousControlPoints = controlPoints
+        let simulationSpace = SceneParticleEmitterSpace(world: space)
+        let points = controlPoints
+        let spaceToScene = space
+        collisions = configuration.program.operators.compactMap(\.collision).flatMap { collision in
+            collision.placed(in: simulationSpace) { spaceToScene.apply(points[min(max($0, 0), 7)]) }
         }
-        spawnOrigin = configuration.emitterControlPoint.map { point($0, offset: .zero, .spawnOrigin) } ?? origin
-        if let attractor = configuration.attractor {
-            attractorOrigin = point(attractor.controlPoint, offset: attractor.offset, .attractor)
-            attractorOffset = space.offset(attractor.offset)
+    }
+
+    /// This step's records: each with its scripts evaluated, its audio response and, for the
+    /// `mapsequence…` initializers, the `count` override applied to their step.
+    private mutating func encodeProgram(_ system: ParticleSystemRuntime, time: Double, audio: AudioSpectrumSnapshot,
+                                        countScale: Float) {
+        let program = system.configuration.program
+        func evaluated(_ record: ParticleProgramOp, scripts: [ParticleValueScript]) -> ParticleProgramOp {
+            var record = record
+            for script in scripts {
+                let fallback = record[script.vector, script.component]
+                record[script.vector, script.component] = AudioReactiveScriptEngine.shared.evaluate(
+                    script.script, fallback: fallback, time: time)
+            }
+            return record
         }
-        if let vortex = configuration.vortex {
-            vortexOrigin = point(vortex.controlPoint, offset: .zero, .vortex)
+        var collision: UInt32 = 0
+        operators = program.operators.map { element in
+            var record = evaluated(element.record, scripts: element.scripts)
+            if let response = element.audio { record.e.w = response.response(audio) }
+            if element.kind == .collision {
+                let count = element.collision?.placementCount ?? 0
+                record.header.z = collision | (UInt32(count) << 16)
+                collision += UInt32(count)
+            }
+            return record
         }
-        if let reduction = configuration.nearControlPointReduction {
-            reductionOrigin = point(reduction.controlPoint, offset: reduction.offset, .reduction)
-            reductionOffset = space.offset(reduction.offset)
-        }
-        if let constraint = configuration.maintainControlPointDistance {
-            constraintOrigin = point(constraint.controlPoint, offset: constraint.offset, .constraint)
-            constraintOffset = space.offset(constraint.offset)
-        }
-        if let span = configuration.sequenceSpan {
-            if locked(span.startControlPoint) { absolutePoints.insert(.sequenceStart) }
-            if locked(span.endControlPoint) { absolutePoints.insert(.sequenceEnd) }
-            sequenceStart = Self.controlPointPosition(span.startControlPoint, configuration: configuration,
-                                                      space: space, cursor: cursor)
-            sequenceEnd = Self.controlPointPosition(span.endControlPoint, configuration: configuration,
-                                                    space: space, cursor: cursor)
-        }
-        if let remap = configuration.initialRemap {
-            if locked(remap.controlPoint) { absolutePoints.insert(.remapAnchor) }
-            remapAnchor = Self.controlPointPosition(remap.controlPoint, configuration: configuration,
-                                                    space: space, cursor: cursor)
+        initializers = program.initializers.map { element in
+            var record = evaluated(element.record, scripts: element.scripts)
+            if let response = element.audio { record.e.w = response.response(audio) }
+            if let count = element.sequenceCount {
+                let scaled = (record.header.y & ParticleProgramCPU.sequenceFollowsCountFlag(element.kind)) != 0
+                    ? count * countScale : count
+                let between = element.kind == .mapSequenceBetweenControlPoints
+                record.a.x = 1 / max(between ? scaled - 1 : scaled, 0.0001)
+            }
+            return record
         }
     }
 
     /// These inputs for one instance of an instanced system, whose emitter sits at `translation`
-    /// (on top of the shared emitter transform the inputs were placed with).
-    func placed(at translation: SIMD2<Float>) -> ParticleFrameInputs {
+    /// (on top of the shared emitter transform the inputs were placed with); it sat at `previous`
+    /// last step.
+    func placed(at translation: SIMD2<Float>, previous: SIMD2<Float>) -> ParticleFrameInputs {
         var inputs = self
-        func shift(_ point: SIMD2<Float>, _ absolute: AbsolutePoints) -> SIMD2<Float> {
-            absolutePoints.contains(absolute) ? point : point + translation
+        inputs.space.translation += translation
+        let toSpace = self.toSpace
+        for index in 0..<ParticleControlPoint.count where absolutePoints & (1 << UInt32(index)) != 0 {
+            inputs.controlPoints[index] -= toSpace * translation
+            inputs.previousControlPoints[index] -= toSpace * previous
         }
-        inputs.spawnOrigin = shift(spawnOrigin, .spawnOrigin)
-        inputs.attractorOrigin = shift(attractorOrigin, .attractor)
-        inputs.sequenceStart = sequenceStart.map { shift($0, .sequenceStart) }
-        inputs.sequenceEnd = sequenceEnd.map { shift($0, .sequenceEnd) }
-        inputs.remapAnchor = shift(remapAnchor, .remapAnchor)
-        inputs.vortexOrigin = shift(vortexOrigin, .vortex)
-        inputs.reductionOrigin = shift(reductionOrigin, .reduction)
-        inputs.constraintOrigin = shift(constraintOrigin, .constraint)
         inputs.collisions = collisions.map { $0.moved(by: translation) }
         return inputs
-    }
-
-    static func controlPointPosition(_ id: Int, configuration: SceneMetalParticleSystem,
-                                     space: SceneParticleEmitterSpace, cursor: SIMD2<Float>) -> SIMD2<Float> {
-        guard let point = configuration.controlPoints.first(where: { $0.id == id }) else {
-            return space.origin
-        }
-        return (point.locksToCursor ? cursor : space.origin) + space.offset(point.offset)
     }
 }

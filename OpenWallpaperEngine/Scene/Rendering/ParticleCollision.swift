@@ -38,8 +38,11 @@ struct ParticleCollision: Equatable {
     let stopsRotation: Bool
 
     /// The operator `element`, nil for one that isn't a collision WE resolves at runtime
-    /// (`collisionbox` does nothing; `collisionmodel` needs a model).
-    init?(_ element: WEParticleOperator, sceneSize: SIMD2<Float>) {
+    /// (`collisionbox` does nothing; `collisionmodel` needs a model). Defaults (`wallpaper64.exe`
+    /// 0x1401c00a0 and the shapes' fillers 0x1401c0540 / 0x1401c0740 / 0x1401c0870): plane "0 1 0"
+    /// at −150 (2D) / 0, sphere at "0 −200 0" / 0 of radius 50 / 1, quad at "0 −150 0" / 0 of size
+    /// "200 200" / "1 1", bounce factor 0.5, behaviour bounce.
+    init?(_ element: WEParticleOperator, sceneSize: SIMD2<Float>, defaults: ParticleDefaults = ParticleDefaults(pixelUnits: true)) {
         func vector(_ value: WEFlexValue?, _ fallback: SIMD3<Float>) -> SIMD3<Float> {
             guard let value else { return fallback }
             let v = value.vectorValue
@@ -47,12 +50,13 @@ struct ParticleCollision: Equatable {
         }
         switch element.name {
         case "collisionplane":
-            shape = .plane(normal: vector(element.plane, SIMD3(0, 1, 0)), distance: Float(element.distance ?? -150))
+            shape = .plane(normal: vector(element.plane, SIMD3(0, 1, 0)), distance: Float(element.distance ?? defaults.pick(-150, 0)))
         case "collisionsphere":
-            shape = .sphere(origin: vector(element.origin, SIMD3(0, -200, 0)), radius: Float(element.radius ?? 50))
+            shape = .sphere(origin: vector(element.origin, defaults.pick(SIMD3(0, -200, 0), .zero)),
+                            radius: Float(element.radius ?? defaults.pick(50, 1)))
         case "collisionquad":
-            let size = element.size?.vectorValue ?? (200, 200, 0)
-            shape = .quad(origin: vector(element.origin, SIMD3(0, -150, 0)), normal: vector(element.plane, SIMD3(0, 1, 0)),
+            let size = element.size?.vectorValue ?? defaults.pick((200, 200, 0), (1, 1, 0))
+            shape = .quad(origin: vector(element.origin, defaults.pick(SIMD3(0, -150, 0), .zero)), normal: vector(element.plane, SIMD3(0, 1, 0)),
                           forward: vector(element.forward, SIMD3(0, 0, 1)), size: SIMD2(Float(size.0), Float(size.1)))
         case "collisionbounds":
             shape = .bounds(size: sceneSize)
@@ -73,6 +77,12 @@ struct ParticleCollision: Equatable {
         self.bounceFactor = bounceFactor
         self.controlPoint = controlPoint
         self.stopsRotation = stopsRotation
+    }
+
+    /// The placements `placed(in:controlPoint:)` makes: four planes for the scene's bounds.
+    var placementCount: Int {
+        if case .bounds = shape { return 4 }
+        return 1
     }
 
     /// The shape in scene space this frame. `controlPoint` gives a control point's position.

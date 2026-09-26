@@ -33,8 +33,8 @@ final class ParticleMaterialRenderTests: XCTestCase {
 
     func testSpriteThroughEmulatedGeometryStage() throws {
         let plan = try self.plan("materials/solid.json", renderer: "sprite", keeping: .emulated(vertexCount: 6))
-        // One particle in the top-left quadrant (scene y is up). WE's shaders read half the
-        // simulated size, which is the quad's width.
+        // One particle in the top-left quadrant (scene y is up). Its size is half the authored
+        // one, and the shaders read it as the quad's width.
         let pixels = try render(plan, particles: [particle(at: SIMD2(64, 192), size: 80)])
         XCTAssertGreaterThan(pixels.red(x: 64, y: 64), 250, "the sprite covers its position")
         XCTAssertGreaterThan(pixels.red(x: 64 + 17, y: 64 - 17), 250, "a size-80 sprite is 40 wide: it reaches 17 out")
@@ -157,7 +157,7 @@ final class ParticleMaterialRenderTests: XCTestCase {
         // Clamped, so the frames' outer edges don't pull in the opposite frame.
         plan.textureFlags[0] = .clampUVs
         for frame in 0..<2 {
-            let chosen = Particle(position: SIMD2(128, 128), velocity: .zero, age: 0, lifetime: 10, size: 80, baseSize: 80,
+            let chosen = Particle(position: SIMD2(128, 128), velocity: .zero, age: 0, lifetime: 10, size: 40, baseSize: 40,
                                   alpha: 1, baseAlpha: 1, rotation: 0, angularVelocity: 0, color: SIMD4(repeating: 1),
                                   baseColor: SIMD4(repeating: 1), spriteFrame: frame, history: [], historyStart: 0)
             let pixels = try render(plan, particles: [chosen], texture: sheet, animationMode: "randomframe")
@@ -596,7 +596,9 @@ final class ParticleMaterialRenderTests: XCTestCase {
     /// Builds the material for `renderer` and keeps only the stage of the path under test.
     private func plan(_ material: String, renderer name: String,
                       keeping geometry: ParticleMaterialPlan.Stage.Geometry) throws -> ParticleMaterialPlan {
-        let plan = try builder.build(materialPath: material, renderer: try decodeRenderer(#"{"name":"\#(name)"}"#),
+        // Ropes without subdivision (`TRAILSUBDIVISION` 0), which these pixel checks assume.
+        let json = name.hasPrefix("rope") ? #"{"name":"\#(name)","subdivision":0}"# : #"{"name":"\#(name)"}"#
+        let plan = try builder.build(materialPath: material, renderer: try decodeRenderer(json),
                                      flags: 0, baseTexture: .image(NSImage()), spriteSheet: nil)
         let stages = plan.stages.filter { $0.geometry == geometry }
         XCTAssertEqual(stages.count, 1, "\(material) \(name): \(plan.stages.map(\.geometry))")
@@ -688,8 +690,10 @@ final class ParticleMaterialRenderTests: XCTestCase {
         return bytes
     }
 
+    /// A particle of authored `sizerandom` `size`: WE's particle size is half that (its base size
+    /// 0.5 times the random, `wallpaper64.exe` 0x14023b340), which the shaders read as the quad's width.
     private func particle(at position: SIMD2<Float>, size: Float) -> Particle {
-        Particle(position: position, velocity: .zero, age: 0, lifetime: 10, size: size, baseSize: size,
+        Particle(position: position, velocity: .zero, age: 0, lifetime: 10, size: size / 2, baseSize: size / 2,
                  alpha: 1, baseAlpha: 1, rotation: 0, angularVelocity: 0, color: SIMD4(repeating: 1),
                  baseColor: SIMD4(repeating: 1), spriteFrame: 0, history: [], historyStart: 0)
     }
@@ -774,18 +778,9 @@ final class ParticleMaterialRenderTests: XCTestCase {
         let rendererName = plan.format == .rope ? (trail ? "ropetrail" : "rope") : (trail ? "spritetrail" : "sprite")
         var system = SceneMetalParticleSystem(
             source: .image(NSImage()), origin: .zero, emissionRate: 0, emissionRateScript: nil, maximumParticleCount: 100,
-            spawnExtent: .zero, lifetime: 1...1, size: 1...1, minimumVelocity: .zero, maximumVelocity: .zero, gravity: .zero,
-            drag: 0, dragScript: nil, alpha: 1...1, minimumColor: SIMD4(repeating: 1), maximumColor: SIMD4(repeating: 1),
-            minimumRotation: 0, maximumRotation: 0, minimumAngularVelocity: 0, maximumAngularVelocity: 0,
-            emitterName: "sphererandom", sizeChange: nil, alphaChange: nil, colorChange: nil, angularAcceleration: 0,
-            maximumSpeed: nil, vortex: nil, boids: nil, oscillateSize: nil, oscillateAlpha: nil, oscillatePosition: nil,
-            positionOffsetMinimum: .zero, positionOffsetMaximum: .zero, remapAlpha: nil, nearControlPointReduction: nil,
-            maintainControlPointDistance: nil, controlPoints: [], sequenceSpan: nil, sequenceRing: nil, initialRemap: nil,
-            maintainSequenceDistance: false, rendererName: rendererName, trailLength: 1, trailSegments: 4,
-            ropeSubdivision: 1, fadeTrailAlpha: false, fadeTrailSize: false, turbulence: nil, attractor: nil,
-            emitterControlPoint: nil, spriteSheet: plan.spriteSheet, animationMode: animationMode,
-            sequenceMultiplier: 1, opacityMultiplier: 1, refractive: false, fadeIn: 0, fadeOut: 1,
-            fadeInScript: nil, fadeOutScript: nil, blending: plan.blending)
+            rendererName: rendererName, trailLength: 1, trailSegments: 4, ropeSubdivision: 1, fadeTrailAlpha: false,
+            fadeTrailSize: false, spriteSheet: plan.spriteSheet, animationMode: animationMode, sequenceMultiplier: 1,
+            opacityMultiplier: 1, refractive: false, blending: plan.blending)
         system.material = plan
         return system
     }

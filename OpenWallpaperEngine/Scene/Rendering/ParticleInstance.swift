@@ -21,6 +21,10 @@ struct ParticleInstance {
     var live = 0
     /// Spawned this step.
     var spawnCount = 0
+    /// Spawned since it was made, and by the start of its current emission period: its own
+    /// sequence for the `mapsequence…` initializers.
+    var spawned: UInt32 = 0
+    var periodSpawned: UInt32 = 0
     /// The source particle's values, for `inheritinitialvaluefromevent` and `inheritvaluefromevent`.
     var sourceVelocity = SIMD2<Float>.zero
     var sourceColor = SIMD4<Float>.zero

@@ -48,10 +48,10 @@ enum ParticleRecordWriter {
         return SIMD4(points, 0, 1, points)
     }
 
-    /// The size WE's particle shaders read: half the simulated size (a sprite's quad is this
-    /// wide, a rope ribbon twice this), as linux-wallpaperengine and wallpaper-scene-renderer
-    /// pass it, times `scale` (`ParticleSystemRuntime.drawSizeScale`).
-    static func shaderSize(_ particle: Particle, scale: Float = 1) -> Float { particle.size / 2 * scale }
+    /// The size WE's particle shaders read: the particle's size (a sprite's quad is this wide, a
+    /// rope ribbon twice this; `common_particles.h`), times `scale`
+    /// (`ParticleSystemRuntime.drawSizeScale`).
+    static func shaderSize(_ particle: Particle, scale: Float = 1) -> Float { particle.size * scale }
 
     private static func color(_ particle: Particle, opacity: (Particle) -> Float) -> SIMD4<Float> {
         SIMD4(particle.color.x, particle.color.y, particle.color.z, particle.color.w * opacity(particle))

@@ -73,13 +73,11 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
         system.spawnExtent = .zero
         system.minimumVelocity = .zero
         system.maximumVelocity = .zero
-        system.size = 30...30
+        system.size = 60...60
         system.lifetime = 100...100
         system.alpha = 1...1
         system.minimumColor = SIMD4(repeating: 1)
         system.maximumColor = SIMD4(repeating: 1)
-        system.fadeIn = 0
-        system.fadeOut = 1
         system.maximum = 1
         system.source = .image(SceneWallpaperViewModel.pixelImage([1, 1, 1, 1]))
         return system

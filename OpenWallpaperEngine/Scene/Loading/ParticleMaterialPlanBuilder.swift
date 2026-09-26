@@ -145,14 +145,17 @@ struct ParticleMaterialPlanBuilder {
             // Per-segment end colour and size are always known.
             combos["THICKFORMAT"] = 1
             if rendererName == "ropetrail" { combos["TRAILRENDERER"] = 1 }
-            combos["TRAILSUBDIVISION"] = max(renderer?.subdivision ?? 0, 0)
+            // WE's subdivision: 4 for `rope`, 1 for `ropetrail` (`ParticleRendererDefaults`).
+            combos["TRAILSUBDIVISION"] = ParticleRendererDefaults(renderer).subdivision
         }
         return combos
     }
 
-    /// `(length, maxlength, minlength, 0)` with WE's renderer defaults.
+    /// `g_RenderVar0` of a sprite trail: `(length, maxlength, minlength, 0)` with WE's renderer
+    /// defaults (`ParticleRendererDefaults`).
     static func trailLengths(_ renderer: WEParticleRenderer?) -> SIMD4<Float> {
-        SIMD4(Float(renderer?.length ?? 0.05), Float(renderer?.maxlength ?? 10), Float(renderer?.minlength ?? 0), 0)
+        let trail = ParticleRendererDefaults(renderer)
+        return SIMD4(trail.length, trail.maximumLength, trail.minimumLength, 0)
     }
 
     /// One stage: with `geometry`, its geometry stage emulated; without, WE's no-geometry-shader

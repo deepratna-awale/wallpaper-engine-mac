@@ -100,6 +100,7 @@ final class ParticleOverrideTests: XCTestCase {
             XCTAssertLessThan(simd_distance(SIMD2(state.positionVelocity.z, state.positionVelocity.w), particle.velocity), 1e-2)
         }
         let sizes = cpu.particles.map(\.size)
-        XCTAssertGreaterThanOrEqual(sizes.min() ?? 0, 20, "authored 10…20, doubled")
+        // WE's base size is 0.5, which `sizerandom` multiplies (wallpaper64.exe 0x14023b340).
+        XCTAssertGreaterThanOrEqual(sizes.min() ?? 0, 10, "authored 10…20 on the base 0.5, doubled")
     }
 }

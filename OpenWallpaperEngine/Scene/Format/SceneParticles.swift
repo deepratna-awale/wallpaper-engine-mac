@@ -43,7 +43,7 @@ struct WEParticleEmitter: Codable {
     @WEFlexibleInt var id: Int?
     var name: String?
     @WEFlexibleDouble var rate: Double?
-    var origin: String?
+    var origin: WEFlexValue?
     var distancemax: WEFlexValue?
     var distancemin: WEFlexValue?
     @WEFlexibleDouble var speedmax: Double?
@@ -65,6 +65,8 @@ struct WEParticleEmitter: Codable {
     var directions: WEFlexValue?
     /// Per-axis sign the spawn offset is forced to (0 keeps both).
     var sign: WEFlexValue?
+    /// A sphere's spread around its +x axis: 0 a full sphere, 1 one direction.
+    @WEFlexibleDouble var cone: Double?
     /// Audio response: 0 off, 1 left, 2 right, 3 both channels (`ParticleAudioResponse`).
     @WEFlexibleInt var audioprocessingmode: Int?
     @WEFlexibleDouble var audioprocessingexponent: Double?
@@ -86,22 +88,62 @@ struct WEParticleInitializer: Codable {
     var name: String?
     var min: WEFlexValue?
     var max: WEFlexValue?
+    @WEFlexibleDouble var exponent: Double?
+    // hsvcolorrandom, colorlist
+    @WEFlexibleDouble var huemin: Double?
+    @WEFlexibleDouble var huemax: Double?
+    @WEFlexibleInt var huesteps: Int?
+    @WEFlexibleDouble var saturationmin: Double?
+    @WEFlexibleDouble var saturationmax: Double?
+    @WEFlexibleDouble var valuemin: Double?
+    @WEFlexibleDouble var valuemax: Double?
+    var colors: [String]?
+    @WEFlexibleDouble var huenoise: Double?
+    @WEFlexibleDouble var saturationnoise: Double?
+    @WEFlexibleDouble var valuenoise: Double?
+    // turbulentvelocityrandom, positionoffsetrandom
+    @WEFlexibleDouble var phasemin: Double?
+    @WEFlexibleDouble var phasemax: Double?
+    @WEFlexibleDouble var timescale: Double?
+    @WEFlexibleDouble var scale: Double?
+    @WEFlexibleDouble var offset: Double?
+    var forward: WEFlexValue?
+    var right: WEFlexValue?
+    var directions: WEFlexValue?
+    var sign: WEFlexValue?
+    @WEFlexibleDouble var distance: Double?
+    @WEFlexibleInt var octaves: Int?
+    // mapsequence…
+    @WEFlexibleInt var controlpoint: Int?
+    @WEFlexibleInt var controlpointstart: Int?
+    @WEFlexibleInt var controlpointend: Int?
+    var arcdirection: WEFlexValue?
+    @WEFlexibleDouble var sizereductionamount: Double?
+    // remapinitialvalue
+    var inputcomponent: String?
+    var outputcomponent: String?
+    var transformfunction: String?
+    @WEFlexibleDouble var transforminputscale: Double?
+    @WEFlexibleInt var transformoctaves: Int?
+    var inputrangemin: WEFlexValue?
+    var inputrangemax: WEFlexValue?
+    var outputrangemin: WEFlexValue?
+    var outputrangemax: WEFlexValue?
+    @WEFlexibleInt var inputcontrolpoint1: Int?
+    @WEFlexibleInt var outputcontrolpoint0: Int?
+    @WEFlexibleInt var outputcontrolpoint1: Int?
     @WEFlexibleInt var flags: Int?
     @WEFlexibleDouble var count: Double?
     @WEFlexibleDouble var arcamount: Double?
     var limitbehavior: String?
     var axis: String?
     var bounds: String?
-    @WEFlexibleInt var controlpoint0: Int?
-    @WEFlexibleInt var controlpoint1: Int?
     var speedmin: WEFlexValue?
     var speedmax: WEFlexValue?
     var input: String?
     var output: String?
     var operation: String?
     @WEFlexibleInt var inputcontrolpoint0: Int?
-    @WEFlexibleDouble var inputrangemin: Double?
-    @WEFlexibleDouble var inputrangemax: Double?
     /// Audio response: 0 off, 1 left, 2 right, 3 both channels (`ParticleAudioResponse`).
     @WEFlexibleInt var audioprocessingmode: Int?
     @WEFlexibleDouble var audioprocessingexponent: Double?
@@ -113,6 +155,28 @@ struct WEParticleInitializer: Codable {
 struct WEParticleOperator: Codable {
     @WEFlexibleInt var id: Int?
     var name: String?
+    /// The blend window over the particle's life (`ParticleBlend`).
+    @WEFlexibleDouble var blendinstart: Double?
+    @WEFlexibleDouble var blendinend: Double?
+    @WEFlexibleDouble var blendoutstart: Double?
+    @WEFlexibleDouble var blendoutend: Double?
+    @WEFlexibleDouble var deletethreshold: Double?
+    var offset: WEFlexValue?
+    @WEFlexibleDouble var reductionouter: Double?
+    @WEFlexibleDouble var centerforce: Double?
+    @WEFlexibleDouble var ringpullforce: Double?
+    @WEFlexibleDouble var separationthreshold: Double?
+    @WEFlexibleInt var controlpointstart: Int?
+    @WEFlexibleInt var controlpointend: Int?
+    var inputcomponent: String?
+    var outputcomponent: String?
+    @WEFlexibleInt var transformoctaves: Int?
+    var inputrangemin: WEFlexValue?
+    var inputrangemax: WEFlexValue?
+    @WEFlexibleInt var inputcontrolpoint0: Int?
+    @WEFlexibleInt var inputcontrolpoint1: Int?
+    @WEFlexibleInt var outputcontrolpoint0: Int?
+    @WEFlexibleInt var outputcontrolpoint1: Int?
     var gravity: String?
     @WEFlexibleDouble var drag: Double?
     @WEFlexibleDouble var fadeintime: Double?
@@ -158,9 +222,7 @@ struct WEParticleOperator: Codable {
     @WEFlexibleDouble var transforminputscale: Double?
     var outputrangemin: WEFlexValue?
     var outputrangemax: WEFlexValue?
-    @WEFlexibleInt var controlpoint0: Int?
-    @WEFlexibleInt var controlpoint1: Int?
-    /// `movement`: bit 0 applies gravity in world space rather than the system's. Collision
+    /// `movement`: bit 0 gives gravity in the scene rather than the system's space. Collision
     /// operators: bit 0 locks the shape to `controlpoint`, bit 1 stops rotation on contact.
     @WEFlexibleInt var flags: Int?
     /// Audio response: 0 off, 1 left, 2 right, 3 both channels (`ParticleAudioResponse`).

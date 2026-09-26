@@ -22,7 +22,7 @@ final class ParticleCPUSimulationTests: XCTestCase {
 
     func testTheSameSeedReplaysTheSameParticles() {
         var system = ParticleTestSystem()
-        system.turbulence = Turbulence(scale: 0.01, speed: 100...300, timeScale: 1, phase: 0, mask: SIMD2(1, 1))
+        system.operators = [ParticleOperator(.turbulence, a: SIMD4(1, 1, 0, 0), b: SIMD4(0.01, 100, 300, 1))]
         let first = run(system, seed: 7), second = run(system, seed: 7), other = run(system, seed: 8)
         XCTAssertGreaterThan(first.particles.count, 100)
         XCTAssertEqual(first.particles.map(\.position), second.particles.map(\.position))
@@ -33,12 +33,12 @@ final class ParticleCPUSimulationTests: XCTestCase {
     func testRandomDrawsAreUniformAndStayInRange() {
         var sum: Float = 0
         for serial in UInt32(0)..<10_000 {
-            let value = ParticleRandom.value(2, 4, seed: 3, serial: serial, .size)
+            let value = ParticleRandom.value(2, 4, seed: 3, serial: serial, .spawnAngle)
             XCTAssertTrue((2..<4).contains(value))
             sum += value
         }
         XCTAssertEqual(sum / 10_000, 3, accuracy: 0.03)
-        XCTAssertEqual(ParticleRandom.value(5, 1, seed: 0, serial: 0, .size) <= 5, true, "reversed bounds don't trap")
+        XCTAssertEqual(ParticleRandom.value(5, 1, seed: 0, serial: 0, .spawnAngle) <= 5, true, "reversed bounds don't trap")
     }
 
     func testEmissionFillsTheAuthoredMaximumAndNoMore() {
@@ -58,9 +58,10 @@ final class ParticleCPUSimulationTests: XCTestCase {
         system.lifetime = 100...100
         system.minimumVelocity = SIMD2(-50, -50)
         system.maximumVelocity = SIMD2(50, 50)
-        let plain = run(system, seed: 2, frames: 10)
-        system.boids = ParticleBoids(alignment: 5, cohesion: 5, separation: 0, threshold: 500)
-        let flocking = run(system, seed: 2, frames: 10)
+        let plain = run(system, seed: 2, frames: 40)
+        // WE updates one slice of N/200 + 1 each frame, with the weights scaled to match.
+        system.operators = [ParticleOperator(.boids, flags: 0, a: SIMD4(20, 500, 500, 0), b: SIMD4(0, 2, 0, 0))]
+        let flocking = run(system, seed: 2, frames: 40)
         XCTAssertEqual(flocking.particles.count, 3_000)
         func spread(_ runtime: ParticleSystemRuntime) -> Float {
             let mean = runtime.particles.reduce(SIMD2<Float>.zero) { $0 + $1.velocity } / Float(runtime.particles.count)

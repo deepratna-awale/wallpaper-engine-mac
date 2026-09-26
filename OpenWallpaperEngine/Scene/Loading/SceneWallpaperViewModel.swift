@@ -467,6 +467,7 @@ class SceneWallpaperViewModel: ObservableObject {
         for (index, object) in scene.objects.enumerated() where visibility[String(object.id ?? -1)] ?? false {
             let base = particleSystems.count
             for var system in buildParticleFamily(object, wallpaperDir: wallpaperDir, sceneSize: sceneSize,
+                                                  pixelUnits: Self.particlesUsePixelUnits(scene),
                                                   transforms: authoredTransforms) {
                 system.order = index
                 system.link?.parentIndex += base
@@ -1102,7 +1103,14 @@ class SceneWallpaperViewModel: ObservableObject {
     }
 
     /// A particle object's system followed by its children (`ParticleFamilyBuilder`).
-    private func buildParticleFamily(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>,
+    /// WE's particle defaults are in pixels in an orthographic scene with a size (its parser's flag,
+    /// `wallpaper64.exe` 0x14018768a), in world units otherwise.
+    static func particlesUsePixelUnits(_ scene: WEScene) -> Bool {
+        guard let projection = scene.general.orthogonalprojection else { return false }
+        return projection.width != 0 || projection.height != 0
+    }
+
+    private func buildParticleFamily(_ object: WESceneObject, wallpaperDir: URL, sceneSize: SIMD2<Float>, pixelUnits: Bool,
                                      transforms: SceneTransformHierarchy) -> [SceneMetalParticleSystem] {
         guard let particlePath = object.particle else { return [] }
         // The emitter's full world transform: its own and its parents' origin, scale and angle.
@@ -1112,7 +1120,8 @@ class SceneWallpaperViewModel: ObservableObject {
             load: { [weak self] path in self?.loadJSON(path: path, wallpaperDir: wallpaperDir) },
             build: { [weak self] path, system, world, overrides in
                 self?.buildMetalParticleSystem(path, particleSystem: system, object: object, world: world,
-                                               overrides: overrides, sceneSize: sceneSize, wallpaperDir: wallpaperDir)
+                                               overrides: overrides, sceneSize: sceneSize, pixelUnits: pixelUnits,
+                                               wallpaperDir: wallpaperDir)
             },
             report: { message in OWELog.error(.scene, "Particle object \(object.id ?? -1): \(message)") })
         var family = builder.family(particlePath, world: world,
@@ -1124,7 +1133,8 @@ class SceneWallpaperViewModel: ObservableObject {
 
     private func buildMetalParticleSystem(_ particlePath: String, particleSystem: WEParticleSystem, object: WESceneObject,
                                           world: SceneAffineTransform, overrides: SceneParticleOverrides,
-                                          sceneSize: SIMD2<Float>, wallpaperDir: URL) -> SceneMetalParticleSystem? {
+                                          sceneSize: SIMD2<Float>, pixelUnits: Bool,
+                                          wallpaperDir: URL) -> SceneMetalParticleSystem? {
         guard let materialPath = particleSystem.material,
               let material: WEMaterial = loadJSON(path: materialPath, wallpaperDir: wallpaperDir),
               let textureName = material.passes?.first?.textures?.first else { return nil }
@@ -1141,7 +1151,7 @@ class SceneWallpaperViewModel: ObservableObject {
         var system = ParticleSystemBuilder.build(particlePath, particleSystem: particleSystem, object: object,
                                                  world: world, overrides: overrides, sceneSize: sceneSize,
                                                  source: source, spriteSheet: spriteSheet, material: material,
-                                                 materialPlan: materialPlan)
+                                                 materialPlan: materialPlan, pixelUnits: pixelUnits)
         system.material = materialPlan
         let albedo = ParticleMaterialPlanBuilder.textureHeader(named: textureName, materialPath: materialPath) {
             assetData(named: $0, wallpaperDir: wallpaperDir)

@@ -107,20 +107,24 @@ final class ParticleGPUSystem {
     func reserve(for inputs: ParticleFrameInputs, blit: () -> MTLBlitCommandEncoder?) -> Bool {
         // Every instance may hold the system's maximum.
         maximumCount = max(inputs.maximum, 0) * slots
+        // A step holds last step's particles (the ones that die aging are compacted away at its
+        // end) and its spawns. The carried remainder is below 1 at the start of a step, so it
+        // spawns at most ⌊rate·Δt⌋ + 1 particles plus its burst.
+        let spawns = Double(max(inputs.emissionRate, 0)) * Double(inputs.deltaTime)
+        let stepSpawns = Int(min(spawns.rounded(.down) + 1 + Double(max(inputs.burst, 0)), Double(maximumCount)))
+        let held = upperBound
         if inputs.clears {
             upperBound = 0
         } else {
-            // The carried remainder is below 1 at the start of a step, so a step spawns at most
-            // ⌊rate·Δt⌋ + 1 particles.
-            let spawns = Double(max(inputs.emissionRate, 0)) * Double(inputs.deltaTime)
-            let bound = Double(upperBound) + spawns.rounded(.down) + 1 + Double(inputs.burst)
-            upperBound = Int(min(bound, Double(maximumCount)))
+            upperBound = Int(min(Double(upperBound) + Double(stepSpawns), Double(maximumCount)))
             // Any instance may start this step, so an instanced system holds its whole budget.
             if instances != nil { upperBound = maximumCount }
         }
-        guard upperBound > capacity || particles == nil else { return true }
-        let grown = max(upperBound, capacity * 2, 256)
-        let newCapacity = maximumCount > 0 ? min(grown, max(maximumCount, 1)) : 256
+        let needed = instances != nil ? maximumCount * 2 : min(held + stepSpawns, maximumCount + stepSpawns)
+        guard needed > capacity || particles == nil else { return true }
+        let grown = max(needed, capacity * 2, 256)
+        let limit = instances != nil ? maximumCount * 2 : maximumCount + stepSpawns
+        let newCapacity = maximumCount > 0 ? min(grown, max(limit, 1)) : 256
         return grow(to: newCapacity, blit: blit)
     }
 

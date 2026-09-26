@@ -10,20 +10,18 @@ enum ParticleRandom {
     /// What a draw is for. Spawn streams are drawn once per particle; per-frame draws use
     /// `frameStream`.
     enum Stream: UInt32 {
-        case spawnAngle = 0, spawnRadius, boxX, boxY, offsetX, offsetY, size, alpha
-        case red, green, blue, velocityX, velocityY, ringSpeedX, ringSpeedY
-        case lifetime, rotation, angularVelocity, spriteFrame, emitterSpeed
+        /// The emitter's draws: a sphere's angle, height and radius (a box's x, y and z), its speed,
+        /// and a direction for a particle spawned at the centre.
+        case spawnAngle = 0, spawnHeight, spawnRadius, emitterSpeed, fallbackX, fallbackY, fallbackZ
+        case spriteFrame
         /// Whether a parent particle's event makes a child instance (keyed by the parent's serial).
         case eventProbability
-        /// An audio-responsive `turbulentvelocityrandom`.
-        case audioVelocityX, audioVelocityY
         /// A periodic emitter's emitting and paused phases (keyed by the phase, `ParticleEmitterClock`).
         case periodDuration, periodDelay
+        /// The particle's one random value every operator reads (WE's [system+0x338]).
+        case `operator`
     }
-
-    /// Per-frame draws (turbulence): the frame index with the high bit set, so they never meet a
-    /// spawn stream.
-    static func frameStream(_ frame: UInt32) -> UInt32 { 0x8000_0000 | (frame & 0x7FFF_FFFF) }
+    // Initializers draw from their own streams (`ParticleProgramCPU.initializerStream`), from 64 on.
 
     /// PCG hash (Jarzynski and Olano, "Hash Functions for GPU Rendering", 2020).
     static func pcg(_ value: UInt32) -> UInt32 {

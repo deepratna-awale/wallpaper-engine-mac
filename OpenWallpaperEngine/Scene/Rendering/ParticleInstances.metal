@@ -116,6 +116,7 @@ static uint instanceEmission(thread ParticleInstanceState &instance, uint slot, 
                                    step.y ? int(p.instancing.w) : 0, rateLimit(f, uint(instance.clock.w)));
     instance.emission.y = carry;
     instance.clock.w += float(spawned.y);
+    if (step.z) instance.spawn.z = instance.spawn.y;
     return spawned.x + spawned.y;
 }
 
@@ -133,8 +134,9 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
     const uint slots = p.instancing.y;
     const uint kind = p.instancing.x;
     uint count = control[cCount];
+    const uint dead = control[cDead];
     uint emitted = 0;
-    if (f.fade.z > 0.5) {
+    if (f.misc.y > 0.5) {
         count = 0;
         for (uint slot = 0; slot < slots; ++slot) instances[slot] = ParticleInstanceState{};
     } else {
@@ -142,6 +144,8 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
         for (uint slot = 0; slot < slots; ++slot) {
             ParticleInstanceState instance = instances[slot];
             instance.place.zw = instance.place.xy;
+            // Last step's spawns join the instance's sequence.
+            instance.spawn.y += instance.spawn.x;
             instance.spawn.x = 0;
             if (kind == lStatic) {
                 const ParticleInstanceState source = parentInstances[slot];
@@ -212,6 +216,8 @@ kernel void particleInstanceStep(device uint *control [[buffer(0)]],
     control[cCount] = count;
     control[cEmit] = emitted;
     control[cTotal] = total;
+    control[cLive] = total - min(f.misc.y > 0.5 ? 0u : dead, total);
+    control[cDead] = 0;
     control[cSerialBase] = control[cSerial];
     control[cSerial] = control[cSerial] + emitted;
     control[cDispatch] = max((total + kGroup - 1) / kGroup, 1u);

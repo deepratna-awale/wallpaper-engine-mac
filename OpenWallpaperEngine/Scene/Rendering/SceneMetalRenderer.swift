@@ -1303,9 +1303,12 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func appendParticleTrail(_ particle: Particle, system: ParticleSystemRuntime,
                                      drawableSize: SIMD2<Float>) {
         let speed = simd_length(particle.velocity)
-        let stretch = max(system.configuration.trailLength, 1)
+        // `ComputeParticleTrailTangents` (common_particles.h): the size times the speed's stretch,
+        // clamped to `minlength`…`maxlength`.
+        let limits = system.configuration.trailLengthLimits
+        let stretch = max(limits.y, min(speed * system.configuration.trailLength, limits.x))
         let size = particle.size * system.drawSizeScale
-        let length = max(size, min(size * stretch, size + speed * 0.08))
+        let length = size * stretch
         let width = system.configuration.refractive ? max(2, size * 0.08) : size
         var uniform = layerUniform(position: particle.position,
                                    size: SIMD2<Float>(width, length),
@@ -1362,7 +1365,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             guard length > 0.01 else { continue }
             // 0 at the oldest sample, 1 at the particle itself.
             let progress = Float(index + 1) / Float(spline.count - 1)
-            let size = particle.size * system.drawSizeScale
+            // A rope ribbon is twice the particle's size wide.
+            let size = 2 * particle.size * system.drawSizeScale
             let width = configuration.fadeTrailSize ? size * progress : size
             var uniform = layerUniform(position: (start + end) / 2,
                                        size: SIMD2<Float>(length, max(width, 0.01)),
@@ -1411,7 +1415,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             let delta = end.position - start.position
             let length = simd_length(delta)
             guard length > 0.01 else { continue }
-            let averageSize = (start.size + end.size) / 2 * system.drawSizeScale
+            // A rope ribbon is twice the particle's size wide.
+            let averageSize = (start.size + end.size) * system.drawSizeScale
             var uniform = layerUniform(position: (start.position + end.position) / 2,
                                        size: SIMD2<Float>(length, averageSize),
                                        opacity: (start.opacity + end.opacity) / 2,
@@ -1435,11 +1440,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         return 0.5 * (a + b + c + d)
     }
 
+    /// The particle's alpha (`alphafade` is one of its operators) with the material's multiplier.
     private func particleOpacity(_ particle: Particle, in system: ParticleSystemRuntime) -> Float {
-        let progress = particle.age / particle.lifetime
-        let fadeIn = system.fadeIn > 0 ? min(progress / system.fadeIn, 1) : 1
-        let fadeOut = system.fadeOut < 1 ? min((1 - progress) / (1 - system.fadeOut), 1) : 1
-        return particle.alpha * fadeIn * fadeOut * system.configuration.opacityMultiplier
+        particle.alpha * system.configuration.opacityMultiplier
     }
 }
 /// WE keeps the pointer where it left a display rather than recentring it, and reports no

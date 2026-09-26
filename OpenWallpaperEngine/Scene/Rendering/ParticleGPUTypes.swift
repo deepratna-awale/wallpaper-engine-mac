@@ -13,7 +13,7 @@ struct ParticleGPUState {
     var alphaRotation: SIMD4<Float>
     var color: SIMD4<Float>
     var baseColor: SIMD4<Float>
-    /// History timer, sequence, instance.
+    /// History timer, -, instance.
     var trail: SIMD4<Float>
     /// Serial, sprite frame, history count, history start.
     var identity: SIMD4<UInt32>
@@ -83,81 +83,78 @@ enum ParticleGPUDrawKind: UInt32 {
 
 /// Per-frame inputs of one system's GPU step (`ParticleFrameInputs`).
 struct ParticleGPUFrame {
-    /// Delta, elapsed, emission rate, drag.
+    /// Delta, system time, emission rate, engine time.
     var time: SIMD4<Float>
-    /// Fade in, fade out, clears, burst.
-    var fade: SIMD4<Float>
-    /// Spawn origin xy, attractor origin xy.
-    var points: SIMD4<Float>
-    /// Sequence start xy, end xy.
-    var sequence: SIMD4<Float>
-    /// Remap anchor xy, has sequence.
-    var anchor: SIMD4<Float>
+    /// Time of day, clears, burst, -.
+    var misc: SIMD4<Float>
     /// Scene size xy, render target size xy (the built-in draw's pixels).
     var scene: SIMD4<Float>
     /// Frame index, material vertex count, `g_RenderVar0` offset in floats (`noRenderVar`: none), draw kind.
     var indices: SIMD4<UInt32>
-    /// `ParticleFrameInputs.offsetLinear`, column 0 xy, column 1 xy.
-    var offsetLinear: SIMD4<Float>
-    /// `ParticleFrameInputs.velocityRotation`, column 0 xy, column 1 xy.
-    var velocityRotation: SIMD4<Float>
-    /// Gravity xy, extent scale xy.
-    var gravityExtent: SIMD4<Float>
-    /// Vortex origin xy, reduction origin xy.
-    var origins: SIMD4<Float>
-    /// Constraint origin xy, motion translation xy.
-    var constraintMotion: SIMD4<Float>
+    /// `ParticleFrameInputs.space`: linear part, column 0 xy, column 1 xy; its translation xy and
+    /// the motion's translation xy.
+    var spaceLinear: SIMD4<Float>
+    var spaceMotion: SIMD4<Float>
+    /// The inverse of `space`'s linear part, column 0 xy, column 1 xy.
+    var toSpace: SIMD4<Float>
+    /// `ParticleFrameInputs.emitterLinear`, column 0 xy, column 1 xy.
+    var emitterLinear: SIMD4<Float>
+    /// The control points in the system's space, two per vector, and last step's.
+    var controlPoints0: SIMD4<Float>
+    var controlPoints1: SIMD4<Float>
+    var controlPoints2: SIMD4<Float>
+    var controlPoints3: SIMD4<Float>
+    var previousControlPoints0: SIMD4<Float>
+    var previousControlPoints1: SIMD4<Float>
+    var previousControlPoints2: SIMD4<Float>
+    var previousControlPoints3: SIMD4<Float>
     /// Motion linear part, column 0 xy, column 1 xy.
     var motionLinear: SIMD4<Float>
     /// Spawn size scale, spawn turn (`ParticleFrameInputs.spawnSizeScale`), has motion, trail and
     /// rope record size scale (`drawSizeScale`).
     var motionExtras: SIMD4<Float>
-    /// `ParticleFrameInputs.absolutePoints`, maximum.
+    /// `ParticleFrameInputs.absolutePoints`, maximum, collisions, initializers | operators << 16.
     var extra: SIMD4<UInt32>
     /// `ParticleFrameInputs.spawnScale`.
     var spawnScale: SIMD4<Float>
     /// `ParticleFrameInputs.colorScale`.
     var colorScale: SIMD4<Float>
-    /// Audio velocity, turbulence and vortex scales.
-    var audioScales: SIMD4<Float>
     /// `ParticleFrameInputs.periodLimit` (`noLimit`: none), starts a period, one per frame.
     var emission: SIMD4<UInt32>
     /// `ParticleFrameInputs.drawLinear`, column 0 xy, column 1 xy.
     var drawLinear: SIMD4<Float>
-    /// The operators' offsets from their control points: attractor xy, reduction xy; constraint xy.
-    var linkOffsets0: SIMD4<Float>
-    var linkOffsets1: SIMD4<Float>
 
     static let noRenderVar = UInt32.max
     static let noLimit = UInt32.max
 
     init(_ inputs: ParticleFrameInputs, sceneSize: SIMD2<Float>, targetSize: SIMD2<Float>, kind: ParticleGPUDrawKind,
          materialVertexCount: Int, renderVarOffset: Int?) {
-        time = SIMD4(inputs.deltaTime, inputs.elapsedTime, inputs.emissionRate, inputs.drag)
-        fade = SIMD4(inputs.fadeIn, inputs.fadeOut, inputs.clears ? 1 : 0, Float(inputs.burst))
-        points = SIMD4(inputs.spawnOrigin.x, inputs.spawnOrigin.y, inputs.attractorOrigin.x, inputs.attractorOrigin.y)
-        let start = inputs.sequenceStart ?? .zero, end = inputs.sequenceEnd ?? .zero
-        sequence = SIMD4(start.x, start.y, end.x, end.y)
-        let hasSequence: Float = inputs.sequenceStart != nil && inputs.sequenceEnd != nil ? 1 : 0
-        anchor = SIMD4(inputs.remapAnchor.x, inputs.remapAnchor.y, hasSequence, 0)
+        time = SIMD4(inputs.deltaTime, inputs.elapsedTime, inputs.emissionRate, inputs.engineTime)
+        misc = SIMD4(inputs.timeOfDay, inputs.clears ? 1 : 0, Float(inputs.burst), 0)
         scene = SIMD4(sceneSize.x, sceneSize.y, targetSize.x, targetSize.y)
         indices = SIMD4(inputs.frameIndex, UInt32(materialVertexCount),
                         renderVarOffset.map { UInt32($0 / 4) } ?? Self.noRenderVar, kind.rawValue)
-        offsetLinear = Self.columns(inputs.offsetLinear)
-        velocityRotation = Self.columns(inputs.velocityRotation)
-        gravityExtent = SIMD4(inputs.gravity.x, inputs.gravity.y, inputs.extentScale.x, inputs.extentScale.y)
-        origins = SIMD4(inputs.vortexOrigin.x, inputs.vortexOrigin.y, inputs.reductionOrigin.x, inputs.reductionOrigin.y)
+        spaceLinear = Self.columns(inputs.space.linear)
         let motion = inputs.motion ?? .identity
-        constraintMotion = SIMD4(inputs.constraintOrigin.x, inputs.constraintOrigin.y,
-                                 motion.translation.x, motion.translation.y)
+        spaceMotion = SIMD4(inputs.space.translation.x, inputs.space.translation.y, motion.translation.x, motion.translation.y)
+        toSpace = Self.columns(inputs.toSpace)
+        emitterLinear = Self.columns(inputs.emitterLinear)
+        func pair(_ points: [SIMD2<Float>], _ index: Int) -> SIMD4<Float> {
+            SIMD4(points[index * 2].x, points[index * 2].y, points[index * 2 + 1].x, points[index * 2 + 1].y)
+        }
+        controlPoints0 = pair(inputs.controlPoints, 0)
+        controlPoints1 = pair(inputs.controlPoints, 1)
+        controlPoints2 = pair(inputs.controlPoints, 2)
+        controlPoints3 = pair(inputs.controlPoints, 3)
+        previousControlPoints0 = pair(inputs.previousControlPoints, 0)
+        previousControlPoints1 = pair(inputs.previousControlPoints, 1)
+        previousControlPoints2 = pair(inputs.previousControlPoints, 2)
+        previousControlPoints3 = pair(inputs.previousControlPoints, 3)
         motionLinear = Self.columns(motion.linear)
         motionExtras = SIMD4(inputs.spawnSizeScale, inputs.spawnTurn, inputs.motion == nil ? 0 : 1, inputs.drawSizeScale)
         drawLinear = Self.columns(inputs.drawLinear)
-        linkOffsets0 = SIMD4(inputs.attractorOffset.x, inputs.attractorOffset.y,
-                             inputs.reductionOffset.x, inputs.reductionOffset.y)
-        linkOffsets1 = SIMD4(inputs.constraintOffset.x, inputs.constraintOffset.y, 0, 0)
-        extra = SIMD4(inputs.absolutePoints.rawValue, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count), 0)
-        audioScales = SIMD4(inputs.audioVelocityScale, inputs.turbulenceScale, inputs.vortexScale, 0)
+        extra = SIMD4(inputs.absolutePoints, UInt32(clamping: inputs.maximum), UInt32(inputs.collisions.count),
+                      UInt32(inputs.initializers.count) | UInt32(inputs.operators.count) << 16)
         spawnScale = inputs.spawnScale
         colorScale = SIMD4(inputs.colorScale, 1)
         emission = SIMD4(inputs.periodLimit.map { UInt32(clamping: $0) } ?? Self.noLimit,
@@ -173,73 +170,35 @@ struct ParticleGPUFrame {
 struct ParticleGPUParameters {
     struct Flag: OptionSet {
         let rawValue: UInt32
-        static let turbulence = Flag(rawValue: 1 << 0), attractor = Flag(rawValue: 1 << 1)
-        static let vortex = Flag(rawValue: 1 << 2), boids = Flag(rawValue: 1 << 3)
-        static let reduction = Flag(rawValue: 1 << 4), constraint = Flag(rawValue: 1 << 5)
-        static let maintainSequence = Flag(rawValue: 1 << 6), sizeChange = Flag(rawValue: 1 << 7)
-        static let alphaChange = Flag(rawValue: 1 << 8), colorChange = Flag(rawValue: 1 << 9)
-        static let oscillateSize = Flag(rawValue: 1 << 10), oscillateAlpha = Flag(rawValue: 1 << 11)
-        static let oscillatePosition = Flag(rawValue: 1 << 12), remapAlpha = Flag(rawValue: 1 << 13)
-        static let sequenceSpan = Flag(rawValue: 1 << 14), sequenceRing = Flag(rawValue: 1 << 15)
-        static let initialRemap = Flag(rawValue: 1 << 16), history = Flag(rawValue: 1 << 17)
-        static let boxEmitter = Flag(rawValue: 1 << 18), maximumSpeed = Flag(rawValue: 1 << 19)
-        static let spriteSheet = Flag(rawValue: 1 << 20), instanced = Flag(rawValue: 1 << 21)
-        static let worldSpace = Flag(rawValue: 1 << 22)
+        static let history = Flag(rawValue: 1 << 0), boxEmitter = Flag(rawValue: 1 << 1)
+        static let spriteSheet = Flag(rawValue: 1 << 2), instanced = Flag(rawValue: 1 << 3)
+        static let worldSpace = Flag(rawValue: 1 << 4), appliesSign = Flag(rawValue: 1 << 5)
     }
 
     var counts = SIMD4<UInt32>.zero
-    var lifetimeSize = SIMD4<Float>.zero
-    var alphaRotation = SIMD4<Float>.zero
-    var angularSpawn = SIMD4<Float>.zero
-    var velocityRange = SIMD4<Float>.zero
-    /// Emitter speed min, max, sign xy.
-    var emitterShape = SIMD4<Float>.zero
-    /// Minimum spawn radius ratio.
-    var emitterRing = SIMD4<Float>.zero
-    var colorMinimum = SIMD4<Float>.zero
-    var colorMaximum = SIMD4<Float>.zero
-    var offsetRange = SIMD4<Float>.zero
-    var sequence = SIMD4<Float>.zero
-    var ringAxisBounds = SIMD4<Float>.zero
-    var ringSpeed = SIMD4<Float>.zero
-    var initialRemap = SIMD4<Float>.zero
-    /// Maximum speed, angular acceleration.
-    var limits = SIMD4<Float>.zero
-    var turbulence = SIMD4<Float>.zero
-    var turbulenceMask = SIMD4<Float>.zero
-    var attractor = SIMD4<Float>.zero
-    /// Inner speed, outer speed, inner distance, outer distance.
-    var vortex = SIMD4<Float>.zero
-    var boids = SIMD4<Float>.zero
-    /// Inner distance, outer distance, reduction; constraint strength.
-    var reduction = SIMD4<Float>.zero
-    var sizeChange = SIMD4<Float>.zero
-    var alphaChange = SIMD4<Float>.zero
-    var colorChangeTime = SIMD4<Float>.zero
-    var colorChangeStart = SIMD4<Float>.zero
-    var colorChangeEnd = SIMD4<Float>.zero
-    var oscillateSize = SIMD4<Float>.zero
-    var oscillateAlpha = SIMD4<Float>.zero
-    var oscillatePosition = SIMD4<Float>.zero
-    var remapAlpha = SIMD4<Float>.zero
+    /// The emitter (`ParticleEmitterShape`): origin xyz, control point.
+    var emitterOrigin = SIMD4<Float>.zero
+    /// Directions xyz, −cos(cone·π).
+    var emitterDirections = SIMD4<Float>.zero
+    /// Distance minimum xyz, speed minimum.
+    var emitterMinimum = SIMD4<Float>.zero
+    /// Distance maximum xyz, speed maximum.
+    var emitterMaximum = SIMD4<Float>.zero
+    /// Sign xyz.
+    var emitterSign = SIMD4<Float>.zero
     var trail = SIMD4<Float>.zero
+    /// `spritetrail` maxlength, minlength.
+    var trailLimits = SIMD4<Float>.zero
     var spriteSheet = SIMD4<Float>.zero
     var sprite = SIMD4<Float>.zero
     /// Link kind (0: none), instances, -, instantaneous.
     var instancing = SIMD4<UInt32>.zero
     /// Probability.
     var link = SIMD4<Float>.zero
-    /// `ParticleInheritance` at spawn, every step.
-    var inherit = SIMD4<UInt32>.zero
-    /// An audio-responsive `turbulentvelocityrandom`: minimum xy, maximum xy.
-    var audioVelocity = SIMD4<Float>.zero
     /// `ParticleEmitterTiming` for instances: delay, duration, periodic duration minimum and
     /// maximum; periodic delay minimum and maximum, periodic.
     var emitterTiming = SIMD4<Float>.zero
     var emitterPeriod = SIMD4<Float>.zero
-    /// `ParticleControlPointLink.controlPoints` (−1: none), in `LinkedPoint` order.
-    var pointControlPoints0 = SIMD4<Int32>(repeating: -1)
-    var pointControlPoints1 = SIMD4<Int32>(repeating: -1)
     /// Linked (1), first control point, per parent instance (1).
     var linking = SIMD4<UInt32>.zero
 
@@ -250,95 +209,17 @@ struct ParticleGPUParameters {
         var flags: Flag = []
         let historyLimit = max(c.trailSegments, 1)
         if c.rendererName == "ropetrail" { flags.insert(.history) }
-        if c.emitterName == "boxrandom" { flags.insert(.boxEmitter) }
-        lifetimeSize = SIMD4(c.lifetime.lowerBound, c.lifetime.upperBound, c.size.lowerBound, c.size.upperBound)
-        alphaRotation = SIMD4(c.alpha.lowerBound, c.alpha.upperBound, c.minimumRotation, c.maximumRotation)
-        angularSpawn = SIMD4(c.minimumAngularVelocity, c.maximumAngularVelocity, c.spawnExtent.x, c.spawnExtent.y)
-        velocityRange = SIMD4(c.minimumVelocity.x, c.minimumVelocity.y, c.maximumVelocity.x, c.maximumVelocity.y)
-        emitterShape = SIMD4(c.emitterSpeed.lowerBound, c.emitterSpeed.upperBound, c.emitterSign.x, c.emitterSign.y)
-        emitterRing = SIMD4(min(max(c.minimumSpawnRatio, 0), 1), 0, 0, 0)
-        audioVelocity = SIMD4(c.audioVelocityMinimum.x, c.audioVelocityMinimum.y,
-                              c.audioVelocityMaximum.x, c.audioVelocityMaximum.y)
-        colorMinimum = c.minimumColor
-        colorMaximum = c.maximumColor
-        offsetRange = SIMD4(c.positionOffsetMinimum.x, c.positionOffsetMinimum.y,
-                            c.positionOffsetMaximum.x, c.positionOffsetMaximum.y)
-        if let span = c.sequenceSpan {
-            flags.insert(.sequenceSpan)
-            sequence = SIMD4(Float(span.count), span.arcAmount, span.mirrored ? 1 : 0, 0)
-        }
-        if let ring = c.sequenceRing {
-            flags.insert(.sequenceRing)
-            sequence.w = ring.turns
-            ringAxisBounds = SIMD4(ring.axis.x, ring.axis.y, ring.bounds.lowerBound, ring.bounds.upperBound)
-            ringSpeed = SIMD4(ring.minimumSpeed.x, ring.minimumSpeed.y, ring.maximumSpeed.x, ring.maximumSpeed.y)
-        }
-        if let remap = c.initialRemap {
-            flags.insert(.initialRemap)
-            let output: Float
-            switch remap.output {
-            case .size: output = 0
-            case .alpha: output = 1
-            case .velocity: output = 2
-            }
-            initialRemap = SIMD4(remap.rangeMinimum, remap.rangeMaximum, remap.multiply ? 1 : 0, output)
-        }
-        limits = SIMD4(c.maximumSpeed ?? 0, c.angularAcceleration, 0, 0)
-        if c.maximumSpeed != nil { flags.insert(.maximumSpeed) }
-        if let value = c.turbulence {
-            flags.insert(.turbulence)
-            turbulence = SIMD4(value.scale, value.speed.lowerBound, value.speed.upperBound, value.timeScale)
-            turbulenceMask = SIMD4(value.phase, value.mask.x, value.mask.y, 0)
-        }
-        if let value = c.attractor {
-            flags.insert(.attractor)
-            attractor = SIMD4(value.strength, value.threshold, 0, 0)
-        }
-        if let value = c.vortex {
-            flags.insert(.vortex)
-            vortex = SIMD4(value.innerSpeed, value.outerSpeed, value.innerDistance, value.outerDistance)
-        }
-        if let value = c.boids {
-            flags.insert(.boids)
-            boids = SIMD4(value.alignment, value.cohesion, value.separation, value.threshold)
-        }
-        if let value = c.nearControlPointReduction {
-            flags.insert(.reduction)
-            reduction.x = value.innerDistance
-            reduction.y = value.outerDistance
-            reduction.z = value.reduction
-        }
-        if let value = c.maintainControlPointDistance {
-            flags.insert(.constraint)
-            reduction.w = value.strength
-        }
-        if c.maintainSequenceDistance { flags.insert(.maintainSequence) }
-        if let change = c.sizeChange {
-            flags.insert(.sizeChange)
-            sizeChange = SIMD4(change.startTime, change.endTime, change.startValue, change.endValue)
-        }
-        if let change = c.alphaChange {
-            flags.insert(.alphaChange)
-            alphaChange = SIMD4(change.startTime, change.endTime, change.startValue, change.endValue)
-        }
-        if let change = c.colorChange {
-            flags.insert(.colorChange)
-            colorChangeTime = SIMD4(change.startTime, change.endTime, 0, 0)
-            colorChangeStart = change.startValue
-            colorChangeEnd = change.endValue
-        }
-        func oscillation(_ value: ParticleOscillation) -> SIMD4<Float> {
-            SIMD4(value.frequency.middle, value.scale.middle, value.phase.middle, 0)
-        }
-        if let value = c.oscillateSize { flags.insert(.oscillateSize); oscillateSize = oscillation(value) }
-        if let value = c.oscillateAlpha { flags.insert(.oscillateAlpha); oscillateAlpha = oscillation(value) }
-        if let value = c.oscillatePosition { flags.insert(.oscillatePosition); oscillatePosition = oscillation(value) }
-        if let remap = c.remapAlpha {
-            flags.insert(.remapAlpha)
-            remapAlpha = SIMD4(remap.scale, remap.outputMinimum, remap.outputMaximum, remap.sine ? 1 : 0)
-        }
+        let emitter = c.emitter
+        if emitter.kind == .box { flags.insert(.boxEmitter) }
+        if emitter.appliesSign { flags.insert(.appliesSign) }
+        emitterOrigin = SIMD4(emitter.origin, Float(emitter.controlPoint))
+        emitterDirections = SIMD4(emitter.directions, -cos(emitter.cone * .pi))
+        emitterMinimum = SIMD4(emitter.distanceMinimum, emitter.speed.x)
+        emitterMaximum = SIMD4(emitter.distanceMaximum, emitter.speed.y)
+        emitterSign = SIMD4(emitter.sign, 0)
         let fades: Float = (c.fadeTrailAlpha ? 1 : 0) + (c.fadeTrailSize ? 2 : 0)
         trail = SIMD4(max(c.trailLength, 0.001) / Float(historyLimit), c.trailLength, Float(max(c.ropeSubdivision, 1)), fades)
+        trailLimits = SIMD4(c.trailLengthLimits.x, c.trailLengthLimits.y, 0, 0)
         if let sheet = c.spriteSheet {
             flags.insert(.spriteSheet)
             spriteSheet = SIMD4(Float(sheet.frames), Float(sheet.columns), Float(sheet.rows), sheet.duration)
@@ -358,15 +239,11 @@ struct ParticleGPUParameters {
             instancing = SIMD4(link.kind.rawValue, UInt32(clamping: link.maximumInstances), 0,
                                UInt32(clamping: max(c.instantaneous, 0)))
             self.link = SIMD4(link.probability, 0, 0, 0)
-            inherit = SIMD4(c.inheritOnSpawn.rawValue, c.inheritEachStep.rawValue, 0, 0)
         }
         let timing = c.emitterTiming
         emitterTiming = SIMD4(timing.delay, timing.duration, timing.periodDuration.lowerBound, timing.periodDuration.upperBound)
         emitterPeriod = SIMD4(timing.periodDelay.lowerBound, timing.periodDelay.upperBound, timing.periodic ? 1 : 0, 0)
         if let link = c.link, let start = link.controlPointStart {
-            let ids = ParticleControlPointLink.controlPoints(of: c).map { Int32(clamping: $0) }
-            pointControlPoints0 = SIMD4(ids[0], ids[1], ids[2], ids[3])
-            pointControlPoints1 = SIMD4(ids[4], ids[5], ids[6], ids[7])
             linking = SIMD4(1, UInt32(clamping: start), link.kind == .static && link.instanced ? 1 : 0, 0)
         }
         counts = SIMD4(UInt32(clamping: c.maximumParticleCount), flags.rawValue, seed, UInt32(historyLimit))

@@ -52,7 +52,7 @@ kernel void particleWriteSprites(device const ParticleState *particles [[buffer(
     SpriteRecord record;
     record.position = float4(particle.positionVelocity.xy, 0, 0);
     // Sprites take the emitter's transform through `g_Orientation*`; trails scale by its area.
-    record.rotationSize = float4(0, 0, particle.alphaRotation.z, particle.life.z / 2 * f.motionExtras.w);
+    record.rotationSize = float4(0, 0, particle.alphaRotation.z, particle.life.z * f.motionExtras.w);
     record.velocityLifetime = float4(particle.positionVelocity.zw, 0, spritePhase(particle, p));
     record.color = recordColor(particle, p, f);
     records[gid] = record;
@@ -108,10 +108,10 @@ kernel void particleWriteRope(device const ParticleState *particles [[buffer(0)]
     const RopeNeighbours after = ropeNeighbours(particles, count, n.next, p);
     const float2 next = particles[after.next < count ? after.next : n.next].positionVelocity.xy;
     RopeRecord record;
-    record.start = float4(start.positionVelocity.xy, 0, start.life.z / 2 * f.motionExtras.w);
+    record.start = float4(start.positionVelocity.xy, 0, start.life.z * f.motionExtras.w);
     record.end = float4(end.positionVelocity.xy, 0, float(n.length));
     record.previous = float4(previous, 0, float(n.index));
-    record.next = float4(next, 0, end.life.z / 2 * f.motionExtras.w);
+    record.next = float4(next, 0, end.life.z * f.motionExtras.w);
     record.endColor = recordColor(end, p, f);
     record.color = recordColor(start, p, f);
     records[gid] = record;
@@ -143,7 +143,7 @@ kernel void particleWriteRopeTrails(device const ParticleState *particles [[buff
     const uint base = offsets[gid] + blockSums[gid / kGroup];
     const uint points = count + 1;
     const float4 rgba = recordColor(particle, p, f);
-    const float size = particle.life.z / 2 * f.motionExtras.w;
+    const float size = particle.life.z * f.motionExtras.w;
     for (uint segment = 0; segment < points - 1; ++segment) {
         const float2 start = trailPointNewestFirst(particle, own, segment);
         const float2 end = trailPointNewestFirst(particle, own, segment + 1);
@@ -174,13 +174,14 @@ kernel void particleWriteFallbackSprites(device const ParticleState *particles [
     const float opacity = particleOpacity(particle, p, f);
     FallbackInstance instance;
     if (f.indices.w == kFallbackSpriteTrail) {
+        // `ComputeParticleTrailTangents` (common_particles.h): the quad is the size wide and the
+        // size times the speed's stretch (`length`, clamped to `minlength`…`maxlength`) long.
         const float size = particle.life.z * f.motionExtras.w;
         const float2 velocity = particle.positionVelocity.zw;
         const float speed = length(velocity);
-        const float stretch = max(p.trail.y, 1.0f);
-        const float trailLength = max(size, min(size * stretch, size + speed * 0.08f));
+        const float stretch = max(p.trailLimits.y, min(speed * p.trail.y, p.trailLimits.x));
         const float width = p.sprite.w > 0.5 ? max(2.0f, size * 0.08f) : size;
-        instance = fallbackInstance(particle.positionVelocity.xy, float2(width, trailLength), opacity, f);
+        instance = fallbackInstance(particle.positionVelocity.xy, float2(width, size * stretch), opacity, f);
         instance.rotation = speed > 0.01f ? atan2(velocity.y, velocity.x) - M_PI_F / 2 : particle.alphaRotation.z;
     } else {
         const float size = particle.life.z;
@@ -233,7 +234,8 @@ kernel void particleWriteFallbackRope(device const ParticleState *particles [[bu
         const float2 to = last ? end.positionVelocity.xy
             : catmullRom(previous.positionVelocity.xy, start.positionVelocity.xy,
                          end.positionVelocity.xy, following.positionVelocity.xy, t1);
-        const float scale = f.motionExtras.w;
+        // A rope ribbon is twice the particle's size wide.
+        const float scale = 2 * f.motionExtras.w;
         const float fromSize = (start.life.z + (end.life.z - start.life.z) * t0) * scale;
         const float toSize = (last ? end.life.z : start.life.z + (end.life.z - start.life.z) * t1) * scale;
         const float4 fromColor = mix(start.color, end.color, float4(t0));
@@ -298,7 +300,8 @@ kernel void particleWriteFallbackRopeTrails(device const ParticleState *particle
             if (pieceLength > 0.01f) {
                 // 0 at the oldest sample, 1 at the particle itself.
                 const float progress = float(piece + 1) / float(pieces);
-                const float size = particle.life.z * f.motionExtras.w;
+                // A rope ribbon is twice the particle's size wide.
+                const float size = 2 * particle.life.z * f.motionExtras.w;
                 const float width = fadeSize ? size * progress : size;
                 instance = fallbackInstance((from + to) / 2, float2(pieceLength, max(width, 0.01f)),
                                             fadeAlpha ? opacity * progress : opacity, f);

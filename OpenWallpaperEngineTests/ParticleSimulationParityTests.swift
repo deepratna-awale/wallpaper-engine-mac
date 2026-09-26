@@ -54,65 +54,141 @@ final class ParticleSimulationParityTests: XCTestCase {
         try assertParity(system)
     }
 
-    func testBoxEmitterOffsetsRotationAndMaximumSpeed() throws {
+    func testBoxEmitterSpinAndCappedVelocity() throws {
         var system = ParticleTestSystem()
         system.emitterName = "boxrandom"
         system.spawnExtent = SIMD2(300, -80)
-        system.positionOffsetMinimum = SIMD2(-20, 5)
-        system.positionOffsetMaximum = SIMD2(20, 40)
         system.emitterLinear = simd_float2x2(SIMD2(0, 1), SIMD2(-1, 0))
-        system.maximumSpeed = 30
-        system.angularAcceleration = 2
+        system.operators = [ParticleOperator(.angularMovement, a: SIMD4(0, 0, 2, 0.5)),
+                            ParticleOperator(.capVelocity, a: SIMD4(30, 0, 0, 0))]
         try assertParity(system)
     }
 
     func testTurbulence() throws {
         var system = ParticleTestSystem()
-        system.turbulence = Turbulence(scale: 0.01, speed: 200...600, timeScale: 0.5, phase: 1, mask: SIMD2(1, -1))
+        system.operators = [ParticleOperator(.turbulence, a: SIMD4(1, -1, 0, 0), b: SIMD4(0.01, 200, 600, 0.5),
+                                             c: SIMD4(0, 1, 0, 0))]
         try assertParity(system)
     }
 
     func testControlPointAttractAndCursorControlPoint() throws {
         var system = ParticleTestSystem()
-        system.attractor = Attractor(offset: SIMD2(100, 100), strength: 300, threshold: 400, controlPoint: 1)
-        system.controlPoints = [ParticleControlPoint(id: 1, offset: SIMD2(10, -10), locksToCursor: true)]
+        system.operators = [ParticleOperator(.controlPointAttract, flags: 3, controlPoints: 1, b: SIMD4(300, 400, 5, 0))]
+        system.controlPoints[1] = ParticleTestSystem.point(SIMD2(10, -10), cursor: true)
         system.emitterControlPoint = 1
         try assertParity(system)
     }
 
-    func testVortex() throws {
+    func testVortices() throws {
         var system = ParticleTestSystem()
-        system.controlPoints = [ParticleControlPoint(id: 2, offset: SIMD2(20, -20), locksToCursor: false)]
-        system.vortex = ParticleVortex(innerSpeed: 400, outerSpeed: 50, innerDistance: 5, outerDistance: 300, controlPoint: 2)
-        try assertParity(system)
+        system.controlPoints[2] = ParticleTestSystem.point(SIMD2(20, -20))
+        system.operators = [ParticleOperator(.vortex, controlPoints: 2, a: SIMD4(5, 0, 0, 0), b: SIMD4(0, 0, 1, 0),
+                                             c: SIMD4(5, 300, 400, 50))]
+        try assertParity(system, "vortex")
+        system.operators = [ParticleOperator(.vortexV2, flags: 6, controlPoints: 2, a: SIMD4(0, 0, 1, 0),
+                                             b: SIMD4(0, 32, 0, 2500), c: SIMD4(1, 120, 5, 250), d: SIMD4(10, 0, 0, 0))]
+        try assertParity(system, "vortex_v2", positionTolerance: 3)
     }
 
     func testBoids() throws {
         var system = ParticleTestSystem()
-        system.boids = ParticleBoids(alignment: 0.5, cohesion: 0.3, separation: 20, threshold: 60)
+        system.operators = [ParticleOperator(.boids, flags: 1, a: SIMD4(20, 60, 200, 0), b: SIMD4(15, 1, 2, 0))]
         try assertParity(system, positionTolerance: 3)
     }
 
     func testControlPointDistanceOperators() throws {
         var system = ParticleTestSystem()
-        system.nearControlPointReduction = ParticleDistanceReduction(offset: .zero, innerDistance: 10,
-                                                                     outerDistance: 200, reduction: 3)
-        system.maintainControlPointDistance = ParticleDistanceConstraint(offset: SIMD2(-50, 20), strength: 0.5)
+        system.controlPoints[1] = ParticleTestSystem.point(SIMD2(-50, 20), cursor: true)
+        system.operators = [ParticleOperator(.reduceMovementNearControlPoint, a: SIMD4(10, 200, 3, 0)),
+                            ParticleOperator(.maintainDistanceToControlPoint, controlPoints: 1, a: SIMD4(80, 0.5, 0, 0)),
+                            ParticleOperator(.maintainDistanceBetweenControlPoints, controlPoints: 0 | 1 << 8)]
+        try assertParity(system, positionTolerance: 2, cursor: { frame in SIMD2(640 + Float(frame), 360) })
+    }
+
+    func testSequencesBetweenAndAroundControlPoints() throws {
+        var system = ParticleTestSystem()
+        system.rendererName = "rope"
+        system.controlPoints[0] = ParticleTestSystem.point(SIMD2(-200, 0))
+        system.controlPoints[1] = ParticleTestSystem.point(SIMD2(40, 60), cursor: true)
+        var around = ParticleInitializer(.mapSequenceAroundControlPoint, a: SIMD4(0, 0, 1, 0), b: SIMD4(-5, -5, 0, 0),
+                                         c: SIMD4(5, 5, 0, 0), d: SIMD4(0, 1, 0, 0))
+        around.sequenceCount = 16
+        var between = ParticleInitializer(.mapSequenceBetweenControlPoints, flags: 15, controlPoints: 0 | 1 << 8,
+                                          a: SIMD4(0, 0, 1, 1), b: SIMD4(0.4, 0.9, 0, 0), c: SIMD4(0, 1, 0, 0))
+        between.sequenceCount = 16
+        system.initializers = [around, between,
+                               ParticleInitializer(.positionOffsetRandom, a: SIMD4(1, 1, 0, 0), c: SIMD4(0.001, 30, 5, 6))]
+        system.operators = [ParticleOperator(.turbulence, a: SIMD4(1, 1, 0, 0), b: SIMD4(0.02, 50, 80, 1))]
+        try assertParity(system, positionTolerance: 3)
+    }
+
+    func testEveryInitializerKind() throws {
+        var system = ParticleTestSystem()
+        system.controlPoints[2] = ParticleTestSystem.point(SIMD2(30, 0), cursor: true)
+        let remapCode = ParticleProgramCPU.RemapCode.pack(operation: 1, input: 7, output: 2, inputComponent: 0,
+                                                          outputComponent: 0, transform: 1, octaves: 3)
+        var remap = ParticleInitializer(.remapInitialValue, flags: 1, controlPoints: 2, a: SIMD4(5, 5, 5, 0),
+                                        b: SIMD4(60, 60, 60, 0), c: SIMD4(0.2, 0.2, 0.2, 0), d: SIMD4(1, 1, 1, 0),
+                                        e: SIMD4(1, 0, 0, 1))
+        remap.record.header.w = remapCode
+        system.initializers = [
+            ParticleInitializer(.hsvColorRandom, a: SIMD4(0.1, 0.1, 6, 0), b: SIMD4(0.5, 1, 0.5, 1)),
+            ParticleInitializer(.colorList, a: SIMD4(3, 0.1, 0.1, 0.1), b: SIMD4(0, 1, 1, 0), c: SIMD4(0.3, 0.5, 1, 0),
+                                d: SIMD4(0.6, 1, 0.8, 0), e: SIMD4(0, 1, 1, 0)),
+            ParticleInitializer(.turbulentVelocityRandom, a: SIMD4(100, 250, 0, 0.1), b: SIMD4(1, 1, 0, 0),
+                                c: SIMD4(0, 1, 0, 0), d: SIMD4(0, 0, 1, 0)),
+            ParticleInitializer(.inheritControlPointVelocity, controlPoints: 2, a: SIMD4(0.1, 0.2, 0, 0)),
+            remap,
+        ]
+        try assertParity(system, cursor: { frame in SIMD2(640 + 3 * Float(frame), 360) })
+    }
+
+    func testChangesAndFadesOverLife() throws {
+        var system = ParticleTestSystem()
+        // Two of a kind apply in turn.
+        system.operators = [ParticleOperator(.sizeChange, a: SIMD4(1, 3, 0.1, 0.8)),
+                            ParticleOperator(.sizeChange, a: SIMD4(1, 0.5, 0.5, 1)),
+                            ParticleOperator(.alphaChange, a: SIMD4(1, 0, 0.2, 1)),
+                            ParticleOperator(.colorChange, a: SIMD4(1, 0.5, 0.2, 0), b: SIMD4(0.2, 1, 0.5, 0),
+                                             c: SIMD4(0, 0.5, 0, 0)),
+                            ParticleOperator(.alphaFade, a: SIMD4(0.1, 0.8, 0, 0))]
         try assertParity(system)
     }
 
-    func testSequenceBetweenAndAroundControlPoints() throws {
+    func testOscillationsAndRemaps() throws {
         var system = ParticleTestSystem()
-        system.rendererName = "rope"
-        system.controlPoints = [ParticleControlPoint(id: 0, offset: SIMD2(-200, 0), locksToCursor: false),
-                                ParticleControlPoint(id: 1, offset: SIMD2(40, 60), locksToCursor: true)]
-        system.sequenceSpan = ParticleSequenceSpan(startControlPoint: 0, endControlPoint: 1, count: 16, arcAmount: 0.4,
-                                                   mirrored: true)
-        system.sequenceRing = ParticleSequenceRing(turns: 2, axis: SIMD2(0, 1), bounds: 0...1,
-                                                   minimumSpeed: SIMD2(-5, -5), maximumSpeed: SIMD2(5, 5))
-        system.maintainSequenceDistance = true
-        system.turbulence = Turbulence(scale: 0.02, speed: 50...80, timeScale: 1, phase: 0, mask: SIMD2(1, 1))
+        let window = ParticleBlend(inStart: 0.1, inEnd: 0.4, outStart: 0.7, outEnd: 0.9)
+        system.operators = [
+            ParticleOperator(.oscillateSize, b: SIMD4(2, 4, 0, 1), c: SIMD4(0.5, 1.5, 0, 0)),
+            ParticleOperator(.oscillatePosition, a: SIMD4(1, 1, 0, 0), b: SIMD4(3, 3, 0, 0), c: SIMD4(40, 60, 0, 0),
+                             blend: window),
+            ParticleOperator(.oscillateAlpha, b: SIMD4(5, 5, 1, 2), c: SIMD4(0.2, 0.6, 0, 0), blend: window),
+        ]
+        func remap(_ operation: UInt32, input: UInt32, output: UInt32, transform: UInt32, flags: UInt32 = 0,
+                   low: SIMD4<Float>, high: SIMD4<Float>, scale: Float) -> ParticleOperator {
+            var op = ParticleOperator(.remapValue, flags: flags, b: SIMD4(1, 1, 1, 0), c: low, d: high, e: SIMD4(scale, 0, 0, 1))
+            op.record.header.w = ParticleProgramCPU.RemapCode.pack(operation: operation, input: input, output: output,
+                                                                   inputComponent: 0, outputComponent: 0,
+                                                                   transform: transform, octaves: 3)
+            return op
+        }
+        system.operators += [
+            remap(1, input: 0, output: 3, transform: 1, low: SIMD4(0.2, 0.2, 0.2, 0), high: SIMD4(0.9, 0.9, 0.9, 0), scale: 2),
+            remap(0, input: 0, output: 15, transform: 5, low: SIMD4(-200, -100, 0, 0), high: SIMD4(200, -1000, 0, 0), scale: 10),
+            remap(1, input: 0, output: 4, transform: 6, flags: 3, low: SIMD4(-5, -5, -5, 0), high: SIMD4(7, 7, 7, 0), scale: 8),
+        ]
         try assertParity(system, positionTolerance: 3)
+    }
+
+    func testCollisions() throws {
+        var system = ParticleTestSystem()
+        system.gravity = SIMD2(0, -400)
+        var plane = ParticleOperator(.collision)
+        plane.collision = ParticleCollision(shape: .plane(normal: SIMD3(0, 1, 0), distance: -60))
+        var sphere = ParticleOperator(.collision)
+        sphere.collision = ParticleCollision(shape: .sphere(origin: SIMD3(0, -30, 0), radius: 20), behavior: .slide)
+        system.operators = [plane, sphere]
+        try assertParity(system, positionTolerance: 2)
     }
 
     func testEmitterTimingRunsTheSameOnTheGPU() throws {
@@ -131,36 +207,6 @@ final class ParticleSimulationParityTests: XCTestCase {
         single.lifetime = 5...5
         single.emitterTiming.onePerFrame = true
         try assertParity(single, "one per frame")
-    }
-
-    func testInitialRemapOfSizeAlphaAndVelocity() throws {
-        for output in [ParticleInitialRemap.Output.size, .alpha, .velocity] {
-            var system = ParticleTestSystem()
-            system.controlPoints = [ParticleControlPoint(id: 2, offset: SIMD2(30, 0), locksToCursor: false)]
-            system.initialRemap = ParticleInitialRemap(controlPoint: 2, rangeMinimum: 5, rangeMaximum: 60,
-                                                       multiply: output != .alpha, output: output)
-            try assertParity(system, "\(output)")
-        }
-    }
-
-    func testChangesOverLife() throws {
-        var system = ParticleTestSystem()
-        system.sizeChange = ParticleChange(startTime: 0.1, endTime: 0.8, startValue: 1, endValue: 3)
-        system.alphaChange = ParticleChange(startTime: 0.2, endTime: 1, startValue: 1, endValue: 0)
-        system.colorChange = ParticleColorChange(startTime: 0, endTime: 0.5, startValue: SIMD4(1, 0.5, 0.2, 1),
-                                                 endValue: SIMD4(0.2, 1, 0.5, 1))
-        try assertParity(system)
-    }
-
-    func testOscillationsAndAlphaRemap() throws {
-        var system = ParticleTestSystem()
-        system.oscillateSize = ParticleOscillation(frequency: 2...4, scale: 0.5...1.5, phase: 0...1)
-        system.oscillatePosition = ParticleOscillation(frequency: 3...3, scale: 40...60, phase: 0...0)
-        system.remapAlpha = ParticleRemap(scale: 2, outputMinimum: 0.2, outputMaximum: 0.9, sine: true)
-        try assertParity(system)
-        system.remapAlpha = nil
-        system.oscillateAlpha = ParticleOscillation(frequency: 5...5, scale: 0.2...0.6, phase: 1...2)
-        try assertParity(system, "oscillatealpha")
     }
 
     func testRopeTrailHistory() throws {
@@ -218,7 +264,7 @@ final class ParticleSimulationParityTests: XCTestCase {
         var system = ParticleTestSystem()
         system.instantaneous = 300
         system.emissionRate = 120
-        system.emitterSpeed = 50...250
+        system.emitterSpeed = SIMD2(50, 250)
         system.minimumSpawnRatio = 0.5
         system.emitterSign = SIMD2(0, 1)
         system.lifetime = 3...4
@@ -342,16 +388,18 @@ final class ParticleSimulationParityTests: XCTestCase {
 
     private func runBoth(_ system: ParticleTestSystem, frames: Int = frames, seed: UInt32 = 42,
                          kind: ParticleGPUDrawKind? = nil,
-                         emitter: ((Int) -> SceneAffineTransform)? = nil) throws -> (ParticleSystemRuntime, GPURun) {
+                         emitter: ((Int) -> SceneAffineTransform)? = nil,
+                         cursor: ((Int) -> SIMD2<Float>)? = nil) throws -> (ParticleSystemRuntime, GPURun) {
         let cpu = ParticleSystemRuntime(texture: texture, configuration: system.configuration, seed: seed)
         let gpu = ParticleSystemRuntime(texture: texture, configuration: system.configuration, seed: seed)
         let kind = kind ?? (system.rendererName == "ropetrail" ? .ropeTrail : .sprite)
         var last: MTLCommandBuffer?
         for frame in 0..<frames {
             let world = emitter?(frame)
-            ParticleCPUSimulation.step(cpu, inputs: ParticleFrameInputs.advance(cpu, deltaTime: 1 / 60, cursor: Self.cursor,
+            let point = cursor?(frame) ?? Self.cursor
+            ParticleCPUSimulation.step(cpu, inputs: ParticleFrameInputs.advance(cpu, deltaTime: 1 / 60, cursor: point,
                                                                                 emitter: world))
-            let inputs = ParticleFrameInputs.advance(gpu, deltaTime: 1 / 60, cursor: Self.cursor, emitter: world)
+            let inputs = ParticleFrameInputs.advance(gpu, deltaTime: 1 / 60, cursor: point, emitter: world)
             let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
             simulator.encode([.init(system: gpu, inputs: inputs, kind: kind, materialVertexCount: 6)],
                              sceneSize: SIMD2(1280, 720), targetSize: SIMD2(1280, 720), commandBuffer: commandBuffer)
@@ -400,9 +448,9 @@ final class ParticleSimulationParityTests: XCTestCase {
     }
 
     private func assertParity(_ system: ParticleTestSystem, _ label: String = "", positionTolerance: Float = 1,
-                              emitter: ((Int) -> SceneAffineTransform)? = nil,
+                              emitter: ((Int) -> SceneAffineTransform)? = nil, cursor: ((Int) -> SIMD2<Float>)? = nil,
                               file: StaticString = #filePath, line: UInt = #line) throws {
-        let (cpu, gpu) = try runBoth(system, emitter: emitter)
+        let (cpu, gpu) = try runBoth(system, emitter: emitter, cursor: cursor)
         let states = simulator.snapshot(gpu.runtime, queue: queue)
         let expected = statistics(cpu.particles), actual = statistics(states)
         XCTAssertGreaterThan(expected.count, 50, label, file: file, line: line)
@@ -428,10 +476,7 @@ final class ParticleSimulationParityTests: XCTestCase {
         let pointer = UnsafeMutableRawPointer.allocate(byteCount: max(count, 1) * format.stride, alignment: 16)
         defer { pointer.deallocate() }
         ParticleRecordWriter.write(system, format: format, count: count, into: pointer) { particle in
-            let progress = particle.age / particle.lifetime
-            let fadeIn = system.fadeIn > 0 ? min(progress / system.fadeIn, 1) : 1
-            let fadeOut = system.fadeOut < 1 ? min((1 - progress) / (1 - system.fadeOut), 1) : 1
-            return particle.alpha * fadeIn * fadeOut * system.configuration.opacityMultiplier
+            particle.alpha * system.configuration.opacityMultiplier
         }
         let records = pointer.bindMemory(to: Record.self, capacity: count)
         return Array(UnsafeBufferPointer(start: records, count: count))

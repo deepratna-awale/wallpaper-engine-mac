@@ -57,13 +57,11 @@ final class SceneRendererParticleTests: XCTestCase {
         system.spawnExtent = .zero
         system.minimumVelocity = .zero
         system.maximumVelocity = .zero
-        system.size = 60...60
+        system.size = 120...120
         system.lifetime = 100...100
         system.alpha = 1...1
         system.minimumColor = SIMD4(repeating: 1)
         system.maximumColor = SIMD4(repeating: 1)
-        system.fadeIn = 0
-        system.fadeOut = 1
         system.maximum = 5
         system.source = .image(image([1, 1, 1, 1]))
         system.material = try refractionMaterial()
@@ -129,13 +127,13 @@ final class SceneRendererParticleTests: XCTestCase {
         system.spawnExtent = .zero
         system.minimumVelocity = .zero
         system.maximumVelocity = .zero
-        system.size = 100...100
+        // The built-in disc and WE's material both draw the particle's size, half the authored one:
+        // a 100 disc, a 50 square.
+        system.size = material ? 100...100 : 200...200
         system.lifetime = 100...100
         system.alpha = 1...1
         system.minimumColor = SIMD4(repeating: 1)
         system.maximumColor = SIMD4(repeating: 1)
-        system.fadeIn = 0
-        system.fadeOut = 1
         system.maximum = 5
         system.source = .image(image([1, 1, 1, 1]))
         if material { system.material = try solidMaterial() }

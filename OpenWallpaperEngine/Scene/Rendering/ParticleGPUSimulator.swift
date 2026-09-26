@@ -21,7 +21,7 @@ final class ParticleGPUSimulator {
     static let threadgroupSize = 256
 
     private let device: MTLDevice
-    private let begin, emit, simulate, scanBlocks, scanBlockSums, compact, finish: MTLComputePipelineState
+    private let age, begin, emit, simulate, scanBlocks, scanBlockSums, compact, finish: MTLComputePipelineState
     private let eventMark, eventScatter, instanceStep, linkPoints: MTLComputePipelineState
     private let writers: [ParticleGPUDrawKind: MTLComputePipelineState]
 
@@ -34,6 +34,7 @@ final class ParticleGPUSimulator {
             return try device.makeComputePipelineState(function: function)
         }
         self.device = device
+        age = try pipeline("particleAge")
         begin = try pipeline("particleBegin")
         emit = try pipeline("particleEmit")
         simulate = try pipeline("particleSimulate")
@@ -135,6 +136,16 @@ final class ParticleGPUSimulator {
                                     threadsPerThreadgroup: MTLSize(width: min(gpu.slots, 64), height: 1, depth: 1))
         }
 
+        // WE's order: every particle ages first and those past their lifetime die (0x140236d91).
+        encoder.setComputePipelineState(age)
+        encoder.setBuffer(particles, offset: 0, index: 0)
+        encoder.setBuffer(alive, offset: 0, index: 1)
+        encoder.setBuffer(control, offset: 0, index: 2)
+        encoder.setBuffer(gpu.parameters, offset: 0, index: 3)
+        encoder.setBytes(&frame, length: frameLength, index: 4)
+        encoder.setBuffer(instances, offset: 0, index: 5)
+        perParticle()
+
         if request.system.configuration.isInstanced {
             guard let parent = request.system.parent?.gpu else { return }
             encodeInstanceStep(request.system, gpu: gpu, parent: parent, frame: &frame, encoder: encoder)
@@ -153,6 +164,7 @@ final class ParticleGPUSimulator {
         encoder.setBytes(&frame, length: frameLength, index: 3)
         encoder.setBuffer(instances, offset: 0, index: 4)
         encoder.setBuffer(linked, offset: 0, index: 5)
+        bindProgram(request.inputs, index: 6, fallback: control, encoder: encoder)
         perParticle()
 
         encoder.setComputePipelineState(simulate)
@@ -176,6 +188,7 @@ final class ParticleGPUSimulator {
             encoder.setBuffer(control, offset: 0, index: 8)
         }
         encoder.setBuffer(linked, offset: 0, index: 9)
+        bindProgram(request.inputs, index: 10, fallback: control, encoder: encoder)
         perParticle()
 
         scan(alive, count: ParticleGPUSystem.Control.total, into: ParticleGPUSystem.Control.count, offsets: offsets,
@@ -227,6 +240,21 @@ final class ParticleGPUSimulator {
             encoder.setBytes(&frame, length: frameLength, index: 4)
         }
         perParticle()
+    }
+
+    /// The step's program (`ParticleProgramOp`: initializers, then operators) at `index`.
+    private func bindProgram(_ inputs: ParticleFrameInputs, index: Int, fallback: MTLBuffer, encoder: MTLComputeCommandEncoder) {
+        let records = inputs.initializers + inputs.operators
+        let bytes = records.count * MemoryLayout<ParticleProgramOp>.stride
+        if records.isEmpty {
+            encoder.setBuffer(fallback, offset: 0, index: index)
+        } else if bytes <= 4096 {
+            records.withUnsafeBytes { encoder.setBytes($0.baseAddress!, length: bytes, index: index) }
+        } else if let buffer = device.makeBuffer(bytes: records, length: bytes, options: .storageModeShared) {
+            encoder.setBuffer(buffer, offset: 0, index: index)
+        } else {
+            encoder.setBuffer(fallback, offset: 0, index: index)
+        }
     }
 
     /// Prefix sums of `values` (`countControl[count]` of them) into `offsets` and `blockSums`, the

@@ -135,23 +135,29 @@ final class ParticleCollisionAudioTests: XCTestCase {
         var system = ParticleTestSystem()
         system.gravity = SIMD2(0, -600)
         system.lifetime = 2...3
-        system.turbulence = Turbulence(scale: 0.01, speed: 200...400, timeScale: 0.5, phase: 0, mask: SIMD2(1, 1))
-        system.vortex = ParticleVortex(innerSpeed: 200, outerSpeed: 50, innerDistance: 0, outerDistance: 300)
-        var configuration = system.configuration
-        configuration.collisions = [
-            ParticleCollision(shape: .plane(normal: SIMD3(0.1, 1, 0), distance: -150), bounceFactor: 0.7),
-            ParticleCollision(shape: .sphere(origin: SIMD3(80, -60, 0), radius: 40), behavior: .slide, stopsRotation: true),
-            ParticleCollision(shape: .quad(origin: SIMD3(-80, -60, 0), normal: SIMD3(0, 1, 0), forward: SIMD3(0, 0, 1),
-                                           size: SIMD2(100, 100)), behavior: .delete),
-            ParticleCollision(shape: .bounds(size: SIMD2(700, 1000)), behavior: .stop),
-        ]
         let response = ParticleAudioResponse(mode: 3, exponent: 1, bounds: SIMD2(0, 1), frequencyStart: 0, frequencyEnd: 3)
+        var turbulence = ParticleOperator(.turbulence, a: SIMD4(1, 1, 0, 0), b: SIMD4(0.01, 200, 400, 0.5))
+        turbulence.audio = response
+        var vortex = ParticleOperator(.vortex, b: SIMD4(0, 0, 1, 0), c: SIMD4(0, 300, 200, 50))
+        vortex.audio = response
+        var velocity = ParticleInitializer(.turbulentVelocityRandom, a: SIMD4(100, 200, 0, 0.1), b: SIMD4(1, 1, 0, 0),
+                                           c: SIMD4(0, 1, 0, 0), d: SIMD4(0, 0, 1, 0))
+        velocity.audio = response
+        system.initializers = [velocity]
+        func collision(_ shape: ParticleCollision) -> ParticleOperator {
+            var op = ParticleOperator(.collision)
+            op.collision = shape
+            return op
+        }
+        system.operators = [turbulence, vortex,
+            collision(ParticleCollision(shape: .plane(normal: SIMD3(0.1, 1, 0), distance: -150), bounceFactor: 0.7)),
+            collision(ParticleCollision(shape: .sphere(origin: SIMD3(80, -60, 0), radius: 40), behavior: .slide, stopsRotation: true)),
+            collision(ParticleCollision(shape: .quad(origin: SIMD3(-80, -60, 0), normal: SIMD3(0, 1, 0), forward: SIMD3(0, 0, 1),
+                                                     size: SIMD2(100, 100)), behavior: .delete)),
+            collision(ParticleCollision(shape: .bounds(size: SIMD2(700, 1000)), behavior: .stop)),
+        ]
+        var configuration = system.configuration
         configuration.rateAudio = response
-        configuration.velocityAudio = response
-        configuration.audioVelocityMinimum = SIMD2(-100, 0)
-        configuration.audioVelocityMaximum = SIMD2(100, 200)
-        configuration.turbulenceAudio = response
-        configuration.vortexAudio = response
         let cpu = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: 11)
         let gpu = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: 11)
         var last: MTLCommandBuffer?

@@ -74,7 +74,9 @@ final class ParticleGPURenderTests: XCTestCase {
             guard frame > 0, let gpu = runtime.gpu, let recordBuffer = gpu.records, let state = gpu.particles else { continue }
             records.insert(ObjectIdentifier(recordBuffer))
             particles.insert(ObjectIdentifier(state))
-            XCTAssertLessThanOrEqual(recordBuffer.length, 10_000 * MemoryLayout<ParticleSpriteInstance>.stride + 16)
+            // A step holds last step's particles until the ones that died aging are compacted
+            // away, and its spawns: at most twice the maximum.
+            XCTAssertLessThanOrEqual(recordBuffer.length, 20_000 * MemoryLayout<ParticleSpriteInstance>.stride + 16)
         }
         XCTAssertEqual(runtime.gpu?.completedCount, 10_000)
         XCTAssertEqual(records.count, 1, "one record buffer for 99 frames")
@@ -101,7 +103,9 @@ final class ParticleGPURenderTests: XCTestCase {
         let decoded = try JSONDecoder().decode(WEParticleRenderer.self, from: Data(#"{"name":"\#(renderer)"}"#.utf8))
         let built = try builder.build(materialPath: "materials/solid.json", renderer: decoded, flags: 0,
                                       baseTexture: .image(NSImage()), spriteSheet: nil)
-        let stages = built.stages.filter { $0.geometry == .emulated(vertexCount: 6) }
+        // WE's rope default subdivides each segment (`TRAILSUBDIVISION` 4), which grows the stage's
+        // vertex count.
+        let stages = built.stages.filter { if case .emulated = $0.geometry { return true } else { return false } }
         let plan = ParticleMaterialPlan(materialPath: built.materialPath, shader: built.shader, format: built.format,
                                         blending: built.blending, stages: stages, trailLengths: built.trailLengths,
                                         spriteSheet: nil)
@@ -163,12 +167,7 @@ final class ParticleGPURenderTests: XCTestCase {
             let simulated = try XCTUnwrap(materials.prepareSimulated(gpu, pixelFormat: .rgba8Unorm))
             try step(gpu, simulated: simulated, drawingInto: frame == frames - 1 ? gpuTarget : nil)
         }
-        XCTAssertTrue(materials.prepare(cpu, pixelFormat: .rgba8Unorm, opacity: { particle in
-            let progress = particle.age / particle.lifetime
-            let fadeIn = cpu.fadeIn > 0 ? min(progress / cpu.fadeIn, 1) : 1
-            let fadeOut = cpu.fadeOut < 1 ? min((1 - progress) / (1 - cpu.fadeOut), 1) : 1
-            return particle.alpha * fadeIn * fadeOut
-        }))
+        XCTAssertTrue(materials.prepare(cpu, pixelFormat: .rgba8Unorm, opacity: { $0.alpha }))
         let commandBuffer = try XCTUnwrap(queue.makeCommandBuffer())
         try draw(cpu, into: cpuTarget, commandBuffer: commandBuffer)
         commandBuffer.commit()

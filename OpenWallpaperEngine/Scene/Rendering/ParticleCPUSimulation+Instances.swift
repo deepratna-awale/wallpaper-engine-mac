@@ -81,6 +81,7 @@ extension ParticleCPUSimulation {
                                    burst: step.bursts ? configuration.instantaneous : 0, rateLimit: limit)
             instance.clock.state.w += Float(emitted.rate)
             instance.spawnCount = emitted.burst + emitted.rate
+            if step.startsPeriod { instance.periodSpawned = instance.spawned }
             system.instances[index] = instance
         }
     }

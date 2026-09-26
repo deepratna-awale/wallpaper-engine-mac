@@ -34,23 +34,31 @@ final class ParticleEmitterShapeTests: XCTestCase {
         XCTAssertEqual(runtime.particles.count, 25)
     }
 
+    /// `sphererandom` (wallpaper64.exe 0x140237c14): a radius between `distancemin` and
+    /// `distancemax`, `sign` forcing an axis, speed out from the centre.
     func testEmitterSpeedPushesOutwardFromTheRing() throws {
         var system = ParticleTestSystem()
         system.emissionRate = 0
         system.instantaneous = 200
         system.minimumVelocity = .zero
         system.maximumVelocity = .zero
-        system.spawnExtent = SIMD2(40, 40)
-        system.minimumSpawnRatio = 0.5
-        system.emitterSpeed = 100...100
-        system.emitterSign = SIMD2(0, 1)
-        let runtime = try runtime(system)
+        system.emitterSpeed = SIMD2(100, 100)
+        var configuration = system.configuration
+        configuration.emitter.directions = SIMD3(1, 1, 0)
+        configuration.emitter.distanceMinimum = SIMD3(repeating: 20)
+        configuration.emitter.distanceMaximum = SIMD3(repeating: 40)
+        configuration.emitter.sign = SIMD3(0, 1, 0)
+        configuration.emitter.appliesSign = true
+        let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
+        let texture = try XCTUnwrap(device.makeTexture(descriptor: .texture2DDescriptor(
+            pixelFormat: .rgba8Unorm, width: 1, height: 1, mipmapped: false)))
+        let runtime = ParticleSystemRuntime(texture: texture, configuration: configuration, seed: 9)
         let inputs = ParticleFrameInputs.advance(runtime, deltaTime: 0, cursor: .zero)
         ParticleCPUSimulation.step(runtime, inputs: inputs)
         XCTAssertEqual(runtime.particles.count, 200)
         for particle in runtime.particles {
             let offset = particle.position - system.origin
-            XCTAssertGreaterThanOrEqual(simd_length(offset), 20 - 1e-3, "inside the inner radius")
+            XCTAssertGreaterThanOrEqual(simd_length(offset), 20 - 1e-3, "inside distancemin")
             XCTAssertLessThanOrEqual(simd_length(offset), 40 + 1e-3)
             XCTAssertGreaterThanOrEqual(offset.y, 0, "sign forces y positive")
             XCTAssertEqual(simd_length(particle.velocity), 100, accuracy: 1e-2)

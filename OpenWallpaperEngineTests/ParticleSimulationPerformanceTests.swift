@@ -29,11 +29,12 @@ final class ParticleSimulationPerformanceTests: XCTestCase {
         system.spawnExtent = SIMD2(800, 400)
         system.gravity = SIMD2(0, -50)
         system.drag = 0.2
-        system.turbulence = Turbulence(scale: 0.005, speed: 200...400, timeScale: 0.1, phase: 0, mask: SIMD2(1, 1))
-        system.sizeChange = ParticleChange(startTime: 0, endTime: 1, startValue: 1, endValue: 0.2)
-        system.alphaChange = ParticleChange(startTime: 0.5, endTime: 1, startValue: 1, endValue: 0)
-        system.colorChange = ParticleColorChange(startTime: 0, endTime: 1, startValue: SIMD4(repeating: 1),
-                                                 endValue: SIMD4(1, 0.5, 0.2, 1))
+        system.operators = [
+            ParticleOperator(.turbulence, a: SIMD4(1, 1, 0, 0), b: SIMD4(0.005, 200, 400, 0.1)),
+            ParticleOperator(.sizeChange, a: SIMD4(1, 0.2, 0, 1)),
+            ParticleOperator(.alphaChange, a: SIMD4(1, 0, 0.5, 1)),
+            ParticleOperator(.colorChange, a: SIMD4(1, 1, 1, 0), b: SIMD4(1, 0.5, 0.2, 0), c: SIMD4(0, 1, 0, 0)),
+        ]
         return system
     }
 
@@ -44,7 +45,7 @@ final class ParticleSimulationPerformanceTests: XCTestCase {
         }
         for count in [1_000, 10_000, 100_000] {
             var system = typical(count)
-            system.boids = ParticleBoids(alignment: 0.2, cohesion: 0.1, separation: 5, threshold: 80)
+            system.operators.append(ParticleOperator(.boids, flags: 1, a: SIMD4(20, 80, 500, 0), b: SIMD4(5, 0.2, 0.1, 0)))
             report.append(try measure("boids", system, count: count, frames: count >= 100_000 ? 6 : 20))
         }
         print("Particle simulation cost per frame (median):\n" + report.joined(separator: "\n"))

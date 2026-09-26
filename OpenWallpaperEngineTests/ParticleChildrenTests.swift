@@ -78,8 +78,12 @@ final class ParticleChildrenTests: XCTestCase {
         XCTAssertEqual(Set(systems.map(\.order)), [0])
         XCTAssertEqual(systems.map(\.hasEventChildren), [true, false, false, false, false, false])
         XCTAssertEqual(systems[2].link?.probability, 0.5)
-        XCTAssertEqual(systems[2].inheritOnSpawn, [.multiplySize, .setColor], "setcolor when no input is named")
-        XCTAssertEqual(systems[2].inheritEachStep, [.setColor, .setOpacity], "setcoloropacity when no input is named")
+        let spawnVerbs = systems[2].program.initializers.filter { $0.kind == .inheritInitialValueFromEvent }
+            .map { ParticleInheritance(rawValue: $0.record.header.y) }
+        XCTAssertEqual(spawnVerbs, [.multiplySize, .setColor], "setcolor when no input is named")
+        let stepVerbs = systems[2].program.operators.filter { $0.kind == .inheritValueFromEvent }
+            .map { ParticleInheritance(rawValue: $0.record.header.y) }
+        XCTAssertEqual(stepVerbs, [[.setColor, .setOpacity]], "setcoloropacity when no input is named")
         XCTAssertEqual(systems[3].instantaneous, 3)
         XCTAssertTrue(systems[4].worldSpace)
         // The static glow sits 100 units above the rocket's emitter, turned and doubled.
@@ -241,7 +245,7 @@ final class ParticleChildrenTests: XCTestCase {
         var spark = trail
         spark.instantaneous = 5
         spark.emissionRate = 0
-        spark.emitterSpeed = 50...120
+        spark.emitterSpeed = SIMD2(50, 120)
         spark.maximum = 10
         var burst = spark
         burst.instantaneous = 12
@@ -427,8 +431,9 @@ final class ParticleChildrenTests: XCTestCase {
         beam.maximumVelocity = .zero
         beam.lifetime = 0.5...0.5
         beam.rendererName = "rope"
-        beam.sequenceSpan = ParticleSequenceSpan(startControlPoint: 0, endControlPoint: 1, count: 8, arcAmount: 0,
-                                                 mirrored: false)
+        var sequence = ParticleInitializer(.mapSequenceBetweenControlPoints, controlPoints: 0 | 1 << 8, a: SIMD4(0, 0, 1, 0))
+        sequence.sequenceCount = 8
+        beam.initializers = [sequence]
         var beamLink = beam.link(.static, instances: 4, probability: 1, instanced: true)
         beamLink.controlPointStart = 1
         return [(spawner.link(.follow, instances: 4, probability: 1), 0), (beamLink, 1)]

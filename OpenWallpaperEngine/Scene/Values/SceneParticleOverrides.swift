@@ -21,6 +21,32 @@ struct SceneParticleOverrides: Equatable {
 
     init() {}
 
+    /// The overrides a particle system's `flags` can switch off (`wallpaper64.exe`: bits 8 colour,
+    /// 0x10 speed, 0x20 count, 0x40 lifetime, 0x80 size).
+    struct Parts: OptionSet, Equatable {
+        let rawValue: Int
+        static let color = Parts(rawValue: 8), speed = Parts(rawValue: 0x10), count = Parts(rawValue: 0x20)
+        static let lifetime = Parts(rawValue: 0x40), size = Parts(rawValue: 0x80)
+
+        /// The parts a system's `flags` switch off.
+        init(systemFlags: Int) { rawValue = systemFlags & 0xF8 }
+        init(rawValue: Int) { self.rawValue = rawValue }
+    }
+
+    /// These overrides with `parts` back at 1.
+    func ignoring(_ parts: Parts) -> SceneParticleOverrides {
+        var overrides = self
+        if parts.contains(.color) {
+            overrides.tint = SIMD3(repeating: 1)
+            overrides.brightness = 1
+        }
+        if parts.contains(.speed) { overrides.speed = 1 }
+        if parts.contains(.count) { overrides.count = 1 }
+        if parts.contains(.lifetime) { overrides.lifetime = 1 }
+        if parts.contains(.size) { overrides.size = 1 }
+        return overrides
+    }
+
     init(_ override: WEInstanceOverride?, in context: SceneValueContext) {
         guard let override else { return }
         // Scripts run in the particle runtime; only the user binding and the literal resolve here.
