@@ -61,7 +61,6 @@ struct ImageMaterialPlanBuilder {
     /// The combos WE's engine lays over every material of the scene (`SceneEngineCombos`).
     var sceneEngineCombos = SceneEngineCombos()
 
-    private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
     /// Combos whose inputs (scene lights, reflection targets) the renderer does not provide yet.
     private static let unsupportedCombos = ["LIGHTING", "REFLECTION"]
 
@@ -160,7 +159,7 @@ struct ImageMaterialPlanBuilder {
         if clampUVs == true || image.map({ textureClamps($0, materialPath: materialPath) }) ?? true { clampedSlots.insert(0) }
         for (slot, input) in inputs {
             switch input {
-            case .sceneSnapshot: clampedSlots.insert(slot)
+            case .sceneSnapshot, .mipMappedFrameBuffer: clampedSlots.insert(slot)
             case .asset(let key, _):
                 if textureClamps(String(key.dropFirst(materialPath.count + 1)), materialPath: materialPath) {
                     clampedSlots.insert(slot)
@@ -201,7 +200,8 @@ struct ImageMaterialPlanBuilder {
 
     /// nil (logged) for a texture that isn't there: the slot stays unbound, and so does its combo.
     private func textureInput(named name: String, materialPath: String) throws -> SceneEffectTextureInput? {
-        if Self.sceneSnapshotNames.contains(name) { return .sceneSnapshot }
+        if name == "_rt_FullFrameBuffer" { return .sceneSnapshot }
+        if name == SceneMipMappedFrameBuffer.name { return .mipMappedFrameBuffer }
         if name.hasPrefix("_rt_") || name.hasPrefix("_alias_") {
             throw ImageMaterialPlanError.unsupported("render target \(name)")
         }

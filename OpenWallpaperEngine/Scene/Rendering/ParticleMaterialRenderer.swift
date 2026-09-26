@@ -202,6 +202,8 @@ final class ParticleMaterialRenderer {
         let assetTexture: (String, SceneMetalTextureSource) -> MTLTexture?
         /// The scene drawn so far (`_rt_FullFrameBuffer`), for a system that reads it.
         var sceneSnapshot: MTLTexture?
+        /// `_rt_MipMappedFrameBuffer` (`SceneMipMappedFrameBuffer`), for a system that samples it.
+        var mipMappedFrameBuffer: MTLTexture? = nil
     }
 
     /// Whether `system`'s draw this frame reads the scene drawn so far, which the caller then
@@ -249,6 +251,10 @@ final class ParticleMaterialRenderer {
                 // when `readsSceneSnapshot` (only a failed allocation leaves it out).
                 guard let snapshot = context.sceneSnapshot else { return }
                 texture = snapshot
+                flags = .clampUVs
+            case .mipMappedFrameBuffer?:
+                guard let target = context.mipMappedFrameBuffer else { return }
+                texture = target
                 flags = .clampUVs
             default:
                 continue

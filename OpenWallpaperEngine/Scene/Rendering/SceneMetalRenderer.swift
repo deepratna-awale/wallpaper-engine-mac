@@ -61,6 +61,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let postProcess: ScenePostProcess
     /// WE's work on the finished frame before its bloom (`SceneFrameStages`).
     private let frameStages: [SceneFrameStage]
+    /// The stage that keeps `_rt_MipMappedFrameBuffer` (internal for tests and diagnostics), and
+    /// its target for this frame's draws.
+    let mipMappedFrameBuffer: SceneMipMappedFrameBuffer?
+    private var mipMappedTarget: MTLTexture?
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
@@ -250,7 +254,9 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         self.device = device
         self.copyPipeline = copyPipeline
         self.postProcess = postProcess
-        self.frameStages = SceneFrameStages.make(device: device)
+        let frameStages = SceneFrameStages.make(device: device)
+        self.frameStages = frameStages
+        self.mipMappedFrameBuffer = frameStages.lazy.compactMap { $0 as? SceneMipMappedFrameBuffer }.first
         self.commandQueue = commandQueue
         self.renderPipeline = renderPipeline
         self.additiveRenderPipeline = additiveRenderPipeline
@@ -600,6 +606,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // Layers and particles are drawn in scene units onto a target at the output's pixel
         // density; placement scaling happens once, in the final composite pass.
         let drawableSize = SIMD2<Float>(Float(sceneTexture.width), Float(sceneTexture.height))
+        // Draws sample the last frame's copy; this frame's is made after the scene pass.
+        mipMappedTarget = mipMappedFrameBuffer?.target(matching: sceneTexture, commandBuffer: commandBuffer)
         let animationSpeed = WallpaperServices.shared.userPropertyValue("_owe_speed", fallback: 1)
         clock.advance(to: wallTime(), speed: Double(animationSpeed))
         let sceneTime = clock.time
@@ -810,7 +818,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                         sceneSize: sceneSize, frame: effectFrame,
                         values: timelines.values,
                         assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
-                        sceneSnapshot: snapshot))
+                        sceneSnapshot: snapshot, mipMappedFrameBuffer: mipMappedTarget))
                     drew = true
                     continue
                 }
@@ -906,7 +914,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                    color: SIMD3(draw.color.x, draw.color.y, draw.color.z) * textTint, alpha: draw.opacity, brightness: draw.brightness,
                    texture: materialTexture, contentSize: entry.layer.source.contentSize,
                    uvOrigin: textureFrame.uvOrigin, uvAxisX: textureFrame.uvAxisX, uvAxisY: textureFrame.uvAxisY,
-                   sceneSnapshot: layerSnapshot, frame: effectFrame,
+                   sceneSnapshot: layerSnapshot, mipMappedFrameBuffer: mipMappedTarget, frame: effectFrame,
                    values: timelines.values,
                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
                    assetSprite: { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) },
@@ -1288,6 +1296,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             // The scripted/animated values the layer is drawn with this frame, not the authored ones.
             layerColor: SIMD3(draw.color.x, draw.color.y, draw.color.z),
             layerAlpha: draw.opacity)
+        context.mipMappedFrameBuffer = mipMappedTarget
         context.assetContentSize = { _, source in source.contentSize }
         context.assetSprite = { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) }
         if let probe = drawProbe { context.recordAnimated = { probe.record(constant: $0, value: $1) } }

@@ -8,8 +8,11 @@ enum SceneEffectTextureInput {
     case previous
     /// A render target the effect declares in `fbos`.
     case fbo(String)
-    /// The scene rendered so far (`_rt_FullFrameBuffer`, `_rt_MipMappedFrameBuffer`).
+    /// The scene rendered so far (`_rt_FullFrameBuffer`).
     case sceneSnapshot
+    /// The previous frame's finished scene with its mips (`_rt_MipMappedFrameBuffer`,
+    /// `SceneMipMappedFrameBuffer`).
+    case mipMappedFrameBuffer
     /// A texture asset; `key` identifies it for the renderer's texture cache.
     case asset(key: String, source: SceneMetalTextureSource)
 }
@@ -40,6 +43,11 @@ struct SceneEffectPassPlan {
 
     var readsSceneSnapshot: Bool {
         textures.values.contains { if case .sceneSnapshot = $0 { return true } else { return false } }
+    }
+
+    /// Reads `_rt_MipMappedFrameBuffer`, whose contents change every frame.
+    var readsMipMappedFrameBuffer: Bool {
+        textures.values.contains { if case .mipMappedFrameBuffer = $0 { return true } else { return false } }
     }
 }
 
@@ -79,8 +87,6 @@ struct SceneEffectPlanBuilder {
     let loadTexture: (_ name: String, _ materialPath: String) -> SceneMetalTextureSource?
     /// The combos WE's engine lays over every material of the scene (`SceneEngineCombos`).
     var sceneEngineCombos = SceneEngineCombos()
-
-    private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
 
     /// `overrides` returns the user's edit for a WE material key (inspector), as a WE value string.
     /// `owner` is the layer's id and the effect's index in its `effects`: an animated constant of
@@ -235,7 +241,8 @@ struct SceneEffectPlanBuilder {
                               effectDirectory: String) -> SceneEffectTextureInput? {
         if name == "previous" { return .previous }
         if fboNames.contains(name) { return .fbo(name) }
-        if Self.sceneSnapshotNames.contains(name) { return .sceneSnapshot }
+        if name == "_rt_FullFrameBuffer" { return .sceneSnapshot }
+        if name == SceneMipMappedFrameBuffer.name { return .mipMappedFrameBuffer }
         if name.hasPrefix("_rt_") {
             OWELog.error(.scene, "Unsupported render target \(name) in \(materialPath)")
             return nil

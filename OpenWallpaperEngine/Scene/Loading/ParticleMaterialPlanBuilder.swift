@@ -26,8 +26,6 @@ struct ParticleMaterialPlanBuilder {
     /// The combos WE's engine lays over every material of the scene (`SceneEngineCombos`).
     var sceneEngineCombos = SceneEngineCombos()
 
-    private static let sceneSnapshotNames: Set<String> = ["_rt_FullFrameBuffer", "_rt_MipMappedFrameBuffer"]
-
     /// `baseTexture` is texture 0 as the system already loaded it; `spriteSheet` is set when it
     /// is a sheet. `flags` are the particle system's `flags`.
     func build(materialPath: String, renderer: WEParticleRenderer?, flags: Int, baseTexture: SceneMetalTextureSource,
@@ -223,7 +221,8 @@ struct ParticleMaterialPlanBuilder {
     }
 
     private func textureInput(named name: String, materialPath: String) -> SceneEffectTextureInput? {
-        if Self.sceneSnapshotNames.contains(name) { return .sceneSnapshot }
+        if name == "_rt_FullFrameBuffer" { return .sceneSnapshot }
+        if name == SceneMipMappedFrameBuffer.name { return .mipMappedFrameBuffer }
         if name.hasPrefix("_rt_") {
             OWELog.error(.scene, "Unsupported render target \(name) in particle material \(materialPath)")
             return nil

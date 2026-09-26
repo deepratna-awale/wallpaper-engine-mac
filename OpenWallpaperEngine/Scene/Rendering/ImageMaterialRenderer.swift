@@ -99,6 +99,9 @@ final class ImageMaterialRenderer {
         let uvAxisY: SIMD2<Float>
         /// The scene drawn so far, for materials that blend with it (`BLENDMODE`).
         let sceneSnapshot: MTLTexture?
+        /// `_rt_MipMappedFrameBuffer` (`SceneMipMappedFrameBuffer`), for a material that samples it
+        /// (`REFLECTION`).
+        var mipMappedFrameBuffer: MTLTexture? = nil
         let frame: BuiltinFrameContext
         let values: SceneValueContext
         let assetTexture: (String, SceneMetalTextureSource) -> MTLTexture?
@@ -132,6 +135,9 @@ final class ImageMaterialRenderer {
             case .sceneSnapshot:
                 guard let snapshot = draw.sceneSnapshot else { return false }
                 textureInfo.append((slot, snapshot, clampSampler, nil, nil))
+            case .mipMappedFrameBuffer:
+                guard let target = draw.mipMappedFrameBuffer else { return false }
+                textureInfo.append((slot, target, clampSampler, nil, nil))
             case .asset(let key, let source):
                 guard let texture = draw.assetTexture(key, source) else { return false }
                 textureInfo.append((slot, texture, sampler, source.contentSize, draw.assetSprite?(key, source)))

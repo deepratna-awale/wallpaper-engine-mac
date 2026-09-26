@@ -24,8 +24,10 @@ protocol SceneFrameStage: AnyObject {
 
 enum SceneFrameStages {
     /// The stages of a renderer, in WE's order: the `_rt_MipMappedFrameBuffer` copy, then the
-    /// volumetrics. None exists yet.
+    /// volumetrics (not yet).
     static func make(device: MTLDevice) -> [SceneFrameStage] {
-        []
+        [
+            SceneMipMappedFrameBuffer(device: device),
+        ]
     }
 }

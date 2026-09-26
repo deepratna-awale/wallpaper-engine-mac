@@ -184,6 +184,8 @@ final class EffectGraphRenderer {
         let assetTexture: (String, SceneMetalTextureSource) -> MTLTexture?
         /// The scene rendered so far, if a pass needs `_rt_FullFrameBuffer`.
         let sceneSnapshot: MTLTexture?
+        /// `_rt_MipMappedFrameBuffer` (`SceneMipMappedFrameBuffer`), for a pass that samples it.
+        var mipMappedFrameBuffer: MTLTexture? = nil
         let layerColor: SIMD3<Float>
         let layerAlpha: Float
         /// Bump when `input`'s contents change while the texture object stays the same.
@@ -250,8 +252,10 @@ final class EffectGraphRenderer {
         let staticKey = StaticChainKey(input: input, inputVersion: context.inputVersion,
                                        color: context.layerColor, alpha: context.layerAlpha,
                                        scriptRevision: context.scriptRevision, dynamicValues: dynamicValues)
-        // A scene snapshot keeps its texture identity while its contents change every frame.
+        // A scene snapshot, or the last frame's copy, keeps its texture identity while its contents
+        // change every frame.
         let readsScene = context.sceneSnapshot != nil
+            || effects.contains { $0.passes.contains(where: \.readsMipMappedFrameBuffer) }
         if !readsScene, let cached = state.staticOutput, cached.key.matches(staticKey) {
             layersReused += 1
             return cached.output
@@ -287,7 +291,7 @@ final class EffectGraphRenderer {
                     } else {
                         output = current === pingA ? pingB : pingA
                     }
-                    reusable = reusable && program.isReusable && !pass.readsSceneSnapshot
+                    reusable = reusable && program.isReusable && !pass.readsSceneSnapshot && !pass.readsMipMappedFrameBuffer
                     encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
                            current: current, previous: previous, fbos: fbos, context: context,
                            scriptWrites: context.constantWrites[effect.effectIndex] ?? [],
@@ -447,6 +451,7 @@ final class EffectGraphRenderer {
             case .previous: texture = previous
             case .fbo(let name): texture = fbos[name]
             case .sceneSnapshot: texture = context.sceneSnapshot
+            case .mipMappedFrameBuffer: texture = context.mipMappedFrameBuffer
             case .asset(let key, let source):
                 texture = context.assetTexture(key, source)
                 contentSize = context.assetContentSize?(key, source)
