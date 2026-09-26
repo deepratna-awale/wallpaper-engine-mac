@@ -14,6 +14,8 @@ struct SceneRenderSettings: Equatable {
     /// WE's texture reduction (`TextureReduction`), 1 or 2: the user's setting resolved for the
     /// displays showing the scene (`init(_:outputPixels:)`). Textures load for it.
     var textureReduction = 1
+    /// The scene target's pixels per display point.
+    var renderResolution = GSRenderResolution.native
 
     init() {}
 
@@ -23,6 +25,7 @@ struct SceneRenderSettings: Equatable {
         shadows = settings.shadows
         volumetrics = settings.volumetrics
         particleBudget = settings.particleBudget
+        renderResolution = settings.renderResolution
     }
 
     /// `settings` with the texture reduction WE's `resolution` setting gives on displays whose

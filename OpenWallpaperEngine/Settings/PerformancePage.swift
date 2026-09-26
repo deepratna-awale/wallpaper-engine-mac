@@ -142,6 +142,11 @@ struct PerformancePage: SettingsPage {
                     Text("Automatic").tag(GSTextureResolutionQuality.automatic)
                 }
                 .help("Wallpaper Engine's setting: High Performance loads textures at half their size and runs effects at half size too; Automatic does so on displays smaller than 1080p.")
+                Picker("Render Resolution", selection: $viewModel.settings.renderResolution) {
+                    Text("Native").tag(GSRenderResolution.native)
+                    Text("Desktop (1 pixel per point)").tag(GSRenderResolution.desktop)
+                }
+                .help("Native draws at the display's full pixel count. Desktop draws one pixel per point (half the width and height on a Retina display) and scales the frame up, for a quarter of the work.")
                 Picker("Volumetrics", selection: $viewModel.settings.volumetrics) {
                     Text("Disabled").tag(GSLightingQuality.disabled)
                     Text("Low").tag(GSLightingQuality.low)

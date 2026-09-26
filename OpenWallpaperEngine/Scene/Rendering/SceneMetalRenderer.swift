@@ -692,8 +692,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let viewports = destination.viewports
         drawablePixelsPerPoint = viewports[0].pixelsPerPoint
         // The largest target any display needs, so each shows the scene at its own density.
-        renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize,
-                                                                  drawableSize: SceneViewport.largestDrawable(viewports))
+        let renderDrawable = SceneRenderResolution.drawableSize(viewports, resolution: renderSettings.renderResolution)
+        renderPixelsPerUnit = SceneRenderResolution.pixelsPerUnit(sceneSize: sceneSize, drawableSize: renderDrawable)
         // A content drawn in HDR draws into RGBA16F (docs/lighting-plan.md §2.6).
         guard let sceneTexture = sceneRenderTarget(pixelFormat: postProcess.drawsHDR ? .rgba16Float : destination.pixelFormat),
               let commandBuffer = commandQueue.makeCommandBuffer(),

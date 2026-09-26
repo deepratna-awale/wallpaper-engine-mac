@@ -68,6 +68,14 @@ enum GSTextureResolutionQuality: String, CaseIterable, Identifiable, Codable {
     case highQuality, highPerformance, automatic
 }
 
+/// How many pixels the scene target gets per point of the display (`SceneRenderResolution`):
+/// the display's backing pixels, or one per point (a 2× display drawn at half its pixels and
+/// scaled up), which a lower-resolution display would draw.
+enum GSRenderResolution: String, CaseIterable, Identifiable, Codable {
+    var id: Self { self }
+    case native, desktop
+}
+
 enum GSAppearance: String, CaseIterable, Identifiable, Codable {
     var id: Self { self }
     case light, dark, followSystem
@@ -111,6 +119,8 @@ struct GlobalSettings: Codable, Equatable {
     /// engine reads a missing key as "disabled"; docs/lighting-plan.md §5).
     var postProcessing = GSPostProcessingQuality.enabled
     var textureResolution = GSTextureResolutionQuality.automatic
+    /// The scene target's pixels per display point (`GSRenderResolution`).
+    var renderResolution = GSRenderResolution.native
     /// WE's `reflection` setting (default on): the screen-space reflection copy.
     var reflections = true
     /// WE's `shadows` setting; medium is WE's default.
@@ -161,6 +171,7 @@ struct GlobalSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case otherApplicationFocused, otherApplicationFullscreen, otherApplicationPlayingAudio, displayAsleep
         case laptopOnBattery, antiAliasing, textureResolution, shadows, volumetrics, fps, particleBudget
+        case renderResolution
         case postProcessing = "postProcessingQuality"
         case reflections = "reflection"
         case autoStart, safeMode, language, adjustMenuBarTint, appearance, audioOutput
@@ -190,6 +201,7 @@ extension GlobalSettings {
         read(.antiAliasing, &antiAliasing)
         read(.postProcessing, &postProcessing)
         read(.textureResolution, &textureResolution)
+        read(.renderResolution, &renderResolution)
         read(.reflections, &reflections)
         read(.shadows, &shadows)
         read(.volumetrics, &volumetrics)
