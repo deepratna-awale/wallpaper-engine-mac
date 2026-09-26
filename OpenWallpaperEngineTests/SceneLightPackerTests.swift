@@ -68,11 +68,11 @@ final class SceneLightPackerTests: XCTestCase {
             $0.innerCone = 60
             $0.outerCone = 90
         }
-        // A quarter turn in the renderer's 2D convention takes local +X to (0, −1).
+        // A quarter turn takes local +X to (0, 1), as WE's `Rz` does.
         let arrays = pack([entry(spot, at: SIMD3(1, 2, 3), angle: .pi / 2, scale: SIMD2(2, 1))], WELightConfig(spot: 1))
         assertEqual(arrays["g_LSpot_Color"], [4, 4, 4, 50])
         assertEqual(arrays["g_LSpot_Origin"], [1, 2, 3, 0.5])
-        assertEqual(arrays["g_LSpot_Direction"], [0, -2, 0, cos(Float(Double.pi / 2))])
+        assertEqual(arrays["g_LSpot_Direction"], [0, 2, 0, cos(Float(Double.pi / 2))])
         assertEqual(arrays["g_LSpot_Exponent"], [1.5, 0, 0, 0])
     }
 

@@ -13,11 +13,13 @@ struct SceneAffineTransform: Equatable {
     }
 
     /// `translate(origin) · rotate(angle) · scale(scale)`, the order WE applies an object's own
-    /// `origin`, `angles.z` and `scale`. A positive angle turns clockwise on screen, the
-    /// convention the renderer has always drawn `angles.z` with.
+    /// `origin`, `angles.z` and `scale`. A positive angle turns counter-clockwise on screen (+x
+    /// toward +y), as WE's object matrix does: its rotation is `Rz(z)·Ry(y)·Rx(x)` (0x1401dd630),
+    /// whose +x row is (cos z, sin z). WE's previews agree (2764281221's lens flare), and so do
+    /// clock scripts, which turn hands clockwise with negative angles.
     init(_ local: SceneLocalTransform) {
         let c = cos(local.angle), s = sin(local.angle)
-        let rotation = simd_float2x2(columns: (SIMD2(c, -s), SIMD2(s, c)))
+        let rotation = simd_float2x2(columns: (SIMD2(c, s), SIMD2(-s, c)))
         let scale = simd_float2x2(diagonal: local.scale)
         self.init(linear: rotation * scale, translation: local.origin)
     }

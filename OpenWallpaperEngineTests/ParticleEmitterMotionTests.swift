@@ -141,9 +141,9 @@ final class ParticleEmitterMotionTests: XCTestCase {
         let start = try world("2", in: content, at: 0)
         XCTAssertLessThan(simd_distance(start.translation, SIMD2(500, 540)), 1e-3)
         XCTAssertEqual(start, systems[0].authoredWorld)
-        // Halfway: the pivot is at (900, 540), turned a clockwise eighth.
+        // Halfway: the pivot is at (900, 540), turned a counter-clockwise eighth.
         let halfway = try world("2", in: content, at: 1)
-        let expected = SIMD2<Float>(900, 540) + SIMD2(100, -100) / sqrt(2)
+        let expected = SIMD2<Float>(900, 540) + SIMD2(100, 100) / sqrt(2)
         // WE's sampler finds the curve's x by bisection to 0.01 frames, linear handles included.
         XCTAssertLessThan(simd_distance(halfway.translation, expected), 0.1)
     }

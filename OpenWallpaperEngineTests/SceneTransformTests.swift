@@ -33,11 +33,12 @@ final class SceneTransformTests: XCTestCase {
             "2": .init(parentID: "1", local: SceneLocalTransform(origin: SIMD2(10, 0), scale: SIMD2(1, 3), angle: 0)),
         ])
         let world = hierarchy.world(of: "2")
-        // A positive angle turns clockwise on screen (y-up scene space): +x maps to −y.
-        assertEqual(world.translation, SIMD2(100, 80))
+        // A positive angle turns counter-clockwise on screen (y-up scene space), as WE's
+        // object matrix does: +x maps to +y.
+        assertEqual(world.translation, SIMD2(100, 120))
         let quad = SceneQuadGeometry(world: world, size: SIMD2(4, 4), alignment: nil)
-        assertEqual(quad.axisX, SIMD2(0, -8))
-        assertEqual(quad.axisY, SIMD2(24, 0))
+        assertEqual(quad.axisX, SIMD2(0, 8))
+        assertEqual(quad.axisY, SIMD2(-24, 0))
     }
 
     /// A live (scripted) parent transform replaces the authored one, so children follow it.

@@ -94,9 +94,9 @@ struct SceneFrameLighting: Equatable {
     /// `scale` (the object's matrix at 0x1401850a0).
     ///
     /// WE builds the rotation as `Rz(z)·Ry(y)·Rx(x)` (0x1401dd630; its row-major rows are this
-    /// matrix's columns). The z rotation here is the renderer's own 2D one, so a light turns with
-    /// the layers it lights; x and y tilt it out of the plane as in WE. The parents are the 2D
-    /// hierarchy's, which carries no depth or tilt.
+    /// matrix's columns). `Rz` is the 2D hierarchy's own rotation (`SceneAffineTransform`), which
+    /// turns +X toward +Y as WE's does, so a light turns with the layers it lights; x and y tilt it
+    /// out of the plane. The parents are the 2D hierarchy's, which carries no depth or tilt.
     static func world(parent: SceneAffineTransform, local: SceneLocalTransform, depth: SceneLightDepth) -> simd_float4x4 {
         let parentMatrix = embed(parent)
         let turn = SceneAffineTransform(SceneLocalTransform(origin: .zero, scale: SIMD2(repeating: 1), angle: local.angle))
