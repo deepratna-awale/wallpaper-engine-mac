@@ -13,7 +13,7 @@ Order: finish what is **most implemented** first, then what is **partly implemen
 - Phase 4: user properties on every field, per-wallpaper property store, sidebar conditions and property types, web wallpaper properties and audio.
 - Phase 5: parent transforms, image alignment, WE text layout and colour.
 - M8: library sweep passes (44 wallpapers, 0 failures).
-- Area 4 SceneScript, WP0–WP11 (docs/scenescript-plan.md): every scene's scripts run on `SceneScriptRuntime`, one per display, feeding the renderer through the object table; the legacy engine's scripting is deleted.
+- Area 4 SceneScript, WP0–WP11 (docs/scenescript-plan.md): every scene's scripts run on `SceneScriptRuntime`, one per display, feeding the renderer through the object table; the legacy engine's scripting is deleted. Then WP11's gaps and the optimisation pass: WE's sound layers play, clicks count only on the wallpaper, a draw shows its own script frame, `createLayer` makes particle systems and sounds, `brightness`/`size` scripts are drawn, and JavaScriptCore JIT-compiles the scripts.
 
 ## Work queue (autonomous loop, from 2026-09-25 night)
 
@@ -21,7 +21,7 @@ Each step: research → parallel agents by file ownership + tester → fix the t
 
 1. Finish in flight: the depth-parallax and shine bug (3802047741). The particle finish (child control points, per-instance ropes, non-uniform scale, particle uniform arena, test cleanup) is done.
 2. WE-authored values everywhere (priority): every threshold, default, range, step and option comes from WE's json, shader annotations and scripts (effect.json, materials, `// {..}` uniform annotations, `[COMBO]`, project.json properties, particle jsons, SceneScript `createScriptProperties`). No invented constants, magic factors or app-made ranges. Audit → fix → a test that fails on hard-coded values.
-3. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise. WP0–WP11 done; WP12 (timelines and animation APIs) goes with area 3.
+3. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise. WP0–WP11, their gaps and the optimisation pass done; WP12 (timelines and animation APIs) goes with area 3.
 4. Area 3 Timeline animations → tester → optimise.
 5. Area 5 Lighting and reflections → tester → optimise.
 6. Area 6 3D models (with particle collisionmodel) → tester → optimise.
@@ -70,9 +70,10 @@ Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs 
 4. ~~Live left/right `registerAudioBuffers` (16/32/64).~~ Done (WP5).
 5. ~~Input: scene-space cursor, events only on `solid` layers with hit-testing, angles in degrees.~~ Done (WP4, WP10, WP11).
 6. ~~Callbacks: `applyUserProperties` (changed keys only), `media*`, `destroy`, `resizeScreen`.~~ Done (WP4, WP6, WP11).
-7. Layer API: ~~`createLayer` from an asset, `destroyLayer`, `sortLayer`, `getLayerIndex`, `localStorage`~~ done; sound layers are not played at all yet (their script playback only changes `isPlaying()`), and `createLayer` of a particle system is not drawn.
+7. ~~Layer API: `createLayer` from an asset (image, text, shape, particle system, sound), `destroyLayer`, `sortLayer`, `getLayerIndex`, `localStorage`; sound layers played like WE's (modes, gain, timers, mute and pause, script control)~~ done. Open: sound `spatialization` (no library sound uses it).
 8. WP12: scene, effect and material animations under script control, `animationEvent`, animation layers, bones (with areas 3, 6, 7).
 9. Live Now Playing on macOS 15.4+ (MediaRemote answers only entitled processes: the `/usr/bin/perl` adapter or a helper).
+10. ~~Performance: JIT (the `allow-jit` entitlement), per-frame allocations in the runtime, no frame of latency.~~ Done; see the plan's cost table.
 
 ### 5. Lighting and reflections (mostly not implemented)
 

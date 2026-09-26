@@ -705,6 +705,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 | S26 | Medium | WP8, WP10, WP11 | Scripts on hidden layers and effects |
 | S27 | Medium | WP10 | Cursor hit testing: spaces, parallax, Retina, multi-display, click pairing |
 | S28 | Medium | WP2, WP7 | Untrusted scripts reach `__rt` and the shared buffers |
+| S29 | Medium | sound | Sound layers: double playback, playing while paused, restarts on rebuild, memory, callbacks |
 
 ---
 
@@ -891,6 +892,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 - JS allocation: a `Vec3` per getter and per argument (like WE), event objects, closures. Eden GCs every few seconds with 1–3 ms pauses show up as p99 spikes, not in averages.
 - Determinism: 62 corpus scripts use `Date` and 7 use `Math.random`. A replay harness with a fake clock must also stub `Date` and seed `Math.random`, or assertion (e) on clocks is flaky and frame-time baselines vary.
 **Test.** `measure` p50 and p99 over 3600 frames of 3453730450 with a tone: p50 < 0.5 ms, p99 < 1 ms. Zero Swift→JS object creations in a frame with no events. The clock fixtures run at a fixed `Date`.
+**Status.** Addressed by the optimisation pass after WP11: the JIT is on (it was off, since the app lacked `allow-jit`); the per-call closures and arrays are gone; and unchanged material writes send no command. `SceneScriptLibraryCostTests` measures after a 10 s warm-up: 3453730450 runs at p50 0.21 ms and p99 0.54 ms (plan, "After WP11"). A frame with events still bridges them (`inbox.drain().map { $0.javaScriptObject }`).
 
 ## S25. Scripts on effects and materials (High, WP7, WP8)
 **Scenario.** 46 `effects[i].visible` sites (`thisObject.visible = event.hasThumbnail` 44 times) and 86 effect-constant sites. `thisObject` must be the `IEffect` or the `IMaterial` (constants by name, `thisObject.multiply`), and `thisObject.getAnimation()` must be the property's own timeline (2134765860's `multiply` with `startpaused`).
@@ -919,6 +921,17 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 **Scenario.** `__rt` is a non-writable global, but its members are writable and reachable from every script. A Workshop script can replace `__rt.hooks.coerce`, clear `__rt.records`, set `__rt.halted`, or push arbitrary opcodes and targets through `__rt.push` or directly into `__rt.ring.records`. The ring bounds-checks number ranges (`Objects/SceneScriptCommandRing.swift:95-96`), but each handler must also bounds-check `target` against the object table. Combined with S17, the shared buffers are the only path from script to memory corruption.
 **Test.** A script that pushes opcode 400 with target `2^31-1`, negative targets and garbage counts → no crash, one log line. Handlers get `target` already validated or validate it themselves.
 **Status.** Fixed. The memory-safety half with SF3 and SF10 (shared memory can't be freed, command numbers are validated). `__rt` is hidden from scripts (the module scope shadows it; the global reads `undefined` during every native entry and all script code, so a replaced builtin called by runtime code can't leak it) and sealed after installation (frozen hooks, read-only functions); `SceneScriptRuntimeReachTests`.
+
+## S29. Sound layers (Medium, sound)
+**Scenario.** WE plays `sound` objects through SFML streams; ours goes through `AVAudioEngine`. Things that can go wrong:
+- Two displays showing one wallpaper play its sound twice. Only the display `shouldPlaySceneAudio` picks gets a gain above 0.
+- A paused wallpaper keeps playing: the renderer stops drawing, so the fade runs on its own timer.
+- A content rebuild (a user property) restarts the music. Layers with the same id, files and settings keep their playback.
+- A very long file (hours of rain) is decoded into memory. It is streamed from disk instead.
+- A script calls `play()` every frame. That restarts a loop or single clip each time, as in WE (`play()` stops and restarts).
+- Completion callbacks run on AVFoundation's threads. They only hop to the main thread; scheduling from inside the callback deadlocks the engine (seen in the offline probe).
+
+**Test.** `SceneSoundPlaybackTests`, `SceneSoundLayersTests`, `SceneScriptRenderTests.testScriptsDriveSoundsCreatedObjectsBrightnessAndSize`. On screen (manual): a wallpaper with music plays once across two displays, fades out on pause and resumes where it was, and the app's mute silences it.
 
 ---
 
@@ -1054,8 +1067,41 @@ S28 and S11 were closed with WP8 (see WP8 below).
 - S26: hidden objects and effects are built and skipped; visibility scripts run every frame (`testScriptWritesReachThePixels`).
 - S10: the renderer tears its runtime down on its thread (`destroy()` runs there) when the content stops or the document changes.
 
-**Open.**
+**Open** (the latency, the left button, `brightness`/`size` and sound layers are closed since: see "After WP11" below).
 - One frame of latency: scripts run between draws, so what they write shows on the next draw (WE runs them in the frame).
 - The left button counts only while Finder is frontmost, the closest this app gets to "clicks the wallpaper receives".
 - `brightness` and `size` scripts (none in the corpus) keep their values in JS but aren't drawn from them; sound layers aren't played; scene, effect and material animations aren't script-controlled (WP12).
 - 3453730450 takes 0.49 ms per frame (Release median, p99 0.97 ms), just under §4.6's budget, nearly all of it its 71 scripts' JavaScript; the host around them costs about 0.05 ms.
+
+### After WP11: gaps closed, the optimisation pass
+
+**What the commits cover.**
+- **Sound layers (new S29 below).** `SceneSoundPlaybackTests` checks, against a recording output, every rule the plan lists from `wallpaper64.exe`:
+  - loop with one file (native loop) and with several (random clips back to back);
+  - random's wait and `isPlaying()` during it;
+  - single;
+  - `startsilent`;
+  - pause/resume and stop/restart;
+  - the `volume²` gain, and a silent start that waits for volume;
+  - muting pauses and freezes timers, and a sound loaded muted starts when unmuted;
+  - WE's defaults and both `sound` forms.
+
+  `SceneSoundLayersTests` renders AVAudioEngine offline: a layer sounds, its second pass follows without a gap, `volume` 0.5 is a gain of 0.25, WE's fade takes a tenth per 60 Hz step and snaps at 0.01, the pause is silent, a rebuild keeps the same playback, and the builder finds loose and packaged files and leaves out what it can't decode. `SceneScriptRenderTests.testScriptsDriveSoundsCreatedObjectsBrightnessAndSize` checks a script `stop()`, a bound `volume`, `createLayer` of a sound and of a particle system, `brightness` 0.5 and a bound `size`, all through the real loader and renderer.
+- **S27 (clicks elsewhere).** `DesktopClickMonitor` counts only presses that land on the wallpaper, in any app. `DesktopClickMonitorTests` covers: presses elsewhere ignored, a release anywhere, a click shorter than a frame seen once, two readers, and a point with no window.
+- **Latency.** `SceneScriptRenderTests.testADrawShowsItsOwnScriptFrame`: each draw shows the update it ran.
+- **S24 (per-frame cost).** Three changes:
+  - the JIT entitlement (`SceneScriptJITTests`);
+  - the binding's cached access (no closures per call);
+  - typed field accessors and the binding converter without intermediate arrays, and `init`/`update` called without an arguments array;
+  - material writes that change nothing send no command, and declared constants are named by pool offset instead of a string (`SceneScriptObjectModelTests`, the S28 hardening test covers the new opcode).
+
+  After a 10 s warm-up (JIT tiering puts compile spikes into the first seconds), every library scene is at p50 ≤ 0.21 ms and p99 ≤ 0.55 ms. The table is in the plan. 3453730450's p99 rises to 0.68–0.80 ms on a busy machine, with or without polling traps; that is open.
+
+**Open.**
+- A looping file's next pass is queued from the player's played-back callback, hopped to the main thread. While the main thread is blocked longer than one pass of a very short loop (under ~50 ms), the loop can gap once. Offline rendering never reports a pass as played, so the tests can't cover the third pass.
+- `spatialization` (3D sound position, `attenuation`, `mindistance`) is read but not applied. No library sound sets it.
+- Ogg Vorbis relies on Core Audio's decoder. Verified on macOS 27; the deployment target (13) is not verified, and no library sound is Ogg.
+- The desktop hit test treats a window at or below the desktop-icon level as the wallpaper. Clicks on Finder's desktop icons count too; WE's own treatment of icons is not known.
+- WE applies `brightness` only when an unidentified flag (0x2000 at layer+0xc8+0x118) is set; ours always applies it.
+- Unsigned test hosts (CI) run JavaScriptCore without its JIT, so CI timings are the interpreter's; `SceneScriptJITTests` skips its JIT halves there.
+- **S19 again, found by the full suite in a signed host.** With the JIT on, the watchdog could not stop a compiled `while (true) {}`. `SceneScriptRenderTests.testAHungScriptHaltsOnlyItsWallpaper` hung the suite: JavaScriptCore's VMTraps thread kept signalling while the loop never reached a trap. Polling traps (`JSC_usePollingTraps`, set in `main.swift` before the first VM) fix it: the loop stops at 0.31 s under a 0.3 s limit, and tight loops cost about 10 % more. It relies on JavaScriptCore reading that option from the environment, as it does on macOS 27; `SceneScriptJITTests.testTheWatchdogStopsAJITCompiledEmptyLoop` fails if that stops working.

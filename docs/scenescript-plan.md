@@ -1,6 +1,6 @@
 # SceneScript plan
 
-**Status: 2026-09-26, WP0 (from evidence) and WP1–WP11 done: the app runs every scene's scripts on `SceneScriptRuntime`, one per display, and the legacy `AudioReactiveScriptEngine` scripting is deleted. WP12 (timelines and animation APIs) is next.** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
+**Status: 2026-09-26, WP0 (from evidence) and WP1–WP11 done: the app runs every scene's scripts on `SceneScriptRuntime`, one per display, and the legacy `AudioReactiveScriptEngine` scripting is deleted. WP11's gaps are closed (sound layers, desktop clicks, no frame of latency, `createLayer` of every kind, `brightness`/`size`) and the optimisation pass is done (see "After WP11"). WP12 (timelines and animation APIs) is next.** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
 
 Sources, in order of authority:
 
@@ -115,7 +115,7 @@ The d.ts header states the binding model: a script is bound to **one property**;
 - **Effect layer** (image/text): `getEffect(name|index) → IEffect`, `getEffectCount()`, `transformAttachmentToTexture(...)`, `size: Vec2` (read-only), `perspective`, `solid`.
 - **Image**: `alpha`, `color: Vec3`, `alignment`, `getTextureAnimation() → ITextureAnimation`, `getVideoTexture() → IVideoTexture`, animation layers (`getAnimationLayerCount/getAnimationLayer/createAnimationLayer/playSingleAnimation/destroyAnimationLayer`), bones (`getBoneCount`, `get/setBoneTransform`, `get/setLocalBoneTransform/Angles/Origin`, `getBoneIndex`, `getBoneParentIndex`, `applyBonePhysicsImpulse`, `resetBonePhysicsSimulation`), blend shapes (`getBlendShapeIndex/Weight`, `setBlendShapeWeight`).
 - **Text**: `text`, `color`, `alpha`, `opaquebackground`, `backgroundcolor`, `pointsize`, `font`, `padding`, `horizontalalign`, `verticalalign`, `anchor`, `limitrows`, `maxrows`, `limitwidth`, `maxwidth`.
-- **Sound**: `play()`, `stop()`, `pause()`, `isPlaying()`, `volume`.
+- **Sound**: `play()`, `stop()`, `pause()`, `isPlaying()`, `volume`. How WE plays them (modes, gain, timers, mute) is under "After WP11" in §5.
 - **Particle system**: `play/pause/stop/isPlaying`, `emitParticles(count?)`, `instance: {alpha, size, count, speed, lifetime, rate, colorn, controlpoint0…7}`.
 - **Model**: `perspective`, `rootmotion`, animation layers. **Camera**: `fov`, `zoom`.
 - `IEffect`: `visible`, `name`, `getMaterial(i) → IMaterial`, `getMaterialCount()`, `setMaterialProperty(name, number|Vec2|Vec3|Vec4)` ("on all materials of this effect that have a matching property"), `executeMaterialFunction(name)`, `getAnimation()`.
@@ -478,7 +478,7 @@ Each frame:
 - The limit applies per native→JS entry, so it covers the whole `__rt.frame`; WE's applies per outermost script call. On termination `__rt.current` names the running instance, the "dead lock was detected" message is logged once, and, like WE, the **whole runtime halts**: no callback, timer or new script runs until the wallpaper reloads (§1.9 P5).
 - Limit: WE's 15 s, at load and per frame.
 
-**Threading (S19).** A runtime is confined to one `SceneScriptThread`: a serial dispatch queue of its own, off the main thread (`.userInitiated`). The owner creates the runtime inside `thread.sync { … }` and afterwards reaches it only on that queue; `load`, `frame`, `add`, `remove` and `tearDown` check it (`dispatchPrecondition`). The renderer posts each frame with `thread.asyncFrame { runtime.frame(deltaTime:) }`, which skips the frame while the previous one is still queued or running, so a script that hangs until the 15 s watchdog fires stalls only its own wallpaper's scripts: the UI, other displays and the renderer (drawing with the last values) keep going. Other threads talk to a runtime only through its thread-safe `inbox`. Releasing the last reference elsewhere still runs `destroy()` on the runtime's queue (`deinit` hops there). JavaScriptCore locks a VM per API call, so the queue's worker threads may change between blocks. Without a thread (tests) the caller's thread is the runtime's; on the main thread that is logged once. The table and command read-back (WP11) happen on the script queue after the frame, handing the renderer a value snapshot.
+**Threading (S19).** A runtime is confined to one `SceneScriptThread`: a serial dispatch queue of its own, off the main thread (`.userInitiated`). The owner creates the runtime inside `thread.sync { … }` and afterwards reaches it only on that queue; `load`, `frame`, `add`, `remove` and `tearDown` check it (`dispatchPrecondition`). The renderer posts each frame with `thread.asyncFrame { runtime.frame(deltaTime:) }`, which skips the frame while the previous one is still queued or running, so a script that hangs until the 15 s watchdog fires stalls only its own wallpaper's scripts: the UI, other displays and the renderer (drawing with the last values) keep going. Since the latency fix the renderer waits up to 4 ms for the frame it posted (never for a skipped one), so a draw shows its own script frame. Other threads talk to a runtime only through its thread-safe `inbox`. Releasing the last reference elsewhere still runs `destroy()` on the runtime's queue (`deinit` hops there). JavaScriptCore locks a VM per API call, so the queue's worker threads may change between blocks. Without a thread (tests) the caller's thread is the runtime's; on the main thread that is logged once. The table and command read-back (WP11) happen on the script queue after the frame, handing the renderer a value snapshot.
 
 **Shared memory (SF3).** Every buffer scripts can reach (command ring, object table and slot buffers, engine frame and clock) is a `SceneScriptSharedBuffer`: the bytes are reference counted between Swift and the typed array's deallocator, and pinned at creation, so `buffer.transfer()` copies instead of detaching and no script can free memory Swift writes. The runtime `watch`es each buffer and stops the scripts if one ever reports `isDetached`.
 
@@ -502,7 +502,7 @@ Each frame:
 | Bridging per frame | ~15 `setObject` + `toDictionary` of all layers per call | 1 call + buffer reads |
 | Allocations | dictionaries per call | one `Vec3` per vector getter or argument (like WE) |
 
-Per-frame budget assertions go into the harness (§5, WP9) as `measure` tests, with a baseline per scene. Measured after WP11 in the renderer (`SceneScriptLibraryCostTests`, Release, median): 0.10–0.26 ms per frame for the library's scenes, 0.49 ms for 3453730450 (71 sites); see WP11.
+Per-frame budget assertions go into the harness (§5, WP9) as `measure` tests, with a baseline per scene. Measured after WP11 in the renderer (`SceneScriptLibraryCostTests`, Release, median): 0.10–0.26 ms per frame for the library's scenes, 0.49 ms for 3453730450 (71 sites); see WP11. After the optimisation pass (JIT, fewer allocations, fewer commands; "After WP11" in §5): p50 0.05–0.21 ms and p99 0.13–0.55 ms for every library scene.
 
 ### 4.7 Audio, media and storage sources
 
@@ -515,7 +515,7 @@ Per-frame budget assertions go into the harness (§5, WP9) as `measure` tests, w
 
 ### 4.8 Input
 
-- The renderer publishes the scene-space cursor (it already has `sceneCursor` and `cursorTracker`) and the left-button state **only for clicks on the desktop** (the wallpaper window receives the events; the global `NSEvent.pressedMouseButtons` is not used).
+- The renderer publishes the scene-space cursor (it already has `sceneCursor` and `cursorTracker`) and the left-button state **only for clicks that land on the wallpaper** (`DesktopClickMonitor`: global and local `NSEvent` monitors and a hit test per press; the global `NSEvent.pressedMouseButtons` is not used).
 - `input.cursorScreenPosition` is in display pixels.
 - **Hit test** (WP10, §1.9 P7). The renderer hands `SceneScriptCursorExtension.publish(_:)` the cursor, the button and the image and text layers in draw order with last frame's world matrices (`SceneScriptCursorLayer.layers(in:drawOrder:parentOf:)` reads them from the table). `localPosition` is from the quad's top-left with y down. Hidden layers are hit; `disablepropagation` on a visible hit stops the pass; otherwise overlapping solid layers all get the events, topmost first.
 
@@ -674,7 +674,7 @@ Originally planned: `Scene/Values/` (`SceneValueContext`, `SceneValueResolver`, 
 - **User properties.** Every change reaches `applyUserProperties` with WE's raw payload (values typed as project.json declares them); the content is rebuilt only for a property the built content reads outside scripts (`SceneWallpaperViewModel.contentUserProperties`).
 - **Halt.** A watchdog stop is logged, shown in a non-blocking panel like safe restart's (Retry reloads the wallpaper), and stops only that wallpaper's scripts; the renderer keeps drawing their last values.
 - **Deleted:** `AudioReactiveScriptEngine`'s scripting (what remains, audio capture and user properties, is `Audio/WallpaperServices.swift`), `SceneScriptPropertiesShim`, the invented globals, the legacy 64-band spectrum and waveform, `resolveLayerVisibility`, the `script.js` guess, the per-field script sources the loader decoded, and `SceneValueContext.evaluateScript` (a scripted value starts from its fallback; the runtime owns it). Also `engine.isObjectValid` and `requestFeatures` (WP4's leftovers) are in.
-- **Best guesses and gaps:** the left button counts only while Finder is frontmost (the wallpaper window ignores mouse events); fields outside the object model (`brightness`, `size`) are kept by their scripts but not drawn from them (no corpus site uses them); sound layers are not played, so their playback only changes `isPlaying()` (logged once); scene, effect and material animations and `executeMaterialFunction` are not script-controlled (WP12, logged once); `createLayer` draws image, text and shape layers, not particle systems; `fullscreen` layers and models are not hit-tested (WP10's gaps).
+- **Best guesses and gaps** (the left button, `brightness`/`size`, sound layers, `createLayer` of particle systems and the frame of latency are closed since; see "After WP11" below): the left button counts only while Finder is frontmost (the wallpaper window ignores mouse events); fields outside the object model (`brightness`, `size`) are kept by their scripts but not drawn from them (no corpus site uses them); sound layers are not played, so their playback only changes `isPlaying()` (logged once); scene, effect and material animations and `executeMaterialFunction` are not script-controlled (WP12, logged once); `createLayer` draws image, text and shape layers, not particle systems; `fullscreen` layers and models are not hit-tested (WP10's gaps).
 - **Tests:** `SceneScriptRenderTests` (headless renders of `Tests/Fixtures/Scenes/scripted*` through the real loader: an origin moves a layer, a layer hidden at load is shown and a visible one hidden, a material constant turns a tint green, `createLayer` draws, a user-bound script property reaches a text layer; two displays share nothing; a script-only user property reaches `applyUserProperties` without a rebuild; a hang halts only its wallpaper), `SceneScriptWallpaperTests` (ownership and P2, world matrices, create/sort/destroy, effects and constants, strings, playback, the cursor pass, animation control, the 1000-frame create/destroy churn), `SceneScriptSceneDescriberTests`, `UniformScriptWriteTests`, `SceneScriptInstanceOverridesTests`, and `SceneScriptLibraryCostTests` (the cost table below). The replay now uses the app's describer and WP10's cursor pass.
 - **Cost** (§4.6), per frame, CPU time of the script thread for a whole script frame (renderer values into the tables, cursor pass, scripts, read-back), median of 240 frames on the local library's 21 scenes with scripts, Release: 0.10–0.26 ms, and 0.49 ms for 3453730450 (71 sites; p99 0.97 ms), almost all of it the scripts' own JavaScript (the host around them is about 0.05 ms); the render thread's share is 0.01–0.07 ms. Before, with the legacy engine on the render thread (Debug): 1.1–64 ms per frame, 3453730450 about 500 ms. Debug builds of the new path: 0.18–0.41 ms, 3453730450 0.72 ms; render thread 0.03–0.26 ms.
 
@@ -687,6 +687,95 @@ Originally planned:
 - `sortLayer` in the same frame.
 - Delete `AudioReactiveScriptEngine`'s scripting half, the shim and the invented globals, and rename what remains per the architecture doc (move-only commit).
 - Tests: the existing render tests plus `RenderCheckTests` for a scripted layer that moves, hides and shows; the clone stress test from test-risks (create and destroy 1000 frames, memory flat).
+
+**After WP11: WP11's gaps and the optimisation pass** (2026-09-26). Evidence from `wallpaper64.exe` and `scenescript64.dll` (disassembly in `/Volumes/980Pro/dd-agentSS1/research/`; helpers `strx.py`, `regtab.py` and the createLayer listings `ss_cl*.asm` in `/Volumes/980Pro/dd-agentSSG/research/`).
+
+- **Sound layers** (`Scene/Sound/`, `Scene/Format/SceneSound.swift`, `Scene/Loading/SceneSoundContentBuilder.swift`). A scene.json object whose `"sound"` isn't null is WE's sound object (constructor `0x140190593`, property table `0x1401f7090`).
+  - Fields and WE's defaults: `sound` (a list of files, or one path when `createLayer('sounds/…')` made it), `playbackmode` loop/random/single (default loop), `volume` 1, `mintime` 1, `maxtime` 5, `startsilent`, `muteineditor` and `spatialization` false. `spatialization` (3D position with `attenuation`, `mindistance`) is read but not played: no library sound sets it.
+  - Playback (`SceneSoundPlayback`, a line-by-line model of `play()` `0x1401f5980`, the update `0x1401f4f50`, `stop()`, `pause()`, `isPlaying()` `0x1401f6fb0`):
+    - The gain is `volume² × wallpaper gain`. With no gain `play()` starts nothing, and raising the volume later (a script, a user property, unmuting) starts a sound that never could.
+    - Every start stops the files and picks one at random, repeats allowed; list order is never used.
+    - `loop` with one file loops it seamlessly. With several, each clip plays once and the next random one starts when it ends, at frame granularity.
+    - `random` plays at load, then waits `mintime + u·(maxtime − mintime)` after each clip's end. `play()` during the wait does nothing, and `isPlaying()` is false while the file is stopped.
+    - `single` plays one clip once. `startsilent` waits for a script's `play()`.
+    - `pause()`/`play()` resume where the file was; `stop()` resets, and the next `play()` starts afresh.
+  - The wallpaper gain (`SceneSoundLayers`) is the app's volume × this wallpaper's music volume on the display that plays the wallpaper's sound, 0 while muted, paused or with its music off. WE's app factor fades toward its target at `v += (target − v) × min(dt × 6, 1)`, snapping within 0.01 (`0x140492860`, `0x140492620`); ours follows on a timer of its own, so a pause fades out although no frames are drawn. At 0 the files pause (in `random`/`single`, a finished clip stops) and their timers freeze; above 0 they resume where they were.
+  - Decoding and mixing: WE streams every file through SFML `sf::Music` on OpenAL (`mediaextensions64.dll`: mp3, Ogg Vorbis, FLAC, WAV). Here `AVAudioFile` streams them into one `AVAudioPlayerNode` per file on one `AVAudioEngine` per wallpaper instance. A looping file keeps two passes queued. The engine is made when a sound first plays, so a muted wallpaper (and every test at gain 0) never touches the audio hardware. It pauses while nothing plays and is released off the main thread: a stalled coreaudiod once hung the library cost test in the engine's disposal.
+  - Ogg Vorbis decodes through Core Audio on current macOS (verified on macOS 27 with an ffmpeg-made file). No library sound is Ogg (49 mp3, 1 wav, 1 flac), so no decoder was added. A file that can't be decoded is logged once and left out.
+  - Packaged files are copied once into `Caches/Open Wallpaper Engine/SceneAudio/<sha256>.<ext>`.
+  - The old "play the first audio file anywhere" soundtrack (`SceneAudioPlayback`, `sceneAudioURL`) is deleted. It ignored modes, volumes and scripts, and even played a file from WE's assets.
+  - Scripts: `play()`/`pause()`/`stop()` reach the renderer as `.sound` events. `volume` (member writes and bound scripts) is drawn from the table. `isPlaying()` reads the playback state the renderer writes into the table before each frame.
+  - Best guesses: what bit 29 (the editor mute) and bit 27 mean, and the time scale at scene+0x154. The update uses real time; a gap in drawing counts as at most 0.25 s, since a paused wallpaper's sounds are paused.
+- **The left button** (`DesktopClickMonitor`, owned by `SceneScriptServices`).
+  - A global and a local `NSEvent` monitor watch left down and up. Mouse events need no Accessibility permission; key events would.
+  - A press counts when it lands on the wallpaper. `NSWindow.windowNumber(at:belowWindowWithWindowNumber:)` skips windows that ignore the mouse (ours, and overlays such as BetterDisplay's full-screen one and `borders`). It returns 0 over the bare desktop and Finder's desktop window when icons are shown, and the window's layer decides the rest (`kCGDesktopIconWindowLevel` or below). This runs once per press, never per frame: the hit test takes 20–60 µs, and when a window is there the one window-list lookup for its layer took 0.2–14 ms in the probe.
+  - A release anywhere lets go. A click shorter than a frame still shows for one frame, per renderer (`DesktopClickReader`).
+  - `g_PointerState` uses the same button now, instead of `NSEvent.pressedMouseButtons`, which counted clicks in any app.
+- **No frame of latency.**
+  - The renderer builds the script frame's inputs at the start of the draw: this frame's clock, cursor and animated values, with last frame's world transforms, text sizes and camera, as WE's cursor pass uses. It posts the frame and waits for it up to `SceneScriptWallpaper.Timing.frameWait` (4 ms) before drawing, so a frame draws what its own scripts did, as in WE.
+  - A frame that overruns the wait shows from the next draw on. While a hung script's frame runs, later frames are skipped without waiting, so the renderer waits at most once.
+  - The wait costs the render thread the scripts' time (0.1–0.3 ms, see below) instead of overlapping it.
+- **createLayer of every kind.** WE's `createLayer` builds through the scene loader's own object factory (`0x14018ba00` → `0x14018ff60`, like the loader at `0x140187f22`) and picks the kind of an asset path by its folder (DLL `0x1816342a8`): `particles/` → particle system, `sounds/` → sound, `models/*.json` → image.
+  - Created particle systems are built through the loader (`SceneScriptCreatedObject.particles`) and drawn above the authored objects, in the scripts' order. They get their own motion and are removed by `destroyLayer`.
+  - Created sounds play unless `startsilent`.
+  - Both survive a content rebuild, like created layers.
+- **`brightness` and `size`.**
+  - WE's image property table (`0x1401ee520`) registers both as scriptable. `brightness` is a float that multiplies the colour (`0x140257fc0`: `rgb × brightness`). It is now a table field (`thisLayer.brightness`, and a bound script's return is drawn).
+  - `size` is read-only in the typings but writable natively (`0x1401a4200`) and read by the transforms every frame (`0x1401e8bb0`). A script bound to `size` now sets the drawn quad through `objects.writeBound`; member writes stay ignored.
+  - Best guess left: WE applies `brightness` only when a flag (0x2000 at layer+0xc8+0x118) is set. The flag isn't identified, and ours always applies it, as the renderer did before.
+- **Scripts in particle files don't exist.** The only reader of `"script"` in `wallpaper64.exe` is the scriptable-property loader (`0x1401a5803` in `0x1401a4db0`). It is reached only from the property tables of scene objects, `instanceoverride` included. Particle files' numbers go through the plain JSON-to-float reader (`0x140086220`; rate `0x1401c1c87`, drag `0x1401cb35e`, fade times `0x1401cb8e0`). The dead `rateScript`/`ParticleValueScript` fields and `WEFlexibleDouble.script` are deleted.
+- **Optimisation.** See the cost table below.
+
+**Optimisation pass: the cost table.** `SceneScriptLibraryCostTests`, Release, signed ad hoc with the app's entitlements, median and p99 of CPU time of the script thread per script frame over 240 frames after a 10 s warm-up, on the local library's 21 scenes with scripts. "Before" is `76f2449`, the state before this pass, as it shipped (no JIT entitlement); "after" is two runs of the current code. Both were measured the same way on the same machine, while other builds were running. The targets were p50 < 0.3 ms and p99 < 0.6 ms for every scene. Both are met in these runs, 3453730450 with little margin at p99.
+
+| wallpaper | before p50 | before p99 | after p50 (runs 1 / 2) | after p99 (runs 1 / 2) | render thread p50, before → after |
+|---|---|---|---|---|---|
+| 2406282996 | 0.101 | 0.262 | 0.054 / 0.051 | 0.168 / 0.157 | 0.015 → 0.019 |
+| 2764281221 | 0.102 | 0.318 | 0.068 / 0.076 | 0.208 / 0.246 | 0.017 → 0.023 |
+| 3109042108 | 0.150 | 0.540 | 0.085 / 0.077 | 0.214 / 0.218 | 0.069 → 0.088 |
+| 3121284565 | 0.138 | 0.381 | 0.061 / 0.064 | 0.208 / 0.206 | 0.027 → 0.036 |
+| 3244466773 | 0.135 | 0.364 | 0.078 / 0.077 | 0.232 / 0.260 | 0.015 → 0.019 |
+| 3245833232 | 0.139 | 0.423 | 0.087 / 0.090 | 0.266 / 0.200 | 0.022 → 0.028 |
+| 3352730400 | 0.157 | 0.514 | 0.079 / 0.077 | 0.227 / 0.255 | 0.026 → 0.037 |
+| 3384308105 | 0.096 | 0.279 | 0.074 / 0.068 | 0.200 / 0.181 | 0.016 → 0.021 |
+| 3443078996 | 0.085 | 0.235 | 0.059 / 0.046 | 0.159 / 0.125 | 0.012 → 0.014 |
+| 3453730450 | 0.433 | 1.253 | 0.214 / 0.206 | 0.548 / 0.536 | 0.055 → 0.076 |
+| 3546971487 | 0.338 | 0.801 | 0.125 / 0.131 | 0.351 / 0.338 | 0.026 → 0.034 |
+| 3672756984 | 0.190 | 0.663 | 0.107 / 0.111 | 0.302 / 0.293 | 0.024 → 0.037 |
+| 3677897732 | 0.205 | 0.651 | 0.124 / 0.122 | 0.382 / 0.316 | 0.019 → 0.028 |
+| 3742916237 | 0.088 | 0.277 | 0.063 / 0.067 | 0.181 / 0.198 | 0.016 → 0.021 |
+| 3802509485 | 0.095 | 0.333 | 0.052 / 0.060 | 0.200 / 0.196 | 0.010 → 0.017 |
+| 3802900973 | 0.102 | 0.340 | 0.073 / 0.073 | 0.191 / 0.172 | 0.018 → 0.029 |
+| 3803044683 | 0.177 | 0.526 | 0.100 / 0.101 | 0.296 / 0.235 | 0.034 → 0.052 |
+| 3803167460 | 0.128 | 0.474 | 0.086 / 0.089 | 0.286 / 0.259 | 0.029 → 0.042 |
+| 3803728810 | 0.228 | 0.757 | 0.112 / 0.113 | 0.350 / 0.338 | 0.027 → 0.042 |
+| 3805976313 | 0.087 | 0.261 | 0.060 / 0.063 | 0.193 / 0.188 | 0.011 → 0.018 |
+| 3806006894 | 0.081 | 0.318 | 0.055 / 0.062 | 0.159 / 0.206 | 0.011 → 0.017 |
+
+Where the time went (3453730450; profiling build, per frame, µs):
+- **Before.** The scripts' JavaScript took most of it, run by JavaScriptCore's interpreter.
+- **After.** Updates about 250 (instrumentation included), the command ring 32, preparing the tables 21, reading them back 16, the extensions' frame globals 12.
+
+What changed:
+1. **The JIT.** JavaScriptCore compiles only with `com.apple.security.cs.allow-jit` (`SceneScriptJIT`). This alone took 3453730450 from about 0.5 to 0.33 ms (one-second warm-up, measured on a busier machine).
+   - With the JIT, the watchdog (§4.5) no longer stopped a compiled empty loop: `while (true) {}` ran past 15 s under a 0.3 s limit, because JIT code reaches JavaScriptCore's traps only if loops poll for them.
+   - The app turns on `JSC_usePollingTraps` in `main.swift`, before the first VM, since JavaScriptCore reads its options from the environment once. The loop then stops at 0.31 s, and a tight loop costs about 10 % more.
+   - `SceneScriptJITTests` and `SceneScriptRenderTests.testAHungScriptHaltsOnlyItsWallpaper` (in a signed host) cover it.
+2. **No closures or arrays per bound script per frame.**
+   - The binding's access is cached on the record.
+   - Field accessors are typed functions over the table.
+   - The converter builds the `Vec` directly.
+   - `init`/`update` get their argument without an arguments array.
+3. **Material constants.**
+   - Writes that change nothing send no command.
+   - Declared constants are named by pool offset, so no string crosses the ring.
+   - The ring resets its header natively.
+   - This took 3453730450's command ring from 70 to about 30 µs, and 3677897732's and 3803728810's from about 50 to under 1 µs.
+4. **The measurement's warm-up.** JIT tiering puts compile spikes into the first seconds: 3453730450's p99 was 0.68–0.86 ms after a one-second warm-up and 0.54–0.55 ms after ten.
+
+With polling traps on (the watchdog fix, see item 1), 3453730450 measured p50 0.22 ms and p99 0.68–0.80 ms in three runs while the machine was busier (load 5–6). Without traps at the same load it measured 0.23 ms and 0.69–0.74 ms, so the traps cost little and the p99 moves with the machine. Its slow frames are slow in every script at once, not in one script, and 2 of its texts change every frame (two `setString` commands per frame, about 30 µs of command-ring time with the state updates behind them). Its p99 under load is the open item.
+
+The render thread's share grew by 0.005–0.02 ms. It now builds the script frame's inputs before the draw and runs the sound layers, and it waits for the script frame, which costs wall time, not CPU. Unsigned test hosts (CI) run the interpreter, so their timings look like the "before" column.
 
 ### Step 4 (after areas 3, 6 and 7)
 
