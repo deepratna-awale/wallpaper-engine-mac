@@ -75,6 +75,11 @@ struct BuiltinPassContext {
     var modelMatrix: simd_float4x4 = matrix_identity_float4x4
     var viewMatrix: simd_float4x4 = matrix_identity_float4x4
     var viewProjection: simd_float4x4 = matrix_identity_float4x4
+    /// `g_AltModelMatrix` and `g_AltViewProjectionMatrix`: the layer's own placement in the scene
+    /// while a pass draws it elsewhere (WE's prelighting draw into the layer's effect buffer,
+    /// docs/lighting-plan.md §2.3). nil: `modelMatrix` and `viewProjection`.
+    var altModelMatrix: simd_float4x4? = nil
+    var altViewProjection: simd_float4x4? = nil
     /// Identity in LWE.
     var effectTextureProjection: simd_float4x4 = matrix_identity_float4x4
     var textures: [Int: BuiltinTextureInfo] = [:]
@@ -94,7 +99,7 @@ enum BuiltinUniforms {
         "g_PointerState", "g_ParallaxPosition", "g_TexelSize", "g_TexelSizeHalf", "g_Screen",
         "g_ModelViewProjectionMatrix", "g_ModelViewProjectionMatrixInverse",
         "g_EffectModelViewProjectionMatrix", "g_EffectModelViewProjectionMatrixInverse",
-        "g_ModelMatrix", "g_ModelMatrixInverse", "g_EffectModelMatrix", "g_AltModelMatrix",
+        "g_ModelMatrix", "g_ModelMatrixInverse", "g_EffectModelMatrix", "g_AltModelMatrix", "g_AltNormalModelMatrix",
         "g_ModelViewMatrix", "g_ModelViewMatrixInverse", "g_ViewProjectionMatrix",
         "g_ViewProjectionMatrixInverse", "g_AltViewProjectionMatrix", "g_ViewMatrix",
         "g_EffectTextureProjectionMatrix", "g_EffectTextureProjectionMatrixInverse", "g_NormalModelMatrix",
@@ -152,22 +157,19 @@ enum BuiltinUniforms {
             return flat(pass.modelViewProjection)
         case "g_ModelViewProjectionMatrixInverse", "g_EffectModelViewProjectionMatrixInverse":
             return flat(pass.modelViewProjection.inverse)
-        case "g_ModelMatrix", "g_EffectModelMatrix", "g_AltModelMatrix": return flat(pass.modelMatrix)
+        case "g_ModelMatrix", "g_EffectModelMatrix": return flat(pass.modelMatrix)
+        case "g_AltModelMatrix": return flat(pass.altModelMatrix ?? pass.modelMatrix)
         case "g_ModelMatrixInverse": return flat(pass.modelMatrix.inverse)
         case "g_ModelViewMatrix": return flat(pass.viewMatrix * pass.modelMatrix)
         case "g_ModelViewMatrixInverse": return flat((pass.viewMatrix * pass.modelMatrix).inverse)
         case "g_ViewMatrix": return flat(pass.viewMatrix)
-        case "g_ViewProjectionMatrix", "g_AltViewProjectionMatrix": return flat(pass.viewProjection)
+        case "g_ViewProjectionMatrix": return flat(pass.viewProjection)
+        case "g_AltViewProjectionMatrix": return flat(pass.altViewProjection ?? pass.viewProjection)
         case "g_ViewProjectionMatrixInverse": return flat(pass.viewProjection.inverse)
         case "g_EffectTextureProjectionMatrix": return flat(pass.effectTextureProjection)
         case "g_EffectTextureProjectionMatrixInverse": return flat(pass.effectTextureProjection.inverse)
-        case "g_NormalModelMatrix":
-            // Inverse-transpose of the model's upper 3×3 (LWE binds identity; this equals it for
-            // the 2D transforms WE layers use and is correct for 3D).
-            let m = pass.modelMatrix
-            let upper = simd_float3x3(m.columns.0.xyz, m.columns.1.xyz, m.columns.2.xyz)
-            let normal = upper.determinant == 0 ? matrix_identity_float3x3 : upper.inverse.transpose
-            return [normal.columns.0, normal.columns.1, normal.columns.2].flatMap { [$0.x, $0.y, $0.z] }
+        case "g_NormalModelMatrix": return normalMatrix(pass.modelMatrix)
+        case "g_AltNormalModelMatrix": return normalMatrix(pass.altModelMatrix ?? pass.modelMatrix)
         case "g_Color4": return [pass.color.x, pass.color.y, pass.color.z, pass.alpha]
         case "g_Color": return flat(pass.color)
         case "g_Alpha": return [pass.alpha]
@@ -181,6 +183,16 @@ enum BuiltinUniforms {
         case "g_ViewForward": return flat(frame.viewForward)
         case "g_TextureReductionScale": return [1]
         default: return nil
+        }
+    }
+
+    /// WE's normal matrix (0x1400d8840, and 0x1400d8aab for the alt one): the model's upper 3×3
+    /// with each axis normalised, not the inverse transpose. A zero axis stays zero.
+    private static func normalMatrix(_ m: simd_float4x4) -> [Float] {
+        [m.columns.0.xyz, m.columns.1.xyz, m.columns.2.xyz].flatMap { axis -> [Float] in
+            let length = simd_length(axis)
+            let unit = length > 0 ? axis / length : axis
+            return [unit.x, unit.y, unit.z]
         }
     }
 

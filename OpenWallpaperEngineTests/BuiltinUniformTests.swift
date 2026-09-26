@@ -101,6 +101,32 @@ final class BuiltinUniformTests: XCTestCase {
         assertIdentity(matrix(value("g_EffectTextureProjectionMatrix")), "texture projection")
     }
 
+    /// WE's normal matrix is the model's upper 3×3 with each axis normalised (0x1400d8840), not its
+    /// inverse transpose; the alt matrices are the pass's own unless a pass sets them (prelighting).
+    func testNormalAndAltMatrices() {
+        let turn: Float = 0.4
+        let rotation = simd_float4x4(columns: (SIMD4(cos(turn), sin(turn), 0, 0), SIMD4(-sin(turn), cos(turn), 0, 0),
+                                               SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0, 1)))
+        let shear = simd_float4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0.5, 1, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, 0, 0, 1)))
+        pass.modelMatrix = simd_float4x4(translation: SIMD3(5, 6, 0)) * rotation * shear * simd_float4x4(scale: SIMD3(3, 2, 1))
+        let normal = value("g_NormalModelMatrix")
+        let m = pass.modelMatrix
+        let axes = [m.columns.0, m.columns.1, m.columns.2].map { simd_normalize(SIMD3($0.x, $0.y, $0.z)) }
+        for (index, expected) in axes.flatMap({ [$0.x, $0.y, $0.z] }).enumerated() {
+            XCTAssertEqual(normal[index], expected, accuracy: 1e-6, "element \(index)")
+        }
+        XCTAssertEqual(value("g_AltModelMatrix"), value("g_ModelMatrix"))
+        XCTAssertEqual(value("g_AltNormalModelMatrix"), normal)
+        XCTAssertEqual(value("g_AltViewProjectionMatrix"), value("g_ViewProjectionMatrix"))
+
+        pass.altModelMatrix = simd_float4x4(scale: SIMD3(4, 5, 1))
+        pass.altViewProjection = PassMatrices.ortho(left: 0, right: 10, bottom: 0, top: 10)
+        XCTAssertEqual(matrix(value("g_AltModelMatrix")), pass.altModelMatrix)
+        XCTAssertEqual(value("g_AltNormalModelMatrix"), [1, 0, 0, 0, 1, 0, 0, 0, 1])
+        XCTAssertEqual(matrix(value("g_AltViewProjectionMatrix")), pass.altViewProjection)
+        XCTAssertEqual(value("g_NormalModelMatrix"), normal, "the pass's own stays")
+    }
+
     func testPassMatrices() {
         let base = PassMatrices.base(width: 200, height: 100)
         XCTAssertEqual(base * SIMD4(0, 0, 0, 1), SIMD4(-1, -1, 0, 1))
