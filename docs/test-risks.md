@@ -1110,7 +1110,7 @@ S28 and S11 were closed with WP8 (see WP8 below).
 
 # Timeline animations
 
-Status: 2026-09-26, branch `deepratna/feature-work`, base `fee2a06`. Landed: T0 (oracle `Scripts/timeline-reference.py`, `Tests/Fixtures/Timeline/`, sweep tests), T1 (`SceneTimelineClock`/`Channel`/`Animation`), T2 (`SceneAnimationSet`, sites, holders), T5a (`SceneTextureAnimationClock`/`Control`/`Animations`), T4a (`objects-animations.js`). In flight: T3 (renderer). Adversarial list for [`timeline-plan.md`](timeline-plan.md); owners are its packages. Paths are relative to `OpenWallpaperEngine/`. Library cases are from `/Volumes/980Pro/dd-timeline/animations.json` and `anim_scripts.json`; "the oracle" is `Scripts/timeline-reference.py`.
+Status: 2026-09-26, branch `deepratna/feature-work`, base `fee2a06`. Landed: T0 (oracle `Scripts/timeline-reference.py`, `Tests/Fixtures/Timeline/`, sweep tests), T1 (`SceneTimelineClock`/`Channel`/`Animation`), T2 (`SceneAnimationSet`, sites, holders), T5a (`SceneTextureAnimationClock`/`Control`/`Animations`), T4a (`objects-animations.js`). T3 (renderer) landed after this list was written; its status is in "T3 status" below. Adversarial list for [`timeline-plan.md`](timeline-plan.md); owners are its packages. Paths are relative to `OpenWallpaperEngine/`. Library cases are from `/Volumes/980Pro/dd-timeline/animations.json` and `anim_scripts.json`; "the oracle" is `Scripts/timeline-reference.py`.
 
 | # | Sev | Owner | Risk |
 |---|-----|-------|------|
@@ -1310,6 +1310,18 @@ No library item has duplicate names or events.
 ## TL22. Hostile `length`/`fps` (Low, T1)
 **Scenario.** The cache grows up to `length` (`frame1 ≤ length`). A Workshop file with `length: 2000000000` and a `setFrame` near the end, or a mirror bounce, allocates 8 GB and runs 2·10⁹ Bézier solves on the render thread. `fps: 1e-38` with `length: 60` gives `duration = inf` (float32 overflow), which passes the `duration > 0` check. WE does the same, but it's a denial of service by a wallpaper file.
 **Test.** Load `length` 2³¹−1: no hang over 10 frames. Cap the cache or evaluate uncached past a bound (for example 1 << 16 frames). `fps` 1e-38 and 1e30: finite values, no trap.
+
+## T3 status (2026-09-26)
+- **TL1.** Sites agree: `SceneEffectPlanBuilder` binds scene.json's `passes[i]` to the effect document's pass `i` (the same index `build` reads the instance pass by, command passes included), with the object's id after `assigningFallbackIDs` and the authored key before any case-insensitive match. Only a material file's own constants stay unbound (WE animates only the scene's). The per-item enumeration and 3803044683 render are T6's.
+- **TL2.** Fixed: a field a timeline drives gets the animated value in the table every frame, and the mirror reads that object's row back even when no script wrote it, so a one-off `thisLayer.alpha = 0` shows for its frame only. `TimelineRenderTests` covers the identity and accumulator scripts.
+- **TL3.** Calls come back as render events (not state, so none is lost to a later frame) and are restored before the next advance. Open: a script frame that overruns the draw's wait is restored after one more advance, so that clock loses a frame.
+- **TL5.** Fixed: an inspector edit replaces only the value under the timeline (and under a script).
+- **TL7, TL8.** Fixed in the renderer: one sprite frame per layer per frame, and a frame outside the sheet draws frame 0.
+- **TL15.** The scene-time modulo path is deleted.
+- **TL16.** A rebuild from the same document keeps the set; new scripts or a new document start a new one. Open: layers dropped by a rebuild stay registered with the texture clocks.
+- **TL19.** A channel the timeline lacks reads 0 (ground truth below).
+- **TL20.** Only the animated fields of animated objects are read each frame. `TimelineRenderTests.testThePerFrameCostIsSmall`, Debug build, 64 three-channel 600-frame timelines: about 117 µs to advance and 65 µs to read them per frame.
+- Open, not T3's: TL4, TL6, TL9–TL14, TL17, TL18, TL21, TL22.
 
 ## Needs WE ground truth (timelines)
 - Missing channels for the property's width (TL19): 0, garbage, or the static value?

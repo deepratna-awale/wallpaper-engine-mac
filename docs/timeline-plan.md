@@ -1,6 +1,6 @@
 # Timeline animations: evidence and plan
 
-**Status: 2026-09-26. Research only. Nothing described here is implemented yet.** This covers roadmap area 3 (timeline animations) and the animation half of SceneScript WP12 (docs/scenescript-plan.md). It sets out:
+**Status: 2026-09-26. T0–T3, T4a and T5a are implemented** (§4 has what's left). This covers roadmap area 3 (timeline animations) and the animation half of SceneScript WP12 (docs/scenescript-plan.md). It sets out:
 
 - WE's format for animated values;
 - how `wallpaper64.exe` evaluates them;
@@ -291,7 +291,7 @@ The wrapper holds `frame` (+0xe8), `time` (+0xec), `rate` (+0xe4), `playing` (+0
 
 - **Dispatch.** Events fire during the clock advance (§2.4). They dispatch as callback 6 (`0x1401726e7` → `0x140177ad0`) to every initialised script that exports `animationEvent` and is either attached to the animation's **owner** (`script+0x8 == owner`) or is the handle the animation carries (`+0x108`). The docs agree: "only scripts attached to the layer".
 - **Arguments.** The event is `AnimationEvent {name, frame}`; `value` and the applied return follow plan P3.
-- **Which events fire.** Events are per animation (a child fires its own), at [old, new) as the clock moves.
+- **Which events fire.** Events fire as a clock moves, at [old, new) (§2.4), and only a clock owner's clock moves: a linked child's own clock never advances, so its events never fire. Every event of a frame is the **owner's** (the parent's), sent to the scripts of the animation it belongs to.
 - **Library use.** No library scene defines one.
 
 ### 3.4 Animation layers
@@ -300,52 +300,38 @@ The wrapper holds `frame` (+0xe8), `time` (+0xec), `rate` (+0xe4), `playing` (+0
 
 ## 4. Our implementation and its gaps
 
-What exists:
+How it runs (T1, T2, T3, T4a, T5a):
 
-- **`Scene/Format/SceneObject.swift`** decodes object fields into `WEKeyframeAnimation` / `WEVectorKeyframeAnimation`, which read `keyframes`/`frames`, `duration`/`seconds` and a top-level `mode`. **That is not WE's format.** For every real wallpaper, `keyframes` decodes to `[]`.
-- **`Scene/Rendering/SceneTimeline.swift`** evaluates those. With no keyframes it returns the fallback, so **every object timeline in the library is frozen at its static value**. Only our own fixture `Tests/Fixtures/Scenes/particle-animated-parent` exercises this path.
-- **`Scene/Values/SceneValueAnimation.swift`** parses the real `c0…`/`options` format. It is used only through `SceneValueSource`, for effect constants in `ShaderConstantResolver`, `EffectGraphRenderer` and `ImageMaterialUniforms`.
-  - It interpolates linearly at scene time with a mode formula.
-  - A `startpaused` animation is pinned at frame 0 forever.
-  - It ignores `relative`, handles, `step`, `parent` and events, and scripts can't control it.
-  - Its wraploop is a linear return to the first value.
-  - `user` wraps the animation, so a user binding would win.
-- **`Scene/Scripting/Host/SceneScriptSceneMirror.swift`** keeps clocks in the script animation buffer: frame += Δ·fps·rate, always wrapped modulo `frameCount`, whatever the mode. A controlled animation publishes `animationTimes[property]`, which the renderer then feeds to `SceneTimeline` (the dead path). Scene, effect and material animations are logged "not script-controlled (WP12)".
-- **`Resources/SceneScript/objects-animations.js`**:
-  - `isPlaying` is a stored flag, not the paused and finished bits.
-  - `play()` doesn't restart a finished animation.
-  - `stop()`/`setFrame` go through commands.
-- **Texture animations.** `TEXParser` drops frames with duration ≤ 0. The renderer's `textureFrame(for:time:)` takes scene time modulo the total, which can skip frames, has no per-texture shared clock and ignores `ITextureAnimation` control. The describer's `textureAnimation` gives scripts an fps of count/duration. Effect textures that are sprite sheets don't animate (roadmap 8.15).
-- **Clock.** `SceneClock` (scene seconds × speed, frame delta clamped to 0.25 s) is the right delta source.
+- **Model.** `Scene/Format/SceneTimelineDocument` reads §1.1; `Scene/Values/SceneTimelineAnimation`, `SceneTimelineChannel` and `SceneTimelineClock` are §2.2–§2.4 in float32, checked bit for bit against the oracle (`Scripts/timeline-reference.py`, `Tests/Fixtures/Timeline/`).
+- **One set per renderer.** `SceneMetalRenderer` builds a `SceneAnimationSet` from the content's `scene.json` (`SceneMetalContent.timelines`) and keeps it, clocks and all, across content rebuilt from the same document (a user property), as it keeps the scripts; new scripts or a new document start a new set. Each draw advances it once by `SceneClock.delta`, after the last script frame's calls were applied and before the scripts run (P1). Wallpapers without scripts animate the same way, and a hung script can't stop them.
+- **Where values go.** Object fields (`origin`, `scale`, `angles`, `alpha`, `color`, `brightness`, `size`) are read per frame into `SceneObjectAnimation` and replace the static and user-bound value (§2.6); the property's type picks the channels. Effect constants are `SceneValueSource.animation(site:)`, nested over `user` and under `script`, bound to `.material(object, effect, pass)` by `SceneEffectPlanBuilder` and resolved through `LiveSceneValueContext.animations`. An inspector edit replaces only the value under the timeline.
+- **Scripts (P2).** The frame input carries every site's `SceneAnimationState`, every layer's texture state and the frame's events. `SceneScriptSceneMirror` publishes them into the animation buffer, posts `animationEvent` for each event (to the clock owner's slot), and turns the slots scripts called into render events (`.animation`, `.textureAnimation`) that the renderer restores into the set. A field a timeline drives gets the animated value in the table every frame, so `update(value)` sees it and a script's write or return wins only for its frame.
+- **Textures.** An animated image layer registers its texture (`SceneMetalLayer.textureKey`) with the set's `SceneTextureAnimations`; each drawn layer takes its sprite frame once per frame (`drawnTextureFrame`), from the shared clock or its script's override. A frame outside the sheet draws frame 0.
+- **Deleted.** `SceneTimeline`, the invented `WEKeyframeAnimation` format, `SceneValueAnimation`, the mirror's loop-only clocks and `animationTimes`, and the scene-time sprite frame.
+- **Tests.** `TimelineRenderTests` (headless renders of `Scenes/timeline`: an ease-in-out alpha loop against the model, relative origin, scale and angles, a start-paused single played by a script with its linked child, P2 identity and accumulator scripts, an effect constant, a shared sprite sheet and one a script holds, and the per-frame cost), `SceneScriptWallpaperTests` (state in, calls back, events to the owner), `SceneValueTests`, `ParticleEmitterMotionTests` (`particle-animated-parent`, now in WE's format).
 
-Running the reference model against a linear evaluation (`compare.py`, 1/60 s steps over 1.5 × the duration) shows every library animation differs:
+What is left:
 
-- The `multiply` fades differ by 0.21.
-- 3074485715's cutouts differ by 0.9.
-- The relative origins of 3187908708 and 3546971487 differ by 6.3 units.
-- The 28 object fields don't move at all today.
+- **Not drawn yet** (the set evaluates them; no library user): `general.*` scene settings, effect `visible`, particle `instanceoverride` fields, and object fields other than the seven above.
+- **`thisScene.getAnimation(name)`** searches only the scene's own animations, not every layer's (`objects-scene.js`).
+- **Sprite-sheet effect textures** (T7, roadmap 8.15) and animation layers (§3.4, areas 6 and 7).
+- **A late script frame.** A script frame that overruns the draw's wait has its calls restored after the next advance, so that clock loses a frame's advance.
+- **Library verification** (T6): the render sweep over the 15 animated items and their cost.
 
 | Feature | WE semantics | Our status | Library users |
 |---|---|---|---|
-| `c0…c3` + `options` on object fields | §1.1 | ❌ decoded as the invented `keyframes` format, so frozen | alpha 19, origin 4, scale 4, angles 1 (2134765860, 2542737668, 2963872291, 3187908708, 3453730450, 3546971487) |
-| Effect-constant animations | same, owner = material | 🟡 linear, scene time | 36 (10 items) |
-| Bézier handles (default ease) | §2.3 | ❌ linear (the legacy tangents are invented) | all 182 keyframes |
-| Per-integer-frame sampling + lerp | §2.3 | ❌ | all |
-| `step` (on the later key) | §2.3 | ❌ | 0 |
-| Keyframe order: drop, don't sort | §1.1 | ❌ sorts | 0 |
-| `single`, `loop`, `mirror` clock | §2.4 | 🟡 a formula of scene time; the script clock always loops | 50 / 14 / 0 |
-| `startpaused` holds the first value and `play()` starts it | §2.1, §3.1 | 🟡 constants frozen at frame 0, can't be played | 30 |
-| `wraploop` | §2.2 | 🟡 a linear return | 11 |
-| `relative` (baked at load, string values only) | §2.2 | ❌ | 8 |
-| Linked `parent`/`children` clocks | §2.5 | ❌ | 6 children (3074485715, 3187908708, 3546971487) |
-| Animation beats static and user; script return wins for its frame | §2.6 | ❌ E7 inverted; P2 designed in `SceneScriptTableSync` | all 64; 38 scripted |
-| `IAnimation` play/pause/stop/isPlaying/getFrame/setFrame/rate | §3.1 | 🟡 object fields only, loop-only clock, published to a dead evaluator | 23 sites / 9 items |
-| Scene, effect and material animations under script | §3.1 | ❌ logged | the `multiply` fades (22 in 9 items) |
-| `getAnimation(name)`, `thisScene.getAnimation` | §3.1 | 🟡 object records only | 0 |
-| `animationEvent` | §3.3 | ❌ | 0 |
-| Texture clock: shared, one frame per tick, 0 s frames | §2.7 | ❌ scene time modulo, drops 0 s frames | 6 image items, particle sheets |
-| `ITextureAnimation` override, rate, join, int `getFrame` | §3.2 | ❌ not evaluated | 2176097362, 2963872291 |
-| Sprite-sheet effect textures | §2.7 | ❌ (8.15) | not surveyed per pass |
+| `c0…c3` + `options` on object fields | §1.1 | ✅ origin, scale, angles, alpha, color, brightness, size | alpha 19, origin 4, scale 4, angles 1 |
+| Effect-constant animations | same, owner = material | ✅ | 36 (10 items) |
+| Bézier handles, per-frame sampling, `step`, keyframe order | §2.3, §1.1 | ✅ | all |
+| `single`, `loop`, `mirror` clock, `startpaused`, `wraploop`, `relative` | §2.2, §2.4 | ✅ | 50 / 14 / 0 |
+| Linked `parent`/`children` clocks | §2.5 | ✅ | 6 children |
+| Animation beats static and user; script return wins for its frame | §2.6 | ✅ | all 64; 38 scripted |
+| `IAnimation` on objects, effects, materials and the scene | §3.1 | ✅ | 23 sites / 9 items |
+| `getAnimation(name)`, `thisScene.getAnimation` | §3.1 | 🟡 per owner; `thisScene.getAnimation(name)` finds only the scene's own | 0 |
+| `animationEvent` | §3.3 | ✅ | 0 |
+| Texture clock and `ITextureAnimation` | §2.7, §3.2 | ✅ | 6 image items |
+| Scene settings, effect `visible`, particle overrides animated | §1.1 | 🟡 evaluated, not drawn | 0 |
+| Sprite-sheet effect textures | §2.7 | ❌ (T7, 8.15) | not surveyed per pass |
 | Animation layers | §3.4 | ⚪ stubs (areas 6/7) | 0 |
 
 ## 5. Plan

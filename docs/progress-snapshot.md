@@ -79,7 +79,7 @@ Legend: ✅ working · 🟡 partial · ❌ missing or broken
 | Feature | Status | Evidence |
 |---|---|---|
 | Image layers (static, sprite sheets) | 🟡 | They render, but `alignment` is ignored (D3), parent scale and rotation are ignored (D8), and `colorBlendMode` is ignored on Metal (SH:727). |
-| Keyframe animation | 🟡 | Alpha works (13 in the sample). Origin, scale, angles and size keyframes never play (E7). |
+| Keyframe animation | ✅ | WE's timeline format and evaluation on object fields and effect constants, script-controlled; texture animations on a shared clock (docs/timeline-plan.md, 2026-09-26). E7 fixed. |
 | Composition / fullscreen / project layers | ❌ | `_rt_FullFrameBuffer` becomes a transparent 1×1 (VM:1194, R:1504). |
 | Solid layers (`solidlayer*.json`) | ❌ | No texture → nil (VM:696) → dropped. 17 in the sample. |
 | Text layers | 🟡 | They render, but see §D. No effects (VM:797). Always drawn on top (VM:489). |

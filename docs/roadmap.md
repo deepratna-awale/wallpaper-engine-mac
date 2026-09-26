@@ -21,7 +21,7 @@ Each step: research → parallel agents by file ownership + tester → fix the t
 
 1. Finish in flight: the depth-parallax and shine bug (3802047741). The particle finish (child control points, per-instance ropes, non-uniform scale, particle uniform arena, test cleanup) is done.
 2. WE-authored values everywhere (priority): every threshold, default, range, step and option comes from WE's json, shader annotations and scripts (effect.json, materials, `// {..}` uniform annotations, `[COMBO]`, project.json properties, particle jsons, SceneScript `createScriptProperties`). No invented constants, magic factors or app-made ranges. Audit → fix → a test that fails on hard-coded values.
-3. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise. WP0–WP11, their gaps and the optimisation pass done; WP12 (timelines and animation APIs) goes with area 3.
+3. Area 4 SceneScript: research plan (docs/scenescript-plan.md) → implement → corpus replay over every library script → tester → optimise. WP0–WP11, their gaps and the optimisation pass done; WP12's timeline half is done with area 3 (animation layers and bones wait for areas 6 and 7).
 4. Area 3 Timeline animations → tester → optimise.
 5. Area 5 Lighting and reflections → tester → optimise.
 6. Area 6 3D models (with particle collisionmodel) → tester → optimise.
@@ -55,12 +55,14 @@ Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs 
 7. ~~Every particle default and semantic from WE~~: done (`docs/we-values-audit.md` §6), with WE's low-frame-rate drag (the engine frame time [engine+0x14c]) and half steps at an fps limit of 1…20 ([engine+0x148]), renderer `orientation`/`axis`, and rope `uvscale`/`uvsmoothing`/`uvscrolling`.
 8. ~~Performance pass~~: done (2026-09-25; `ParticleLibraryBenchmarkTests`, `ParticleSimulationPerformanceTests`, `ParticleMaterialPerformanceTests`). The GPU step now runs stage by stage for every system at once (one concurrent encoder, a barrier between stages) instead of each system's dozen dispatches in turn: a small system's fixed cost fell from about 48 µs to 3 µs, and every library wallpaper's simulation takes 0.03…0.27 ms of GPU time (was up to 0.43 ms; 10–11 systems 0.29…0.38 → 0.07…0.09 ms). The CPU inputs and encode take 0.03…0.08 ms a system (Debug), the material draw about 0.07 ms; pipeline keys, uniform members, the time of day and the sprite axes are cached. Open: a rate bound to a script costs 0.5…4 ms a frame in the script engine (area 4); the draws are fill-bound and dominate the heaviest wallpaper (20 000 refracting rain sprites, several ms at 1080p); boids and an instanced rope's neighbour search are O(n²).
 
-### 3. Timeline animations (partly implemented)
+### 3. Timeline animations (mostly implemented; docs/timeline-plan.md)
 
-1. Origin, scale, angles and size keyframes (E7: a static value currently overrides the timeline).
-2. Bezier and easing parity for every keyframe track, animated effect constants included.
-3. The `getTextureAnimation` API: play, pause, stop, frame and rate.
-4. The `getAnimation` / animation-layer API for puppet and model animations; this completes with area 7.
+1. ~~Origin, scale, angles and size keyframes (E7)~~: done. WE's own format, evaluated per wallpaper instance by `SceneAnimationSet` (Bézier handles, per-frame samples, single/loop/mirror, `startpaused`, `wraploop`, `relative`, linked clocks); the timeline beats the static and user value, a script's return wins for its frame.
+2. ~~Bezier and easing parity, animated effect constants~~: done, bit for bit against the reference model.
+3. ~~The `getTextureAnimation` API~~: done. One clock per texture, one step per frame, a script's override (`rate`, `pause`, `stop`, `setFrame`, `join`).
+4. ~~`getAnimation`, `IAnimation` on objects, effects, materials and the scene, `animationEvent`~~: done. Open: `thisScene.getAnimation(name)` searches only the scene's own animations.
+5. Open: animated `general.*`, effect `visible` and particle `instanceoverride` fields are evaluated but not drawn (no library user); sprite-sheet effect textures (8.15); library render sweep and cost (T6).
+6. The animation-layer API for puppet and model animations; this completes with area 7.
 
 ### 4. SceneScript (mostly implemented; Phase 6)
 
@@ -71,7 +73,7 @@ Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs 
 5. ~~Input: scene-space cursor, events only on `solid` layers with hit-testing, angles in degrees.~~ Done (WP4, WP10, WP11).
 6. ~~Callbacks: `applyUserProperties` (changed keys only), `media*`, `destroy`, `resizeScreen`.~~ Done (WP4, WP6, WP11).
 7. ~~Layer API: `createLayer` from an asset (image, text, shape, particle system, sound), `destroyLayer`, `sortLayer`, `getLayerIndex`, `localStorage`; sound layers played like WE's (modes, gain, timers, mute and pause, script control)~~ done. Open: sound `spatialization` (no library sound uses it).
-8. WP12: scene, effect and material animations under script control, `animationEvent`, animation layers, bones (with areas 3, 6, 7).
+8. WP12: ~~scene, effect and material animations under script control, `animationEvent`~~ done (area 3); animation layers and bones with areas 6 and 7.
 9. Live Now Playing on macOS 15.4+ (MediaRemote answers only entitled processes: the `/usr/bin/perl` adapter or a helper).
 10. ~~Performance: JIT (the `allow-jit` entitlement), per-frame allocations in the runtime, no frame of latency.~~ Done; see the plan's cost table.
 
