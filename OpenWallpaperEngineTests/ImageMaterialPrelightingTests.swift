@@ -122,6 +122,18 @@ final class ImageMaterialPrelightingTests: XCTestCase {
                              "the lighting varies over the layer")
     }
 
+    /// LF5: a prelit layer whose effects all are hidden (or still compiling) draws its prelit
+    /// image, not its image unlit: the layer's own draw has `LIGHTING` and `REFLECTION` off.
+    func testALayerWhoseEffectsAreHiddenStillDrawsLit() throws {
+        var hidden = try identityTint()
+        hidden.visible = false
+        let viaHidden = try renderScene(effects: [hidden]).pixels
+        let direct = try renderScene(effects: []).pixels
+        var worst = 0
+        for index in direct.indices where index % 4 != 3 { worst = max(worst, abs(Int(direct[index]) - Int(viaHidden[index]))) }
+        XCTAssertLessThanOrEqual(worst, 3, "prelit with its effect hidden vs lit directly: \(worst)/255")
+    }
+
     /// LF3: in HDR the prepass draws into the frame-buffer format, RGBA16F, as WE's layer buffers
     /// are: `CombineLighting`'s overbright reaches the effects and the float scene target, as it
     /// does for the same layer lit directly.

@@ -169,6 +169,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// The user's quality settings (post-processing, reflection, shadows, volumetrics); the view sets them.
     var renderSettings = SceneRenderSettings()
     private var sceneRenderTarget: MTLTexture?
+    /// This frame's prelit images (`prelit`), by layer id.
+    private var prelitImages: [String: MTLTexture] = [:]
     /// A shared scene's finished frame, the scene target's size (`sharedFrame`).
     private var sharedFrameTarget: MTLTexture?
     private var sceneRenderTargetSize = SIMD2<Int>.zero
@@ -723,6 +725,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let leftDown = cursorSample.onDisplay
             && clickReader.isDown(scripts.services?.clicks?.state ?? DesktopClickMonitor.State())
         releaseFinishedEffectState()
+        prelitImages.removeAll(keepingCapacity: true)
         beginTransformFrame()
         if scripts.isRunning {
             // Like WE, the scripts run before the frame that shows what they did (§4.4): this
@@ -1006,7 +1009,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 snapshotTracker.sceneDrawn(in: drawn)
             }
             // A text layer's `font` material reads the glyphs' coverage; colour glyphs have none.
-            let materialTexture = entry.layer.text == nil ? dynamicTextures[layerIndex] ?? textureFrame.texture
+            // A prelit layer whose chain rendered nothing (every effect hidden, or compiling) draws
+            // its prelit image: its own draw has the lighting off, so the raw image would be unlit.
+            let materialTexture = entry.layer.text == nil
+                ? dynamicTextures[layerIndex] ?? prelitImages[entry.layer.id] ?? textureFrame.texture
                 : textureFrame.coverage
             if let plan = entry.layer.imageMaterial, let imageMaterials, let materialTexture, imageMaterials.draw(plan, ImageMaterialRenderer.Draw(
                    layerID: entry.layer.id, quad: draw.quad, sceneSize: sceneSize,
@@ -1435,7 +1441,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func prelit(_ entry: PreparedLayer, draw: LayerDraw, input: MTLTexture, snapshot: MTLTexture?,
                         frame: BuiltinFrameContext, commandBuffer: MTLCommandBuffer) -> MTLTexture? {
         guard let plan = entry.layer.imageMaterial, plan.prelighting != nil, let imageMaterials else { return nil }
-        return imageMaterials.prelight(plan, ImageMaterialRenderer.Draw(
+        let lit = imageMaterials.prelight(plan, ImageMaterialRenderer.Draw(
             layerID: entry.layer.id, quad: draw.quad, sceneSize: sceneSize, color: SIMD3(repeating: 1), alpha: 1,
             brightness: 1, texture: input, contentSize: entry.layer.source.contentSize, uvOrigin: .zero,
             uvAxisX: SIMD2(1, 0), uvAxisY: SIMD2(0, 1), sceneSnapshot: snapshot, mipMappedFrameBuffer: mipMappedTarget,
@@ -1444,6 +1450,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             assetSprite: { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) }),
             // The layer's effect buffers' format: RGBA16F in HDR (docs/lighting-plan.md §2.3, §2.6).
             format: postProcess.drawsHDR ? .rgba16Float : .rgba8Unorm, commandBuffer: commandBuffer)
+        prelitImages[entry.layer.id] = lit
+        return lit
     }
 
     /// Continues the scene pass after a pause (a snapshot of it, or effects run in between).
