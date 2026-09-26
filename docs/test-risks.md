@@ -1383,3 +1383,375 @@ These were reviewed against TL1–TL22. The claims below were checked with a thr
 - **TL8.** One sprite frame per layer per frame: `spriteFrames` is cleared in `advanceAnimations` (`:492`) and filled once per layer (`:1604`). Without it, the model's override advances once per call (with two calls per tick, frame 5 instead of 2 after 10 ticks), so the cache is load-bearing too. `SceneTextureAnimationControl.advance` still has no tick guard of its own.
 - **TL3.** The order is `beginFrame` events → advance → script frame → `finishFrame` events → draw (`SceneMetalRenderer.draw`). A call made in frame N is restored after N's advance and acts from N+1's advance, as in WE. An overrun script frame costs that clock one frame; T3 notes it as open.
 - **TL5.** An inspector edit replaces only the base under the timeline (`replacingBase`).
+
+---
+
+# Lighting and reflections (roadmap area 5)
+
+Status: 2026-09-26, branch `deepratna/feature-work`, HEAD `e4f7a83` (code as of `36a5796`). Adversarial list for the landed packages of docs/lighting-plan.md: L0, A1, A2, A3/A4, B1, B2, C1 and D1. **Owner** is the plan's package (§4.3). **EP** = the effects-perf agent (Match display, Texture Resolution, `SceneEffectDetail`); **ST** = settings UI.
+
+The scenes used below:
+- One piece girls 3270035750: 4 tubes lighting `f1`; `bloom` is bound to the user property `resplandorradiance`.
+- witcher 3803167460: `меч`, `ведьмак розбивpng`; parallax and shake on.
+- Knight 2515150033: the genericimage2 `LIGHTING`/`REFLECTION` puppet `centurion 1080p_sheet`, lit by 2 **legacy** points. Light 29 has scripts on `intensity` and `origin`.
+- Hinata 3352730400: a cookie spot, turned on all three axes, with volumetrics and HDR.
+- Lofi Cafe 2370927443: `REFLECTION` with 11 effects.
+- The bloom scenes (24 in §1.5, plus 2868563343).
+- The 3D/HDR test set: 3455121165, 3657770939, 3734636606, 3233200129, 3159348391, 3378346807, 2350874185, 2321732083.
+
+| # | Sev | Owner | Risk |
+|---|-----|-------|------|
+| LR1 | Critical | A4 | A prelit layer behind a static effect chain keeps its first frame's lighting and reflection (**confirmed**, LF1) |
+| LR2 | High | A2 | Light fields and the out-of-plane transform are frozen at load: scripted `intensity`, `color`, `radius`, `origin.z` (**confirmed**, LF2) |
+| LR3 | High | A3 | The `angles.z` sign flip: every consumer that doesn't go through `SceneAffineTransform` |
+| LR4 | High | A2, D1 | A light's tilt order (`Rz·Ry·Rx` vs `Rx·Ry·Rz`) for lights turned on x/y and z |
+| LR5 | High | A4, B2 | Prelit image is RGBA8 in HDR: overbright is clipped before effects and bloom (**confirmed**, LF3) |
+| LR6 | High | B1, EP | Bloom radius and HDR level count follow the scene target's size (Match display, Texture Resolution, desktop resolution, two displays) |
+| LR7 | High | B1, B2 | Bloom gates and live values: user-bound and scripted `bloom`, timelines on strength, `bloomhdr*` not live, `_owe_bloom` |
+| LR8 | High | B2 | HDR float targets through every stage |
+| LR9 | High | all | Cost at 5K (5120×2880), HDR and reflection on |
+| LR10 | High | all | Memory: full-size float targets, unused ping targets, targets kept after leaving HDR |
+| LR11 | Medium | A4 | A prelit layer whose chain renders nothing draws **unlit** (**confirmed by reading**, LF5) |
+| LR12 | Medium | A2, D1 | Lights (and volumetrics) don't move with camera parallax or shake; the layers they light do |
+| LR13 | Medium | A2 | Light packing: overflowing groups, budgets, legacy slot collisions, sort ties |
+| LR14 | Medium | A2, A3 | Lights under animated or scripted parents, hidden ancestors, lights created or re-parented by scripts |
+| LR15 | Medium | A3, A4 | Lit layers and colour, alpha, brightness, blend modes, puppets and sprite sheets |
+| LR16 | Medium | A3 | PBR mask flag bits: component combos taken from `.tex` flags |
+| LR17 | Medium | A1 | `SCENE_ORTHO`/`HDR`/`LIGHTS_*` in every cache key: key churn and recompiles |
+| LR18 | Medium | C1 | `_rt_MipMappedFrameBuffer` is a frame late: new targets, resizes and content swaps |
+| LR19 | Medium | C1, ST | Reflections off, on again, and the rebuild every settings change causes |
+| LR20 | Medium | D1 | Volumetric draw order: the stage runs after every object |
+| LR21 | Medium | D1 | Volumetrics under camera shake, parallax and script cameras (**confirmed by reading**, LF6) |
+| LR22 | Medium | D1 | One missing cookie drops every volumetric light (**confirmed by reading**, LF4); shadow casters show only with shadows off |
+| LR23 | Medium | all | Two displays sharing one instance |
+| LR24 | Medium | ST, all | Settings changed live: every change rebuilds the content |
+| LR25 | Medium | A1, A3 | Cookie spots under `LightingV1`: `_alias_lightCookie` and the zero `g_LFeature_*` projections |
+| LR26 | Low | A2 | Per-frame lighting cost when a scene has no lights |
+
+## LR1. A prelit layer behind a static effect chain keeps its first frame's lighting (Critical, A4)
+**Scenario.** `SceneMetalRenderer.runEffects` (`:1406`) hands `effectGraph.apply` the prelit texture. `ImageMaterialRenderer.prelight` draws into the same `program.prelit` texture every frame (`:223-230`), and `inputVersion` stays 0. `EffectGraphRenderer.apply` keys its static-output cache on the input's identity and version (`:277`). Its `readsScene` check (`:284`) looks only at the effect passes, not at the prepass, which reads the lights and `_rt_MipMappedFrameBuffer`. So once every effect on a lit or reflective layer is static, the first frame's output is served for good.
+- Moving lights, a scripted ambient, parallax and parent motion (through the `g_Alt*` matrices) and the reflection all freeze. The prepass is still encoded every frame, and its result is thrown away.
+- A reflective layer can freeze on the frame where `_rt_MipMappedFrameBuffer` was just made, which is transparent black (LR18).
+- At HEAD it takes a wholly static chain. EP's uncommitted `staticPrefix` cache and `SceneEffectDetail.input` use the same key, so a static *prefix* is enough there. witcher's `меч` (opacity, then foliagesway) would then keep its first reflection.
+
+**Test.** Confirmed by LF1's probe. Add it as a renderer test: a lit layer behind the `tint` identity effect, then change the frame's lighting; the drawable must change. The existing `LitLayerLibraryTests` count `imageMaterialPrelitDraws`, which go up even when the output is discarded, so they can't catch this. The fix is to bump `inputVersion` per prepass, or to count `plan.prelighting != nil` as `readsScene`.
+
+## LR2. Light fields and the out-of-plane transform are frozen at load (High, A2)
+**Scenario.** `SceneFrameLighting.frame` packs `object.light` (`SceneFrameLighting.swift:92`), which the view model resolved once against the user properties. It also packs `object.depth` (`SceneLightDepth(object:)`, `:36`: `origin.z`, `angles.x/y`, `scale.z` as authored). Only the 2D transform is live.
+- Knight 2515150033: light 29's `intensity` script flickers `1 + 0.3 sin(7.3t) + 0.2 sin(9.8t)`, and its `origin` script moves y and z (`500 + 200 sin t`). WE's `g_LightsColorRadius[0]` and `g_LightsPosition[0].z` change every frame; ours never do (LF2).
+- The survey in lighting-plan §1.5 missed this scene. It says the library has 3 legacy points and that "none of the library's light fields is bound to a user property, script or animation". The Knight adds 2 legacy points, with a script on each of those two fields, and it is the **only** library layer lit by legacy lights (genericimage2 reads `g_LightsPosition`/`g_LightsColorPremultiplied`).
+- The same applies to a timeline on a light's `color` or `intensity`, and to a tube's `controlpoint` (the plan's adversarial fixture). A user property change works, because it rebuilds the content.
+
+**Test.** LF2's probe as a library test: render the Knight for 4 s at 10 fps. `g_LightsColorRadius[0].rgb` must take more than one value, and `g_LightsPosition[0].z` must follow `500 + 200 sin t`. Add a fixture with a timeline on `intensity` and a script on a tube's `controlpoint`.
+
+## LR3. The `angles.z` sign flip (High, A3)
+**Scenario.** `dc179e3` flipped `SceneAffineTransform` alone. The reviewer traced every consumer: layer quads, `g_ModelMatrix`/`g_AltModelMatrix`, text, the scripts' `worldMatrix` and `getTransformMatrix`, cursor hit testing (`SceneScriptCursorHitTest` uses the matrix axes), emitter offsets and rotation (velocity, gravity, control points, collision planes), light matrices, the volumetric projection and the packer's directions. All of them take it from there. What remains:
+- **Worldspace particles.** `ParticleFrameInputs.swift:203` sets `spawnTurn = atan2(col0.y, col0.x)`, which is +θ after the flip. It is added to the particle's `rotation`. The sprite axes (`ParticleShared.h:281`, `ParticleCPUSimulation.swift:431`) turn a positive rotation clockwise, as WE's `ComputeParticleTangents` does (with `mul(x, y) = y * x`: right = (cos, −sin)). So an emitter turned θ counter-clockwise gives worldspace sprites turned θ clockwise, while its non-worldspace sprites turn with the emitter. Whether WE adds the emitter's angle to a worldspace particle's rotation is unverified.
+- **Clock wallpapers and scripts that set `angles`.** They write radians into the same field, so hands now turn as WE's do (negative = clockwise). A script that computed an angle *from* a drawn position (`atan2` of a cursor delta, for example) gets the new sign as well.
+- **Anything cached in the old convention:** saved property stores, the snapshots in `docs/`, and the tests' expected images.
+
+**Test.**
+- A fixture: an emitter under a parent turned +45°, drawn once with `worldspace` and once without, comparing the sprites' axes.
+- A cursor-click hit test on a layer turned +30° whose quad is asymmetric (a 400×40 bar): click the tip that lies above its centre after a counter-clockwise turn.
+- 2764281221 against WE's preview (the flare falls down to the right).
+- One clock wallpaper at a known time.
+
+## LR4. A light's tilt order (High, A2, D1)
+**Scenario.** `SceneFrameLighting.world` computes `Rz·Ry·Rx` on column vectors (`:119`). WE's `Rz(z)·Ry(y)·Rx(x)` at 0x1401dd630 is a row-major, row-vector product. If each factor there is in row-vector form, the column-vector equivalent is `Rx·Ry·Rz`. The two agree unless z and x or y are both non-zero.
+
+Hinata's cookie spot is (−0.141, 0.582, −0.780). Its +X direction is (0.594, −0.588, −0.550) one way and (0.594, −0.752, −0.288) the other: **17.8° apart**. `g_LSpot_Direction`, the cookie projection and the volumetric cone all follow it. `VolumetricsLibraryTests` checks that the lit texels lie in *our* frustum, so it is self-consistent and can't tell the two apart.
+
+**Test.** Needs WE ground truth. Compare Hinata's `preview.gif` shafts with a headless frame under both orders, or check the multiply order at 0x1401dd630.
+
+## LR5. The prelit image is RGBA8 in HDR (High, A4, B2)
+**Scenario.** `ImageMaterialRenderer.prelitFormat` is `.rgba8Unorm` (`:204`), and the pipeline and texture use it (`:218`, `:225`). B2 made every other layer buffer RGBA16F in HDR, as WE's frame-buffer class is. The prepass is compiled with `HDR=1`, so `CombineLighting`'s overbright and `HDR && EMISSIVE_MAP` emissive are clipped to 1 before the layer's effects and the HDR bloom see them. No library scene combines HDR with a prelit layer today. A witcher-like layer in an HDR scene would stop blooming.
+
+**Test.** An HDR fixture: a lit layer with an identity effect and a light bright enough that `CombineLighting` > 1. The float scene target must hold > 1 there, as the same layer drawn directly does.
+
+## LR6. Bloom against the target size (High, B1, EP)
+**Scenario.**
+- **The LDR blur is fixed in target pixels.** It is 13 taps at 8× the 1/8 target, about 104 full-size pixels, so its on-screen width is a fraction of the *target*. EP's Match display draws a 3840×2160 scene (3639372043, bloom 1.92, "4K") at 1920×1080 on a 1080p display, where full detail draws it at 3840. The bloom is then twice as wide relative to the frame. The same happens with Texture Resolution and "desktop" resolution.
+- **HDR levels come from `min(w, h)`** (`SceneHDRChain.levels`). A smaller target can drop a level, which changes `bloomhdrstrength / (1 + scatter^(n−2))`.
+- **`fboSize` rounds** (1366 / 4 → 342), so pass 1 is no longer an exact 4×4 box at such widths [?: WE may truncate].
+- **Live resizes.** EP quantises to 64ths below 1 pixel per unit, so a live resize reallocates the five LDR and ten HDR targets at each step. The 32-spare cap bounds the churn.
+
+Which size WE blooms at for each of its scene-detail settings is the open question.
+
+**Test.**
+- Render 3639372043 and 3606529469 (HDR) at full detail and at Match display on a 1920×1080 drawable. Measure the bloom's half-width around a bright edge as a fraction of the frame, and check it against WE at the same setting.
+- A unit test that `g_TexelSize` stays 1 / the actual target under every `SceneRenderSettings` size option. The reviewer found it does at HEAD plus EP's diff (`texelSizeReference` wins over `standIn`).
+
+## LR7. Bloom gates and live values (High, B1, B2)
+**Scenario.**
+- `ScenePostProcess.runsBloom` = `allowsBloom && bloom.enabled`, and the live `bloom` includes scripts and user properties. One piece girls binds `bloom` to `resplandorradiance`, and 3 other scenes are user-bound. Toggling that property rebuilds the content; a script toggle doesn't.
+- Strength, threshold and tint are rewritten per frame (scripts, then timelines, then the content).
+- `bloomhdr*` are taken from the load: `liveBloom` passes `hdr: bloom.hdr` as built, and `SceneScriptSceneField` has no `bloomhdr*`. 2350874185's property script on `bloomhdrstrength` is ignored (B2 notes it). A timeline on `bloomhdrstrength` wouldn't animate [?: whether WE exposes them].
+- `_owe_bloom` now only scales scenes that have bloom. The old app slider added bloom to any scene, so users who relied on it lose it silently.
+- `SceneMetalRenderer.swift:990` still writes `bloom * _owe_bloom` into the native uniform's `effects.w`, which no shader reads. When it is non-zero, `nativeAdjustmentsAreIdentity` is false, which may log a false "ignored adjustments" [likely].
+
+**Test.**
+- One piece girls: flip `resplandorradiance` mid-run, and bloom must stop within one rebuild.
+- A fixture script that sets `thisScene.bloom = false` at frame 30: no bloom from frame 31, and in HDR, `combine_srgb`.
+- A timeline on `bloomstrength`: pass 1's constant follows it.
+- `_owe_bloom` = 0 and 3 on a non-bloom scene: the frame is unchanged.
+
+## LR8. HDR float targets through every stage (High, B2)
+**Scenario.** In HDR the reviewer found RGBA16F in the scene target, snapshots and region copies, `rgba_backbuffer` FBOs, the effect ping-pong targets, the image and particle pipelines, the mip copy and the volumetrics light buffers. The stages that stay 8-bit:
+- the prepass (LR5);
+- an effect's explicit `rgba8888` FBO (WE's too, by the format name);
+- the combine's sRGB output and the shared multi-display frame, which are after the combine by design.
+
+Risks:
+- **Text is rasterised in 8-bit** and then drawn into a float target. Overbright text is impossible, as in WE.
+- **A new stage that allocates `.rgba8Unorm` by default** silently clips. D2's shadow atlas and area 6's depth are the next ones.
+- **The composite reads the sRGB-encoded bytes through an `rgba8Unorm` view.** A future EDR output (`rgba16Float` `CAMetalLayer`) needs a different path.
+
+**Test.** Extend `HDRLibrarySweepTests`: walk every texture the frame touches (the renderer's pools and the effect graph's states) and assert RGBA16F for every frame-buffer-class target in HDR. Run the 5 HDR scenes and the test set with `MTL_DEBUG_LAYER=1`.
+
+## LR9. Cost at 5K (High, all)
+**Scenario.** Measured by the packages, in GPU time for their stage alone on M-series with other work on the GPU:
+
+| Stage | 1920×1080 | 5120×2880 |
+|---|---|---|
+| LDR bloom | 0.5–0.9 ms median | 4–7 ms median |
+| HDR chain, 8 levels | 2.8–4.5 ms median | 8–21 ms median |
+| Volumetrics | 4–10 ms median | (not measured) |
+| Lit layer, 4 tubes | 0.6 ms vs 0.05 unlit | (not measured) |
+
+Per frame, HDR at 5K reads the full float frame at least twice: D0 and the combine, about 300 MB. The reflection copy plus `generateMipmaps` of a 118 MB RGBA16F target adds more. Hinata at 5K with ultra runs HDR, bloom and volumetrics at once, which can exceed a 16.7 ms frame on its own.
+
+**Test.** `SceneFrameBenchmarkTests` at 5120×2880 for Hinata (HDR, volumetrics), witcher (prelit, reflection, 3840×2160), One piece girls (tubes, bloom) and 3606529469 (HDR), in enabled and ultra. Record the median GPU ms per stage with signposts, and set a budget: for example, ultra at 5K ≤ 12 ms on the reference Mac. Then re-run under EP's Match display.
+
+## LR10. Memory (High, all)
+**Scenario.** At 5K in HDR:
+
+| Target | Size |
+|---|---|
+| Scene target (RGBA16F) | 118 MB |
+| Snapshot (when a layer reads the scene) | 118 MB |
+| Mip-mapped copy (with its mips) | ~157 MB |
+| HDR levels | ~39 MB |
+| Each chain's `pingA` + `pingB`, full size | 2 × 59 MB |
+
+Waste found:
+- Only one ping target per chain is written (`EffectGraphRenderer.swift:571-572`).
+- `ScenePostProcess.encodedView` (`:87`, `:185`) keeps the last HDR combine's texture alive after switching to an LDR scene or from ultra to enabled.
+- HDR scenes also plan the unused LDR chain (`SceneWallpaperViewModel.swift:554`; load time only).
+- Each prelit layer holds its own image-sized RGBA8 texture.
+
+With two HDR wallpapers on two displays, each instance holds its own set.
+
+**Test.**
+- Switch Hinata → a non-HDR scene → Hinata ten times, and check that `MTLDevice.currentAllocatedSize` returns to within 5% of the first visit.
+- Assert that no `engine:bloom*` state and no `encodedView` survive `setContent` of a content without that chain.
+- Record the peak for 3606529469 at 5K ultra.
+
+## LR11. A prelit layer whose chain renders nothing draws unlit (Medium, A4)
+**Scenario.** The layer's own draw is planned with `LIGHTING 0, REFLECTION 0` (`ImageMaterialPlan.swift`, the `pass` variant). It relies on `dynamicTextures` holding the prelit result. `EffectGraphRenderer.apply` returns nil when every effect is hidden (`guard didRender`, `:329`) or while the chain compiles. The renderer then draws the raw texture (`SceneMetalRenderer.swift:1006`) with lighting off, and the prelit image is dropped.
+
+Example: a user property or script hides all 9 of `ведьмак розбивpng`'s effects. That layer is ambient-only (1 1 1), so the result looks the same. The same thing on a lit layer in a scene with lights (a witcher variant with a `lightconfig`) loses its lighting for as long as the effects are hidden.
+
+**Test.** A fixture lit layer with one effect bound to a `visible` user property. Hiding the effect must still show the layer lit, as it is on the direct path.
+
+## LR12. Lights don't follow camera parallax or shake (Medium, A2, D1)
+**Scenario.**
+- `layerDraw` moves each quad by `parallaxOffset − shake` (`SceneMetalRenderer.swift:1241`), which reaches `g_ModelMatrix` and `g_AltModelMatrix`.
+- `emitterWorld` does the same for emitters (`:1324`, citing 0x14018a0b3: "every object's model matrix").
+- `frameLighting` (`:1073`) uses the bare hierarchy.
+
+So with parallax on, a lit layer slides under its lights by `parallaxDepth × amount`. No library scene combines lights with parallax on today: the Knight's lights have `parallaxDepth` 1 but parallax is off, and witcher has parallax but no lights.
+
+**Test.** One piece girls with `cameraparallax` forced on. With the cursor at the left edge, the bright bands must stay on the same image columns (WE moves the lights with their objects' matrices [?]).
+
+## LR13. Light packing: overflow and budgets (Medium, A2)
+**Scenario.** The reviewer confirmed that every write is bounds-checked (`SceneLightPacker.swift:262`) and that an overfull group spills into the next group, as in WE. What remains:
+- **Budgets below the light count drop lights silently**, in sort order. One piece girls with `{"tube":3}` loses the tube whose `origin` is deepest along the view: which one depends on `dot(origin, forward)` ties, which WE's `std::sort` leaves unordered.
+- **A subset above its base** (`{"spot":1,"spotcookie":3}`) moves the plain spots' cursor past the array, so they write into `g_LSpot_Origin`. That is WE-faithful garbage, and a shader must never read NaN from it.
+- **Five or more legacy lights** collide on slot 0, where the later light wins. Every light type counts towards the legacy slots, so a tube before a legacy point pushes it to slot 1.
+- A `lightconfig` with more lights than the scene has leaves zeroed slots: colour 0, and a radius of 0 in `saturate(1 − d/radius)` divides by zero.
+
+**Test.**
+- Packer unit tests for each case, plus a render with the zero-radius slot: every pixel finite.
+- One piece girls with `{"tube":3}`: 3 bands, with the dropped one logged once.
+- A fixture of 5 legacy points in scene order, checking slot 0.
+
+## LR14. Lights under animated or scripted parents (Medium, A2, A3)
+**Scenario.** The frame lighting runs after scripts and timelines, and `liveLocal` covers light objects through `objectMotions`. The reviewer confirmed that the 2D transform is this frame's. Gaps:
+- **A parent's `origin.z`, tilt and non-uniform `scale.z` don't reach the light:** "the parents are the 2D hierarchy's".
+- **Scripts can re-parent or create layers** (`createLayer`, `sortLayer`). Nobody has checked that a light parented to a created layer resolves, or that a light keeps its legacy slot when a layer before it is removed.
+- **Hidden ancestors** drop the light from the budget *before* it is counted (WE's order). A script toggling a parent's `visible` every frame makes the lit layer strobe, as it would in WE.
+- **A light's `angles.z` from a timeline** turns a spot's cone under the new CCW convention (LR3).
+
+**Test.**
+- A fixture tube parented to a layer with a `origin` timeline. `g_LTube_OriginA` and `OriginB` must follow the parent at frames 0, 30 and 60, within 1e−3.
+- A script that hides the parent at frame 10: the arrays are zero from frame 11.
+- A legacy point after a layer that a script removes: its slot is unchanged.
+
+## LR15. Lit layers and colour, alpha and blend modes (Medium, A3, A4)
+**Scenario.**
+- **Prelit layers.** The prepass draws with `g_Color4` white and unblended, and the layer's colour, alpha and brightness are applied once by its own draw after the effects. A layer whose `alpha` is animated to 0 still pays for the prepass. A `colorBlendMode` layer (`BLENDMODE` reads `_rt_FullFrameBuffer` as `g_Texture4`) takes the blend in its final draw only. Nobody has tested that a prelit layer with a blend mode matches WE.
+- **Direct lit layers.** `brightness` is multiplied into the albedo under `HDR` only. `CombineLighting` doesn't clamp in LDR, so `ambient + light` > 1 is clipped by the RGBA8 target.
+- **The Knight is a puppet.** Its atlas is lit as one still image (its mesh isn't drawn), with the 2 legacy lights moving across it (LR2). WE prelights the mesh.
+- **Sprite-sheet albedos keep the direct path**, and the prepass maps the whole input onto the quad (uv axes identity), so a lit sprite sheet with effects would be lit at the wrong texel positions. There is no library user.
+
+**Test.**
+- A lit fixture layer with `alpha` 0.5, `color` (1, 0.5, 0.5) and `brightness` 2, drawn prelit behind the identity effect and drawn directly. The two must agree within 3/255, as `testALayerWithAnIdentityEffectMatchesTheDirectPath` does at white.
+- The same with `colorBlendMode` 2 (multiply).
+
+## LR16. PBR mask flag bits (Medium, A3)
+**Scenario.** WE defines `METALLIC_MAP`…`EMISSIVE_MAP` when the bound mask's `.tex` flags have bit 20 + k. The reviewer checked `texiWord(1)` little-endian, `0x100000 << k`, and the r, g, b, a order: `меч`'s 0x400002 gives `REFLECTION_MAP` only, and the Knight's 0x300002 gives metallic and roughness. Risks:
+- **A mask re-exported without the bits** (an older editor, or a `.tex` converted by a tool) defines no component. It then reads the constants, so a painted metallic map is ignored silently.
+- **A texture override by script** (`setTexture`, TL8) swaps the mask at runtime, but the combos were fixed at build.
+- **A texture that isn't a mask** in slot 2 with high flag bits set (video `.tex` or GIF flags) turns components on. Only samplers with a `components` annotation are considered, which limits this to real mask slots.
+- **`TEXV0001`–`TEXV0004` header variants**: the flags word is at the same offset only if `TEXI` is found within the first 64 bytes (`ImageMaterialPlan.texFlags`).
+
+**Test.** `texFlags` over every `.tex` in the library, tallied by version, with every mask slot's flags logged. A fixture mask with flags 0 must draw the constants' metallic and roughness.
+
+## LR17. Engine combos in every cache key (Medium, A1)
+**Scenario.** `ShaderVariant.cacheKey` (`:190`) hashes every combo whether or not the shader mentions it, and `ShaderPrelude` emits `#define SCENE_ORTHO 1`. After `28da824`:
+- Every effect, particle and image variant of an orthographic scene got new translation and pipeline keys: one full re-translation on upgrade.
+- The same effect used in a perspective scene keeps a second key for identical MSL.
+- `HDR=1` (B2) forks every variant of the 5 HDR scenes and the test set again.
+- `LIGHTS_SHADOW_MAPPING_QUALITY` follows the shadows setting, so changing shadows recompiles every lit material in a scene with a shadow budget.
+- Old pipeline-archive entries stay until the build number changes.
+
+The test runs log `mdb_txn_commit error: MDB_MAP_FULL` from the process many times, a store that is already full [?: whose].
+
+**Test.**
+- Count the distinct translation keys over the library before and after dropping combos the source never names. They should differ only where a shader reads `SCENE_ORTHO` or `HDR`.
+- Time a cold start of One piece girls: first frame through the material.
+- Flip shadows from medium to high while Hinata runs: count recompiles.
+
+## LR18. `_rt_MipMappedFrameBuffer` is a frame late (Medium, C1)
+**Scenario.** Draws read the previous frame, as in WE. Edge cases:
+- **A new target** (first frame, a resize, a Texture Resolution change, an HDR format flip) reads transparent black for one frame, so a reflective layer blinks dark on every live window resize. With LR1 it can stay dark.
+- **A content swap** that also samples the target at the same size keeps `texture` and `contents = .frame` (`SceneMipMappedFrameBuffer.setContent`, `:81`). The new wallpaper's first frame reflects the previous wallpaper's last frame (reloading the Knight after a property change, or switching between two reflective scenes).
+- **The volumetrics stage runs first**, so reflections include the shafts, as in WE.
+
+**Test.**
+- Render the Knight 3 frames, `setContent` witcher: `меч`'s first-frame reflection must not contain Knight pixels (expect black).
+- Resize the drawable from 1920 to 1600 mid-run: at most one frame of black reflection.
+
+## LR19. Reflections off and on again (Medium, C1, ST)
+**Scenario.** Off clears the target once to (0,0,0,1). Back on, it reads black for one frame, then copies.
+
+The setting is read per frame by the stage, but `SceneWallpaperViewModel.setRenderSettings` bumps the revision for *any* settings change, so toggling Reflections rebuilds the whole content. Per TL16 a rebuild may restart timelines, scripts and particle systems, and every lit material is re-planned. Because WE's reflections are copied or not per frame (flag 0x80), this toggle needs no rebuild.
+
+Prelit reflective layers (`меч`, Lofi Cafe) read the black target through their prepass while it is off. Lofi Cafe has no normal map, so it is unaffected.
+
+**Test.**
+- Toggle Reflections on witcher while a timeline runs: the timeline's clock must not reset, and the `меч` reflection is its albedo within 1/255 while off.
+- Count `loadScene` or `metalContent` calls per toggle: expect 0.
+
+## LR20. Volumetric draw order (Medium, D1)
+**Scenario.** WE finishes each run of lights before the next object that isn't a light (§2.8). Here the stage runs after the whole scene pass, so every object after a volumetric light in scene order is drawn *under* its shafts. Hinata's light comes after every drawn object, so it is unaffected. A scene with a foreground layer after the light (a character in front of a lamp's beam, a common layout) gets the beam over the character.
+
+**Test.** A fixture: a volumetric spot, then an opaque layer across its beam. The beam must not show over the layer. Also run the test set's 2D-orthographic members, if any, in WE's order.
+
+## LR21. Volumetrics under camera shake, parallax and script cameras (Medium, D1)
+**Scenario.** `SceneVolumetricsCamera` is built once from scene.json (`SceneVolumetricLight.swift:36-50`), and `g_EyePosition` is fixed with it. Layers move by `parallaxOffset − shake` each frame (LR12), so with shake on, the shafts stay still while the lamp layer shakes under them. Script changes to the camera (fov, eye) are ignored.
+
+`BuiltinFrameContext.eyePosition` and `viewForward` are never assigned (0 and (0, 0, −1)), so the packer's depth sort is right only for the default orthographic camera (LF10).
+
+**Test.** Hinata with `camerashake` forced on: the shaft's apex must stay on the lamp's pixel within 1 px across 60 frames.
+
+## LR22. Missing cookies and shadow casters (Medium, D1)
+**Scenario.**
+- **One missing cookie drops every volumetric light.** `SceneVolumetricsPlan.build` loads each cookie with `try` inside the light loop (`:113`), and `volumetricsPlan` turns the throw into a nil plan for the whole scene. A typo in one `cookie` key, or a missing `cookie/flashlight1` in the bundled assets, drops every other light too.
+- **Shadow casters are inverted.** A light with `castshadow` and `castvolumetrics` is skipped while shadows are on (the default, medium), and appears when the user turns shadows *off*. That waits for D2, but users see it the wrong way round. The library has none today: all 8 `castshadow` keys are false.
+
+**Test.**
+- A fixture with two volumetric spots, one naming `cookie/missing`: the other must still draw, with one log line.
+- A fixture light with `castshadow`: its visibility at each shadows setting.
+
+## LR23. Two displays sharing one instance (Medium, all)
+**Scenario.** `renderShared` draws once at the largest scene target any display needs, then each display copies the finished frame (`f80b92e`). So:
+- **Bloom and reflection are computed at the largest display's density.** On a 1080p display next to a 5K one, the bloom is 2.7× narrower relative to the frame than on the 1080p display alone (LR6).
+- **The post-process runs once**, in the drawable format of the renderer, not of each display.
+- **"Ultra (Display HDR)" is offered when *a* display has EDR headroom** (`29ec3cd`), but the one frame is shown on both.
+- **The mip buffer, volumetrics targets and bloom targets are per instance**, which is right. The per-display cursor feeds parallax, and the lights don't follow parallax (LR12).
+
+**Test.**
+- The `4722bcc` two-display benchmark with Hinata and One piece girls on a 1920×1080 view and a 5120×2880 view: record the bloom half-width as a fraction of each view, against Hinata alone on each.
+- A settings test: "Ultra (Display HDR)" with one EDR and one SDR display.
+
+## LR24. Settings changed live (Medium, ST, all)
+**Scenario.** Every `SceneRenderSettings` change goes through `setRenderSettings` → `bumpRevision` → a content rebuild: post-processing, reflections, shadows, volumetrics, and EP's Match display and Texture Resolution. Consequences:
+- **Rebuild side effects.** Timelines, scripts and particles may restart (TL16), and a user dragging the Volumetrics picker through its 5 values triggers 5 rebuilds.
+- **HDR mismatch while rebuilding.** Between the change and the rebuilt content, the renderer draws the old content with the new settings. `drawsHDR` comes from the content, and `runsBloom` reads the settings. Switching ultra → disabled briefly shows an HDR frame through `combine_srgb`, without bloom.
+- **Volumetrics targets.** They are remade on a quality change.
+- **"Display HDR" coercion.** It runs only when the Performance page appears.
+
+**Test.** Flip each setting on Hinata while recording frames:
+- no frame may be black or NaN;
+- the clock must not jump back (or it must, if that is accepted, documented in TL16);
+- count content builds per change.
+
+## LR25. Cookie spots under `LightingV1` (Medium, A1, A3)
+**Scenario.** With a `spotcookie` budget, `LightingV1` samples `COOKIE_SAMPLER` (`g_Texture7` = `_alias_lightCookie`) at `CalculateProjectedCoords(worldPos, g_LFeature_ShadowProjection[i])`. `ImageMaterialPlan.textureInput` throws `unsupported` for any `_alias_` name, and the packer leaves the projections zero (A2 "not done"). Two cases:
+- **A lit layer in a cookie scene** falls back to the native draw, or, if the sampler has no default texture, is drawn with the cookie unbound.
+- **Once the alias is bound**, a zero projection matrix gives w = 0 and NaN coordinates.
+
+Hinata has the budget but no lit layer; 3233200129 (cookie spot) is 3D.
+
+**Test.** A fixture: a `genericimage4` `LIGHTING` layer with `{"spot":1,"spotcookie":1}` and a `usecookie` spot. It must draw through its material, with every pixel finite, and the cookie's shape visible once D1's projection feeds `g_LFeature_ShadowProjection`.
+
+## LR26. Per-frame lighting cost with no lights (Low, A2)
+**Scenario.** The lighting names are in `UniformProgram.timeVarying`. So `BuiltinUniforms.value` builds a zero-padded array for every lighting member of every pass every frame (`BuiltinUniforms.swift:121-126`), even in scenes without lights. `SceneFrameLighting.frame` also allocates closures, two arrays and about 18 dictionary entries per frame.
+
+**Test.** An Instruments allocations run over 600 frames of a lit-free bloom scene (2134765860): the lighting's allocations per frame should be 0 when `content.lighting.lights` is empty.
+
+## Needs WE ground truth (lighting)
+- **Hinata's spot direction (LR4):** the tilt order, from its `preview.gif`, or the multiply order at 0x1401dd630.
+- **Parallax and shake (LR12, LR21):** do they move light objects and the volumetrics camera?
+- **Worldspace particles (LR3):** does WE add the emitter's `angles.z` to a worldspace particle's rotation?
+- **Bloom width (LR6, LR23):** the bloom's width relative to the frame at WE's scene-detail settings, and on two displays of different density.
+- **Captures of the reference scenes:** One piece girls, Hinata, 3606529469 and one plain bloom scene (3639372043) at `postprocessing` "enabled" and "ultra", per the plan's T package.
+- **The Knight (LR2):** a WE capture of it flickering.
+
+## Findings (lighting)
+
+Reviewed:
+- the diffs of `dc179e3`, `5029391`, `540de97`, `256796e`, `28da824`, `7f44a7f`, `b638945`, `bcf6159`, `78d5f07`, `12a009b`, `d9015b7`, `8b4355d`, `b1a73b9`, `6d9f864`, `5067e4d`, `dea657b`, `29ec3cd`, `87fb5e5`, `3bf0439` and `fd79f54`;
+- EP's uncommitted diff, where it meets bloom.
+
+The probes ran on a copy of HEAD (`git archive`) at `/Volumes/980Pro/dd-agentLTT/src`, built with `xcodebuild build-for-testing -derivedDataPath /Volumes/980Pro/dd-agentLTT/dd`. That copy's renderer has two test hooks, `probeLastLighting` and `probeLightingOverride`, and the probes aren't committed.
+
+The lighting suites pass at HEAD: 108 tests in `SceneLightPackerTests`, `SceneTransformTests`, `ImageMaterialLightingTests`, `ImageMaterialPrelightingTests`, `ImageMaterialReflectionTests`, `SceneMipMappedFrameBufferTests`, `SceneBloomChainTests`, `SceneBloomRenderTests`, `ScenePostProcessTests`, `SceneHDRChainTests`, `SceneHDRRenderTests`, `SceneVolumetricsTests`, `SceneScriptCursorHitTestTests`, `SceneLightingSeamTests` and `LightingV1RequireTests`; 6 more in `LitLayerLibraryTests`, `VolumetricsLibraryTests` and `LightingLibraryDecodeTests`.
+
+**Confirmed.**
+- **LF1 (LR1, Critical): a prelit layer behind a static chain never relights.**
+  - The probe (`ImageMaterialPrelightingTests.testLTTPrelitLayerFollowsLightingChanges`) is the existing 128×128 lit layer under a point light. Once the frame is stable, it raises the frame's ambient from 0.2 to 1.0 for 5 frames.
+  - Without effects (the direct path) the drawable changes by up to 192/255.
+  - Behind the identity `tint` effect it changes by **0/255**, although the prepass ran all 5 frames (`imageMaterialPrelitDraws` +5).
+  - Cause: `EffectGraphRenderer.swift:277-284` and `:333`. The static key is the prelit texture's identity with `inputVersion` 0 (`runEffects`, `SceneMetalRenderer.swift:1383-1408`, never sets it), and `readsScene` ignores the prepass.
+- **LF2 (LR2, High): the Knight's scripted legacy light doesn't flicker and doesn't move in z.**
+  - The probe (`LTTProbeTests.testKnightScriptedLegacyLight`) loads 2515150033 with the real loader and renderer and draws 40 frames 0.1 s apart.
+  - `g_LightsColorRadius` is `[0.72157, 0.35294, 0.14902, 2048, …]` on every frame: its `intensity` script is ignored, and 1.0 is used.
+  - `g_LightsPosition[0]` y follows the script (500 → 616 → 689 → 691 → 621), but z stays 588, where the script says `500 + 200 sin t`.
+  - Cause: `SceneFrameLighting.swift:92` packs `object.light` (resolved at build), and `:94` packs `object.depth.originZ`, parsed once by `SceneLightDepth(object:)` (`:36`).
+  - The Knight is the library's only layer lit by legacy lights (genericimage2). It is missing from the §1.5 survey and from `LightingLibraryDecodeTests.known`.
+- **LF3 (LR5, High, by reading):** `ImageMaterialRenderer.swift:204` hard-codes RGBA8 for the prelit image, so HDR overbright is clipped before the effects.
+- **LF4 (LR22, Medium, by reading):** `SceneVolumetricsPlan.swift:113` throws for one missing cookie, and the view model's `volumetricsPlan` drops the whole plan.
+- **LF5 (LR11, Medium, by reading):** a prelit layer's own draw has `LIGHTING`/`REFLECTION` 0, and it falls back to the raw texture (`SceneMetalRenderer.swift:1006`) whenever `apply` returns nil (`EffectGraphRenderer.swift:329`: every effect hidden, or compiling).
+- **LF6 (LR21, Medium, by reading):** the volumetrics camera and `g_EyePosition` are built once (`SceneVolumetricLight.swift:36-50`). Layers and emitters move with shake and parallax; shafts don't.
+- **LF7 (LR10, Low, by reading):**
+  - `ScenePostProcess.encodedView` (`:87`, `:185`) outlives the HDR content.
+  - `allocateTargets` makes `pingA` and `pingB` at full size for the engine chains, and only one is written (`EffectGraphRenderer.swift:571-572`).
+  - HDR contents also plan the LDR chain (`SceneWallpaperViewModel.swift:554`).
+- **LF8 (LR17, Low, by reading):** `SCENE_ORTHO` and `HDR` are hashed into every variant's key, whether or not the source reads them.
+- **LF9 (LR18, Low, likely):** `SceneMipMappedFrameBuffer.setContent` keeps the old frame across a content swap of the same size, so the new content's first frame reflects the old one.
+- **LF10 (LR21, Low, by reading):** `BuiltinFrameContext.eyePosition` and `viewForward` are never assigned in `SceneMetalRenderer`, so the packer's sort depth and `g_EyePosition` are the defaults in every scene.
+
+**Checked and not a bug.**
+- **Packer overflow:** every write is bounds-checked, and slices stay inside the buffer. Masked `lightconfig` counts can't go negative or past 15.
+- **Arrays of any length:** they are cut or zero-padded to the shader's declaration, and `UniformWriter` honours the array stride, so `vec3[4]` in Metal is fine.
+- **The particle sprite convention:** positive = clockwise, as WE's `ComputeParticleTangents` with `mul(x, y) = y * x`. It didn't need the flip (only `spawnTurn` is open, LR3).
+- **The PBR component bits:** `меч` 0x400002 and Knight 0x300002 give exactly their painted channels.
+- **The prelit colour and alpha:** they are applied once, straight alpha, and every texel is covered.
+- **The mip count:** WE's, down to 1 level.
+- **The bloom gate and per-frame LDR constants.**
+- **`g_TexelSize` under EP's sizes:** it stays 1 / the actual target.
+- **Tiny targets:** they never reach 0×0.
+
+**Aside (uncommitted, EP).** The working tree's `SceneMetalRenderer.swift` prints on every frame (`print("TEMPVIEW", …)`) and for every layer with effects under Match display (`print("TEMPDETAIL", …)`). These must not be committed.
