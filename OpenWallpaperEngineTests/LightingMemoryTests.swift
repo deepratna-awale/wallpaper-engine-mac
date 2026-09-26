@@ -3,8 +3,10 @@ import MetalKit
 @testable import OpenWallpaperEngine
 
 /// Memory across content swaps (test-risks LR10): one renderer switched between the HDR fixture
-/// (float targets, WE's HDR chain) and an LDR one ten times returns to what its first HDR visit
-/// held, within 5%, and a content without HDR holds no float target.
+/// (float targets, WE's HDR chain) and an LDR one ten times holds, after the last HDR visit, no more
+/// than it held once its caches settled (after the third round trip), give or take 5% or 8 MB, and a
+/// content without HDR holds no float target. The allocator moves by a few MB between runs (more on
+/// CI's virtual GPU); a leaked set of HDR targets is ~4 MB a round trip, 28 MB over the seven.
 final class LightingMemoryTests: XCTestCase {
     private static let size = SIMD2(960, 544)
 
@@ -48,15 +50,16 @@ final class LightingMemoryTests: XCTestCase {
             }
             return device.currentAllocatedSize
         }
-        let first = show(hdr)
+        var first = show(hdr)
         var last = first
-        for _ in 0..<10 {
+        for round in 0..<10 {
             _ = show(ldr)
             XCTAssertNotEqual(renderer.lastSceneTarget?.pixelFormat, .rgba16Float, "an LDR content draws into 8 bits")
             XCTAssertFalse(renderer.postProcess.holdsHDROutput)
             last = show(hdr)
+            if round == 2 { first = last }
         }
-        let growth = Double(last - first) / Double(first)
-        XCTAssertLessThanOrEqual(growth, 0.05, "\(first) → \(last) bytes after ten round trips")
+        let allowance = max(first / 20, 8 << 20)
+        XCTAssertLessThanOrEqual(last - first, allowance, "\(first) → \(last) bytes from the third round trip to the tenth")
     }
 }
