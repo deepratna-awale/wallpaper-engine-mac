@@ -26,3 +26,16 @@ Reference captures from real Wallpaper Engine on Windows, for checking Open Wall
 | 3657770939 | WE_Phys Î±_01 | Everyone | `default` | â€” | Physics scene |
 
 Not captured: the editor UI, fresh-install Settings defaults, VRAM use by texture resolution, two-monitor audio and per-monitor properties. With the same wallpaper on two monitors, WE's 3D engine use was 89% on one and 93% on two; the GPU was saturated, so that result is inconclusive.
+
+## Batch 3 (2026-09-26 evening), Mac audit items 7, 9, 10b and 11
+
+Log: `batch3.log`. Scripts: `batch3.ps1` and `test9.ps1`. `config.backup2.json` is the user's config at the start of this batch, restored afterwards.
+Machine note: the only GPU is an **Intel Iris Xe (integrated)**, so it has no dedicated VRAM. GPU memory below is the *shared* usage of `wallpaper64.exe`.
+
+| Item | Folder(s) | Result |
+|---|---|---|
+| 7 Texture resolution, 3270035750 | `3270035750/texres_full`, `texres_half`, `texres_quarter` | Config values `full`/`half`/`quarter` are accepted (WE kept them after restart). Shared GPU memory with this wallpaper: **full 707 MB, half 327 MB**. The quarter memory reading failed (the PC ran out of RAM), but its stills exist. |
+| 9 Same wallpaper on 1 vs 2 monitors | log only | Default project `retro`, FPS 15, with playback forced to `run` for focus, maximized, fullscreen, audio and battery. wallpaper64 3D engine use: **one monitor about 2.9%, two monitors about 6.8–6.9%** (two runs). **WE renders once per monitor**, in a single wallpaper64 process. A first run left the maximized/fullscreen pause settings on and showed no change; that result is invalid. |
+| 10b Rain on glass, 3606529469 "2B Nier: Automata #2" | `3606529469/default` | Still plus a 5 s clip. Water caustics over the whole image, with a few refracting drops on the glass. |
+| 11 3D reference | `<id>/shadowsHigh_t10`, `<id>/shadowsOff_t10` for 3455121165, 3159348391, 3378346807, 3734636606, 3657770939, 2350874185 (Razer) | Captured 10 s after load, with a 3 s clip each. Camera paths could not be disabled from outside WE, so only the fixed time after load is controlled. |
+| 11 Puppets | `2515150033/puppet5s`, `2321732083/puppet5s` | 5 s clips at full 1920×1080. Crop them for close-ups. |

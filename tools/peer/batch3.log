@@ -1,0 +1,21 @@
+﻿3606529469 downloaded: True
+2350874185 downloaded: True
+7 texres=full configAfterStart="full" dedicatedMB=0
+7 texres=half configAfterStart="half" dedicatedMB=0
+7 texres=quarter configAfterStart="quarter" dedicatedMB=0
+9 retro fps15: one monitor 3D%=2.9 dedMB=0 | two monitors 3D%=2.9 dedMB=0
+10b 3606529469 captured
+11 3455121165 captured
+11 3159348391 captured
+11 3378346807 captured
+11 3734636606 captured
+11 3657770939 captured
+11 2350874185 captured
+11 puppet 2515150033 captured
+11 puppet 2321732083 captured
+done
+9-redo run1 retro fps15 playback=run: one monitor 3D%=2.9 dedMB=0 | two monitors 3D%=6.9 dedMB=0 | wallpaper64 processes=1
+9-redo run2 retro fps15 playback=run: one monitor 3D%=3 dedMB=0 | two monitors 3D%=6.8 dedMB=0 | wallpaper64 processes=1
+7-redo texres=full sharedGpuMB=707.3
+7-redo texres=half sharedGpuMB=327.3
+7-redo texres=quarter sharedGpuMB=577
