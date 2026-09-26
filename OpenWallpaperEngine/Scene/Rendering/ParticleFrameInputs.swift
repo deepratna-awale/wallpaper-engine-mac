@@ -157,7 +157,7 @@ struct ParticleFrameInputs {
         inputs.elapsedTime = system.elapsedTime
         inputs.engineTime = values.map { Float($0.time) } ?? system.elapsedTime
         inputs.frameIndex = system.frameIndex
-        inputs.timeOfDay = ParticleProgramCPU.fractionOfDay()
+        inputs.timeOfDay = system.timeOfDay()
         let world = emitter ?? childEmitter(system) ?? configuration.authoredWorld
         inputs.motion = motion(of: system, to: world)
         let time = Double(system.elapsedTime)
@@ -204,8 +204,11 @@ struct ParticleFrameInputs {
             inputs.spawnSizeScale = sqrt(abs(simd_determinant(linear)))
             inputs.spawnTurn = atan2(linear.columns.0.y, linear.columns.0.x)
         }
-        system.drawLinear = configuration.worldSpace ? matrix_identity_float2x2 : world.linear
-        system.spriteLinear = configuration.orientation.spriteLinear(linear: system.drawLinear)
+        let drawLinear = configuration.worldSpace ? matrix_identity_float2x2 : world.linear
+        if drawLinear != system.drawLinear || system.frameIndex == 1 {
+            system.drawLinear = drawLinear
+            system.spriteLinear = configuration.orientation.spriteLinear(linear: drawLinear)
+        }
         inputs.drawLinear = system.drawLinear
         inputs.drawSizeScale = system.drawSizeScale
         inputs.spriteLinear = system.spriteLinear
@@ -289,6 +292,7 @@ struct ParticleFrameInputs {
         }
         previousControlPoints = system.previousControlPoints ?? controlPoints
         system.previousControlPoints = controlPoints
+        guard configuration.program.operators.contains(where: { $0.collision != nil }) else { return }
         let simulationSpace = SceneParticleEmitterSpace(world: space)
         let points = controlPoints
         let spaceToScene = space

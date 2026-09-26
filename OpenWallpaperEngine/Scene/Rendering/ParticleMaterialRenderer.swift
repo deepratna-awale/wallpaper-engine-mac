@@ -41,6 +41,12 @@ final class ParticleMaterialRenderer {
         /// Uniform blocks the GPU simulation patches (`Simulated.renderVar`), ring-buffered.
         let uniformBlocks: ParticleRecordBuffer
         var programs: [String: UniformProgram] = [:]
+        /// Each stage's pipeline key, by pixel format: built once, looked up every frame.
+        var pipelineKeys: [UInt: [String]] = [:]
+        /// The particle uniforms' members in each stage's block (`ParticleMaterialUniforms.Members`).
+        var members: [String: ParticleMaterialUniforms.Members] = [:]
+        /// The uniform block being patched, reused frame to frame.
+        var scratch: [UInt8] = []
         /// This frame's draw, set by `prepare` or `prepareSimulated`.
         var prepared: (stage: ParticleMaterialPlan.Stage, pipeline: MTLRenderPipelineState, records: Records)?
         var reportedFallback = false
@@ -264,9 +270,18 @@ final class ParticleMaterialRenderer {
             pass.textures = textures
             pass.renderVars = uniforms.renderVars
             program.update(frame: uniforms.frame(from: context.frame), pass: pass, values: context.values)
-            var bytes = program.bytes
-            uniforms.patch(&bytes, layout: layout)
-            bytes.withUnsafeBytes { raw in
+            let members: ParticleMaterialUniforms.Members
+            if let known = state.members[stage.variantKey] {
+                members = known
+            } else {
+                members = ParticleMaterialUniforms.Members(layout)
+                state.members[stage.variantKey] = members
+            }
+            // Patched in a block reused frame to frame: no copy of the program's bytes to allocate.
+            state.scratch.removeAll(keepingCapacity: true)
+            state.scratch.append(contentsOf: program.bytes)
+            uniforms.patch(&state.scratch, members: members)
+            state.scratch.withUnsafeBytes { raw in
                 if case .gpu(let block?) = prepared.records, block.length >= raw.count {
                     // The simulation's step, which runs before this draw, patches the block.
                     block.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
@@ -310,8 +325,14 @@ final class ParticleMaterialRenderer {
 
     private func readiness(_ plan: ParticleMaterialPlan, pixelFormat: MTLPixelFormat, state: SystemState) -> Readiness {
         var reasons: [String] = []
-        for stage in plan.stages {
-            let key = Self.pipelineKey(stage, plan: plan, pixelFormat: pixelFormat)
+        let keys: [String]
+        if let known = state.pipelineKeys[pixelFormat.rawValue] {
+            keys = known
+        } else {
+            keys = plan.stages.map { Self.pipelineKey($0, plan: plan, pixelFormat: pixelFormat) }
+            state.pipelineKeys[pixelFormat.rawValue] = keys
+        }
+        for (stage, key) in zip(plan.stages, keys) {
             let status: (pipeline: MTLRenderPipelineState?, pending: Bool, failure: String?) = pipelineLock.withLock {
                 if pipelines[key] != nil { usedPipelines.insert(key) }
                 return (pipelines[key], pendingPipelines.contains(key), failedPipelines[key])

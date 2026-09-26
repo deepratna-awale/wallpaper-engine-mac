@@ -75,19 +75,33 @@ struct ParticleMaterialUniforms {
         return result
     }
 
+    /// The block members `patch` writes, looked up once per layout.
+    struct Members {
+        let right, up, forward, eye, renderVar0, renderVar1: UniformMember?
+
+        init(_ layout: UniformLayout) {
+            right = layout.members["g_OrientationRight"]
+            up = layout.members["g_OrientationUp"]
+            forward = layout.members["g_OrientationForward"]
+            eye = layout.members["g_EyePosition"]
+            renderVar0 = layout.members["g_RenderVar0"]
+            renderVar1 = layout.members["g_RenderVar1"]
+        }
+    }
+
     /// Writes the values `UniformProgram` doesn't: WE's particle-only uniforms, and the ones that
     /// change with the system every frame.
-    func patch(_ bytes: inout [UInt8], layout: UniformLayout) {
-        let values: [(String, [Float])] = [
-            ("g_OrientationRight", Self.flat(orientationRight)),
-            ("g_OrientationUp", Self.flat(orientationUp)),
-            ("g_OrientationForward", Self.flat(orientationForward)),
-            ("g_EyePosition", Self.flat(eyePosition)),
-            ("g_RenderVar0", Self.flat(renderVars[0] ?? .zero)),
-            ("g_RenderVar1", Self.flat(renderVars[1] ?? .zero)),
+    func patch(_ bytes: inout [UInt8], members: Members) {
+        let values: [(UniformMember?, [Float])] = [
+            (members.right, Self.flat(orientationRight)),
+            (members.up, Self.flat(orientationUp)),
+            (members.forward, Self.flat(orientationForward)),
+            (members.eye, Self.flat(eyePosition)),
+            (members.renderVar0, Self.flat(renderVars[0] ?? .zero)),
+            (members.renderVar1, Self.flat(renderVars[1] ?? .zero)),
         ]
-        for (name, components) in values {
-            guard let member = layout.members[name] else { continue }
+        for (member, components) in values {
+            guard let member else { continue }
             UniformWriter.write(components, member: member, into: &bytes)
         }
     }

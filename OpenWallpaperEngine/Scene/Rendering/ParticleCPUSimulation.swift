@@ -1,4 +1,5 @@
 import Metal
+import QuartzCore
 import simd
 
 struct Particle {
@@ -71,6 +72,17 @@ final class ParticleSystemRuntime {
     /// Control points a remap wrote over a point the instance override drives: the override then,
     /// and the point in the system's space (`keepWrittenControlPoints`).
     var writtenOverridePoints: [Int: (override: SIMD2<Float>, point: SIMD2<Float>)] = [:]
+    /// The fraction of the day (`remapvalue`'s `timeofday`), and when it was read: the calendar is
+    /// asked again once a second at most.
+    private var dayFraction: (value: Float, at: CFTimeInterval)?
+
+    func timeOfDay(now: CFTimeInterval = CACurrentMediaTime()) -> Float {
+        if let dayFraction, now - dayFraction.at < 1 { return dayFraction.value }
+        let value = ParticleProgramCPU.fractionOfDay()
+        dayFraction = (value, now)
+        return value
+    }
+
     /// The offsets the instance override gave the control points last step (`keptPoints`).
     var lastOverridePoints = [SIMD2<Float>?](repeating: nil, count: ParticleControlPoint.count)
     /// Each emitter's clock (`ParticleEmitterTiming`), carried fraction and what its rate emitted this
