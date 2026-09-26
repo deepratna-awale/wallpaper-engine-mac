@@ -93,7 +93,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         prelude: SceneScriptPrelude.load(),
         storage: SceneScriptStorage(directory: SceneScriptStorage.defaultDirectory),
         media: MacMediaSessionSource(),
-        spectrum: { AudioReactiveScriptEngine.shared.audioSpectrumSnapshot })
+        spectrum: { WallpaperServices.shared.audioSpectrumSnapshot })
     /// Fetches the Workshop items shown wallpapers borrow assets from.
     lazy var workshopDependencies = WorkshopDependencyService(steamCmd: contentViewModel.steamCmd)
     private var workshopDependencyCancellable: AnyCancellable?

@@ -1,7 +1,7 @@
 import Foundation
 
 /// The user properties of every running wallpaper instance, their music-synced modulation and the
-/// per-frame snapshot the render loop reads them from. Owned by `AudioReactiveScriptEngine`.
+/// per-frame snapshot the render loop reads them from. Owned by `WallpaperServices`.
 final class SceneUserPropertyService {
     /// Guards every stored property except `frameSnapshot`, which is confined to the render thread.
     private let levelLock = NSLock()

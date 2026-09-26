@@ -12,12 +12,12 @@ protocol SceneValueContext {
 
 /// `SceneValueContext` over the app's user property store.
 struct LiveSceneValueContext: SceneValueContext {
-    let engine: AudioReactiveScriptEngine
+    let engine: WallpaperServices
     let time: Double
     /// The wallpaper whose user properties to read; nil reads the wallpaper being rendered.
     let wallpaper: String?
 
-    init(engine: AudioReactiveScriptEngine = .shared, time: Double, wallpaper: String? = nil) {
+    init(engine: WallpaperServices = .shared, time: Double, wallpaper: String? = nil) {
         self.engine = engine
         self.time = time
         self.wallpaper = wallpaper

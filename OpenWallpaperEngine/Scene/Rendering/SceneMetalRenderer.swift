@@ -439,10 +439,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     func draw(in view: MTKView) {
         let frameStart = CACurrentMediaTime()
         let frameSignpost = OWESignpost.begin(OWESignpost.render, "frame")
-        AudioReactiveScriptEngine.shared.beginFrame(wallpaper: wallpaperKey)
+        WallpaperServices.shared.beginFrame(wallpaper: wallpaperKey)
         renderTargetPool.endFrame()
         defer {
-            AudioReactiveScriptEngine.shared.endFrame()
+            WallpaperServices.shared.endFrame()
             frameSignpost.end()
             frameTimeObserver?(CACurrentMediaTime() - frameStart)
             if OWEFrameMetrics.isReportingEnabled {
@@ -467,7 +467,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         // Layers and particles are drawn in scene units onto a target at the output's pixel
         // density; placement scaling happens once, in the final composite pass.
         let drawableSize = SIMD2<Float>(Float(sceneTexture.width), Float(sceneTexture.height))
-        let animationSpeed = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_speed", fallback: 1)
+        let animationSpeed = WallpaperServices.shared.userPropertyValue("_owe_speed", fallback: 1)
         clock.advance(to: CACurrentMediaTime(), speed: Double(animationSpeed))
         let sceneTime = clock.time
         let time = Float(sceneTime)
@@ -493,7 +493,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectFrame.pointerState = BuiltinFrameContext.pointerState(
             primaryDown: cursorSample.onDisplay && NSEvent.pressedMouseButtons & 1 != 0)
         effectFrame.screenSize = drawableSize
-        effectFrame.audio = AudioReactiveScriptEngine.shared.advanceAudioSpectrumFrame()
+        effectFrame.audio = WallpaperServices.shared.advanceAudioSpectrumFrame()
         let motion = cameraMotion(pointer: pointer, time: time, deltaTime: Float(clock.delta))
         effectFrame.parallax = parallaxEnabled ? cameraParallax.shaderPosition(sceneSize: sceneSize) : SIMD2(0.5, 0.5)
         // Text is rasterised first so its effects run on the finished text, like an image layer's.
@@ -728,8 +728,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             uniform.effects = SIMD4<Float>(materialEffects.brightness * draw.brightness, materialEffects.contrast,
                                            materialEffects.saturation
                                                * (1 + (entry.layer.musicSync?.saturationAmount ?? 0) * Float(draw.musicSyncLevel)),
-                                           materialEffects.bloom * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1))
-            uniform.blur = materialEffects.blur * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_blur", fallback: 1)
+                                           materialEffects.bloom * WallpaperServices.shared.userPropertyValue("_owe_bloom", fallback: 1))
+            uniform.blur = materialEffects.blur * WallpaperServices.shared.userPropertyValue("_owe_blur", fallback: 1)
             uniform.colorEffects = SIMD4<Float>(materialEffects.exposure, materialEffects.gamma,
                                                 materialEffects.hue, materialEffects.bloomThreshold)
             uniform.transform = SIMD4<Float>(materialEffects.transformAngle, materialEffects.transformOffset.x,
@@ -777,7 +777,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         compositeEncoder.setRenderPipelineState(compositePipeline)
         var compositeUniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
                                             placement: placement)
-        let bloomMultiplier = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_bloom", fallback: 1)
+        let bloomMultiplier = WallpaperServices.shared.userPropertyValue("_owe_bloom", fallback: 1)
         // `thisScene.bloom`, `bloomstrength` and `bloomthreshold` once a script set them.
         let scene = scripts.state.scene
         let bloomEnabled = scene.flag(.bloom) ?? bloom.enabled
@@ -787,15 +787,15 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let bloomStrength = max(authoredBloom, userBloom)
         // The app's saturation and hue are linear in colour, so on the composite they equal applying
         // them to every layer, and layers keep drawing through their WE materials.
-        compositeUniform.effects = SIMD4<Float>(1, 1, AudioReactiveScriptEngine.shared.userPropertyValue("_owe_saturation", fallback: 1),
+        compositeUniform.effects = SIMD4<Float>(1, 1, WallpaperServices.shared.userPropertyValue("_owe_saturation", fallback: 1),
                                                 max(bloomStrength, 0))
-        compositeUniform.colorEffects.z = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_hue", fallback: 0)
+        compositeUniform.colorEffects.z = WallpaperServices.shared.userPropertyValue("_owe_hue", fallback: 0)
         // The app's bloom slider (an app extra) on a scene without WE bloom uses WE's default threshold.
         compositeUniform.colorEffects.w = bloomEnabled ? bloomThreshold : SceneGeneralDefaults.bloomThreshold
         compositeUniform.bloomTint = SIMD4<Float>(bloom.tint.x, bloom.tint.y, bloom.tint.z, 1)
         // "_owe_blur" defaults to 1 (no extra blur); raising it above 1 blurs the whole composited scene,
         // independent of any per-layer material blur, so the slider is guaranteed to have an effect.
-        let userBlur = AudioReactiveScriptEngine.shared.userPropertyValue("_owe_blur", fallback: 1)
+        let userBlur = WallpaperServices.shared.userPropertyValue("_owe_blur", fallback: 1)
         compositeUniform.blur = max(userBlur - 1, 0) * 4
         compositeEncoder.setVertexBytes(&compositeUniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
         compositeEncoder.setFragmentBytes(&compositeUniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
@@ -875,7 +875,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// app's parallax toggle.
     private var parallaxEnabled: Bool {
         if let scripted = scripts.state.scene.flag(.cameraparallax) { return scripted }
-        return camera.parallax || AudioReactiveScriptEngine.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
+        return camera.parallax || WallpaperServices.shared.userPropertyString("_owe_effect_enabled_parallax") == "true"
     }
 
     /// WE's camera shake, then its parallax (`SceneCameraShake`, `SceneCameraParallax`), in the
@@ -898,11 +898,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                                   deltaTime: deltaTime)
             // `_owe_effect_parallax_amount` is an app extra, 1 (WE's amount) by default.
             let amount = (scene.scalar(.cameraparallaxamount) ?? camera.parallaxAmount)
-                * AudioReactiveScriptEngine.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
+                * WallpaperServices.shared.userPropertyValue("_owe_effect_parallax_amount", fallback: 1)
             if camera.orthographic { parallax = (cameraParallax, amount) }
         }
         return CameraMotion(parallax: parallax, shake: SIMD2(shake.x, shake.y),
-                            audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+                            audioLevel: WallpaperServices.shared.audioLevel)
     }
 
     /// The parallax offset of a layer: its root object's live origin and `parallaxDepth`.
@@ -935,7 +935,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let script = scripts.object(entry.layer.id)
         var opacity = script?.scalar(.alpha) ?? baseOpacity(entry, base: base, time: time, script: script)
         if entry.layer.text != nil {
-            opacity *= AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
+            opacity *= WallpaperServices.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
         }
         var local = evaluatedLocal(entry, time: time)
         let parallaxOffset = parallaxOffset(entry, local: local, time: time, motion: motion)
@@ -1206,7 +1206,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     /// The user's colour for a text layer (`_owe_text_<id>_color`), white when unset.
     private func textTint(layerID: String) -> SIMD3<Float> {
-        guard let value = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_color") else {
+        guard let value = WallpaperServices.shared.userPropertyString("_owe_text_\(layerID)_color") else {
             return SIMD3(repeating: 1)
         }
         let rgb = value.parseVector3()
@@ -1218,11 +1218,11 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private func makeTextFrame(_ text: SceneMetalText, value: String, pointSize: Float?, boxSize: SIMD2<Float>,
                                pixelsPerUnit: Float, layerID: String) -> (frame: RenderTextureFrame, baseSize: SIMD2<Float>)? {
         let stateKey = layerID
-        let fontName = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_font") ?? ""
+        let fontName = WallpaperServices.shared.userPropertyString("_owe_text_\(layerID)_font") ?? ""
         let sizeValue = pointSize
-            ?? AudioReactiveScriptEngine.shared.userPropertyValue("_owe_text_\(layerID)_size", fallback: Float(text.pointSize))
-        let bold = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_bold") == "true"
-        let italic = AudioReactiveScriptEngine.shared.userPropertyString("_owe_text_\(layerID)_italic") == "true"
+            ?? WallpaperServices.shared.userPropertyValue("_owe_text_\(layerID)_size", fallback: Float(text.pointSize))
+        let bold = WallpaperServices.shared.userPropertyString("_owe_text_\(layerID)_bold") == "true"
+        let italic = WallpaperServices.shared.userPropertyString("_owe_text_\(layerID)_italic") == "true"
         let rasterScale = SceneTextRasterScale.retained(SceneTextRasterScale.quantized(pixelsPerUnit),
                                                         previous: textRasterScales[stateKey])
         textRasterScales[stateKey] = rasterScale

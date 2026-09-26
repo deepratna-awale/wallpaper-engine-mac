@@ -80,7 +80,7 @@ private final class SceneUserPropertiesModel: ObservableObject {
         values[id] = value
         NotificationCenter.default.post(name: .wallpaperUserPropertyChanged, object: wallpaperPath,
                                         userInfo: ["key": id, "value": value])
-        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
+        WallpaperServices.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
         pendingSave?.cancel()
         let snapshot = values
         let work = DispatchWorkItem { [storageKey, explicitKey] in
@@ -188,7 +188,7 @@ private final class SceneUserPropertiesModel: ObservableObject {
         for property in properties where values[property.id] == nil {
             values[property.id] = property.defaultValue
         }
-        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
+        WallpaperServices.shared.setUserProperties(values, wallpaper: wallpaperPath, replacing: false)
     }
 
     /// Simple on/off `visibleUserProperty` gates (no string variant condition) that the author never

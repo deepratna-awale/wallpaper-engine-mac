@@ -11,8 +11,8 @@ extension Notification.Name {
 /// The app's system audio capture and the user properties of every running wallpaper instance,
 /// shared by scene, video and web wallpapers. SceneScript itself runs per wallpaper instance in a
 /// `SceneScriptRuntime` (docs/scenescript-plan.md WP11).
-final class AudioReactiveScriptEngine {
-    static let shared = AudioReactiveScriptEngine()
+final class WallpaperServices {
+    static let shared = WallpaperServices()
 
     /// System audio capture: the level, the legacy spectrum and WE's spectrum analyzer.
     let audioCapture: SystemAudioCapture

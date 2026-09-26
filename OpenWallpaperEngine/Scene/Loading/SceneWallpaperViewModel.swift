@@ -441,7 +441,7 @@ class SceneWallpaperViewModel: ObservableObject {
                                              declared: Self.declaredUserProperties(in: wallpaper.wallpaperDirectory),
                                              scene: scene)
         defaults.set(values, forKey: key)
-        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: wallpaper.wallpaperDirectory.path,
+        WallpaperServices.shared.setUserProperties(values, wallpaper: wallpaper.wallpaperDirectory.path,
                                                            replacing: true)
     }
 
@@ -597,7 +597,7 @@ class SceneWallpaperViewModel: ObservableObject {
             saturationAmount: VideoMusicSyncSettings.bool(wallpaper, "saturationEnabled")
                 ? Float(VideoMusicSyncSettings.double(wallpaper, "saturationAmount", default: 0.6)) : 0,
             levelSource: { [weak stream] in
-                stream?.musicSyncLevel ?? AudioReactiveScriptEngine.shared.audioLevel
+                stream?.musicSyncLevel ?? WallpaperServices.shared.audioLevel
             })
 
         var layer = SceneMetalLayer(
@@ -656,7 +656,7 @@ class SceneWallpaperViewModel: ObservableObject {
             wallpaperID: loadedProjectId ?? Self.localWallpaperID(wallpaperDir),
             document: loadedDocument.document, documentSignature: loadedDocument.signature,
             project: loadedProject,
-            userValues: { AudioReactiveScriptEngine.shared.userProperties(wallpaper: storeKey) },
+            userValues: { WallpaperServices.shared.userProperties(wallpaper: storeKey) },
             file: { [weak self] path in self?.scriptFile(path, wallpaperDir: wallpaperDir) },
             makeLayer: { [weak self] json in self?.buildScriptLayer(json, wallpaperDir: wallpaperDir, sceneSize: sceneSize) })
     }
@@ -1049,7 +1049,7 @@ class SceneWallpaperViewModel: ObservableObject {
                 var plan = try builder.build(effect, overrides: { key in
                     SceneEffectOverride.stored(
                         property: sceneAuthoredEffectOverrideKey(objectID: objectID, effectIndex: index, parameter: key),
-                        lookup: { AudioReactiveScriptEngine.shared.userPropertyString($0, wallpaper: storeKey) })
+                        lookup: { WallpaperServices.shared.userPropertyString($0, wallpaper: storeKey) })
                 })
                 plan.effectIndex = index
                 plan.visible = isEffectVisible(effect)
@@ -1074,7 +1074,7 @@ class SceneWallpaperViewModel: ObservableObject {
 
     /// This wallpaper's current value of a user property.
     func userProperty(_ name: String) -> String? {
-        AudioReactiveScriptEngine.shared.userPropertyString(name, wallpaper: propertyStoreKey)
+        WallpaperServices.shared.userPropertyString(name, wallpaper: propertyStoreKey)
     }
 
     private func isObjectVisible(_ object: WESceneObject) -> Bool {

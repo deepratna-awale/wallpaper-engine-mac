@@ -44,7 +44,7 @@ struct PermissionsPage: SettingsPage {
     /// Never prompts: only re-reads the grant and starts capture if it was newly granted.
     private func refresh() {
         hasScreenRecordingPermission = PermissionHelper.hasScreenRecordingPermission
-        AudioReactiveScriptEngine.shared.recheckCapturePermission()
+        WallpaperServices.shared.recheckCapturePermission()
     }
 
     private func permissionRow(title: String, status: String, isGranted: Bool, description: String) -> some View {

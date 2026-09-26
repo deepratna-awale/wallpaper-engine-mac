@@ -41,7 +41,7 @@ struct SceneWallpaperView: NSViewRepresentable {
         guard SceneWallpaperViewModel.isVideoType(viewModel.currentWallpaper.project.type) else { return }
         viewModel.updateVideoPlayback(playRate: wallpaperViewModel.playRate,
                                       audioRate: wallpaperViewModel.audioPlayRate,
-                                      audioLevel: AudioReactiveScriptEngine.shared.audioLevel,
+                                      audioLevel: WallpaperServices.shared.audioLevel,
                                       audioEnabled: wallpaperViewModel.shouldPlayAudio(on: screenId),
                                       volume: wallpaperViewModel.playVolume)
     }

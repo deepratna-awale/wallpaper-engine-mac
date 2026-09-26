@@ -98,7 +98,7 @@ final class SceneReviewFixTests: XCTestCase {
     /// Risk #22: with no audio (capture denied, stopped or asleep, which resets the level to 0)
     /// a music-synced override reads as the value the user set, not a frozen modulation.
     func testSyncedOverrideFallsBackToItsValueWithoutAudio() {
-        let engine = AudioReactiveScriptEngine.shared
+        let engine = WallpaperServices.shared
         let wallpaper = "/tests/\(UUID().uuidString)"
         engine.setUserProperties(["p": "0.4", "p_musicSync": "true", "p_musicAmount": "1"], wallpaper: wallpaper, replacing: true)
         engine.beginFrame(wallpaper: wallpaper)

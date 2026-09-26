@@ -85,7 +85,7 @@ final class SceneScriptRenderTests: XCTestCase {
         XCTAssertEqual(scene.model.impact(of: ["offset"]), .none, "only a script reads it")
 
         let key = scene.model.propertyStoreKey
-        AudioReactiveScriptEngine.shared.setUserProperties(["offset": "42"], wallpaper: key, replacing: false)
+        WallpaperServices.shared.setUserProperties(["offset": "42"], wallpaper: key, replacing: false)
         scene.renderer.scripts.userPropertiesDidChange(["offset"])
         _ = try scene.render(frames: 2)
         XCTAssertEqual(scene.origin(of: "1")?.z, 42, "applyUserProperties({offset: 42})")

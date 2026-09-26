@@ -64,7 +64,7 @@ final class SceneUserPropertyStoreTests: XCTestCase {
 
     /// Two displays rendering different wallpapers read their own properties each frame.
     func testEngineFramesReadTheirWallpaper() {
-        let engine = AudioReactiveScriptEngine.shared
+        let engine = WallpaperServices.shared
         let a = "/tests/\(UUID().uuidString)/a", b = "/tests/\(UUID().uuidString)/b"
         engine.setUserProperties(["tint": "1 0 0"], wallpaper: a, replacing: true)
         engine.setUserProperties(["tint": "0 1 0"], wallpaper: b, replacing: true)

@@ -22,7 +22,7 @@ class VideoWallpaperViewModel: ObservableObject {
 
     var playRate: Float = 0 {
         didSet {
-            updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+            updatePlaybackRates(audioLevel: WallpaperServices.shared.audioLevel)
         }
     }
 
@@ -91,7 +91,7 @@ class VideoWallpaperViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 // Assigning the rate directly here used to restart audio even while paused.
-                self?.updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+                self?.updatePlaybackRates(audioLevel: WallpaperServices.shared.audioLevel)
             }
             .store(in: &cancellables)
         wallpaperViewModel.$playVolume
@@ -138,7 +138,7 @@ class VideoWallpaperViewModel: ObservableObject {
     func setAudioEnabled(_ enabled: Bool) {
         player.isMuted = true
         audioPlayer.isMuted = !enabled
-        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+        updatePlaybackRates(audioLevel: WallpaperServices.shared.audioLevel)
     }
 
     /// The wallpaper's own soundtrack drives music sync whenever you can actually hear it;
@@ -146,7 +146,7 @@ class VideoWallpaperViewModel: ObservableObject {
     var musicSyncLevel: Double {
         !audioPlayer.isMuted && audioPlayer.volume > 0 && ownAudioTap.isMeasuring
             ? ownAudioTap.level
-            : AudioReactiveScriptEngine.shared.audioLevel
+            : WallpaperServices.shared.audioLevel
     }
 
     func updatePlaybackRates(audioLevel: Double) {
@@ -187,7 +187,7 @@ class VideoWallpaperViewModel: ObservableObject {
         probe.reset()
         self.player.seek(to: CMTime.zero)
         self.audioPlayer.seek(to: CMTime.zero)
-        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+        updatePlaybackRates(audioLevel: WallpaperServices.shared.audioLevel)
     }
 
     private func systemWillSleep() {
@@ -196,11 +196,11 @@ class VideoWallpaperViewModel: ObservableObject {
     }
 
     private func systemDidWake() {
-        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+        updatePlaybackRates(audioLevel: WallpaperServices.shared.audioLevel)
     }
 
     private func videoMusicSyncAudioLevelDidChange(_ notification: Notification) {
-        let level = notification.userInfo?["level"] as? Double ?? AudioReactiveScriptEngine.shared.audioLevel
+        let level = notification.userInfo?["level"] as? Double ?? WallpaperServices.shared.audioLevel
         updatePlaybackRates(audioLevel: level)
     }
 
@@ -229,6 +229,6 @@ class VideoWallpaperViewModel: ObservableObject {
         audioPlayer.isMuted = !playsAudio
         ownAudioTap.attach(to: audioItem)
         observeItemEnd(of: videoItem)
-        updatePlaybackRates(audioLevel: AudioReactiveScriptEngine.shared.audioLevel)
+        updatePlaybackRates(audioLevel: WallpaperServices.shared.audioLevel)
     }
 }

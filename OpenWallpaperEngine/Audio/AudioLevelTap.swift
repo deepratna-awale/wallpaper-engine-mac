@@ -3,7 +3,7 @@ import Accelerate
 
 /// RMS level of one `AVPlayerItem`'s own audio.
 ///
-/// The system-wide ScreenCaptureKit capture in `AudioReactiveScriptEngine` cannot tell a
+/// The system-wide ScreenCaptureKit capture in `WallpaperServices` cannot tell a
 /// wallpaper's own soundtrack apart from whatever else is playing, so music sync needs a tap on
 /// the wallpaper's audio track to drive visuals from its own music.
 final class AudioLevelTap {

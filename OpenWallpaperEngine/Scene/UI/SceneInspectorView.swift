@@ -731,7 +731,7 @@ private final class SceneInspectorModel: ObservableObject {
     }
 
     private func persist(_ values: [String: String]) {
-        AudioReactiveScriptEngine.shared.setUserProperties(values, wallpaper: directory.path, replacing: false)
+        WallpaperServices.shared.setUserProperties(values, wallpaper: directory.path, replacing: false)
         pendingSave?.cancel()
         let work = DispatchWorkItem {
             UserDefaults.standard.set(values, forKey: self.storageKey)

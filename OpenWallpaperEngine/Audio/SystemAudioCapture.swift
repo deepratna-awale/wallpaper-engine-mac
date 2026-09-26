@@ -5,7 +5,7 @@ import ScreenCaptureKit
 
 /// System audio capture through ScreenCaptureKit: the stream, its restarts, the overall level
 /// (video music sync) and WE's spectrum analyzer (shaders' `g_AudioSpectrum*`, SceneScript's
-/// `registerAudioBuffers`). Owned by `AudioReactiveScriptEngine`.
+/// `registerAudioBuffers`). Owned by `WallpaperServices`.
 final class SystemAudioCapture: NSObject, SCStreamOutput, SCStreamDelegate {
     private let levelLock = NSLock()
     private var level: Double = 0

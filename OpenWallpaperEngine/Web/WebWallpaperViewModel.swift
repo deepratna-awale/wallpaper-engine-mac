@@ -150,7 +150,7 @@ class WebWallpaperViewModel: NSObject, ObservableObject, WKNavigationDelegate {
         guard audioTimer == nil else { return }
         let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
             guard let self, let webView = self.webView else { return }
-            let snapshot = AudioReactiveScriptEngine.shared.audioSpectrumSnapshot
+            let snapshot = WallpaperServices.shared.audioSpectrumSnapshot
             let samples = WebWallpaperPropertyBridge.audioArray(left: snapshot.left64, right: snapshot.right64)
             webView.evaluateJavaScript(WebWallpaperPropertyBridge.audioDeliveryScript(samples), completionHandler: nil)
         }
