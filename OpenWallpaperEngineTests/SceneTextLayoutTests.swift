@@ -1,8 +1,8 @@
 import XCTest
 @testable import OpenWallpaperEngine
 
-/// D1, D2, D4, D6: WE text layout — 96/72 sizing, aligned edge on the origin, stub auto-size,
-/// wrapping only under `limitwidth`, row limits with ellipsis, and no shrink-to-fit.
+/// D1, D2, D4, D6: WE text layout — 300/72 sizing, aligned edge on the origin, stub auto-size,
+/// wrapping only under `limitwidth`, row limits with ellipsis, and no shrink-to-fit or clipping.
 final class SceneTextLayoutTests: XCTestCase {
     private func font(pointSize: CGFloat) -> NSFont {
         NSFont.systemFont(ofSize: SceneTextLayout.pixelSize(pointSize: pointSize))
@@ -23,9 +23,13 @@ final class SceneTextLayoutTests: XCTestCase {
                         maxWidth: maxWidth, maxRows: maxRows, useEllipsis: ellipsis)
     }
 
-    func testPixelSizeIsPointSizeAt96DPI() {
-        XCTAssertEqual(SceneTextLayout.pixelSize(pointSize: 32), 42.6667, accuracy: 0.001)
-        XCTAssertEqual(SceneTextLayout.pixelSize(pointSize: 72), 96)
+    /// WE sets its FreeType face at 300 dpi (`FT_Set_Char_Size(…, pointsize × 64, 300, 300)`) and
+    /// lays glyphs out one atlas pixel per scene unit. R1: 3270035750's "Nami" and "Robin"
+    /// (Deutschlands, `pointsize` 25, scale 1) best match WE's capture at an em of 104 units.
+    func testPixelSizeIsPointSizeAt300DPI() {
+        XCTAssertEqual(SceneTextLayout.pixelSize(pointSize: 32), 133.3333, accuracy: 0.001)
+        XCTAssertEqual(SceneTextLayout.pixelSize(pointSize: 25), 104.1667, accuracy: 0.001)
+        XCTAssertEqual(SceneTextLayout.pixelSize(pointSize: 72), 300)
     }
 
     /// 3352730400 'Artist Title' / 'Song Title' author `size "2 2"`: the block is sized from the text.
@@ -46,7 +50,16 @@ final class SceneTextLayoutTests: XCTestCase {
     }
 
     func testAuthoredSizeIsKept() {
-        XCTAssertEqual(layout("12:34", size: SIMD2(387, 219)).boxSize, SIMD2(387, 219))
+        XCTAssertEqual(layout("1", pointSize: 20, size: SIMD2(387, 219)).boxSize, SIMD2(387, 219))
+    }
+
+    /// R1: 3352730400's 'D a y' saved 368×224 for "DAY"; its script writes "SATURDAY", which WE
+    /// draws whole (its glyph quads aren't clipped), so the block grows around the text.
+    func testBlockGrowsToTextThatOutgrowsIt() {
+        let grown = layout("SATURDAY", size: SIMD2(368, 224))
+        XCTAssertEqual(grown.boxSize.x, Float(ceil(grown.contentSize.width)) + 64, accuracy: 0.001)
+        XCTAssertGreaterThan(grown.boxSize.x, 368)
+        XCTAssertEqual(grown.boxSize.y, max(224, Float(grown.contentSize.height) + 64), accuracy: 0.001)
     }
 
     /// The block edge named by horizontalalign/verticalalign sits on the origin.
@@ -66,11 +79,11 @@ final class SceneTextLayoutTests: XCTestCase {
 
     /// Lines are placed inside the padding on the aligned side.
     func testLinesAlignInsidePadding() {
-        let left = layout("Hi", size: SIMD2(400, 200), horizontal: "left", vertical: "top")
+        let left = layout("Hi", size: SIMD2(400, 300), horizontal: "left", vertical: "top")
         let origin = try! XCTUnwrap(left.baselineOrigins().first)
         XCTAssertEqual(origin.x, 32)
-        XCTAssertEqual(origin.y, 200 - 32 - left.ascent)
-        let right = layout("Hi", size: SIMD2(400, 200), horizontal: "right", vertical: "bottom")
+        XCTAssertEqual(origin.y, 300 - 32 - left.ascent)
+        let right = layout("Hi", size: SIMD2(400, 300), horizontal: "right", vertical: "bottom")
         let rightOrigin = try! XCTUnwrap(right.baselineOrigins().first)
         XCTAssertEqual(rightOrigin.x + right.lines[0].width, 400 - 32, accuracy: 0.001)
         XCTAssertEqual(rightOrigin.y, 32 + right.lineHeight - right.ascent, accuracy: 0.001)
@@ -81,7 +94,7 @@ final class SceneTextLayoutTests: XCTestCase {
         let result = layout(text, size: SIMD2(100, 60), padding: SIMD2(4, 4))
         XCTAssertEqual(result.lines.map(\.text), [text])
         XCTAssertGreaterThan(result.lines[0].width, 100, "no shrink-to-fit: the line keeps its natural width")
-        XCTAssertEqual(result.boxSize, SIMD2(100, 60))
+        XCTAssertEqual(result.boxSize.x, Float(ceil(result.lines[0].width)) + 8, accuracy: 0.001)
     }
 
     /// 3546971487 'Song Title': limitwidth 471, limitrows 2.
@@ -108,10 +121,10 @@ final class SceneTextLayoutTests: XCTestCase {
     }
 
     func testRasterisesAtRequestedPixelScale() throws {
-        let result = layout("12:34", size: SIMD2(387, 219))
+        let result = layout("12:34", size: SIMD2(600, 300))
         let image = try XCTUnwrap(result.rasterize(font: font(pointSize: 32), color: .white, pixelsPerUnit: 2))
-        XCTAssertEqual(image.width, 774)
-        XCTAssertEqual(image.height, 438)
+        XCTAssertEqual(image.width, 1200)
+        XCTAssertEqual(image.height, 600)
         XCTAssertEqual(SceneTextRasterScale.quantized(1.3), exp2(Float(0.5)), accuracy: 0.0001)
         XCTAssertEqual(SceneTextRasterScale.clamped(100, boxSize: SIMD2(1000, 10)), 4.096, accuracy: 0.0001)
     }

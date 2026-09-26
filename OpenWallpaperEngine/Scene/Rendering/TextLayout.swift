@@ -1,11 +1,13 @@
 import AppKit
 import CoreText
+import simd
 
 /// Lays out a WE text object the way Wallpaper Engine does, in scene units:
-/// - the glyph size is `pointsize × 96/72`;
+/// - the glyph size (em) is `pointsize × 300/72` scene units: WE sets its FreeType face to
+///   `pointsize` points at 300 dpi and lays the glyphs out one atlas pixel per scene unit;
 /// - text wraps only when `limitwidth` is set (at `maxwidth`), and `limitrows` keeps the first
 ///   `maxrows` lines, ending in an ellipsis when `limituseellipsis` is set;
-/// - nothing is ever shrunk to fit;
+/// - nothing is ever shrunk to fit, and nothing is clipped: the block grows to its content;
 /// - `padding` is geometry around the glyphs, and a stub `size` (no room inside the padding,
 ///   e.g. "2 2") means the block is sized to its content.
 struct SceneTextLayout {
@@ -28,7 +30,8 @@ struct SceneTextLayout {
         CGSize(width: lines.map(\.width).max() ?? 0, height: lineHeight * CGFloat(lines.count))
     }
 
-    static func pixelSize(pointSize: CGFloat) -> CGFloat { pointSize * 96 / 72 }
+    /// WE's `FT_Set_Char_Size(face, 0, pointsize × 64, 300, 300)`: the em in scene units.
+    static func pixelSize(pointSize: CGFloat) -> CGFloat { pointSize * 300 / 72 }
 
     /// A `size` with no room inside its padding is a placeholder the editor writes before the
     /// text has content; WE sizes such blocks from the text.
@@ -63,9 +66,10 @@ struct SceneTextLayout {
         self.lines = lines.map { Line(text: $0, width: Self.width(of: $0, attributes: attributes)) }
 
         let content = CGSize(width: self.lines.map(\.width).max() ?? 0, height: lineHeight * CGFloat(self.lines.count))
-        boxSize = Self.isStub(size: authoredSize, padding: padding)
-            ? SIMD2(Float(ceil(content.width)) + padding.x * 2, Float(content.height) + padding.y * 2)
-            : authoredSize
+        let fitted = SIMD2(Float(ceil(content.width)) + padding.x * 2, Float(content.height) + padding.y * 2)
+        // WE draws glyph quads, which nothing clips: a block whose text outgrows the size the
+        // editor saved (a script's longer string, a user's font) grows around it.
+        boxSize = Self.isStub(size: authoredSize, padding: padding) ? fitted : simd_max(authoredSize, fitted)
     }
 
     /// Where each line's baseline starts, in box coordinates (y-up, origin at the box's
