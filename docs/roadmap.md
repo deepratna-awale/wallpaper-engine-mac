@@ -87,7 +87,7 @@ Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs 
 2. Lit image layers through `genericimage4` (normal maps, PBR masks); needs area 1 item 3.
 3. `_rt_Reflection` and reflection planes.
 4. WE's bloom and HDR chain (`materials/util` downsample, blur and combine) instead of our approximation.
-5. Shadows (`shadowcaster`, `_rt_shadowAtlas`) and volumetrics.
+5. Shadows (`shadowcaster`, `_rt_shadowAtlas`) and ~~volumetrics~~. Volumetrics done (docs/lighting-plan.md D1): WE's util passes for volumetric point and spot lights; 3D scenes get the scene's depth with area 6, shadow casters the atlas with shadows.
 
 ### 6. 3D models (not implemented)
 

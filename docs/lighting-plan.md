@@ -1,6 +1,6 @@
 # Lighting, reflections, bloom and HDR: evidence and plan
 
-**Status: 2026-09-26. L0 (format, values, settings and seams) is done; the seams are in §4.4. A1 (the generated `LightingV1` and the light combos) is done. C1 (`_rt_MipMappedFrameBuffer` and the reflection setting) is done: a `REFLECTION` layer without effects draws through its material. B1 (WE's LDR bloom chain) is done: bloom scenes bloom through WE's own four util passes. A2 (the light packer and the frame lighting) is done. A3 (lit image layers, direct path) and A4 (the prelighting path) are done: every library image layer that sets `LIGHTING` or `REFLECTION` draws through its material, with the packed lights, and `angles.z` now turns counter-clockwise as in WE.** This covers roadmap area 5 (lighting and reflections) and the image-material part of area 1 item 3 that area 5 needs: 3 library image layers fall back to our native draw because their materials set `LIGHTING`/`REFLECTION`. It sets out:
+**Status: 2026-09-26. L0 (format, values, settings and seams) is done; the seams are in §4.4. A1 (the generated `LightingV1` and the light combos) is done. C1 (`_rt_MipMappedFrameBuffer` and the reflection setting) is done: a `REFLECTION` layer without effects draws through its material. B1 (WE's LDR bloom chain) is done: bloom scenes bloom through WE's own four util passes. D1 (volumetrics) is done: volumetric lights draw through WE's util passes, in 2D now and in 3D once the scene has depth. A2 (the light packer and the frame lighting) is done. A3 (lit image layers, direct path) and A4 (the prelighting path) are done: every library image layer that sets `LIGHTING` or `REFLECTION` draws through its material, with the packed lights, and `angles.z` now turns counter-clockwise as in WE.** This covers roadmap area 5 (lighting and reflections) and the image-material part of area 1 item 3 that area 5 needs: 3 library image layers fall back to our native draw because their materials set `LIGHTING`/`REFLECTION`. It sets out:
 
 - WE's format for lights and the `general` lighting, bloom and HDR settings, with a survey of the library;
 - how `wallpaper64.exe` collects lights, generates `#require LightingV1`, reflects, blooms, tone-maps and shadows;
@@ -77,7 +77,7 @@ The docs' "Ultra HDR" and "HDR threshold smoothing" are `hdr` and `bloomhdrfeath
   - 350 `castshadow` keys exist in the library, and **none is true**.
   - The caster shader is picked by a `// [PASS] shadow <shader>` header in the object's shader, otherwise `materials/util/shadowcaster.json`.
 - **Volumetrics:** `castvolumetrics`, `density` and `volumetricsexponent` on point and spot lights.
-- **Cookies:** a spot light with `usecookie` projects a texture (the docs: an image, a video or a layer). The key that names the cookie source wasn't found. The one library cookie spot (Hinata) has none of `cookie`/`texture` among its keys [?].
+- **Cookies:** a spot light with `usecookie` projects a texture (the docs: an image, a video or a layer). The texture is the light's `cookie` key, a path, and `cookie/flashlight1` when it names none (§2.8). The library's cookie spots: Hinata (no `cookie`, so the default) and 3233200129 (`cookie/flashlight1`).
 
 ### 1.4 Material side (`genericimage4`, and the same pattern in `genericimage2/3`, `generic4`, `chroma4`, `fur4`, `foliage4`)
 
@@ -321,22 +321,47 @@ Bloom therefore sees the fully composited frame exactly once.
 
 ### 2.8 Volumetrics
 
-- **Trigger** (`0x140196ce0`): any light with `castvolumetrics`, and the volumetrics setting not disabled.
-- **Targets:** `_rt_volumetricsBack` at full size; `_rt_volumetricsSingle` and `_rt_volumetricsLightBuffer` at 1/4 (quality ≥ 3) or 1/8. Below quality 3 there is also `_rt_volumetricsLightBufferB` with `volumetrics_blur_h`/`_v` (`blur_k3`).
-- **Per point or spot light:**
-  1. The back faces of the light volume (a sphere; a frustum box for a spot with shadow or cookie; otherwise a 32-segment cone) go into `_rt_volumetricsBack` (`volumetrics_back`).
-  2. `volumetrics_front` ray-marches it; `volumetrics_fullscreen` is used when the camera is inside the volume.
-  3. `volumetrics_combine` adds the light buffer to the frame (additive `passthrough`).
-- **Combos:** `COOKIE`, `SHADOW`, `QUALITY`, `POINTLIGHT`, `LIGHTS_SHADOW_MAPPING_QUALITY`.
-- **Uniforms** (`0x14019870f`):
+The disassembly is `volumetrics.asm` (the per-light function `0x140196ce0`, a method of the scene reached through the light's draw, vt+0x50 at `0x14025d300`) and the finish at `0x140198d00`.
 
-  | Uniform | Contents |
-  |---|---|
-  | `g_RenderVar0` | shadow transform |
-  | `g_RenderVar1` | (radius·0.99, cos inner, cos outer, intensity) |
-  | `g_RenderVar2` | (origin, density) |
-  | `g_RenderVar3` | spot forward, or the point's projection info |
-  | `g_RenderVar4` | (colour **without** intensity, volumetricsexponent) |
+- **Trigger:** the volumetrics setting (ctx+0x1ad) isn't disabled. A light draws its volume when it casts volumetrics and it and its ancestors are visible (vt+0x68, `0x14025d330`). Type 0 (`lpoint`) takes the point path; every other type takes the spot path.
+- **Targets**, made on the first light (`0x140196d63`…`0x140196f52`; arguments: divisor, colour format, depth format, flags):
+  - `_rt_volumetricsBack`: full size, depth only (colour 0x1b, depth 0x19).
+  - `_rt_volumetricsSingle`: 1/4 from quality 3, else 1/8; depth only (0x19 from quality 3, 0x17 below).
+  - `_rt_volumetricsLightBuffer`: the same size; RGBA8, or RGBA16F in HDR (`0x14017e750`).
+  - Below quality 3, `_rt_volumetricsLightBufferB` of the same kind, with `volumetrics_blur_h`/`_v`. `volumetrics_combine` always.
+- **Per light**, in the scene's object loop:
+  1. `_rt_volumetricsBack` ← the bound target's depth (vt+0x8, the copy of §5.3).
+  2. `_rt_volumetricsSingle` is bound and its depth cleared; `volumetrics_back` draws the volume's mesh into it. The shader reads it as the far faces' depth (the fullscreen variant starts at the near plane and marches to it), so it holds the far faces [I: the culling state wasn't traced].
+  3. `_rt_volumetricsLightBuffer` is bound; the first light since the last finish clears it to (0, 0, 0, 1) (flag bits 1 and 2 of scene+0x418).
+  4. `volumetrics_fullscreen` when the camera is inside the volume, else `volumetrics_front`, ray-marches from the near faces to the nearer of the scene's depth and the far faces, additively.
+- **Meshes** (made once per light, `0x140197004`…`0x140197560`), placed by `g_AltViewProjectionMatrix`:
+  - A spot with a cookie or a shadow (`0x140185940`): the box of its clip volume, x and y ±1, z from the near depth to the far one, 12 triangles.
+  - Any other spot: a 32-segment cone, the circle inscribed in that square with a fan cap at each end. The caps' centres are at (0.5, 0.5), as WE writes them.
+  - A point: a sphere of radius 1 (`0x14025c660`): the poles and 23 rings of 25 vertices.
+  - The fullscreen triangle (−1, 1), (−1, −3), (3, 1).
+- **The camera inside** (`0x1401979c3`…`0x1401980e5`), at a point just ahead of the eye (ctx+0x68 + ctx+0x160 · d):
+  - box: d = 0.1, inside the six planes of the light's projection (`0x1401849e0`);
+  - cone: d = 0.2; the distance t along the light's axis is in (0, radius], and the distance from the axis is at most t / radius times the far plane's radius (the unprojected far centre to the far top edge);
+  - sphere: d = 0.2, nearer than the radius.
+- **The light's projection** (+0x338, `0x14025d420`): a view down the light's local +X with its +Y up (+x is its +Z), then a square perspective of twice the outer cone from 0.05 (1 in an orthographic scene) to `max(radius, near + 0.01)`. A point's is its shadow cube (§2.7).
+- **Matrices and uniforms** (`0x1401977b4`, `0x140198568`…`0x1401987f5`; the uniform ids follow their names at `0x140002b60`):
+
+  | Uniform | ctx | Contents |
+  |---|---|---|
+  | `g_ViewProjectionMatrix` | +0x930 | the camera's |
+  | `g_EffectModelMatrix` | +0x970 | its inverse: clip to world |
+  | `g_AltModelMatrix` | +0xa70 | the light's projection (+0x338) |
+  | `g_AltViewProjectionMatrix` | +0xab0 | the mesh into the world: the projection's inverse for a spot; the radius and position for a point |
+  | `g_RenderVar0` | +0xa8 | shadow transform (+0x310) |
+  | `g_RenderVar1` | +0xb8 | (radius·0.99, cos inner, cos outer, intensity) |
+  | `g_RenderVar2` | +0xc8 | (world position, density) |
+  | `g_RenderVar3` | +0xd8 | a spot's world row 0 as it stands (scale included), or a point's projection info (+0x320) |
+  | `g_RenderVar4` | +0xe8 | (colour **without** intensity, volumetricsexponent) |
+
+  A cookie light's front passes get its cookie as `g_Texture2` (`0x140198815`). The cookie is the light's `cookie` key, a texture path read only with `usecookie` (`0x14025d0a5`), and `cookie/flashlight1` when it names none (`0x14025d1b7`).
+- **Combos** of the front and fullscreen passes (`0x14019817e`…`0x140198440`): `COOKIE` with `usecookie`; `SHADOW` with `castshadow` while the shadows setting is on; `QUALITY` = the volumetrics setting; for a point, `POINTLIGHT` and `LIGHTS_SHADOW_MAPPING_QUALITY` = the shadows setting.
+- **Finish** (`0x140198d00`): below quality 3, `volumetrics_blur_h` (the light buffer into B) and `_v` (B back); then `volumetrics_combine` adds the light buffer to the frame. The object loop (`0x14018ade4`…`0x14018b21e`) finishes a run of lights before the next object that isn't a light, and at its end. So the volumetrics sit in the object order, and the `_rt_MipMappedFrameBuffer` copy (§2.6 step 4) sees them.
+- **The camera** (`0x140183a70`): an orthographic scene's projection is `ortho(0, width, 0, height)` from −2000 to 2000, whatever `nearz`/`farz` say.
 
 ## 3. Where we stand
 
@@ -359,8 +384,8 @@ Code references are to `OpenWallpaperEngine/Scene/…`.
 | HDR (float targets, `HDR=1`, mip-chain bloom, combine) | 2.6 | ❌ `hdr` and `bloomhdr*` not decoded; the scene target is the drawable's `bgra8Unorm` | 5 scenes |
 | `postprocessing` / `shadows` / `volumetrics` / `reflection` user settings | 2.2, 2.6 | 🟡 settings in place (L0); `postprocessing` gates bloom (B1) | all bloom/HDR scenes |
 | Shadows (`_rt_shadowAtlas`, casters) | 2.7 | ❌ | 0 (no `castshadow` true) |
-| Volumetrics | 2.8 | ❌ | Hinata (2D), Moon (3D) |
-| Light cookie (`_alias_lightCookie`) | one per scene (2.2) | ❌; the cookie source key is unknown | Hinata |
+| Volumetrics | 2.8 | ✅ D1: WE's util passes as a frame stage (`Rendering/SceneVolumetrics.swift`); in 3D without the scene's depth until area 6, and not for shadow casters while shadows are on (D2) | Hinata (2D), Moon and the test set (3D) |
+| Light cookie (`_alias_lightCookie`) | one per scene (2.2) | 🟡 the key is `cookie` (default `cookie/flashlight1`, 2.8), decoded by D1; the volumetrics bind each light's own; the alias for lit materials is A3's | Hinata |
 | Fog (`FOG_*`, `g_Fog*`) | per general fog | ❌ (must stay off) | 0 |
 | Depth buffer, perspective models | area 6 | ❌ | Moon, default projects |
 
@@ -496,10 +521,29 @@ The plan as written:
 - **Tests** (`SceneMipMappedFrameBufferTests`, `ImageMaterialReflectionTests`): WE's mip count; level 0 is the frame and each level is the box average of the one before; `g_Texture3MipMapInfo`; nothing is made while nothing samples the target; the setting off clears every level to (0,0,0,1); a `genericimage4` `REFLECTION` layer with a normal map and a PBR mask (fixture `ImageMaterials/materials/reflection.json`) matches a CPU reference of §2.4 at mip 0 and at the roughest mip, within 3/255; with the setting off it draws its albedo; through `SceneMetalRenderer`, the layer reflects the last frame and stops when the setting is turned off.
 - **Left for A3:** меч itself (LIGHTING, prelit); whether WE sets the `*_MAP` component combos from the mask by itself (the fixture authors them; меч's material doesn't). Both done by A3 and A4: WE sets them from the mask's `.tex` flags (§1.4).
 
-**D1 — Volumetrics (2D first: Hinata).**
-- **Files:** new `Scene/Rendering/SceneVolumetrics.swift` (volumes, back-face pass, ray-march, blur, combine per §2.8, the `RenderVar` packing, quality from the `volumetrics` setting).
-- **Needs first:** the cookie source key (RE: the light parser near `0x14025da80` and the cookie alias assignment in the packer) and the volume meshes' construction.
-- **Tests:** a reference of `volumetrics_front` along one ray; Hinata renders a cone of light that follows the spot's transform.
+**D1 — Volumetrics. Done.** Hinata's cookie spot draws its volume through WE's own passes.
+
+What landed:
+- `SceneVolumetricsPlan` (planned with the content, like the bloom chain) resolves WE's six util materials through the translator with WE's combos, per light that casts volumetrics, and loads each cookie. It is nil while the setting is disabled or no light casts volumetrics.
+- `SceneVolumetrics`, the stage, does §2.8 per visible light: the far faces into `_rt_volumetricsSingle`, the ray march into the light buffer, then the blur below quality 3 and the combine. `SceneVolumetricLight` holds the per-frame values (projection, mesh placement, `g_RenderVar*`, the inside test), `SceneVolumeMesh` the meshes, `SceneVolumetricsPipelines` the pipelines. The cookie key is decoded (`WESceneLight.cookie`, `SceneLight.cookie`).
+- The translator's prelude gained HLSL's `clip`, and `texLoad2D`/`texSample2DBackBuffer`/`sampler2DBackBuffer` (an unfiltered texel read). Only shaders that use them get them, so no translated output that existed changes and the revision stays.
+- *Settings → Performance → Volumetrics* (disabled…ultra; the app's default stays medium, §5.1).
+
+How it maps to Metal:
+- **Depth.** The shaders compare their clip depth with the depth targets, which D3D stores as they are. Here the translator maps clip z to Metal's depth as (z + w) / 2, and the shader reads rows mirrored from how it draws them (D3D's screen UV against the translator's y flip). So each depth target is converted after it is drawn (`volumetricsClipDepth`: 2d − 1, rows swapped) into the R32F texture the shader reads. The front pass keeps the near faces and the back pass the far ones by culling, with the winding taken from the sign of the mesh's full transform: the meshes are wound outward.
+- **Where it runs.** WE composites volumetrics within its object loop (§2.8, finish); here the stage runs once the scene pass has ended. That is WE's result when the volumetric lights come after every drawn object, as Hinata's does; otherwise the objects after a light's run draw under its volumetrics here [deviation]. The stage runs before the `_rt_MipMappedFrameBuffer` copy, which in WE follows the loop: `SceneFrameStages.make` lists it first.
+- **Depth for 3D scenes.** The scene pass has no depth buffer yet, so `_rt_volumetricsBack` is the far depth (one texel). `SceneFrameStageContext.sceneDepth` takes the scene's depth once area 6 has one; each light then copies it through the same conversion, as WE copies it per light.
+- **The camera** is scene.json's `camera` through the orthographic projection above, or `SceneCamera`'s perspective [?: the 2D eye's x and y weren't traced; the library's 2D scenes author (0, 0, 1)]. Camera shake and parallax don't move it yet. Its y is mirrored for the scene target (whose first row is the scene's top), and `g_EffectModelMatrix` is that matrix's inverse.
+
+Not done:
+- `SHADOW` needs the shadow atlas (D2): a light that casts both a shadow and volumetrics while shadows are on isn't drawn, and says so once at load. With shadows off WE compiles it without `SHADOW`, and so does the app.
+- Tube, directional and legacy lights with `castvolumetrics` take WE's spot path, with a projection WE never computes for them; they aren't drawn [?]. The library has none.
+- A point's `g_AltViewProjectionMatrix` drops the light's rotation [?: a sphere doesn't show it], and the sphere's own triangle order wasn't traced.
+
+Tests:
+- `SceneVolumetricsTests`: the plan (materials, combos, passes and blur per quality, the cookie); the setting gates the plan and the stage; shadow casters wait for D2 with shadows on and plan without `SHADOW` with them off; the meshes are WE's and wound outward; the light values against hand-derived ones; the inside tests; the blur and combine against `VolumetricsReference` (a Swift model of `blur_k3` and the additive `passthrough`) within 1/255, with and without the blur; the stage on a synthetic frame against the model of `volumetrics_front` along every pixel's ray (the model rasterises the meshes itself) within 2/255, for a cone spot at ultra and a point at high; the cost.
+- `VolumetricsLibraryTests`: Hinata through the real loader and renderer (every lit texel lies in the light's projected frustum, the volume follows the light when it moves, and the setting turns it off); the test set's and Moon's lights (which WE draws, with shadows on and off); and the root lights of 3233200129 (a cookie spot) and Moon (a point, with the camera inside its volume) drawn through the scene's own camera onto an empty frame.
+- Cost (GPU, the stage alone, 1920×1080, two spots and a point, M-series with other work on the GPU): 0.4–2 ms fastest, 4–10 ms median over runs, at every quality. The light buffers are small; most of it is the ray march over the volumes' screen area.
 
 **C2 — Planar `_rt_Reflection`** and **D2 — shadows (atlas, casters, the cascade quirk):** with area 6 (depth buffer, models). There are no 2D library users.
 
@@ -549,7 +593,7 @@ L0 decoded the format and added the files, types and hook points below without c
 | HDR combo | `SceneEngineCombos+HDR.swift` (**B2**): `hdrCombos(for:)` returns `[:]` | called from `combos(for:)` | `HDR=1` when `hdr` is set; bump the revision |
 | Frame lighting | `Scene/Rendering/SceneFrameLighting.swift` and `SceneLightPacker.swift` (**A2**, done). `SceneFrameLighting.frame(_:input:)` returns the ambient and skylight colours (a script's `thisScene.ambientcolor` or `skylightcolor` wins) and the packed `arrays` by uniform name. | `SceneMetalRenderer` calls it once per frame, after scripts and timelines, and stores the result in `BuiltinFrameContext.lighting`, which `BuiltinUniforms` reads. `SceneFrameLightingInput` provides each object's live own transform (`local(id)`) and its parents' (`parentWorld(id)`), `isVisible(id)` (ancestors included), the scripts' scene colours, the user's shadows setting, the eye and the view forward. | done |
 | Post-process | `Scene/Rendering/ScenePostProcess.swift` (**B1** done, then **B2**). `encode(Frame)` runs `bloomed(_:)` (step 5, WE's LDR chain) and then `composite(_:_:)` with the app's extras; B2's HDR chain replaces step 5 in HDR. It owns the composite pipeline. | `SceneMetalRenderer` calls it after the scene pass and the frame stages. `Frame` holds the scene target, the drawable's pass, the placement uniform, `Bloom` (live values: scripts, then timelines, then the content; `hdr` included), `AppExtras` (`_owe_bloom`, `_owe_saturation`, `_owe_hue`, `_owe_blur`) and `settings`. | B1: `_rt_FullFrameBuffer`, `SceneBloomChain.swift` and the combine; honour `allowsBloom`; make `_owe_bloom` a strength multiplier; then the composite. Delete `sceneFragment`'s 3×3 bloom (`SceneShaders.metal`, `SceneComposite.swift`). B2: `SceneHDRChain.swift` and the float scene target in `SceneMetalRenderer.swift` and `EffectGraphRenderer.swift`. |
-| Frame stages | `Scene/Rendering/SceneFrameStage.swift`: `protocol SceneFrameStage` (`encode(SceneFrameStageContext)`, `setContent`) and `SceneFrameStages.make(device:)`, which returns C1's `SceneMipMappedFrameBuffer` | `SceneMetalRenderer` runs the stages in order between the scene pass and the post-process. Each gets the scene target, the command buffer, the scene size, the frame's `BuiltinFrameContext` (lighting included) and the settings, and `setContent` on every content change. | **C1** adds the `_rt_MipMappedFrameBuffer` copy as the first stage and **D1** adds `SceneVolumetrics` as the second: one line each in `make`, the only line they share. Otherwise D1 owns the file and may extend the context. |
+| Frame stages | `Scene/Rendering/SceneFrameStage.swift`: `protocol SceneFrameStage` (`encode(SceneFrameStageContext)`, `setContent`) and `SceneFrameStages.make(device:)`, which returns C1's `SceneMipMappedFrameBuffer` | `SceneMetalRenderer` runs the stages in order between the scene pass and the post-process. Each gets the scene target, the command buffer, the scene size, the frame's `BuiltinFrameContext` (lighting included) and the settings, and `setContent` on every content change. | **C1** added the `_rt_MipMappedFrameBuffer` copy and **D1** `SceneVolumetrics` (done), which runs first since WE combines volumetrics within its object loop. D1 added `sceneDepth` (for area 6) and `assetTexture` (the cookies) to the context. |
 | Lit image materials | `Loading/ImageMaterialPlan.swift`, `Rendering/ImageMaterialUniforms.swift`, `ImageMaterialRenderer.swift` (**A3**, done) | a lit layer draws through its material with the packed lights | done |
 | Prelighting | `ImageMaterialPlan.prelighting`, `ImageMaterialRenderer.prelight`, called from `SceneMetalRenderer.runEffects` (**A4**, done; `EffectGraphRenderer` untouched) | a lit layer with effects is lit into the image its effects start from | done |
 | Reflection copy | `SceneMipMappedFrameBuffer.swift` (**C1**, done); the setting is `renderSettings.reflection` | the first stage in `SceneFrameStages.make`; `SceneMetalRenderer` binds `target(matching:commandBuffer:)` to every draw | — |
@@ -568,5 +612,5 @@ L0 decoded the format and added the files, types and hook points below without c
 3. What `[scene+0x158]` is. (`vt+0x8` of WE's render targets, `0x1400d3310`, is the frame copy: `CopyResource` of the bound target, or `ResolveSubresource` from MSAA; found for C1.)
 4. ~~`_rt_MipMappedFrameBuffer`'s mip count in LDR and `g_Texture3MipMapInfo`~~: resolved by C1 (§2.4). The "1 or 15" was the format.
 5. ~~The prelighting pass order for lit layers with effects (`0x140209540`)~~: resolved for A4 (§2.3). Still open: the view-projection WE gives the prepass (its effect buffer's), which only the reflection's screen offset reads (`normal · g_ViewProjectionMatrix`, normalised); the app uses the buffer's orthographic projection in the scene target's convention, z range −1…1 as for the scene (C1). The size of that offset depends on WE's orthographic z range, which isn't traced [?].
-6. The cookie texture's source key. (The default `intensity` is 0: §1.1.)
+6. ~~The cookie texture's source key~~: `cookie`, resolved by D1 (§2.8). (The default `intensity` is 0: §1.1.) Still open for D1: the 2D camera's eye, and the culling of `volumetrics_back`.
 7. The shadow atlas depth format and the exact cascade fit.
