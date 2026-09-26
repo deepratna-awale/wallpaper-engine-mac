@@ -151,6 +151,12 @@ final class SceneRendererAnimations {
         return frame
     }
 
+    /// The sprite frame an effect or material texture shows this frame: the texture's shared clock,
+    /// advanced by the first binding of the frame (T7). `texture` is its name, the clock's key.
+    func materialTextureFrame(texture: String, frameTimes: () -> [Float], delta: Float) -> Int32 {
+        set?.boundTextureFrame(texture: texture, frameTimes: frameTimes, delta: delta) ?? 0
+    }
+
     /// The scripts' view of this frame: every timeline's `IAnimation` state, every layer's texture
     /// state and the events the advance crossed.
     func describe(into input: inout SceneScriptFrameInput, events: [SceneAnimationEvent]) {

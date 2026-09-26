@@ -46,6 +46,14 @@ struct BuiltinFrameContext {
     }
 }
 
+/// A sprite-sheet frame's rect in its texture's UV space, for `g_Texture<n>Rotation` and
+/// `g_Texture<n>Translation` (docs/timeline-plan.md §2.7): the frame's axes and its origin.
+struct BuiltinSpriteFrame: Equatable {
+    /// `(axisX.x, axisX.y, axisY.x, axisY.y)`, as `BuiltinTextureInfo.spriteRotation`.
+    var rotation: SIMD4<Float>
+    var translation: SIMD2<Float>
+}
+
 /// Metadata of the texture bound to slot N of a pass.
 struct BuiltinTextureInfo {
     /// Size of the GPU texture (power-of-two padded for WE `.tex`).

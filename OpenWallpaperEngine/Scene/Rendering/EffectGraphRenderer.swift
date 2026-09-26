@@ -191,6 +191,9 @@ final class EffectGraphRenderer {
         /// Image size inside a padded asset texture (the `.tex` width/height), when known; used
         /// for `g_TextureNResolution.zw`. nil means the whole texture is content.
         var assetContentSize: ((String, SceneMetalTextureSource) -> SIMD2<Float>?)? = nil
+        /// An animated asset texture's sprite frame this frame (`g_TextureNRotation/Translation`),
+        /// whose texture `assetTexture` gives; nil for a still one.
+        var assetSprite: ((String, SceneMetalTextureSource) -> BuiltinSpriteFrame?)? = nil
         /// Effects (indices into the chain) that are hidden this frame: built, but skipped.
         var hiddenEffects: Set<Int> = []
         /// Constants scripts set, by the effect's `effectIndex` (`IEffect.setMaterialProperty`).
@@ -231,6 +234,15 @@ final class EffectGraphRenderer {
         var dynamicValues: [Float] = []
         for (effectIndex, programs) in state.programs.enumerated() where !context.hiddenEffects.contains(effectIndex) {
             for program in programs { program?.appendDynamicValues(to: &dynamicValues, values: context.values) }
+            // A sprite sheet's frame changes the output like a live constant does.
+            guard let assetSprite = context.assetSprite else { continue }
+            for pass in effects[effectIndex].passes {
+                for case .asset(let key, let source) in pass.textures.values {
+                    guard let sprite = assetSprite(key, source) else { continue }
+                    dynamicValues += [sprite.rotation.x, sprite.rotation.y, sprite.rotation.z, sprite.rotation.w,
+                                      sprite.translation.x, sprite.translation.y]
+                }
+            }
         }
         let staticKey = StaticChainKey(input: input, inputVersion: context.inputVersion,
                                        color: context.layerColor, alpha: context.layerAlpha,
@@ -425,6 +437,7 @@ final class EffectGraphRenderer {
             guard let input = pass.textures[slot] else { continue }
             let texture: MTLTexture?
             var contentSize: SIMD2<Float>?
+            var sprite: BuiltinSpriteFrame?
             var sampler = clampSampler
             switch input {
             case .current: texture = current
@@ -434,6 +447,7 @@ final class EffectGraphRenderer {
             case .asset(let key, let source):
                 texture = context.assetTexture(key, source)
                 contentSize = context.assetContentSize?(key, source)
+                sprite = context.assetSprite?(key, source)
                 let flags = (pass.textureFlags[slot] ?? []).intersection([.clampUVs, .noInterpolation])
                 sampler = assetSamplers[flags.rawValue] ?? clampSampler
             }
@@ -443,7 +457,10 @@ final class EffectGraphRenderer {
             encoder.setVertexTexture(texture, index: slot)
             encoder.setVertexSamplerState(sampler, index: slot)
             if program.needsTextureInfo {
-                textureInfo[slot] = Self.textureInfo(for: texture, contentSize: contentSize)
+                var info = Self.textureInfo(for: texture, contentSize: contentSize)
+                info.spriteRotation = sprite?.rotation
+                info.spriteTranslation = sprite?.translation
+                textureInfo[slot] = info
             }
         }
 
@@ -698,6 +715,9 @@ final class UniformProgram {
         for slot in pass.textures.keys.sorted() {
             let info = pass.textures[slot]!
             signature += [Float(slot), info.allocatedSize.x, info.allocatedSize.y, info.contentSize.x, info.contentSize.y]
+            if let rotation = info.spriteRotation, let translation = info.spriteTranslation {
+                signature += [rotation.x, rotation.y, rotation.z, rotation.w, translation.x, translation.y]
+            }
         }
         if signature != passSignature {
             passSignature = signature

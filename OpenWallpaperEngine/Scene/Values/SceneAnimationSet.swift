@@ -289,6 +289,12 @@ final class SceneAnimationSet {
 
     // MARK: - Textures
 
+    /// The sprite frame an effect or material binding the animated `texture` draws this frame
+    /// (`SceneTextureAnimations.boundFrame`). `delta` is the engine frame time.
+    func boundTextureFrame(texture: String, frameTimes: () -> [Float], delta: Float) -> Int32 {
+        textures.boundFrame(texture: texture, frameTimes: frameTimes, tick: frameCounter, delta: delta)
+    }
+
     /// The sprite frame layer `id` draws this frame: its texture's shared clock (advanced once per
     /// `advance(by:)` by whichever layer draws it first) or the script's override (advanced by
     /// `advance(by:)`). `delta` is the engine frame time.

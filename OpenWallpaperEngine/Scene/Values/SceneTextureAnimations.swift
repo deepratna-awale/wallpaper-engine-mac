@@ -33,6 +33,9 @@ final class SceneTextureAnimations {
 
     private var clocks: [String: SceneTextureAnimationClock] = [:]
     private var layers: [Int: Layer] = [:]
+    /// Textures a material binds without a layer of its own (effect and material textures): their
+    /// clocks stay when the layers that share them go.
+    private var materialTextures = Set<String>()
 
     /// Object `id` draws the animated texture `texture` (its path, the shared clock's key), whose
     /// TEXS frames last `frameTimes` seconds. The first user creates the texture's clock. A layer
@@ -50,7 +53,9 @@ final class SceneTextureAnimations {
     /// The layer is gone; its texture's clock goes with its last user.
     func removeObject(_ id: Int) {
         guard let removed = layers.removeValue(forKey: id) else { return }
-        if !layers.values.contains(where: { $0.texture == removed.texture }) { clocks[removed.texture] = nil }
+        if !materialTextures.contains(removed.texture), !layers.values.contains(where: { $0.texture == removed.texture }) {
+            clocks[removed.texture] = nil
+        }
     }
 
     /// The shared clock of `texture`, for materials that draw it without a layer of their own.
@@ -65,6 +70,21 @@ final class SceneTextureAnimations {
         guard let layer = layers[id], let shared = clocks[layer.texture] else { return nil }
         shared.advance(tick: tick, delta: delta)
         return layer.control.currentFrame(shared: shared)
+    }
+
+    /// The sprite frame of `texture` as a material binds it this engine frame (`tick`): its shared
+    /// clock (§2.7, the same one its image layers draw), made on the first bind from `frameTimes`
+    /// and advanced once per tick.
+    func boundFrame(texture: String, frameTimes: () -> [Float], tick: UInt64, delta: Float) -> Int32 {
+        let clock: SceneTextureAnimationClock
+        if let existing = clocks[texture] {
+            clock = existing
+        } else {
+            clock = SceneTextureAnimationClock(frameTimes: frameTimes())
+            clocks[texture] = clock
+        }
+        materialTextures.insert(texture)
+        return clock.advance(tick: tick, delta: delta)
     }
 
     /// One engine frame of every layer's override, by `delta` × its `rate` while a script controls

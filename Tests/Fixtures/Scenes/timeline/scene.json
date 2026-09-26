@@ -1149,6 +1149,24 @@
 					]
 				}
 			]
+		},
+		{
+			"id": 14,
+			"name": "Sheet effect",
+			"image": "models/util/solidlayer.json",
+			"size": "8 8",
+			"color": "1 1 1",
+			"origin": "72 24 0",
+			"effects": [
+				{
+					"file": "effects/spriteframe/effect.json",
+					"id": 140,
+					"name": "",
+					"passes": [
+						{}
+					]
+				}
+			]
 		}
 	],
 	"version": 1

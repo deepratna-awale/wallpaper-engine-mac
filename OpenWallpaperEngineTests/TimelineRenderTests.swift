@@ -142,6 +142,21 @@ final class TimelineRenderTests: XCTestCase {
         XCTAssertEqual(held.sharedFrame, 0)
     }
 
+    /// T7: an effect's sprite-sheet texture shows its texture's shared clock (the same clock the
+    /// `Sheet` layer draws, §2.7) through `g_Texture1Rotation/Translation`: the effect samples the
+    /// frame's rect, so it is pure red, then pure green, never the whole atlas.
+    func testAnEffectsSpriteSheetFollowsTheTexturesClock() throws {
+        try XCTSkipUnless(Fixtures.hasWEShaderSources, "WE's effect shaders are not available")
+        let scene = try Scene(services: nil)
+        defer { scene.close() }
+        var pixels = try scene.draw(frames: 15) { $0.color(72, 24) == .white }
+        XCTAssertEqual(pixels.color(72, 24), .red, "frame 0")
+        XCTAssertEqual(pixels.color(120, 8), .red, "the layer drawing the same texture")
+        pixels = try scene.draw(frames: 30)
+        XCTAssertEqual(pixels.color(72, 24), .green, "frame 1")
+        XCTAssertEqual(pixels.color(120, 8), .green)
+    }
+
     // MARK: - Support
 
     private static func timeline(of id: Int, key: String) throws -> SceneTimelineAnimation {

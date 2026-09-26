@@ -102,6 +102,9 @@ final class ImageMaterialRenderer {
         let frame: BuiltinFrameContext
         let values: SceneValueContext
         let assetTexture: (String, SceneMetalTextureSource) -> MTLTexture?
+        /// An animated asset texture's sprite frame this frame (`g_TextureNRotation/Translation`
+        /// of a slot other than 0, which is the layer's own frame); nil for a still one.
+        var assetSprite: ((String, SceneMetalTextureSource) -> BuiltinSpriteFrame?)? = nil
         /// The renderer's own adjustments (legacy material heuristics) are not neutral for this
         /// layer; the material's shader draws it without them. Logged once per layer.
         var ignoredAdjustments = false
@@ -117,20 +120,21 @@ final class ImageMaterialRenderer {
         // A zero-area quad covers no pixels; nothing to draw, and nothing for a fallback to draw either.
         guard extent.x > 0, extent.y > 0, extent.x.isFinite, extent.y.isFinite else { return true }
 
-        var textureInfo: [(slot: Int, texture: MTLTexture, sampler: MTLSamplerState, contentSize: SIMD2<Float>?)] = []
+        var textureInfo: [(slot: Int, texture: MTLTexture, sampler: MTLSamplerState, contentSize: SIMD2<Float>?,
+                           sprite: BuiltinSpriteFrame?)] = []
         for slot in variant.textureSlots {
             // The plan binds every slot the variant reads; one it leaves out is declared but unused.
             guard let input = plan.pass.textures[slot] else { continue }
             let sampler = plan.clampedSlots.contains(slot) ? clampSampler : repeatSampler
             switch input {
             case .current, .previous:
-                textureInfo.append((slot, draw.texture, sampler, draw.contentSize))
+                textureInfo.append((slot, draw.texture, sampler, draw.contentSize, nil))
             case .sceneSnapshot:
                 guard let snapshot = draw.sceneSnapshot else { return false }
-                textureInfo.append((slot, snapshot, clampSampler, nil))
+                textureInfo.append((slot, snapshot, clampSampler, nil, nil))
             case .asset(let key, let source):
                 guard let texture = draw.assetTexture(key, source) else { return false }
-                textureInfo.append((slot, texture, sampler, source.contentSize))
+                textureInfo.append((slot, texture, sampler, source.contentSize, draw.assetSprite?(key, source)))
             case .fbo:
                 return false
             }
@@ -151,7 +155,8 @@ final class ImageMaterialRenderer {
                 brightness: draw.brightness, spriteRotation: rotation, spriteTranslation: draw.uvOrigin,
                 screen: draw.frame.screenSize,
                 textures: textureInfo.map { SIMD4(Float($0.texture.width), Float($0.texture.height),
-                                                  $0.contentSize?.x ?? 0, $0.contentSize?.y ?? 0) })
+                                                  $0.contentSize?.x ?? 0, $0.contentSize?.y ?? 0) },
+                sprites: textureInfo.compactMap(\.sprite))
             uniforms.update(key: key, frame: draw.frame, values: draw.values) {
                 var pass = BuiltinPassContext(targetSize: draw.sceneSize)
                 pass.modelMatrix = model
@@ -166,6 +171,9 @@ final class ImageMaterialRenderer {
                     if entry.slot == 0 {
                         info.spriteRotation = rotation
                         info.spriteTranslation = draw.uvOrigin
+                    } else if let sprite = entry.sprite {
+                        info.spriteRotation = sprite.rotation
+                        info.spriteTranslation = sprite.translation
                     }
                     pass.textures[entry.slot] = info
                 }

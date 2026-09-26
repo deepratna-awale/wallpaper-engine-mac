@@ -155,4 +155,24 @@ final class SceneRendererAnimationsTests: XCTestCase {
         XCTAssertEqual(overrides.size, 2, "an override without a timeline keeps its value")
         XCTAssertEqual(SceneParticleOverrides(override, in: timelines.values).rate, 1, "without its object it can't be found")
     }
+
+    /// T7: a material binding an animated texture shares the texture's clock with its layers
+    /// (one step per frame, whoever binds first), makes the clock when no layer has, and keeps it
+    /// when the layers go.
+    func testAMaterialsTextureSharesTheClockOfItsLayers() throws {
+        let timelines = try timelines(Self.sheet)
+        let set = try XCTUnwrap(timelines.set)
+        let times: [Float] = [0.1, 0.1, 0.1, 0.1]
+        timelines.registerTexture(object: 1, texture: "sheet", frameTimes: times)
+        for _ in 0..<2 {
+            _ = timelines.advance(by: 0.1)
+            XCTAssertEqual(timelines.materialTextureFrame(texture: "sheet", frameTimes: { times }, delta: 0.1),
+                           timelines.spriteFrame(object: 1, delta: 0.1))
+        }
+        XCTAssertEqual(set.textures.state(object: 1)?.sharedFrame, 2, "one step a frame")
+        XCTAssertEqual(timelines.materialTextureFrame(texture: "other", frameTimes: { times }, delta: 0.1), 1,
+                       "made on its first bind, which steps it")
+        timelines.removeObject(1)
+        XCTAssertNotNil(set.textures.clock(texture: "sheet"), "a material still binds it")
+    }
 }

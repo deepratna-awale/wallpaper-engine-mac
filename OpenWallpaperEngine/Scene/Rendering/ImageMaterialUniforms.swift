@@ -16,6 +16,8 @@ final class ImageMaterialUniforms {
         var screen: SIMD2<Float>
         /// Per bound slot: allocated width/height, content width/height.
         var textures: [SIMD4<Float>]
+        /// The sprite frames of the animated asset textures bound, in slot order.
+        var sprites: [BuiltinSpriteFrame] = []
     }
 
     private(set) var bytes: [UInt8]

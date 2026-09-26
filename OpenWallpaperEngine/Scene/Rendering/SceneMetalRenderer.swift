@@ -76,6 +76,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private lazy var imageMaterials = ImageMaterialRenderer(device: device, archive: effectGraph?.pipelineArchive)
     /// Asset textures used by effect passes, materialised once per content.
     private var effectAssetTextures: [String: MTLTexture] = [:]
+    /// Animated asset textures' sprite frames, by the same key.
+    private var effectAssetFrames: [String: [RenderTextureFrame]] = [:]
     /// Scene time since the content loaded, speed applied; drives animations, `g_Time`,
     /// particles and scripts alike.
     private var clock = SceneClock()
@@ -269,7 +271,10 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         effectGraph?.trimMemory(dropIdlePipelines: level == .critical)
         imageMaterials?.trimMemory(dropIdlePipelines: level == .critical)
         particleMaterials?.trimMemory(dropIdlePipelines: level == .critical)
-        if level == .critical { effectAssetTextures.removeAll() }
+        if level == .critical {
+            effectAssetTextures.removeAll()
+            effectAssetFrames.removeAll()
+        }
         OWELog.info(.scene, "Memory pressure (\(level)): freed \((before - renderTargetPool.residentBytes) >> 20) MB of pooled targets")
     }
 
@@ -280,6 +285,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
 
     func setContent(_ content: SceneMetalContent?) {
         effectAssetTextures.removeAll()
+        effectAssetFrames.removeAll()
         effectGraph?.releaseTargets()
         particleMaterials?.releaseAll()
         imageMaterials?.releaseAll()
@@ -891,6 +897,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                    sceneSnapshot: layerSnapshot, frame: effectFrame,
                    values: timelines.values,
                    assetTexture: { [unowned self] key, source in self.effectAssetTexture(key: key, source: source) },
+                   assetSprite: { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) },
                    ignoredAdjustments: !ImageMaterialRenderer.nativeAdjustmentsAreIdentity(uniform, brightness: draw.brightness)),
                    pixelFormat: sceneTexture.pixelFormat, encoder: encoder, commandBuffer: commandBuffer) {
                 encoder.setRenderPipelineState(renderPipeline)
@@ -1262,6 +1269,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             layerColor: SIMD3(draw.color.x, draw.color.y, draw.color.z),
             layerAlpha: draw.opacity)
         context.assetContentSize = { _, source in source.contentSize }
+        context.assetSprite = { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) }
         // Hidden effects (authored, user-bound or a script's `visible`) are built but skipped;
         // constants scripts set go over the material's.
         let scripted = scripts.effects(entry.layer.weEffects, of: entry.layer.id)
@@ -1334,10 +1342,39 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     }
 
     private func effectAssetTexture(key: String, source: SceneMetalTextureSource) -> MTLTexture? {
+        if case .animated = source { return animatedAssetFrame(key: key, source: source)?.texture }
         if let cached = effectAssetTextures[key] { return cached }
         guard let texture = makeTextureFrames(from: source)?.first?.texture else { return nil }
         effectAssetTextures[key] = texture
         return texture
+    }
+
+    /// An animated asset texture's sprite frame this frame, for `g_TextureNRotation/Translation`;
+    /// nil for a still one.
+    private func effectAssetSprite(key: String, source: SceneMetalTextureSource) -> BuiltinSpriteFrame? {
+        guard case .animated = source, let frame = animatedAssetFrame(key: key, source: source) else { return nil }
+        return BuiltinSpriteFrame(rotation: SIMD4(frame.uvAxisX.x, frame.uvAxisX.y, frame.uvAxisY.x, frame.uvAxisY.y),
+                                  translation: frame.uvOrigin)
+    }
+
+    /// The frame an effect or material shows of an animated asset texture (T7): the texture's
+    /// shared clock (§2.7), which every binding of the frame and every image layer of the texture
+    /// share. The key is `materialPath|name`; the clock is the texture name's.
+    private func animatedAssetFrame(key: String, source: SceneMetalTextureSource) -> RenderTextureFrame? {
+        let frames: [RenderTextureFrame]
+        if let cached = effectAssetFrames[key] {
+            frames = cached
+        } else {
+            guard let made = makeTextureFrames(from: source), !made.isEmpty else { return nil }
+            effectAssetFrames[key] = made
+            frames = made
+        }
+        guard frames.count > 1 else { return frames[0] }
+        let texture = key.split(separator: "|", omittingEmptySubsequences: false).last.map(String.init) ?? key
+        let frame = timelines.materialTextureFrame(texture: texture, frameTimes: { frames.map(\.duration) },
+                                                   delta: Float(clock.delta))
+        // `setFrame(n)` can't reach a material's clock; a frame outside the sheet can't happen, but draws the first.
+        return frame >= 0 && Int(frame) < frames.count ? frames[Int(frame)] : frames[0]
     }
 
 
