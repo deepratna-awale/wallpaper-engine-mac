@@ -57,8 +57,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     private let additiveRenderPipeline: MTLRenderPipelineState
     /// Unblended resample of a texture through per-vertex UVs (`sceneRegion`).
     private let copyPipeline: MTLRenderPipelineState
-    /// The scene target onto the drawable: colour only, as WE presents it (scene alpha is ignored).
-    private let compositePipeline: MTLRenderPipelineState
+    /// Everything after the scene pass, up to the drawable (bloom and the composite).
+    private let postProcess: ScenePostProcess
     private let dxtDecodePipeline: MTLComputePipelineState
     private let textureLoader: MTKTextureLoader
     private let renderTargetPool: SceneRenderTargetPool
@@ -145,6 +145,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Where the cursor was last seen on this renderer's display.
     private var cursorTracker = SceneCursorTracker()
     private var bloom = SceneBloomSettings(enabled: false, strength: 0, threshold: 0.7, tint: SIMD3<Float>(repeating: 1))
+    /// The user's quality settings (post-processing, reflection, shadows, volumetrics); the view sets them.
+    var renderSettings = SceneRenderSettings()
     private var sceneRenderTarget: MTLTexture?
     private var sceneRenderTargetSize = SIMD2<Int>.zero
     /// Render-target pixels per scene unit this frame (see `SceneRenderResolution`).
@@ -218,8 +220,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             return nil
         }
 
-        guard let compositePipeline = try? device.makeRenderPipelineState(
-            descriptor: SceneComposite.pipelineDescriptor(basedOn: descriptor)) else {
+        guard let postProcess = ScenePostProcess(device: device, layerDescriptor: descriptor) else {
             return nil
         }
 
@@ -244,7 +245,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
         self.device = device
         self.copyPipeline = copyPipeline
-        self.compositePipeline = compositePipeline
+        self.postProcess = postProcess
         self.commandQueue = commandQueue
         self.renderPipeline = renderPipeline
         self.additiveRenderPipeline = additiveRenderPipeline
@@ -914,46 +915,36 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         guard drawParticleBatches(before: .max) else { return }
         encoder.endEncoding()
 
-        // Composite the scene-resolution render target onto the real drawable, applying placement exactly once.
-        guard let compositeEncoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor) else {
-            commandBuffer.present(drawable)
-            commandBuffer.commit()
-            lastCommandBuffer = commandBuffer
-            return
-        }
-        compositeEncoder.setRenderPipelineState(compositePipeline)
-        var compositeUniform = layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
-                                            placement: placement)
-        let bloomMultiplier = WallpaperServices.shared.userPropertyValue("_owe_bloom", fallback: 1)
-        // `thisScene.bloom`, `bloomstrength` and `bloomthreshold` once a script set them.
-        let scene = scripts.state.scene
-        let bloomEnabled = scene.flag(.bloom) ?? bloom.enabled
-        let bloomThreshold = scene.scalar(.bloomthreshold) ?? timelines.sceneScalar(.bloomthreshold) ?? bloom.threshold
-        let bloomStrengthSetting = scene.scalar(.bloomstrength) ?? timelines.sceneScalar(.bloomstrength) ?? bloom.strength
-        let authoredBloom = bloomEnabled ? bloomStrengthSetting * bloomMultiplier : 0
-        let userBloom = max(bloomMultiplier - 1, 0) * 1.2
-        let bloomStrength = max(authoredBloom, userBloom)
-        // The app's saturation and hue are linear in colour, so on the composite they equal applying
-        // them to every layer, and layers keep drawing through their WE materials.
-        compositeUniform.effects = SIMD4<Float>(1, 1, WallpaperServices.shared.userPropertyValue("_owe_saturation", fallback: 1),
-                                                max(bloomStrength, 0))
-        compositeUniform.colorEffects.z = WallpaperServices.shared.userPropertyValue("_owe_hue", fallback: 0)
-        // The app's bloom slider (an app extra) on a scene without WE bloom uses WE's default threshold.
-        compositeUniform.colorEffects.w = bloomEnabled ? bloomThreshold : SceneGeneralDefaults.bloomThreshold
-        compositeUniform.bloomTint = SIMD4<Float>(bloom.tint.x, bloom.tint.y, bloom.tint.z, 1)
-        // "_owe_blur" defaults to 1 (no extra blur); raising it above 1 blurs the whole composited scene,
-        // independent of any per-layer material blur, so the slider is guaranteed to have an effect.
-        let userBlur = WallpaperServices.shared.userPropertyValue("_owe_blur", fallback: 1)
-        compositeUniform.blur = max(userBlur - 1, 0) * 4
-        compositeEncoder.setVertexBytes(&compositeUniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
-        compositeEncoder.setFragmentBytes(&compositeUniform, length: MemoryLayout<LayerUniform>.stride, index: 0)
-        compositeEncoder.setFragmentTexture(sceneTexture, index: 0)
-        compositeEncoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
-        compositeEncoder.endEncoding()
+        // The scene-resolution target goes onto the real drawable, placement applied exactly once.
+        postProcess.encode(ScenePostProcess.Frame(
+            scene: sceneTexture, output: descriptor, commandBuffer: commandBuffer,
+            placement: layerUniform(position: sceneSize / 2, size: sceneSize, opacity: 1, drawableSize: realDrawableSize,
+                                    placement: placement),
+            bloom: liveBloom(), extras: appExtras(), settings: renderSettings))
 
         commandBuffer.present(drawable)
         commandBuffer.commit()
         lastCommandBuffer = commandBuffer
+    }
+
+    /// The scene's bloom this frame: `thisScene.bloom`, `bloomstrength` and `bloomthreshold` once a
+    /// script set them, else their timelines, else the content's.
+    private func liveBloom() -> ScenePostProcess.Bloom {
+        let scene = scripts.state.scene
+        return ScenePostProcess.Bloom(
+            enabled: scene.flag(.bloom) ?? bloom.enabled,
+            strength: scene.scalar(.bloomstrength) ?? timelines.sceneScalar(.bloomstrength) ?? bloom.strength,
+            threshold: scene.scalar(.bloomthreshold) ?? timelines.sceneScalar(.bloomthreshold) ?? bloom.threshold,
+            tint: bloom.tint, hdr: bloom.hdr)
+    }
+
+    /// The app's own whole-scene adjustments, from this wallpaper's user properties.
+    private func appExtras() -> ScenePostProcess.AppExtras {
+        let services = WallpaperServices.shared
+        return ScenePostProcess.AppExtras(bloom: services.userPropertyValue("_owe_bloom", fallback: 1),
+                                          saturation: services.userPropertyValue("_owe_saturation", fallback: 1),
+                                          hue: services.userPropertyValue("_owe_hue", fallback: 0),
+                                          blur: services.userPropertyValue("_owe_blur", fallback: 1))
     }
 
     /// WE's sound layers each frame: the volumes scripts set, then their timers, in real time. A
