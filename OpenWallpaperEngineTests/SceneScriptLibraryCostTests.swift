@@ -9,12 +9,15 @@ import MetalKit
 /// on `xcodebuild` to get the table as a file.
 ///
 /// Plan §4.6's target is under 0.5 ms per frame; the table is how it is checked (in an optimized
-/// build: Debug Swift is several times slower, while most of the time is the scripts' own
-/// JavaScript). The assertion only guards against regressions an order of magnitude past it.
+/// build signed with the app's entitlements, so JavaScriptCore JIT-compiles as in the app; an
+/// unsigned host such as CI's runs the interpreter, `SceneScriptJIT`). The assertion only guards
+/// against regressions an order of magnitude past it.
 final class SceneScriptLibraryCostTests: XCTestCase {
     /// Plan §4.6: under half a millisecond of script time per frame.
     static let budgetMilliseconds = 0.5
     static let regressionGuard = 10 * budgetMilliseconds
+    /// Ten seconds at 60 fps before measuring.
+    static let warmUpFrames = 600
 
     func testEveryLibrarySceneRunsItsScriptsUnderBudget() throws {
         let library = LibrarySweepTests.libraryRoot
@@ -53,8 +56,10 @@ final class SceneScriptLibraryCostTests: XCTestCase {
                 renderer.releaseContent()
                 continue
             }
-            // Warm up (JIT, first-frame work), then measure.
-            for _ in 0..<60 { step(renderer, view: view, wallpaper: wallpaper) }
+            // Warm up, then measure the steady state: JavaScriptCore compiles a script's functions
+            // tier by tier as they run (baseline on the script thread, then DFG and FTL), and
+            // `update` runs once a frame, so the first seconds carry compile spikes.
+            for _ in 0..<Self.warmUpFrames { step(renderer, view: view, wallpaper: wallpaper) }
             let measured = wallpaper.frameTiming.frames
             let bridgeStart = renderer.scripts.bridgeMilliseconds.count
             for _ in 0..<240 { step(renderer, view: view, wallpaper: wallpaper) }
