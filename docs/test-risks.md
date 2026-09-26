@@ -1330,3 +1330,35 @@ No library item has duplicate names or events.
 - Does the engine clamp the frame delta after sleep (TL10)?
 - Does WE's engine tick follow its fps cap for textures (TL9)?
 - After a parent is removed, does the child's own clock carry on from 0 (TL12)?
+
+## Findings (timelines)
+
+### T3: `b687f6a` (the renderer draws the instance's timelines), `cb9200e` (render tests), `f942898` (docs)
+
+These were reviewed against TL1–TL22. The claims below were checked with a throwaway render test that is not committed. It was a copy of `TimelineRenderTests` over a modified copy of `Scenes/timeline`, run with `xcodebuild test -derivedDataPath /Volumes/980Pro/dd-agentTT`. Separate `swiftc -O` programs linked the landed `Scene/Values` timeline files.
+
+**Confirmed.**
+- **TF1 (TL2, Medium): a script's return on an animated *material constant* beats the timeline for good.** The fixture's layer 8 has a `color` constant animated red→blue:
+  - Unchanged, it ends blue (`testAnEffectConstantAnimates`).
+  - With `export function update(value) { return value; }` bound to that constant, it stays at the authored `"0 1 0"` (green) at frames 35 and 95.
+  - With only `export function init(value) { return value; }` it is also green for good, although WE applies `init`'s return once and the setter overwrites it the next frame.
+  - With a script that exports neither (`cursorClick` only, the library's multiply-fade shape) it animates, blue at frame 95.
+
+  The cause: the script's constant writes (`SceneMetalRenderer.swift:1313`, `context.constantWrites = scripted.writes`) are replayed over the resolved uniforms every frame (`EffectGraphRenderer.swift:446-447`, `program.write(...)` after `program.update(...)`). The material's JS constant pool is never given the animated value, unlike object fields (`SceneScriptTableSync.write`, `animated`). Object fields are right: an identity `update` on an `alpha` moving 0→1 draws 0.498 / 0.749 / 1.0 at frames 30 / 45 / 75.
+
+  No library item has `update`/`init` on an animated constant today (the 22 multiply fades export only `mediaThumbnailChanged`), so nothing in the library is visibly wrong.
+
+  Fix direction: feed the timeline's value into the material pool before scripts run (the P2 order objects already get), or drop a constant write after its frame when the constant is animated.
+- **TF2 (test gap, TL2).** `testScriptsOnAnimatedFieldsSeeAndBeatTheAnimation` uses Echo/Accumulate timelines with a single keyframe (constant 0.3). It passes even if `update` receives a stale or load-time value. The moving-alpha probe above shows the behaviour is right today. The fixture should animate, so the test can catch a regression.
+- **TF3 (TL1, Low): only material constants are bound to their sites.** `bindingAnimation(to:)` is called only from `SceneEffectPlan.swift:256`. Timelines on an effect's `visible` (`.effect`), on particle `instanceoverride` values (`.particleInstance`), on `general.*` (`.scene`) and on an image layer's own material constants are advanced by the set (clock cost and events), but their `.animation(site: nil, …)` sources resolve to the static fallback. So is any object field outside `SceneObjectAnimation.keys`. There are 0 library users; it matters once T6's sweep or a new wallpaper has one.
+- **TF4 (TL4, Medium, open as T3 says).** Every `.animation` source is dynamic (`SceneValueSource.isDynamic`, `SceneValueSource.swift:28`), so `UniformProgram.isStatic` is false (`EffectGraphRenderer.swift:655`). A `startpaused` or finished fade's chain is never reused, although its value is constant. That applies to the 22 multiply fades and 3074485715's finished cutouts, so it costs bandwidth, not correctness.
+- **TF5 (TL14, open).** Texture clocks move only for drawn layers: `textureFrame(for:)` is reached only after `guard scripts.isVisible` (`SceneMetalRenderer.swift:692`). A hidden layer's shared clock, when nobody else draws it, and its override freeze. A script polling `getFrame()` on a hidden layer waits.
+- **TF6 (TL6, open).** Checked with the landed clock: `setFrame(.nan)` or `advance(by: .infinity)` leave `time` NaN for good, so the value is `[nan]`, and `isPlaying` stays true. No renderer clamp exists on `objectAnimations[…].alpha`/`origin` or on the resolved uniform.
+- **TF7 (TL11).** Measured drift of the float32 loop clock (1 s loop, 24 h): the phase is 0.856 s at 1/144 steps and 0.979 s at 1/60 steps, against an exact 0. This is WE-faithful arithmetic, but displays at different refresh rates drift apart by up to about a second a day.
+- **TF8 (TL20).** Cold cache spike: `setFrame(599)` on 128 timelines of 600 frames costs 12.8 ms on the next frame (`-O`), one Bézier solve per frame from 0. Steady state is about 0.2 µs per timeline (5 / 24 / 225 µs per frame for 20 / 128 / 1000 timelines). `testThePerFrameCostIsSmall` measures only the warm state.
+
+**Verified fixed by T3.**
+- **TL7.** A frame outside the sheet draws frame 0 (`SceneMetalRenderer.swift:1607`). The model alone returns 1000 or −5 after `setFrame(1000)`/`setFrame(-5)`, so the guard is load-bearing.
+- **TL8.** One sprite frame per layer per frame: `spriteFrames` is cleared in `advanceAnimations` (`:492`) and filled once per layer (`:1604`). Without it, the model's override advances once per call (with two calls per tick, frame 5 instead of 2 after 10 ticks), so the cache is load-bearing too. `SceneTextureAnimationControl.advance` still has no tick guard of its own.
+- **TL3.** The order is `beginFrame` events → advance → script frame → `finishFrame` events → draw (`SceneMetalRenderer.draw`). A call made in frame N is restored after N's advance and acts from N+1's advance, as in WE. An overrun script frame costs that clock one frame; T3 notes it as open.
+- **TL5.** An inspector edit replaces only the base under the timeline (`replacingBase`).
