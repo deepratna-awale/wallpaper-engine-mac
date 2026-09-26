@@ -39,6 +39,8 @@ final class EffectGraphRenderer {
         var width: Int
         var height: Int
         var formats: [[MTLPixelFormat?]] = []
+        /// The frame-buffer class and output formats the targets and pipelines were made for.
+        var targetFormats = TargetFormats(frameBuffer: .rgba8Unorm, output: .rgba8Unorm)
         var ready = false
         /// Variant keys of the chain the programs were built for; a different chain rebuilds them.
         var chain: [[String]] = []
@@ -73,6 +75,13 @@ final class EffectGraphRenderer {
                 && color == other.color && alpha == other.alpha && scriptRevision == other.scriptRevision
                 && dynamicValues == other.dynamicValues
         }
+    }
+
+    /// A chain's frame-buffer class format (`rgba_backbuffer`, `rgb_backbuffer`) and the format of its
+    /// ping-pong targets, which hold its output.
+    struct TargetFormats: Equatable {
+        var frameBuffer: MTLPixelFormat
+        var output: MTLPixelFormat
     }
 
     /// Targets a layer gave back when its size changed, by size and format. Layers whose size
@@ -208,6 +217,17 @@ final class EffectGraphRenderer {
         /// The size `g_TexelSize` is one over in every pass; nil uses each pass's target. WE's
         /// bloom passes step in texels of the full frame whatever their target (`SceneBloomChain`).
         var texelSizeReference: SIMD2<Float>? = nil
+        /// WE's frame-buffer class format (`wallpaper64.exe` 0x1401e7572, 0x1401ea642): the layers'
+        /// ping-pong targets and `rgba_backbuffer`/`rgb_backbuffer` FBOs are RGBA8 in LDR and
+        /// RGBA16F in HDR.
+        var frameBufferFormat = MTLPixelFormat.rgba8Unorm
+        /// The ping-pong targets' format, where a chain's output lands; nil is `frameBufferFormat`.
+        var outputFormat: MTLPixelFormat? = nil
+        /// `g_RenderVar0…4` the engine sets on a pass, by the pass's `materialIndex`: an engine
+        /// chain's (one effect, `SceneHDRChain`).
+        var passRenderVars: [Int: [Int: SIMD4<Float>]] = [:]
+
+        var targetFormats: TargetFormats { TargetFormats(frameBuffer: frameBufferFormat, output: outputFormat ?? frameBufferFormat) }
     }
 
     /// Runs `effects` on `input` and returns the processed image, or nil when nothing rendered —
@@ -218,16 +238,18 @@ final class EffectGraphRenderer {
         let height = input.height
         let state: LayerState
         let chain = effects.map { $0.passes.map(\.variantKey) }
-        if let existing = layers[layerID], existing.chain == chain {
+        let targetFormats = context.targetFormats
+        if let existing = layers[layerID], existing.chain == chain, existing.targetFormats == targetFormats {
             state = existing
         } else {
             if let stale = layers[layerID] { recycleTargets(stale) }
             state = LayerState(width: width, height: height)
             state.chain = chain
+            state.targetFormats = targetFormats
             layers[layerID] = state
         }
         if !state.ready {
-            guard let formats = readyFormats(effects) else { return nil }
+            guard let formats = readyFormats(effects, targetFormats: targetFormats) else { return nil }
             state.formats = formats
             state.programs = effects.map { effect in
                 effect.passes.map { pass in pass.variant.map { UniformProgram(layout: $0.uniforms, constants: pass.constants) } }
@@ -316,18 +338,19 @@ final class EffectGraphRenderer {
 
     /// Target format of every render pass (per effect, per pass), or nil while any pipeline is
     /// still compiling. Compiles are started here; a pipeline that failed just skips its pass.
-    private func readyFormats(_ effects: [SceneEffectPlan]) -> [[MTLPixelFormat?]]? {
+    private func readyFormats(_ effects: [SceneEffectPlan], targetFormats: TargetFormats) -> [[MTLPixelFormat?]]? {
         var formats: [[MTLPixelFormat?]] = []
         var ready = true
         for effect in effects {
-            let fboFormats = Dictionary(effect.fbos.map { ($0.name, Self.pixelFormat($0.format)) }, uniquingKeysWith: { a, _ in a })
+            let fboFormats = Dictionary(effect.fbos.map { ($0.name, Self.pixelFormat($0.format, frameBuffer: targetFormats.frameBuffer)) },
+                                        uniquingKeysWith: { a, _ in a })
             var effectFormats: [MTLPixelFormat?] = []
             for pass in effect.passes {
                 guard case .render = pass.command, let variant = pass.variant else {
                     effectFormats.append(nil)
                     continue
                 }
-                let format = pass.target.flatMap { fboFormats[$0] } ?? .rgba8Unorm
+                let format = pass.target.flatMap { fboFormats[$0] } ?? targetFormats.output
                 effectFormats.append(format)
                 let key = Self.pipelineKey(pass, format: format)
                 // Checked and claimed in one step, so callers on two threads never both compile it.
@@ -414,9 +437,11 @@ final class EffectGraphRenderer {
     }
 
     /// Blocks until every pipeline these effects need has compiled or failed (tests, prewarming).
-    func waitUntilReady(_ effects: [SceneEffectPlan], width: Int, height: Int, timeout: TimeInterval = 60) -> Bool {
+    func waitUntilReady(_ effects: [SceneEffectPlan], width: Int, height: Int,
+                        targetFormats: TargetFormats = TargetFormats(frameBuffer: .rgba8Unorm, output: .rgba8Unorm),
+                        timeout: TimeInterval = 60) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
-        while readyFormats(effects) == nil {
+        while readyFormats(effects, targetFormats: targetFormats) == nil {
             if Date() > deadline { return false }
             Thread.sleep(forTimeInterval: 0.005)
         }
@@ -481,6 +506,7 @@ final class EffectGraphRenderer {
             passContext.textures = textureInfo
             passContext.color = context.layerColor
             passContext.alpha = context.layerAlpha
+            passContext.renderVars = context.passRenderVars[pass.materialIndex] ?? [:]
             program.update(frame: context.frame, pass: passContext, values: context.values)
             program.write(scriptWrites.filter { $0.reaches(material: pass.materialIndex) })
             if let record = context.recordAnimated { program.recordAnimated(record) }
@@ -542,12 +568,13 @@ final class EffectGraphRenderer {
         state.width = width
         state.height = height
         state.staticOutput = nil
-        state.pingA = target(width: width, height: height, format: .rgba8Unorm)
-        state.pingB = target(width: width, height: height, format: .rgba8Unorm)
+        state.pingA = target(width: width, height: height, format: state.targetFormats.output)
+        state.pingB = target(width: width, height: height, format: state.targetFormats.output)
         state.fbos = effects.map { effect in
             Dictionary(effect.fbos.compactMap { fbo -> (String, MTLTexture)? in
                 let size = Self.fboSize(fbo, width: width, height: height)
-                return target(width: size.x, height: size.y, format: Self.pixelFormat(fbo.format)).map { (fbo.name, $0) }
+                let format = Self.pixelFormat(fbo.format, frameBuffer: state.targetFormats.frameBuffer)
+                return target(width: size.x, height: size.y, format: format).map { (fbo.name, $0) }
             }, uniquingKeysWith: { a, _ in a })
         }
     }
@@ -589,6 +616,8 @@ final class EffectGraphRenderer {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: format, width: max(width, 1),
                                                                   height: max(height, 1), mipmapped: false)
         descriptor.usage = [.renderTarget, .shaderRead]
+        // An sRGB output is read back as its encoded bytes (`SceneHDRChain.encodedView`).
+        if format == .rgba8Unorm_srgb || format == .bgra8Unorm_srgb { descriptor.usage.insert(.pixelFormatView) }
         descriptor.storageMode = .private
         return device.makeTexture(descriptor: descriptor)
     }
@@ -605,8 +634,11 @@ final class EffectGraphRenderer {
         return SIMD2(max(Int(w.rounded()), 1), max(Int(h.rounded()), 1))
     }
 
-    static func pixelFormat(_ format: String) -> MTLPixelFormat {
+    /// `frameBuffer` is WE's frame-buffer class format, which `rgba_backbuffer` and
+    /// `rgb_backbuffer` name (`Context.frameBufferFormat`).
+    static func pixelFormat(_ format: String, frameBuffer: MTLPixelFormat = .rgba8Unorm) -> MTLPixelFormat {
         switch format.lowercased() {
+        case "rgba_backbuffer", "rgb_backbuffer": return frameBuffer
         case "r16f": return .r16Float
         case "rg1616f": return .rg16Float
         case "rgba16161616f", "rgba16f": return .rgba16Float
@@ -747,6 +779,10 @@ final class UniformProgram {
             if let rotation = info.spriteRotation, let translation = info.spriteTranslation {
                 signature += [rotation.x, rotation.y, rotation.z, rotation.w, translation.x, translation.y]
             }
+        }
+        for index in pass.renderVars.keys.sorted() {
+            let value = pass.renderVars[index]!
+            signature += [Float(index), value.x, value.y, value.z, value.w]
         }
         if signature != passSignature {
             passSignature = signature
