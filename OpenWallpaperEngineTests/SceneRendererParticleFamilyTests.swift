@@ -13,6 +13,8 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
     func testCPUStaticChildDrawsAtItsLink() throws { try assertStaticChild(simulation: .cpu) }
     func testGPUParticlesFollowTheirAnimatedParent() throws { try assertAnimatedParent(simulation: .gpu) }
     func testCPUParticlesFollowTheirAnimatedParent() throws { try assertAnimatedParent(simulation: .cpu) }
+    func testGPUParticlesFollowCameraParallax() throws { try assertCameraParallax(simulation: .gpu) }
+    func testCPUParticlesFollowCameraParallax() throws { try assertCameraParallax(simulation: .cpu) }
 
     // MARK: - Scenarios
 
@@ -64,6 +66,31 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
                       file: file, line: line)
     }
 
+    /// WE moves every object's model matrix by camera parallax, particle systems too: the object
+    /// at x 40 of a 128-wide scene, with the cursor at the centre and amount 0.5, sits at
+    /// 40 + 0.5 · (40 − 64) = 28.
+    private func assertCameraParallax(simulation: SceneMetalRenderer.ParticleSimulation,
+                                      file: StaticString = #filePath, line: UInt = #line) throws {
+        let objects = try JSONDecoder().decode([WESceneObject].self, from: Data(#"""
+        [{"id": 2, "origin": "40 64 0", "particle": "p.json"}]
+        """#.utf8))
+        let size = SIMD2<Float>(repeating: Float(Self.size))
+        var dot = dot()
+        dot.origin = SIMD2(40, 64)
+        var system = dot.configuration
+        system.order = 1
+        system.objectID = "2"
+        for parallax in [false, true] {
+            let pixels = try render(simulation: simulation, systems: [system],
+                                    transforms: SceneTransformHierarchy(objects: objects, sceneSize: size),
+                                    parallax: parallax) {
+                parallax ? Self.isWhite($0, x: 17, y: 64) : Self.isWhite($0, x: 50, y: 64)
+            }
+            XCTAssertEqual(Self.isWhite(pixels, x: 17, y: 64), parallax, "left edge, parallax \(parallax)", file: file, line: line)
+            XCTAssertEqual(Self.isWhite(pixels, x: 50, y: 64), !parallax, "right edge, parallax \(parallax)", file: file, line: line)
+        }
+    }
+
     // MARK: - Helpers
 
     /// One still white dot, 30 units across, that lives long.
@@ -86,7 +113,7 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
     /// Frames over a red background until `done` holds for the drawn pixels (or 10 s pass).
     private func render(simulation: SceneMetalRenderer.ParticleSimulation, systems: [SceneMetalParticleSystem],
                         transforms: SceneTransformHierarchy = .empty, motions: [String: SceneObjectMotion] = [:],
-                        until done: ([UInt8]) -> Bool) throws -> [UInt8] {
+                        parallax: Bool = false, until done: ([UInt8]) -> Bool) throws -> [UInt8] {
         let device = try XCTUnwrap(MTLCreateSystemDefaultDevice())
         let view = MTKView(frame: CGRect(x: 0, y: 0, width: Self.size, height: Self.size), device: device)
         view.colorPixelFormat = .bgra8Unorm
@@ -102,6 +129,9 @@ final class SceneRendererParticleFamilyTests: XCTestCase {
                                                                   tint: SIMD3(repeating: 1)))
         content.transforms = transforms
         content.motions = motions
+        content.camera.parallax = parallax
+        content.camera.parallaxAmount = 0.5
+        content.camera.parallaxDelay = 0
         renderer.setContent(content)
         var pixels: [UInt8] = []
         let deadline = Date().addingTimeInterval(10)

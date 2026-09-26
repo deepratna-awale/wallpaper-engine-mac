@@ -492,7 +492,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         for system in orderedSystems {
             let base = particleInstances.count
             let inputs = ParticleFrameInputs.advance(system, deltaTime: Float(clock.delta), cursor: cursor,
-                                                     emitter: emitterWorld(system.configuration, time: time),
+                                                     emitter: emitterWorld(system.configuration, time: time, motion: motion),
                                                      audio: effectFrame.audio)
             if particleSimulator != nil {
                 // The GPU steps the system and writes whichever records it is drawn from.
@@ -892,10 +892,25 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         transforms.parentWorld(of: entry.layer.id) { [self] id in liveLocal(id, time: time) }
     }
 
-    /// A particle system's emitter transform this frame: its object's, parents included.
-    private func emitterWorld(_ configuration: SceneMetalParticleSystem, time: Float) -> SceneAffineTransform? {
+    /// A particle system's emitter transform this frame: its object's, parents included, moved by
+    /// camera parallax and shake as WE moves every object's model matrix (0x14018a0b3): the
+    /// system's particles follow it unless it is `worldspace`; its children follow it through
+    /// their links.
+    private func emitterWorld(_ configuration: SceneMetalParticleSystem, time: Float,
+                              motion: CameraMotion) -> SceneAffineTransform? {
         guard let id = configuration.objectID else { return nil }
-        return transforms.world(of: id) { [self] id in liveLocal(id, time: time) }
+        var world = transforms.world(of: id) { [self] id in liveLocal(id, time: time) }
+        world.translation += particleParallaxOffset(id, time: time, motion: motion) - motion.shake
+        return world
+    }
+
+    /// The parallax offset of a particle object: its root object's live origin and `parallaxDepth`.
+    private func particleParallaxOffset(_ id: String, time: Float, motion: CameraMotion) -> SIMD2<Float> {
+        guard let parallax = motion.parallax else { return .zero }
+        let rootID = transforms.root(of: id)
+        guard let node = transforms.nodes[rootID] else { return .zero }
+        let rootLocal = liveLocal(rootID, time: time) ?? node.local
+        return parallax.state.offset(rootOrigin: rootLocal.origin, rootDepth: node.parallaxDepth, amount: parallax.amount)
     }
 
     private func worldTransform(_ entry: PreparedLayer, time: Float) -> SceneAffineTransform {
