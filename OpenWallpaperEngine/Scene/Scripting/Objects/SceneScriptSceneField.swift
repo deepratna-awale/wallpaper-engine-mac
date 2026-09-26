@@ -11,9 +11,14 @@ enum SceneScriptSceneField: String, CaseIterable {
     /// `CameraTransforms`: not members of `thisScene`, read and written through
     /// `getCameraTransforms()`/`setCameraTransforms()`.
     case cameraEye, cameraCenter, cameraUp, cameraZoom
+    /// The HDR bloom's `general` fields (docs/lighting-plan.md §1.2). `IScene` doesn't declare them,
+    /// so they aren't members, but a script bound to one sets it (2350874185 binds one to
+    /// `bloomhdrstrength`), and WE recomputes the bloom's constants whenever the scene changes
+    /// (0x140184020).
+    case bloomhdrstrength, bloomhdrthreshold, bloomhdrfeather, bloomhdrscatter, bloomhdriterations
 
     enum Layout {
-        static let stride = 36  // 35 used
+        static let stride = 40  // 40 used
         /// Dirty flags: one for the settings, one for the camera transforms.
         static let settingsDirty = 0
         static let cameraDirty = 1
@@ -41,6 +46,14 @@ enum SceneScriptSceneField: String, CaseIterable {
 
     var isCamera: Bool { [.cameraEye, .cameraCenter, .cameraUp, .cameraZoom].contains(self) }
 
+    /// Whether `thisScene` has the field as a member; the others only a bound script sets.
+    var isMember: Bool {
+        switch self {
+        case .bloomhdrstrength, .bloomhdrthreshold, .bloomhdrfeather, .bloomhdrscatter, .bloomhdriterations: return false
+        default: return true
+        }
+    }
+
     /// The defaults of scene.json's `general` for a value the scene leaves out, and a camera at the
     /// origin looking down -z.
     var defaultValue: [Float] {
@@ -53,6 +66,11 @@ enum SceneScriptSceneField: String, CaseIterable {
         case .fov: return [50]
         case .nearz: return [0.01]
         case .farz: return [10000]
+        case .bloomhdrstrength: return [SceneGeneralDefaults.bloomHDRStrength]
+        case .bloomhdrthreshold: return [SceneGeneralDefaults.bloomHDRThreshold]
+        case .bloomhdrfeather: return [SceneGeneralDefaults.bloomHDRFeather]
+        case .bloomhdrscatter: return [SceneGeneralDefaults.bloomHDRScatter]
+        case .bloomhdriterations: return [Float(SceneGeneralDefaults.bloomHDRIterations)]
         default: return Array(repeating: 0, count: components)
         }
     }
@@ -60,7 +78,8 @@ enum SceneScriptSceneField: String, CaseIterable {
     /// The list `objects-scene.js` builds accessors from; camera fields are not members.
     static var javaScriptObject: [[String: Any]] {
         allCases.map {
-            ["name": $0.rawValue, "offset": $0.offset, "type": $0.type.rawValue, "camera": $0.isCamera]
+            ["name": $0.rawValue, "offset": $0.offset, "type": $0.type.rawValue, "camera": $0.isCamera,
+             "member": $0.isMember]
         }
     }
 }

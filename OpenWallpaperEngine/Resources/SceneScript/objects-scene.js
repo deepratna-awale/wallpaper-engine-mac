@@ -167,9 +167,15 @@
 
     // Scene settings (bloom, clearcolor, camerashake, …), generated from SceneScriptSceneField.
     const fieldOffset = {};
+    // Settings `IScene` doesn't declare (`bloomhdr*`): only a script bound to one reads and sets it.
+    const sceneBoundOnly = {};
     native.sceneFields.forEach(function (field) {
         fieldOffset[field.name] = field.offset;
         if (field.camera) return;
+        if (!field.member) {
+            sceneBoundOnly[field.name] = field;
+            return;
+        }
         objects.defineField(Scene.prototype, field.name, field.offset, field.type, false);
     });
     objects.stub(Scene.prototype, 'IScene', 'createModelData', function () { return null; });
@@ -177,6 +183,30 @@
 
     const thisScene = new Scene();
     objects.attach(thisScene, sceneBuffer.values, 0, sceneBuffer.dirty, SETTINGS_DIRTY);
+
+    // The property binding's access to bound-only fields: the scene's own, else a layer's
+    // (objects-layers.js).
+    const layerIsBoundOnly = objects.isBoundOnly, layerReadBound = objects.readBound;
+    const layerWriteBound = objects.writeBound;
+    const sceneField = function (name) {
+        return Object.prototype.hasOwnProperty.call(sceneBoundOnly, name) ? sceneBoundOnly[name] : undefined;
+    };
+    objects.isBoundOnly = function (name, target) {
+        return target === thisScene ? sceneField(name) !== undefined : layerIsBoundOnly(name);
+    };
+    objects.readBound = function (target, name) {
+        if (target !== thisScene) return layerReadBound(target, name);
+        const field = sceneField(name);
+        return field === undefined ? undefined : objects.read(field.type, target._t, target._base + field.offset);
+    };
+    objects.writeBound = function (target, name, value) {
+        if (target !== thisScene) return layerWriteBound(target, name, value);
+        const field = sceneField(name);
+        const c = field === undefined ? undefined : objects.convert(field.type, value);
+        if (c === undefined) return;
+        for (let k = 0; k < c.length; k++) target._t[target._base + field.offset + k] = c[k];
+        target._d[target._di] = 1;
+    };
     const sceneAnimations = native.initial.animations;
     objects.Scene = Scene;
     objects.scene = thisScene;

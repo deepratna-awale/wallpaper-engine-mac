@@ -72,6 +72,18 @@ final class SceneHDRRenderTests: XCTestCase {
         XCTAssertGreaterThan(output[drawn], 0, "the overbright square's glow reaches it")
     }
 
+    /// `bloomhdr*` are live, as WE recomputes the chain's constants whenever the scene changes
+    /// (0x140184020): a timeline holding `bloomhdrstrength` at 0 (the authored value is 2) drives
+    /// the chain's strength, and nothing blooms.
+    func testATimelineOnBloomHDRStrengthDrivesTheChain() throws {
+        directory = Fixtures.url("Scenes/hdr-animated")
+        let (pixels, renderer) = try render(.ultra)
+        defer { renderer.releaseContent() }
+        let record = try XCTUnwrap(renderer.postProcess.lastHDR, "WE's HDR chain didn't run")
+        XCTAssertEqual(record.constants.strength, 0, "the timeline's strength, not the authored 2")
+        XCTAssertLessThanOrEqual(pixels.rgb(Self.bright.outside).x, 1, "nothing blooms")
+    }
+
     /// "displayhdr" without an HDR output draws as "ultra" (WE's fallback, 0x1401109be).
     func testDisplayHDRDrawsAsUltra() throws {
         let (ultra, first) = try render(.ultra)
@@ -108,7 +120,7 @@ final class SceneHDRRenderTests: XCTestCase {
     }
 
     private func content(_ postProcessing: GSPostProcessingQuality) throws -> SceneMetalContent {
-        let project = try JSONDecoder().decode(WEProject.self, from: Fixtures.data("Scenes/hdr/project.json"))
+        let project = try JSONDecoder().decode(WEProject.self, from: Data(contentsOf: directory.appending(path: "project.json")))
         let model = SceneWallpaperViewModel(wallpaper: WEWallpaper(using: project, where: directory))
         var settings = SceneRenderSettings()
         settings.postProcessing = postProcessing

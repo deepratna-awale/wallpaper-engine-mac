@@ -1057,7 +1057,22 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             enabled: scene.flag(.bloom) ?? bloom.enabled,
             strength: scene.scalar(.bloomstrength) ?? timelines.sceneScalar(.bloomstrength) ?? bloom.strength,
             threshold: scene.scalar(.bloomthreshold) ?? timelines.sceneScalar(.bloomthreshold) ?? bloom.threshold,
-            tint: bloom.tint, hdr: bloom.hdr)
+            tint: bloom.tint, hdr: liveHDRBloom())
+    }
+
+    /// The HDR bloom's `bloomhdr*` this frame: a bound script's, else its timeline's, else the
+    /// content's. Whether the scene draws in HDR stays the content's (WE decides it at load).
+    private func liveHDRBloom() -> SceneHDRBloomSettings {
+        var hdr = bloom.hdr
+        hdr.strength = sceneSetting(.bloomhdrstrength) ?? hdr.strength
+        hdr.threshold = sceneSetting(.bloomhdrthreshold) ?? hdr.threshold
+        hdr.feather = sceneSetting(.bloomhdrfeather) ?? hdr.feather
+        hdr.scatter = sceneSetting(.bloomhdrscatter) ?? hdr.scatter
+        // An int property: WE's converter truncates (`ToInt32`).
+        if let iterations = sceneSetting(.bloomhdriterations), iterations.isFinite, abs(iterations) < 1e9 {
+            hdr.iterations = Int(iterations)
+        }
+        return hdr
     }
 
     /// The app's own whole-scene adjustments, from this wallpaper's user properties.

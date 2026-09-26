@@ -342,6 +342,22 @@ final class SceneScriptBindingTests: XCTestCase {
         XCTAssertTrue(f.errors.isEmpty, "\(f.errors)")
     }
 
+    /// B2: 2350874185 binds a script to `general.bloomhdrstrength`. `IScene` doesn't declare the
+    /// `bloomhdr*` fields, but a bound script sets them.
+    func testHDRBloomFieldsBindToTheSceneWithoutBeingMembers() throws {
+        let f = try SceneScriptBindingFixture(objects: [Self.image], settings: [.bloomhdrstrength: [2]])
+        try f.load("""
+            {"general": {
+              "bloomhdrstrength": {"script": "export function update(value) { return value * 2; }", "value": 2}},
+             "objects": [{"id": 1, "name": "Image"}]}
+            """)
+        f.frames(2)
+        XCTAssertEqual(f.model.store!.scene[0, SceneScriptSceneField.bloomhdrstrength.offset], 8,
+                       "2 × 2 × 2: the live value chains")
+        XCTAssertEqual(f.evaluate("'bloomhdrstrength' in thisScene")?.toBool(), false, "not a member")
+        XCTAssertTrue(f.errors.isEmpty, "\(f.errors)")
+    }
+
     // MARK: - User properties (S8)
 
     func testUserBoundScriptPropertiesAreInjectedBeforeApplyUserProperties() throws {
