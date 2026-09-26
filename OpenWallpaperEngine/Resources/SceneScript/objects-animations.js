@@ -1,17 +1,22 @@
 'use strict';
 // SceneScript object model, part 2 of 5: `IAnimation` and `ITextureAnimation` over the animation
-// buffer (rate, frame, playing per animation slot). The renderer keeps the state current and
-// executes the commands; timeline evaluation itself is WP12, which can replace
-// `__rt.objects.hooks.animation` to hand out richer objects.
+// buffer (docs/timeline-plan.md §3; layout in SceneScriptObjectStore.AnimationLayout). The
+// renderer writes each clock's state before a frame; the methods here apply WE's rules to it in
+// call order, so a script reads back what it just did, mark the slot dirty and push the command.
+// The renderer reads a dirty slot back after the frame. `__rt.objects.hooks.animation` can still
+// hand out other objects, and `animationEvent(event, value)` arrives as an inbox event (§3.3).
 (function (global) {
     const rt = global.__rt;
     const objects = rt.objects;
     const OP = objects.OP;
     const buffer = objects.animations;
     const layout = objects.animationLayout;
+    const PAUSED = layout.paused, FINISHED = layout.finished, BACKWARDS = layout.backwards;
+    const OVERRIDDEN = layout.overridden;
+    const f32 = Math.fround;
 
-    // The playback part both interfaces share. `record` is the animation's record from
-    // SceneScriptObjectStore (slot, name, fps, frameCount, duration, property).
+    // What both interfaces share. `record` is the animation's record from SceneScriptObjectStore
+    // (slot, name, fps, frameCount, duration, property).
     class PlaybackState {
         constructor(record) {
             // Non-enumerable internals; `objects.detach` points them at a snapshot once the owner
@@ -25,56 +30,164 @@
         get duration() { return this._record.duration; }
         set duration(value) {}
 
-        get rate() { return this._t[this._base + layout.rate]; }
+        // Any number (0 freezes, a negative one runs backwards); WE stores it as a float.
+        get rate() { return this._get(layout.rate); }
         set rate(value) {
             if (typeof value !== 'number' || this._dead) return;
-            this._t[this._base + layout.rate] = value;
-            this._d[this._di] = 1;
-        }
-
-        play() {
-            this._t[this._base + layout.playing] = 1;
-            this._command(OP.animationPlay);
-        }
-
-        pause() {
-            this._t[this._base + layout.playing] = 0;
-            this._command(OP.animationPause);
-        }
-
-        stop() {
-            this._t[this._base + layout.playing] = 0;
-            this._t[this._base + layout.frame] = 0;
-            this._command(OP.animationStop);
-        }
-
-        isPlaying() { return this._t[this._base + layout.playing] !== 0; }
-
-        getFrame() { return this._t[this._base + layout.frame]; }
-
-        setFrame(frame) {
-            if (typeof frame !== 'number') return;
-            this._t[this._base + layout.frame] = frame;
-            this._command(OP.animationSetFrame, [frame]);
+            this._set(layout.rate, value);
+            this._rateWritten();
         }
     }
+    objects.defineMethod(PlaybackState.prototype, '_get', function (field) {
+        return this._t[this._base + field];
+    });
+    // Writes one float of the slot and marks it dirty (a destroyed owner's snapshot takes it harmlessly).
+    objects.defineMethod(PlaybackState.prototype, '_set', function (field, value) {
+        this._t[this._base + field] = value;
+        this._d[this._di] = 1;
+    });
+    objects.defineMethod(PlaybackState.prototype, '_flags', function () {
+        return this._get(layout.flags) | 0;
+    });
+    objects.defineMethod(PlaybackState.prototype, '_setFlags', function (flags) {
+        this._set(layout.flags, flags);
+    });
+    objects.defineMethod(PlaybackState.prototype, '_rateWritten', function () {});
     objects.defineMethod(PlaybackState.prototype, '_command', function (opcode, numbers) {
         if (!this._dead) objects.push(opcode, this._record.slot, numbers);
     });
 
-    // IAnimation: a named timeline of an object, effect, material or the scene.
+    // IAnimation: a property timeline of an object, effect, material or the scene (§3.1, callbacks
+    // 0x140170770…). Its clock is `time` (float seconds) and the paused/finished/backwards flags.
     class Animation extends PlaybackState {
-        get fps() { return this._record.fps; }
+        // WE stores 1/fps and returns 1 / that, in float.
+        get fps() { return f32(1 / this._frameDuration()); }
         set fps(value) {}
         get name() { return this._record.name; }
         set name(value) {}
-    }
 
-    // ITextureAnimation: an image's spritesheet animation. Changing it detaches it from the state
-    // shared by every user of the texture; `join()` returns to it (docs).
-    class TextureAnimation extends PlaybackState {
-        join() { this._command(OP.animationJoin); }
+        // A finished animation restarts from 0; paused and finished clear (a mirror keeps its direction).
+        play() {
+            if (this._dead) return;
+            const flags = this._flags();
+            if ((flags & FINISHED) !== 0) this._setTime(0);
+            this._setState(flags & ~(PAUSED | FINISHED));
+            this._command(OP.animationPlay);
+        }
+
+        pause() {
+            if (this._dead) return;
+            this._setState(this._flags() | PAUSED);
+            this._command(OP.animationPause);
+        }
+
+        // Paused at 0, not finished, running forwards.
+        stop() {
+            if (this._dead) return;
+            this._setTime(0);
+            this._setState((this._flags() | PAUSED) & ~(FINISHED | BACKWARDS));
+            this._command(OP.animationStop);
+        }
+
+        isPlaying() { return (this._flags() & (PAUSED | FINISHED)) === 0; }
+
+        // `time / frameDuration`: a fractional frame.
+        getFrame() { return this._get(layout.frame); }
+
+        // `time = frame × frameDuration` in float, not clamped; the play state stays (a finished
+        // single stays finished, and `play()` then restarts it from 0).
+        setFrame(frame) {
+            if (typeof frame !== 'number' || this._dead) return;
+            this._setTime(f32(f32(frame) * this._frameDuration()));
+            this._command(OP.animationSetFrame, [frame]);
+        }
     }
+    objects.defineMethod(Animation.prototype, '_frameDuration', function () {
+        return f32(1 / f32(this._record.fps));
+    });
+    objects.defineMethod(Animation.prototype, '_setTime', function (time) {
+        this._set(layout.time, time);
+        this._set(layout.frame, f32(f32(time) / this._frameDuration()));
+    });
+    // The flags, and `playing` as `isPlaying()` for code that reads only that slot.
+    objects.defineMethod(Animation.prototype, '_setState', function (flags) {
+        this._setFlags(flags);
+        this._set(layout.playing, (flags & (PAUSED | FINISHED)) === 0 ? 1 : 0);
+    });
+
+    // ITextureAnimation: an image's spritesheet animation (§3.2, wrapper at layer+0x4c0). Every
+    // user of the texture shares one clock (`sharedFrame`/`sharedTime`, renderer-written); a
+    // script that takes control copies it into this layer's override (`frame`, `time`), which the
+    // renderer advances by the frame time × rate while `playing`. `join()` gives control back.
+    class TextureAnimation extends PlaybackState {
+        // playing = 1; it doesn't take control.
+        play() {
+            if (this._dead) return;
+            this._set(layout.playing, 1);
+            this._command(OP.animationPlay);
+        }
+
+        // Takes control (copying the shared frame the first time), not playing.
+        pause() {
+            if (this._dead) return;
+            this._take();
+            this._set(layout.playing, 0);
+            this._command(OP.animationPause);
+        }
+
+        // Frame 0, time 0, not playing, in control.
+        stop() {
+            if (this._dead) return;
+            this._set(layout.frame, 0);
+            this._set(layout.time, 0);
+            this._setFlags(this._flags() | OVERRIDDEN);
+            this._set(layout.playing, 0);
+            this._command(OP.animationStop);
+        }
+
+        // False only while in control and not playing.
+        isPlaying() {
+            return (this._flags() & OVERRIDDEN) === 0 || this._get(layout.playing) !== 0;
+        }
+
+        // The integer frame: the override's while in control, else the shared one.
+        getFrame() {
+            return ((this._flags() & OVERRIDDEN) !== 0 ? this._get(layout.frame) : this._get(layout.sharedFrame)) | 0;
+        }
+
+        // Frame `n` (an int, not range-checked), time 0; taking control this way starts it playing.
+        setFrame(frame) {
+            if (typeof frame !== 'number' || this._dead) return;
+            const n = frame | 0;
+            this._set(layout.frame, n);
+            this._set(layout.time, 0);
+            const flags = this._flags();
+            if ((flags & OVERRIDDEN) === 0) {
+                this._setFlags(flags | OVERRIDDEN);
+                this._set(layout.playing, 1);
+            }
+            this._command(OP.animationSetFrame, [n]);
+        }
+
+        // Back to the shared clock; the override keeps its frame, time and playing flag.
+        join() {
+            if (this._dead) return;
+            this._setFlags(this._flags() & ~OVERRIDDEN);
+            this._command(OP.animationJoin);
+        }
+    }
+    // Copies the shared frame and time into the override and takes control, unless it has it.
+    objects.defineMethod(TextureAnimation.prototype, '_take', function () {
+        const flags = this._flags();
+        if ((flags & OVERRIDDEN) !== 0) return;
+        this._set(layout.frame, this._get(layout.sharedFrame));
+        this._set(layout.time, this._get(layout.sharedTime));
+        this._setFlags(flags | OVERRIDDEN);
+    });
+    // A stored rate other than 1 (NaN too) takes control (0x1401fa4a0).
+    objects.defineMethod(TextureAnimation.prototype, '_rateWritten', function () {
+        if (this._get(layout.rate) !== 1) this._take();
+    });
 
     objects.Animation = Animation;
     objects.TextureAnimation = TextureAnimation;
@@ -124,5 +237,72 @@
             found = records.find(function (record) { return record.name === key; });
         }
         return found ? objects.animationFor(owner, found, false) : null;
+    };
+
+    // MARK: animationEvent (§3.3)
+
+    function holds(records, slot) {
+        if (!records) return false;
+        for (let i = 0; i < records.length; i++) if (records[i].slot === slot) return true;
+        return false;
+    }
+
+    // The object that owns animation `slot` (a layer, effect, material or the scene), or null.
+    objects.animationOwner = function (slot) {
+        const scene = objects.scene;
+        if (holds(rt.native.objects.initial.animations, slot)) return scene;
+        for (const layer of objects.bySlot.values()) {
+            if (layer._dead) continue;
+            const record = layer._record;
+            if (holds(record.animations, slot)) return layer;
+            const effects = record.effects || [];
+            for (let e = 0; e < effects.length; e++) {
+                const effect = effects[e];
+                if (holds(effect.animations, slot)) return layer.getEffect(effect.index);
+                const materials = effect.materials || [];
+                for (let m = 0; m < materials.length; m++) {
+                    if (holds(materials[m].animations, slot)) {
+                        const owner = layer.getEffect(effect.index);
+                        return owner === null ? null : owner.getMaterial(m);
+                    }
+                }
+            }
+        }
+        return null;
+    };
+
+    // Sends `animationEvent(event, value)` to every initialised script whose `thisObject` owns the
+    // animation (WE: the scripts attached to the owner, and the animated property's own script),
+    // in list order; the return is applied like `update`'s (P3). Payload: {slot, name, frame}.
+    // SceneScriptEvent.animationEvent posts it after the clocks advanced, before timers and `update`.
+    objects.dispatchAnimationEvent = function (payload) {
+        const owner = objects.animationOwner(payload.slot);
+        if (owner === null) return;
+        const records = rt.records;
+        for (let i = 0; i < records.length; i++) {
+            const record = records[i];
+            if (!record.enabled || record.animationReady !== true || record.pendingDestroy) continue;
+            let exported;
+            try {
+                exported = typeof rt.exports(record, 'animationEvent') === 'function';
+            } catch (error) {
+                exported = true; // Let `invoke` report the throwing getter.
+            }
+            if (!exported || rt.hooks.scope(record).thisObject !== owner) continue;
+            const event = { name: String(payload.name), frame: payload.frame };
+            rt.apply(record, rt.invoke(record, 'animationEvent', [event, rt.argument(record)]));
+        }
+    };
+
+    // After media events (§1.9 P1: timeline animations and `animationEvent` follow them).
+    rt.addEventHandler('animationEvent', rt.EVENT_ORDER.media + 100, function (event) {
+        objects.dispatchAnimationEvent(event.payload);
+    });
+
+    // WE calls `animationEvent` only on scripts that finished `init`.
+    const initialized = rt.hooks.initialized;
+    rt.hooks.initialized = function (record) {
+        record.animationReady = true;
+        initialized(record);
     };
 })(this);

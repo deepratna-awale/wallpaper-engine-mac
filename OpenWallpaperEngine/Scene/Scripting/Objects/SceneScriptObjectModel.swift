@@ -60,9 +60,12 @@ final class SceneScriptObjectModel: SceneScriptRuntimeExtension {
         objects.setValue(store.constants.javaScriptObject(in: context), forProperty: "constants")
         objects.setValue(store.animations.javaScriptObject(in: context), forProperty: "animations")
         objects.setValue(store.scene.javaScriptObject(in: context), forProperty: "scene")
-        objects.setValue(["rate": SceneScriptObjectStore.AnimationLayout.rate,
-                          "frame": SceneScriptObjectStore.AnimationLayout.frame,
-                          "playing": SceneScriptObjectStore.AnimationLayout.playing],
+        typealias Layout = SceneScriptObjectStore.AnimationLayout
+        typealias Flags = SceneScriptObjectStore.AnimationFlags
+        objects.setValue(["rate": Layout.rate, "frame": Layout.frame, "playing": Layout.playing, "flags": Layout.flags,
+                          "time": Layout.time, "sharedFrame": Layout.sharedFrame, "sharedTime": Layout.sharedTime,
+                          "paused": Flags.paused, "finished": Flags.finished, "backwards": Flags.backwards,
+                          "overridden": Flags.overridden],
                          forProperty: "animationLayout")
         objects.setValue(initialScene(store), forProperty: "initial")
         installNativeFunctions(on: objects)

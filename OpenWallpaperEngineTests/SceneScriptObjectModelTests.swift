@@ -345,7 +345,8 @@ final class SceneScriptObjectModelTests: XCTestCase {
             bg.play(); bg.emitParticles(3);
             """)
         XCTAssertEqual(f.evaluate("shared.playing + ',' + music.isPlaying()")?.toString(), "true,false")
-        XCTAssertEqual(f.evaluate("shared.sprite")?.toString(), "true,8,1,false,", "a text layer has no texture animation")
+        XCTAssertEqual(f.evaluate("shared.sprite")?.toString(), "true,8,1,true,",
+                       "join() returns to the shared clock, which plays; a text layer has no texture animation")
         XCTAssertEqual(f.table(2, .volume), [0.25])
         XCTAssertEqual(f.table(3, .instanceRate), [2])
         XCTAssertEqual(f.table(3, .controlpoint3), [1, 2, 3])

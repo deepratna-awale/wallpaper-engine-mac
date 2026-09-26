@@ -15,12 +15,36 @@ final class SceneScriptObjectStore {
         static let standard = Capacity()
     }
 
-    /// Per-animation floats in `animations`.
+    /// Per-animation floats in `animations` (docs/timeline-plan.md §3). The renderer writes the
+    /// clock's state before each script frame; `objects-animations.js` applies WE's API rules to it
+    /// in order and marks the slot dirty; the renderer reads a dirty slot back after the frame.
     enum AnimationLayout {
+        /// `rate`, any float.
         static let rate = 0
+        /// `IAnimation`: `time / frameDuration` in float (what `getFrame()` returns).
+        /// `ITextureAnimation`: the override's integer frame.
         static let frame = 1
+        /// `IAnimation`: 1 while `isPlaying()`. `ITextureAnimation`: the override's playing flag.
         static let playing = 2
-        static let stride = 4
+        /// `AnimationFlags` bits.
+        static let flags = 3
+        /// Seconds: the timeline's time (`IAnimation`), or the override's time in its frame.
+        static let time = 4
+        /// `ITextureAnimation`: the texture's shared clock (frame, seconds in it), renderer-written.
+        static let sharedFrame = 5
+        static let sharedTime = 6
+        static let stride = 8
+    }
+
+    /// The `flags` bits (WE's clock flags 0x20000000, 0x40000000, 0x80000000 and the texture
+    /// wrapper's override byte, renumbered to fit a float).
+    enum AnimationFlags {
+        static let paused = 1
+        static let finished = 2
+        /// A mirror timeline running backwards.
+        static let backwards = 4
+        /// `ITextureAnimation`: a script took control from the shared clock.
+        static let overridden = 8
     }
 
     struct PoolRange: Hashable {
@@ -195,7 +219,11 @@ final class SceneScriptObjectStore {
                        into allocation: inout Allocation) -> [String: Any]? {
         guard let animationSlot = animationSlots.take() else { return nil }
         allocation.animations.append(animationSlot)
-        animations.write([Float(animation.rate), Float(animation.frame), animation.playing ? 1 : 0, 0],
+        // A timeline that isn't playing is paused; a texture's override starts off and playing.
+        let flags = reference.isTextureAnimation || animation.playing ? 0 : AnimationFlags.paused
+        let time = animation.fps > 0 ? Float(animation.frame / animation.fps) : 0
+        animations.write([Float(animation.rate), Float(animation.frame), animation.playing ? 1 : 0, Float(flags), time,
+                          Float(animation.frame), 0, 0],
                          slot: animationSlot, offset: 0)
         animations.dirty[animationSlot] = 0
         var placed = reference
