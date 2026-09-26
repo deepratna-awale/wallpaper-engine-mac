@@ -28,6 +28,10 @@ struct EffectShaderCombo: Equatable {
         /// A WE localisation key, as authored.
         let label: String
         let value: Int
+        /// WE's English text, for options WE's editor supplies (the blend modes).
+        var english: String? = nil
+        /// The editor's group heading (a localisation key and its English text), if any.
+        var group: String? = nil
     }
 
     /// The preprocessor name (`BLENDMODE`), upper-cased as the translator uses it.
@@ -42,8 +46,8 @@ struct EffectShaderCombo: Equatable {
     /// `require`: other combos' values this one is shown for (upper-cased names).
     var requirements: [String: Int] = [:]
 
-    /// An on/off switch or an authored option list. WE fills some types (`imageblending`) from
-    /// lists in its editor that we don't have, so those aren't editable here.
+    /// An on/off switch or an option list: authored, or for `imageblending` WE's blend modes
+    /// (`WEImageBlendModes`), which its editor supplies.
     var isEditable: Bool { !options.isEmpty || type == nil || type == "options" }
 }
 
@@ -141,12 +145,21 @@ enum SceneEffectParameters {
             guard let json = ShaderSourceLoader.annotation(raw), let name = json["combo"] as? String,
                   let label = json["material"] as? String else { continue }
             let value = (json["default"] as? NSNumber)?.intValue ?? Int(json["default"] as? String ?? "") ?? 0
+            let type = json["type"] as? String
+            var options = json["options"] is [String: Any] ? orderedOptions(raw) : []
+            if options.isEmpty, type?.lowercased() == "imageblending" { options = blendModeOptions }
             result.append(EffectShaderCombo(combo: name.uppercased(), label: label, defaultValue: value,
-                                            options: json["options"] is [String: Any] ? orderedOptions(raw) : [],
-                                            type: json["type"] as? String,
+                                            options: options,
+                                            type: type,
                                             requirements: requirements(json["require"])))
         }
         return result
+    }
+
+    /// WE's blend modes in its editor's order, grouped as it groups them.
+    static let blendModeOptions: [EffectShaderCombo.Option] = WEImageBlendModes.all.map { mode in
+        let group = mode.isNative ? WEImageBlendModes.nativeGroup : WEImageBlendModes.emulatedGroup
+        return EffectShaderCombo.Option(label: mode.label, value: mode.value, english: mode.english, group: group.label)
     }
 
     private static func requirements(_ raw: Any?) -> [String: Int] {

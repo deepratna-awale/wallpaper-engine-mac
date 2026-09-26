@@ -59,9 +59,12 @@ final class WEAuthoredValuesTests: XCTestCase {
             for (combo, annotation) in zip(combos, expectedCombos) {
                 XCTAssertEqual(combo.label, annotation["material"] as? String, "\(file) \(combo.combo)")
                 XCTAssertEqual(combo.defaultValue, (annotation["default"] as? NSNumber)?.intValue ?? 0, "\(file) \(combo.combo)")
-                let options = annotation["options"] as? [String: NSNumber] ?? [:]
+                var options = (annotation["options"] as? [String: NSNumber] ?? [:]).mapValues(\.intValue)
+                if options.isEmpty, (annotation["type"] as? String)?.lowercased() == "imageblending" {
+                    options = Dictionary(uniqueKeysWithValues: WEImageBlendModes.all.map { ($0.label, $0.value) })
+                }
                 XCTAssertEqual(Dictionary(uniqueKeysWithValues: combo.options.map { ($0.label, $0.value) }),
-                               options.mapValues(\.intValue), "\(file) \(combo.combo): options")
+                               options, "\(file) \(combo.combo): options")
                 checkedCombos += 1
             }
         }
@@ -101,7 +104,8 @@ final class WEAuthoredValuesTests: XCTestCase {
         XCTAssertEqual(SceneEffectParameters.combos(in: #"// [COMBO] {"combo":"MASK","default":0}"#), [],
                        "a combo without a material key isn't shown by WE's editor")
         let blend = SceneEffectParameters.combos(in: #"// [COMBO] {"material":"ui_editor_properties_blend_mode","combo":"BLENDMODE","type":"imageblending","default":9}"#)
-        XCTAssertEqual(blend.first?.isEditable, false, "WE's blend mode list lives in its editor, not the annotation")
+        XCTAssertEqual(blend.first?.isEditable, true, "WE's editor supplies the blend modes")
+        XCTAssertEqual(blend.first?.options.map(\.value), WEImageBlendModes.all.map(\.value))
         XCTAssertEqual(SceneEffectParameters.combos(in: #"// [COMBO] {"material":"ui_x","combo":"COPYBG","type":"options"}"#).first?.isEditable, true)
         let rim = SceneEffectParameters.combos(in: #"// [COMBO] {"material":"ui_rim","combo":"RIMLIGHTING","default":0,"require":{"LIGHTING":1}}"#)
         XCTAssertEqual(rim.first?.requirements, ["LIGHTING": 1])

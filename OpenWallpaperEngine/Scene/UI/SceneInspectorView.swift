@@ -37,8 +37,8 @@ private struct SceneInspectorEffectCombo: Identifiable {
     /// The preprocessor name, which the override is stored under.
     let combo: String
     let title: String
-    /// WE's options as (title, value); an on/off switch when empty.
-    let options: [(title: String, value: Int)]
+    /// WE's options as (title, value, the editor's group heading); an on/off switch when empty.
+    let options: [(title: String, value: Int, group: String?)]
     /// Other combos' values this one is shown for, as WE's `require`.
     var requirements: [String: Int] = [:]
 }
@@ -306,7 +306,10 @@ private final class SceneInspectorModel: ObservableObject {
                 combos.append(SceneInspectorEffectCombo(
                     id: comboID, effectID: effectID, combo: combo.combo,
                     title: labels.translation(combo.label) ?? SceneEffectParameters.title(combo.label),
-                    options: combo.options.map { (labels.translation($0.label) ?? SceneEffectParameters.title($0.label), $0.value) },
+                    options: combo.options.map { option in
+                        (labels.translation(option.label) ?? option.english ?? SceneEffectParameters.title(option.label),
+                         option.value, option.group.map { labels.translation($0) ?? Self.groupTitle($0) })
+                    },
                     requirements: combo.requirements))
             }
             let maskPath = effect.passes?.first?.textures?.compactMap { $0 }.first
@@ -314,6 +317,12 @@ private final class SceneInspectorModel: ObservableObject {
                                         title: name.replacingOccurrences(of: "_", with: " ").capitalized,
                                         maskPath: maskPath, controls: controls, combos: combos)
         }
+    }
+
+    /// A blend-mode group heading without WE's translation table: its English text.
+    private static func groupTitle(_ key: String) -> String {
+        [WEImageBlendModes.nativeGroup, WEImageBlendModes.emulatedGroup].first { $0.label == key }?.english
+            ?? SceneEffectParameters.title(key)
     }
 
     private static func displayEffectValue(_ value: Double, key: String) -> Double {
@@ -641,6 +650,34 @@ private final class SceneInspectorModel: ObservableObject {
         }
         return parts.joined(separator: " ")
     }
+
+    /// An image layer's `colorBlendMode` (WE's default 0, Normal).
+    func blendMode(for item: SceneInspectorItem) -> Int {
+        guard let data = item.rawObject.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return 0 } // not an object: Normal
+        return (object["colorBlendMode"] as? NSNumber)?.intValue ?? 0
+    }
+
+    /// Sets an image layer's `colorBlendMode`, saved with the object's edited JSON.
+    func setBlendMode(_ value: Int, for item: SceneInspectorItem) {
+        guard let index = items.firstIndex(where: { $0.id == item.id }),
+              let data = items[index].rawObject.data(using: .utf8),
+              var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+        object["colorBlendMode"] = value
+        saveObjectJSON(prettyJSON(object), item: items[index])
+    }
+
+    /// WE's blend modes as its editor lists them (`WEImageBlendModes`), with WE's labels.
+    lazy var blendModeCombo: SceneInspectorEffectCombo = {
+        let labels = WallpaperEngineLabels.load()
+        return SceneInspectorEffectCombo(
+            id: "colorBlendMode", effectID: "", combo: "BLENDMODE",
+            title: labels.translation("ui_editor_properties_blend_mode") ?? "Blend mode",
+            options: SceneEffectParameters.blendModeOptions.map { option in
+                (labels.translation(option.label) ?? option.english ?? option.label, option.value,
+                 option.group.map { labels.translation($0) ?? Self.groupTitle($0) })
+            })
+    }()
 
     func saveObjectJSON(_ text: String, item: SceneInspectorItem) {
         guard let data = text.data(using: .utf8),
@@ -1081,9 +1118,31 @@ struct SceneInspectorView: View {
                 .toggleStyle(.checkbox)
         } else {
             Picker(combo.title, selection: selection) {
-                ForEach(combo.options, id: \.value) { option in Text(option.title).tag(option.value) }
+                ForEach(Self.optionGroups(combo), id: \.offset) { group in
+                    if let heading = group.heading {
+                        Section(heading) {
+                            ForEach(group.options, id: \.value) { option in Text(option.title).tag(option.value) }
+                        }
+                    } else {
+                        ForEach(group.options, id: \.value) { option in Text(option.title).tag(option.value) }
+                    }
+                }
             }
         }
+    }
+
+    /// The combo's options in runs of one editor group (WE's "Native (fast)" / "Emulated (slow)"
+    /// blend modes), in order; one run without a heading for authored options.
+    private static func optionGroups(_ combo: SceneInspectorEffectCombo)
+        -> [(offset: Int, heading: String?, options: [(title: String, value: Int)])] {
+        var groups: [(offset: Int, heading: String?, options: [(title: String, value: Int)])] = []
+        for option in combo.options {
+            if groups.isEmpty || groups[groups.count - 1].heading != option.group {
+                groups.append((groups.count, option.group, []))
+            }
+            groups[groups.count - 1].options.append((option.title, option.value))
+        }
+        return groups
     }
 
     @ViewBuilder private func inspectorMusicSyncControls(for control: SceneInspectorEffectControl) -> some View {
@@ -1206,10 +1265,26 @@ struct SceneInspectorView: View {
                 Button("Reset to 1x") { model.setObjectScale(item, scale: 1) }
                     .buttonStyle(.link)
                     .font(.caption)
+                if item.kind == "Image" {
+                    blendModePicker(for: item)
+                }
             } else {
                 Text("Select an object to resize it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    /// The image layer's blend mode, WE's 33 in its editor's order and groups.
+    private func blendModePicker(for item: SceneInspectorItem) -> some View {
+        let combo = model.blendModeCombo
+        return Picker(combo.title, selection: Binding(get: { model.blendMode(for: item) },
+                                                      set: { model.setBlendMode($0, for: item) })) {
+            ForEach(Self.optionGroups(combo), id: \.offset) { group in
+                Section(group.heading ?? "") {
+                    ForEach(group.options, id: \.value) { option in Text(option.title).tag(option.value) }
+                }
             }
         }
     }
