@@ -112,7 +112,10 @@ final class ImageMaterialReflectionTests: XCTestCase {
             return Float(pixels[((size / 2) * size + size / 2) * 4 + 2]) / 255
         }
         // Unlit: half the albedo over white.
-        let unlit = Float((25.0 * 128 / 255 + 255 * (1 - 128.0 / 255)) / 255)
+        let alpha: Double = 128.0 / 255.0
+        let albedo: Double = 25.0 * alpha
+        let white: Double = 255.0 * (1.0 - alpha)
+        let unlit = Float((albedo + white) / 255.0)
         var lit: Float = 0
         let deadline = Date().addingTimeInterval(20)
         repeat {
