@@ -1,6 +1,6 @@
 # SceneScript plan
 
-**Status: 2026-09-25, WP0 (from evidence) and WP1–WP7 done; the runtime hardened against the WP2–WP7 findings (test-risks SF1–SF13, S19).** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
+**Status: 2026-09-25, WP0 (from evidence) and WP1–WP8 done; the runtime hardened against the WP2–WP7 findings (test-risks SF1–SF13, S11, S19, S28).** Roadmap area 4 (Phase 6). This document is the evidence and the plan for making our SceneScript runtime run *every* script users have. It replaces §5 and P5 of [`progress-snapshot.md`](progress-snapshot.md) as the source of truth for scripting.
 
 Sources, in order of authority:
 
@@ -150,7 +150,7 @@ Two structures anchor the evidence:
 |---|---|---|---|---|
 | P1 | Order in a frame | cursor events → pending user-property changes and `applyUserProperties(changed)` → media events → timeline animations and `animationEvent` → engine tick (audio buffers refilled, then timers) → `update` for every script in list order. Timers run per script over a snapshot of its list; an interval is **reset** to its period when it fires (so at most once per frame); a timeout is removed after firing. | exe frame `0x1401802d5`–`0x1401802e5`: cursor `0x140189e10`, then `0x140171440` (`applyUserProperties` via `0x1401731d0` at `0x140171a8d`, media from `0x140171b7c`, `animationEvent` at `0x1401726e7`, `tick` at `0x140172755`, `update` at `0x14017276f`); DLL tick refreshes audio at `0x18164f84d`, timers `0x18164f9b0`–`0x181650346` | evidence. Best guess: list order is scene creation order; `destroyLayer` applies after all updates (docs); where `resizeScreen` falls (we put it first) |
 | P2 | What `value` holds | the property's live value at the call, read natively; animations are evaluated earlier in the same frame, so an animated property shows this frame's animated value; otherwise the last applied value (accumulators work) | DLL `0x18164e693` → `0x1816208e0`; corpus `155fe61a17a0` (`value += …`) | evidence; best guess for how an animation and a script combine on one property |
-| P3 | Returning an unusable value | converter switches on the property type and type-checks the return; a failed check leaves the property unchanged, silently. Vectors need numeric x/y/z; a bare number is broadcast. `NaN` passes the number check and **is written**. Angles are converted degrees→radians on write. Only `init`, `update` and `animationEvent` returns are applied; `animationEvent(event, value)` receives the value too | DLL converter `0x181620e10`, skip path `0x181621458`, applied-return check `0x18164f719` | evidence |
+| P3 | Returning an unusable value | converter switches on the property type and type-checks the return; a failed check leaves the property unchanged, silently. Its nine cases (jump table `0x181621474`): 0 Int32 (`IsNumber`, then `ToInt32`), 1 Vec2, 2 Vec3, 3 Vec4 (an object whose x/y/z/w are all numbers, else a bare number broadcast; nothing else, so `"1 2 3"` is rejected), 4 float (`IsNumber`), 5 string (anything but `null`/`undefined`, through `ToString`; an oddball-kind check at `0x181621376` skips those two), 6 and 8 flag (`IsBoolean` only, `0x180016fe0`: a number is rejected), 7 inert. `NaN` passes the number check and **is written**. Flag bit 4 multiplies float and Vec3 values by π/180 (angles). Only `init`, `update` and `animationEvent` returns are applied; `animationEvent(event, value)` receives the value too | DLL converter `0x181620e10`, skip path `0x181621458`, applied-return check `0x18164f719` | evidence; which properties use the Int32 and inert cases is not known (WP8 treats every numeric property as float) |
 | P4 | A script that throws | the error is logged with line and column, the call's return is not applied, and **that callback is never called again for that script**; its other callbacks keep running. Timer and ended callbacks are logged but never disabled | DLL error handler `0x181651ab0` sets the callback's bit in the script's mask (`orl %r8d,0xdc(%rax)` at `0x181651bff`, only for error-level messages, `0x181651ba6`); the dispatcher skips masked callbacks (`testl %eax,0xdc(%r13)` at `0x18164e51c`); timers call with bit 0 (`0x1816501bc`, `0x181650943`) | evidence (contradicts the earlier "keeps running" default and LWE) |
 | P5 | The watchdog | **15 s** per outermost script call (steady clock + `0x37E11D600` ns, reset when the nesting depth returns to 0). When it fires: `TerminateExecution`, an engine-wide flag, and the "dead lock" message logged once naming the script. From then on **every** callback, timer, ended callback and new script is skipped until the engine is reset (the wallpaper reloads) | DLL `0x1816477c8` (constant), `0x181647908` (flag), `0x181653e3d` (message), skips at `0x18164e529`, `0x18164f9d2`, `0x181650743`, `0x18164bfbc`; reset `0x18164bcb0` | evidence |
 | P6 | `update` on hidden layers | yes: the broadcast checks the exported-callback bit, the component state and a scene flag, never visibility | exe `0x140177ad0`; corpus `03f0db0a6dff` hides its layer in `init` | evidence |
@@ -425,7 +425,7 @@ The corpus uses only `export function|let|var|const NAME` and `import * as X fro
 **Property scripts.** A `ScriptInstance` bound to a field keeps the current value:
 
 - `update(value)` receives it (a fresh `Vec3` for vector fields, created per call like WE, or cached when P2 shows WE reuses one).
-- The return value is coerced to the field's type: number, bool, string, `Vec2/3/4` from objects with x/y/z/w or strings `"x y z"`, and a number broadcast to every component (WE: `2` on Scale is `Vec3(2, 2, 2)`).
+- The return value is coerced to the field's type by WE's converter (P3): number, bool (booleans only), string (`ToString` of anything but `null`/`undefined`), `Vec2/3/4` from objects with numeric x/y/z/w, and a number broadcast to every component (WE: `2` on Scale is `Vec3(2, 2, 2)`). Strings are not vectors.
 - The coerced value becomes the field's value (written into the table) and the next call's input. `undefined` or an uncoercible value leaves it unchanged (P3).
 - `init(value)`'s return is applied the same way.
 
@@ -485,6 +485,7 @@ Each frame:
 **Sandbox.**
 
 - JSC contexts have no file system, network, `require` or DOM. We expose only the WE API. The invented globals of §3.3 are deleted, and no Swift block is callable except the runtime's own narrow ones.
+- `__rt` is out of scripts' reach (S28): a compiled module's own scope shadows the name, and the global reads as `undefined` while a native entry (`load`, `frame`, `teardown`) or any script code runs, so runtime code calling a builtin a script replaced can't leak it either. After every extension is installed, `__rt.seal()` freezes the hooks and makes the runtime's functions read-only. Runtime and extension files capture `__rt` when they are evaluated; tests and the native side read it between entries.
 - `localStorage` has WE's documented cap of 100 KB per wallpaper.
 - `console` is rate-limited.
 - `eval` and `Function` stay available (V8 allows them), but they run inside the same watchdog.
@@ -581,7 +582,7 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 - **WP5 (audio).** An extension; one `SceneScriptSharedBuffer<Float>` per registered resolution, filled in place in `willRunFrame` (WE refreshes them in its tick, before timers and updates; §1.9 P1); `registerAudioBuffers` calls `__rt.requireGlobalScope('registerAudioBuffers')`.
 - **WP6 (media).** Declare kinds in its own file (`extension SceneScriptEvent.Kind { static let mediaPlayback = … }`), post with `runtime.inbox.post(_:)` from any thread, and handle them in JS with `__rt.addEventHandler(kind, __rt.EVENT_ORDER.media, e => __rt.broadcast('mediaPlaybackChanged', [e.payload]))`. The current media state for a new script goes in `__rt.hooks.initialized` (§1.9 P8).
 - **WP7 (object model).** Owns `SceneScriptObjectTable` (append fields at the end and bump `stride`) and the opcodes 400–999 (`extension SceneScriptCommandRing.Opcode { static let … }` in its files, handlers registered in its extension's `install`). `__rt.hooks.scope(record)` returns `{thisLayer, thisObject}` for `record.slot`; `thisScene`, `layers.js` and `scene.js` are its own. Opcode ranges: 1–99 runtime, 100–199 WP4, 200–299 WP5, 300–399 WP6, 400–999 WP7, 1000+ later.
-- **WP8 (binding).** Builds `SceneScriptInstance`s; `__rt.hooks.argument(record)` (the value `init`/`update` receive) and `__rt.hooks.coerce(record, returned)` (undefined keeps the value).
+- **WP8 (binding).** *Done (see WP8 below).* Builds `SceneScriptInstance`s; `__rt.hooks.argument(record)` (the value `init`/`update` receive), `__rt.hooks.coerce(record, returned)` (undefined keeps the value) and `__rt.hooks.userPropertiesChanged(raw)` (before the frame's `applyUserProperties`).
 - **WP10 (cursor).** Cursor events through the inbox with `target` = object slot; its own JS handler registered at `__rt.EVENT_ORDER.cursor`; only Solid objects (§1.9 P7).
 - **WP12 (animations).** Timeline evaluation and `animationEvent(event, value)` go in the `animations` phase.
 - **WP11 (integration).** The renderer (not a singleton) owns one runtime per wallpaper instance, on its own `SceneScriptThread` (§4.5), which is what fixes two displays clobbering each other: `load` at scene load, `thread.asyncFrame { frame(deltaTime:) }` per frame, `tearDown` on reconfigure (on the thread), `screenDidResize`/`userPropertiesDidChange` from the view model. Instances carry `binding` from WP8. It builds the extension list, reads `SceneScriptPrelude.load()` once, and deletes the scripting half of `AudioReactiveScriptEngine`.
@@ -609,14 +610,32 @@ WP2's files, all under `OpenWallpaperEngine/Scene/Scripting/` unless noted. Late
 
 - Tests: a fake source drives all five events with WE's field names; the palette on fixture images; no AppleScript anywhere.
 
-**WP7 — Object model (layers, scene, effects, materials).** *Done:* `Scripting/Objects/` and `Resources/SceneScript/objects-{values,animations,effects,layers,scene}.js`. Best guesses: destroying a parent destroys its children; `getLayer(number)` is a draw-order index, a string a name then an id; `createLayer` appends on top; a missing asset returns `null`. A layer's scripts get `destroy()` while it is still in the scene (SF11); written angles read back exactly (SF13). WP11 duties: keep `worldMatrix`, `size`, `playing` and animation state current in the tables, read them after each frame's commands on the script thread, clear the dirty bytes. Originally planned as `Resources/SceneScript/layers.js`, `scene.js`; `Scripting/Objects/SceneScriptObjectTable.swift` (fill), `SceneScriptCommandRing.swift`.
+**WP7 — Object model (layers, scene, effects, materials).** *Done:* `Scripting/Objects/` and `Resources/SceneScript/objects-{values,animations,effects,layers,scene}.js`. Best guesses: destroying a parent destroys its children; `getLayer(number)` is a draw-order index, a string a name then an id; `createLayer` appends on top; a missing asset returns `null`. A layer's scripts get `destroy()` while it is still in the scene (SF11); written angles read back exactly (SF13). `createLayer` and `registerAsset` handles carry the calling script's `__workshopId`, and the host tries the path under that Workshop item first (`SceneScriptLayerSource.assetPaths`; replay RF1); layer strings reach the renderer only when they changed (RF2). WP11 duties: keep `worldMatrix`, `size`, `playing` and animation state current in the tables, read them after each frame's commands on the script thread, clear the dirty bytes. Originally planned as `Resources/SceneScript/layers.js`, `scene.js`; `Scripting/Objects/SceneScriptObjectTable.swift` (fill), `SceneScriptCommandRing.swift`.
 
 - `getLayer*`, `enumerateLayers` and `getLayerIndex` in draw order with identity preserved; `getParent`/`getChildren`; degrees↔radians; copies on get; `getEffect(name|index).visible`; `getMaterial`/`setMaterialProperty` onto material constant slots; `getTextureAnimation`; particle `instance` and `emitParticles`; sound `play/stop/pause/volume`; scene settings.
 - Tests: headless, against a table: writes stick; `thisLayer === getLayer(name)`; the angles unit; effect visibility toggles; an unknown member is inert rather than throwing, where WE members are inert.
 
 ### Step 2 (parallel)
 
-**WP8 — Property binding.** `Scene/Values/` (`SceneValueContext`, `SceneValueResolver`, `SceneParticleOverrides`, `SceneGeneralSettings`), `Scene/Loading/` script-site collection.
+**WP8 — Property binding.** *Done:* `Scripting/Binding/` (`SceneScriptBindingExtension`, `SceneScriptPropertyType`, `SceneScriptBoundProperty`, `SceneScriptSite`, `SceneScriptUserReference`, `SceneScriptUserProperties`, `SceneScriptSceneValue`, `sceneScriptBinding.js`) and `Scene/Loading/SceneScriptSiteBuilder.swift`. Usage (WP9, WP11), on the runtime's thread:
+
+```swift
+let properties = SceneScriptUserProperties(project: projectJSON)          // + set(_:to:) for the user's values
+let builder = SceneScriptSiteBuilder(wallpaperID: id, userProperties: properties,
+                                     slot: { model.slot(forObjectID: $0) })
+let sites = builder.sites(in: try SceneScriptSiteBuilder.document(from: sceneJSONData))
+binding.add(sites, to: runtime)                                          // binding: SceneScriptBindingExtension
+runtime.load(userProperties: properties.payload())
+runtime.userPropertiesDidChange(properties.payload(only: changedNames))  // later
+```
+
+- A site is every JSON object with a non-empty string `script` (object fields, `effects[i].visible`, `constantshadervalues`, `instanceoverride.*`, `general.*`, and anything else, which then binds to nothing). Order: `general.*` first (best guess), then objects in scene order, their fields `visible, origin, scale, angles, alpha, color, text`, other fields by name, effects (own fields, then constants), `instanceoverride`. Ids: `<wallpaper>/<name>#<id>/<path>` (`#i<index>` for objects without an id, `~2` for duplicates).
+- Types come from the object model's field lists, else from the authored value's shape. `instanceoverride.colorn` is a number, as `lib.sceneScript.d.ts` types it, although scene.json writes a colour.
+- The argument is the live value through the object model (P2) for its members; other fields (`brightness`) chain through the record. Vectors are fresh on every call (S7). A throwing getter or `toString` keeps the value and is reported as `<value>`.
+- The object model's descriptions must carry user-resolved values (the table is the live value); the builder's initial value only seeds fields outside the model.
+- Not done here: the renderer still reads `AudioReactiveScriptEngine` (WP11 deletes `resolveLayerVisibility` and `loadSceneScript` when it switches).
+
+Originally planned: `Scene/Values/` (`SceneValueContext`, `SceneValueResolver`, `SceneParticleOverrides`, `SceneGeneralSettings`), `Scene/Loading/` script-site collection.
 
 - Every `{"script":…}` site becomes a `ScriptInstance` with its field type, value, `scriptproperties` (user-bound entries resolved) and `thisObject` (layer, effect or particle system, per P9).
 - Effect-visible, effect-constant, all `instanceoverride` fields, `general.*` and visible scripts run every frame.

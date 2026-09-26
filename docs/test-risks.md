@@ -797,6 +797,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 - A command handler that calls back into JS (for example `createLayer` running the new layer's module body) pushes into the ring while `SceneScriptCommandRing.drain()` executes it; `drain` ends with `resetRing`, which drops those commands.
 - Slot reuse: a stale `ILayer` kept after `destroyLayer` writes into a slot that now belongs to a new layer (ABA).
 **Test.** Create and destroy 1000 layers over 1000 frames with memory flat (the WP11 clone stress test). A stale handle write after its slot is reused changes nothing. `destroy()` that removes another script → both `destroy()`s run and both ids are gone. A handler that pushes a command during `drain` → the command runs this frame or the next, never lost.
+**Status.** SF2 fixed in `16f9469`; stale handles in WP7. A command pushed during `drain` now runs in the same drain, bounded by the ring's capacity (`SceneScriptRuntimeReachTests`). The clone stress test is WP11's.
 
 ## S12. `createLayer` from assets (High, WP7, WP11)
 **Scenario.**
@@ -917,7 +918,7 @@ Status: 2026-09-25, branch `deepratna/feature-work`, base `94a9e6e` (WP1 and WP2
 ## S28. Untrusted scripts reach the runtime (Medium, WP2, WP7)
 **Scenario.** `__rt` is a non-writable global, but its members are writable and reachable from every script. A Workshop script can replace `__rt.hooks.coerce`, clear `__rt.records`, set `__rt.halted`, or push arbitrary opcodes and targets through `__rt.push` or directly into `__rt.ring.records`. The ring bounds-checks number ranges (`Objects/SceneScriptCommandRing.swift:95-96`), but each handler must also bounds-check `target` against the object table. Combined with S17, the shared buffers are the only path from script to memory corruption.
 **Test.** A script that pushes opcode 400 with target `2^31-1`, negative targets and garbage counts → no crash, one log line. Handlers get `target` already validated or validate it themselves.
-**Status.** The memory-safety half is fixed (SF3, SF10: shared memory can't be freed, command numbers are validated). `__rt` itself is still reachable and writable from scripts.
+**Status.** Fixed. The memory-safety half with SF3 and SF10 (shared memory can't be freed, command numbers are validated). `__rt` is hidden from scripts (the module scope shadows it; the global reads `undefined` during every native entry and all script code, so a replaced builtin called by runtime code can't leak it) and sealed after installation (frozen hooks, read-only functions); `SceneScriptRuntimeReachTests`.
 
 ---
 
@@ -1030,6 +1031,15 @@ Ran 33 adversarial snippets through `SceneScriptModuleTransformer` and JavaScrip
 
 SF1–SF8, SF10–SF13 and SF15 are fixed, each with a regression test in `SceneScriptRuntimeHardeningTests` or `SceneScriptObjectHardeningTests`; S19 has its mechanism (`SceneScriptThread`). Still open:
 - SF14 and SF16 (WP6's `MacMediaSessionSource`). `SceneScriptMediaExtension` can now stop or unsubscribe in the new `tearDown(_:)` hook instead of `deinit`.
-- S28: `__rt` and its hooks stay reachable and writable from scripts; only the memory-safety half is closed.
 - S19: the watchdog still covers a whole frame, not each outermost call, and nothing shows the halted state to the user.
-- S11: a command handler that pushes into the ring while `drain` runs still loses that command (`resetRing`).
+
+S28 and S11 were closed with WP8 (see WP8 below).
+
+### WP8: property binding, S11, S28
+
+**What the commits cover.** S6/P3: returns go through WE's converter per property type, read from the DLL (`0x181620e10`): flags take only booleans (so `return 1` on `visible` is ignored, unlike the object model's direct setters), text takes `ToString` of anything but `null`/`undefined` (a number shows as its text, never "undefined"), vectors take objects with numeric components or a broadcast number and reject `"1 2 3"`; NaN is written. S7: every argument is a fresh value and every applied return is copied, so neither a mutated argument nor a returned object changed later moves the property. S8: user-bound `scriptproperties` are resolved before module bodies run and re-injected through `_Internal.updateScriptProperties` before the frame's `applyUserProperties`; user-bound values take the new value then too. S25: `thisObject` is the effect, material or scene; material constants read `getMaterialProperty` and write `setMaterialProperty`. S26: hidden layers keep updating.
+
+**Open.**
+- Which properties use the converter's Int32 and inert cases is unknown; every numeric property is treated as float. `instanceoverride.colorn` is a number (the d.ts), though scene.json writes a colour.
+- The argument is the object model's live value, so it is only as right as the descriptions WP11 builds: they must carry user-resolved values and the renderer's animated values (P2).
+- Direct member writes (`thisLayer.visible = 1`) still accept numbers through the object model's setters; whether WE's member setters use the same converter is not verified.

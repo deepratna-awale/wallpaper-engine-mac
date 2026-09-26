@@ -35,10 +35,8 @@ Status: 2026-09-25, branch `deepratna/feature-work`, HEAD `46daecc` plus the WP9
   - **behaviour:** every class expectation, P2 accumulators, P7 Solid-only clicks, `getAnimation` on a material constant, `createLayer`, `scriptproperties` and user properties.
   - **failures:** a compile error, P4 (a throwing `update` is disabled while its media callback keeps running), "undefined" text, and a NaN origin.
   - **watchdog:** a hung `update` halts the runtime.
-- WP8 and WP10 have not landed, so `Tests/Fixtures/SceneScript/replay-harness/replay.js` stands in for them:
-  - `__rt.hooks.argument` reads the bound property live (P2);
-  - `__rt.hooks.coerce` applies returns through the object model's setters (P3);
-  - cursor events arrive as an inbox kind targeted at an object slot.
+- Property binding is WP8's own: each site's type, initial value and resolved `scriptproperties` come from `SceneScriptSiteBuilder`, and `SceneScriptBindingExtension` binds it.
+- `Tests/Fixtures/SceneScript/replay-harness/replay.js` samples the bound properties, and stands in for WP10: cursor events arrive as an inbox kind targeted at an object slot.
 - Set `TEST_RUNNER_OWE_REPLAY_REPORT=<path>` on `xcodebuild` to get the table below as a file.
 
 ## Results
@@ -56,7 +54,7 @@ Timing is from a Debug build on a shared M-series machine, with other builds run
 | owe/2978738836 | 15 | 6.14 | 0.092 | 0.073 | 0.384 | 2420 | ok |
 | owe/2981960200 | 3 | 7.13 | 0.059 | 0.052 | 0.210 | 1800 | ok |
 | owe/3109042108 | 20 | 13.46 | 0.292 | 0.353 | 0.742 | 2428 | ok |
-| owe/3121284565 | 3 | 7.20 | 0.054 | 0.047 | 0.174 | 601 | exception (RF1) |
+| owe/3121284565 | 3 | 7.20 | 0.054 | 0.047 | 0.174 | 601 | exception (RF1, since fixed) |
 | owe/3187908708 | 22 | 26.55 | 0.130 | 0.117 | 0.334 | 3014 | ok |
 | owe/3244466773 | 3 | 8.12 | 0.063 | 0.055 | 0.272 | 1800 | ok |
 | owe/3245833232 | 5 | 9.21 | 0.063 | 0.058 | 0.135 | 1800 | ok |
@@ -104,6 +102,8 @@ Timing is from a Debug build on a shared M-series machine, with other builds run
 
 ### RF1. `createLayer(assetPath)` ignores the script's `__workshopId` (WP7, WP11)
 
+**Fixed** in `301ec61`: `createLayer` and `registerAsset` handles pass the calling script's `__workshopId` (`SceneScriptLayerSource.asset(_:workshopID:)`), and `SceneScriptLayerSource.assetPaths` gives the host the order to try. WP11's host must resolve the same way. The expectation is gone from `expectedFailures`.
+
 - **Where:**
   - `Resources/SceneScript/objects-scene.js` `IScene.createLayer`: the string and `IAssetHandle` branches send the path as-is.
   - `Scripting/Objects/SceneScriptLayerSource.swift`: `.asset(String)` has no room for the workshop id.
@@ -125,12 +125,14 @@ Timing is from a Debug build on a shared M-series machine, with other builds run
 
 ### RF2. Unchanged strings are flushed as commands every frame (WP7, WP8)
 
+**Fixed** in `afc45cd`: `flushStrings` compares with what it last sent per layer and field (starting from the described value).
+
 - **Where:** `Resources/SceneScript/objects-layers.js`:
   - `writeString` marks the field pending on every write;
   - `flushStrings` pushes one `setString` per pending field without comparing it with the last value it flushed.
 - **Evidence:**
   - Every text site that returns the same string each frame yields one `setString` per frame: 600 commands in 600 frames for 2519054915 (one text site), 2224061441 and 1877013475.
-  - Property binding writes a script's return through the same path each frame. WP8 will do the same natively, and the harness stands in for it here.
+  - Property binding writes a script's return through the same path each frame.
 - **Why it matters:** from WP11, each `setString` reaches the renderer and relays out the text. That is per frame for every clock and title, although the plan expects text to change "at most once a second" (§4.3).
 - **Fix:** in `flushStrings`, remember the last flushed value per (slot, field) and skip the push when it is equal. Compare at flush, not at write, so A→B→A within one frame still flushes nothing.
 - **Test:** a text site returning a constant produces one `setString` in 600 frames.
