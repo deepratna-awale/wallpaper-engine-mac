@@ -18,6 +18,8 @@ enum SceneLightDefaults {
     static let volumetricsExponent: Float = 1
     static let cascadeDistances = SIMD3<Float>(3, 10, 100)
     static let lightSourceSize: Float = 0
+    /// The texture of a `usecookie` light that names none, or an empty one (0x14025d1b7).
+    static let cookie = "cookie/flashlight1"
 }
 
 /// A light's fields resolved against the user properties, with WE's defaults for the ones it
@@ -40,6 +42,9 @@ struct SceneLight: Equatable {
     /// `cascadedistance0/1/2`: a directional light's shadow cascades.
     var cascadeDistances = SceneLightDefaults.cascadeDistances
     var lightSourceSize = SceneLightDefaults.lightSourceSize
+    /// The cookie texture a `usecookie` light loads (its `cookie`, else `SceneLightDefaults.cookie`);
+    /// nil without `usecookie`.
+    var cookie: String?
 
     init(kind: WELightKind) {
         self.kind = kind
@@ -72,5 +77,6 @@ struct SceneLight: Equatable {
                                  float(.cascadedistance1, SceneLightDefaults.cascadeDistances.y),
                                  float(.cascadedistance2, SceneLightDefaults.cascadeDistances.z))
         lightSourceSize = float(.lightsourcesize, SceneLightDefaults.lightSourceSize)
+        if useCookie { cookie = light.cookie.flatMap { $0.isEmpty ? nil : $0 } ?? SceneLightDefaults.cookie }
     }
 }

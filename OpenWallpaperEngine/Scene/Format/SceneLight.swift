@@ -33,10 +33,14 @@ struct WESceneLight: Decodable {
     var kind: WELightKind
     /// Every authored light field in its full form (literal, `user`, `script`, `animation`).
     var values: [SceneLightValueField: SceneRawValue] = [:]
+    /// `cookie`: the texture a `usecookie` light projects, a path like `cookie/flashlight1`. The
+    /// light parser reads it only for a cookie light (0x14025d0a5).
+    var cookie: String?
 
-    init(kind: WELightKind, values: [SceneLightValueField: SceneRawValue] = [:]) {
+    init(kind: WELightKind, values: [SceneLightValueField: SceneRawValue] = [:], cookie: String? = nil) {
         self.kind = kind
         self.values = values
+        self.cookie = cookie
     }
 
     /// Decodes from the scene object's own container. Throws when the object has no `light` key.
@@ -57,5 +61,7 @@ struct WESceneLight: Decodable {
                 values[field] = raw
             }
         }
+        cookie = container.decodeLogged(SceneRawValue.self, forKey: AnyCodingKey(stringValue: "cookie"),
+                                        userInfo: decoder.userInfo)?.literalString
     }
 }
