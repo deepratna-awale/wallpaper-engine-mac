@@ -14,6 +14,20 @@ final class SceneScriptJITTests: XCTestCase {
         XCTAssertEqual(entitlements[SceneScriptJIT.entitlement] as? Bool, true)
     }
 
+    /// The watchdog stops a JIT-compiled empty loop only with polling traps, which the app turns on
+    /// at launch (the test host runs the same `main.swift`).
+    func testTheWatchdogStopsAJITCompiledEmptyLoop() throws {
+        XCTAssertEqual(ProcessInfo.processInfo.environment["JSC_usePollingTraps"], "true")
+        try XCTSkipUnless(SceneScriptJIT.isEnabled, "the test host isn't signed with \(SceneScriptJIT.entitlement)")
+        let context = try XCTUnwrap(JSContext())
+        let watchdog = try XCTUnwrap(SceneScriptWatchdog(context: context), "JavaScriptCore has no time limit here")
+        watchdog.arm(limit: 0.3)
+        let start = Date()
+        context.evaluateScript("let frames = 0; function update() { frames += 1; if (frames > 3) { while (true) {} } } for (let k = 0; k < 5; k++) update();")
+        XCTAssertTrue(watchdog.fired)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5, "stopped near its 0.3 s limit, not never")
+    }
+
     /// A hot loop takes about 1.3 s interpreted and 0.1 s compiled on an M-series Mac. Unsigned
     /// hosts (CI: `CODE_SIGNING_ALLOWED=NO`) have no entitlement and are skipped.
     func testScriptsRunCompiledWhereTheHostMayJIT() throws {
