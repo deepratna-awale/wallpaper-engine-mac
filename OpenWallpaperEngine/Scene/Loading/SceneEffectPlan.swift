@@ -34,6 +34,9 @@ struct SceneEffectPassPlan {
     /// `.tex` flags of the asset textures, by slot: how WE samples each (`clampUVs`,
     /// `noInterpolation`). A slot without flags repeats with bilinear filtering.
     var textureFlags: [Int: TEXFlags] = [:]
+    /// The pass's index in effect.json's `passes`, which scene.json's `passes` and scripts
+    /// (`IEffect.getMaterial(i)`) address it by.
+    var materialIndex = 0
 
     var readsSceneSnapshot: Bool {
         textures.values.contains { if case .sceneSnapshot = $0 { return true } else { return false } }
@@ -46,6 +49,11 @@ struct SceneEffectPlan {
     let file: String
     let fbos: [EffectFBO]
     let passes: [SceneEffectPassPlan]
+    /// The effect's index in its object's `effects` (what scripts' `getEffect(i)` addresses).
+    var effectIndex = 0
+    /// scene.json `visible` (authored or user-bound). A hidden effect is built but skipped, so a
+    /// script can show it (`thisObject.visible = true`).
+    var visible = true
 }
 
 enum SceneEffectPlanError: Error, CustomStringConvertible {
@@ -97,8 +105,9 @@ struct SceneEffectPlanBuilder {
             guard let materialPath = pass.material else { continue }
             let (material, resolvedMaterialPath): (MaterialDocument, String) = try scoped.decode(materialPath)
             guard let materialPass = material.passes.first else { throw SceneEffectPlanError.missing("\(materialPath) passes") }
-            if let plan = try scoped.buildPass(pass, materialPass: materialPass, materialPath: resolvedMaterialPath,
+            if var plan = try scoped.buildPass(pass, materialPass: materialPass, materialPath: resolvedMaterialPath,
                                                instance: instance, fbos: document.fbos, overrides: overrides) {
+                plan.materialIndex = index
                 passes.append(plan)
             }
         }

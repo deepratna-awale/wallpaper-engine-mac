@@ -62,10 +62,12 @@ final class EffectGraphRenderer {
         let inputVersion: UInt64
         let color: SIMD3<Float>
         let alpha: Float
+        /// `Context.scriptRevision`: script-set visibility or constants changed.
+        let scriptRevision: Int
 
         func matches(_ other: StaticChainKey) -> Bool {
             input === other.input && inputVersion == other.inputVersion
-                && color == other.color && alpha == other.alpha
+                && color == other.color && alpha == other.alpha && scriptRevision == other.scriptRevision
         }
     }
 
@@ -185,6 +187,12 @@ final class EffectGraphRenderer {
         /// Image size inside a padded asset texture (the `.tex` width/height), when known; used
         /// for `g_TextureNResolution.zw`. nil means the whole texture is content.
         var assetContentSize: ((String, SceneMetalTextureSource) -> SIMD2<Float>?)? = nil
+        /// Effects (indices into the chain) that are hidden this frame: built, but skipped.
+        var hiddenEffects: Set<Int> = []
+        /// Constants scripts set, by the effect's `effectIndex` (`IEffect.setMaterialProperty`).
+        var constantWrites: [Int: [SceneScriptConstantWrite]] = [:]
+        /// Bumped whenever `hiddenEffects` or `constantWrites` change.
+        var scriptRevision = 0
     }
 
     /// Runs `effects` on `input` and returns the processed image, or nil when nothing rendered —
@@ -217,7 +225,8 @@ final class EffectGraphRenderer {
         }
 
         let staticKey = StaticChainKey(input: input, inputVersion: context.inputVersion,
-                                       color: context.layerColor, alpha: context.layerAlpha)
+                                       color: context.layerColor, alpha: context.layerAlpha,
+                                       scriptRevision: context.scriptRevision)
         // A scene snapshot keeps its texture identity while its contents change every frame.
         let readsScene = context.sceneSnapshot != nil
         if !readsScene, let cached = state.staticOutput, cached.key.matches(staticKey) {
@@ -229,7 +238,7 @@ final class EffectGraphRenderer {
         var current = input
         var didRender = false
         var isStatic = true
-        for (effectIndex, effect) in effects.enumerated() {
+        for (effectIndex, effect) in effects.enumerated() where !context.hiddenEffects.contains(effectIndex) {
             let previous = current
             var fbos = state.fbos[effectIndex]
             for (passIndex, pass) in effect.passes.enumerated() {
@@ -258,6 +267,7 @@ final class EffectGraphRenderer {
                     isStatic = isStatic && program.isStatic && !pass.readsSceneSnapshot
                     encode(pass, pipeline: pipeline, program: program, variant: variant, output: output,
                            current: current, previous: previous, fbos: fbos, context: context,
+                           scriptWrites: context.constantWrites[effect.effectIndex] ?? [],
                            commandBuffer: commandBuffer)
                     didRender = true
                     if pass.target == nil { current = output }
@@ -387,7 +397,7 @@ final class EffectGraphRenderer {
     private func encode(_ pass: SceneEffectPassPlan, pipeline: MTLRenderPipelineState, program: UniformProgram,
                         variant: TranslatedShaderVariant, output: MTLTexture,
                         current: MTLTexture, previous: MTLTexture, fbos: [String: MTLTexture],
-                        context: Context, commandBuffer: MTLCommandBuffer) {
+                        context: Context, scriptWrites: [SceneScriptConstantWrite], commandBuffer: MTLCommandBuffer) {
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = output
         // Blended passes composite over what's already there; others overwrite every pixel.
@@ -434,6 +444,7 @@ final class EffectGraphRenderer {
             passContext.color = context.layerColor
             passContext.alpha = context.layerAlpha
             program.update(frame: context.frame, pass: passContext, values: context.values)
+            program.write(scriptWrites.filter { $0.material == nil || $0.material == pass.materialIndex })
             program.bytes.withUnsafeBytes { raw in
                 uniformArena.bind(raw, index: 0, to: encoder, commandBuffer: commandBuffer)
             }
@@ -600,6 +611,8 @@ final class UniformProgram {
     let isStatic: Bool
     let needsTextureInfo: Bool
     private let dynamic: [(member: UniformMember, constant: ShaderConstantResolver.DynamicConstant)]
+    /// Members scripts can set, by the lower-cased scene.json key they answer to.
+    private let scriptTargets: [String: [(member: UniformMember, binding: ShaderConstantResolver.ScriptBinding)]]
     /// Built-ins that only depend on the pass's targets and textures: written when those change.
     private let passBuiltins: [UniformMember]
     /// Built-ins that change every frame (time, pointer, audio).
@@ -626,6 +639,13 @@ final class UniformProgram {
             }
         }
         self.dynamic = dynamic
+        var scriptTargets: [String: [(member: UniformMember, binding: ShaderConstantResolver.ScriptBinding)]] = [:]
+        let members = layout?.members ?? [:]
+        for binding in constants.scriptBindings {
+            guard let member = members[binding.uniform] else { continue }
+            for key in Set(binding.keys) { scriptTargets[key, default: []].append((member, binding)) }
+        }
+        self.scriptTargets = scriptTargets
         let varies = { (member: UniformMember) in
             Self.timeVarying.contains(member.name) || member.name.hasPrefix("g_AudioSpectrum")
         }
@@ -633,6 +653,18 @@ final class UniformProgram {
         passBuiltins = builtins.filter { !varies($0) }
         needsTextureInfo = builtins.contains { $0.name.hasPrefix("g_Texture") }
         isStatic = dynamic.isEmpty && frameBuiltins.isEmpty
+    }
+
+    /// Writes what scripts set (`setMaterialProperty`, `IMaterial` members) over the constants,
+    /// in the order they were set: the last write of a key wins, as it does in the scripts.
+    func write(_ scriptWrites: [SceneScriptConstantWrite]) {
+        for write in scriptWrites {
+            for (member, binding) in scriptTargets[write.name.lowercased()] ?? [] {
+                let value = ShaderConstantResolver.shape(ShaderValue(components: write.value),
+                                                         count: binding.count, isInt: binding.isInt)
+                UniformWriter.write(value.components, member: member, into: &bytes)
+            }
+        }
     }
 
     func update(frame: BuiltinFrameContext, pass: BuiltinPassContext, values: SceneValueContext) {

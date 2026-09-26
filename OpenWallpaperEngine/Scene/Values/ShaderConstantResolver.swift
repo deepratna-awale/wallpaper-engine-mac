@@ -48,10 +48,21 @@ enum ShaderConstantResolver {
         let isInt: Bool
     }
 
+    /// A uniform scripts can set by its scene.json key (`IMaterial` members, `setMaterialProperty`):
+    /// the keys it answers to, lower-cased, the way the loader matches `constantshadervalues`.
+    struct ScriptBinding {
+        let uniform: String
+        let keys: [String]
+        let count: Int
+        let isInt: Bool
+    }
+
     /// Values that never change after load, plus the sources to re-resolve every frame.
     struct ResolvedConstants {
         let staticValues: [String: ShaderValue]
         let dynamic: [DynamicConstant]
+        /// Every value uniform, by the keys a script's `setMaterialProperty` names it with.
+        var scriptBindings: [ScriptBinding] = []
 
         /// All values for this frame; only the dynamic sources are evaluated.
         func values(in context: SceneValueContext) -> [String: ShaderValue] {
@@ -73,10 +84,13 @@ enum ShaderConstantResolver {
         let instanceLookup = KeyLookup(instance)
         var staticValues: [String: ShaderValue] = [:]
         var dynamic: [DynamicConstant] = []
+        var scriptBindings: [ScriptBinding] = []
 
         for uniform in uniforms {
             guard let perElement = uniform.componentsPerElement else { continue }
             let count = perElement * uniform.arrayCount
+            scriptBindings.append(ScriptBinding(uniform: uniform.name, keys: KeyLookup.keys(for: uniform),
+                                                count: count, isInt: uniform.isInt))
             let source = instanceLookup.source(for: uniform)
                 ?? materialLookup.source(for: uniform)
                 ?? defaultSource(for: uniform)
@@ -93,7 +107,7 @@ enum ShaderConstantResolver {
                                                count: count, isInt: uniform.isInt))
             }
         }
-        return ResolvedConstants(staticValues: staticValues, dynamic: dynamic)
+        return ResolvedConstants(staticValues: staticValues, dynamic: dynamic, scriptBindings: scriptBindings)
     }
 
     static func shape(_ value: ShaderValue, count: Int, isInt: Bool) -> ShaderValue {
@@ -125,6 +139,12 @@ enum ShaderConstantResolver {
                 folded[key.lowercased()] = values[key]
             }
             self.folded = folded
+        }
+
+        /// The lower-cased keys `source(for:)` finds `uniform` by.
+        static func keys(for uniform: Uniform) -> [String] {
+            let bare = uniform.name.hasPrefix("g_") ? String(uniform.name.dropFirst(2)) : uniform.name
+            return [uniform.materialName?.lowercased(), bare.lowercased()].compactMap { $0 }
         }
 
         func source(for uniform: Uniform) -> SceneValueSource? {
