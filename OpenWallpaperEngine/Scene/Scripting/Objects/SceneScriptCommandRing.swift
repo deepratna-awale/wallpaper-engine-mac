@@ -77,10 +77,12 @@ final class SceneScriptCommandRing {
     func drain() {
         guard header[0] > 0 || header[2] != 0 else { return }
         var executed = 0
+        var usedStrings = false
         while true {
             let count = min(max(0, Int(header[0])), capacity)
             guard executed < count else { break }
             let hasStrings = (executed..<count).contains { records[$0 * Layout.recordStride + 5] > 0 }
+            usedStrings = usedStrings || hasStrings
             let strings: [String] = hasStrings
                 ? (rt.forProperty("ring")?.forProperty("strings")?.toArray() as? [String] ?? [])
                 : []
@@ -94,7 +96,14 @@ final class SceneScriptCommandRing {
             reportedOverflow = true
             OWELog.error(.script, "SceneScript command ring full (\(capacity) commands); later commands were dropped")
         }
-        rt.invokeMethod("resetRing", withArguments: [])
+        if usedStrings {
+            rt.invokeMethod("resetRing", withArguments: [])
+        } else {
+            // No strings to drop: the header is shared memory, so no call into JavaScript.
+            header[0] = 0
+            header[1] = 0
+            header[2] = 0
+        }
     }
 
     private func execute(record index: Int, strings: [String]) {

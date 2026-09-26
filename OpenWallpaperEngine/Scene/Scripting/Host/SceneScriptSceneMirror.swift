@@ -253,7 +253,7 @@ final class SceneScriptSceneMirror: SceneScriptObjectHost {
                 state.objects[object.id] = updated
             }
             _ = sync.readScene(into: &state.scene)
-            for index in 0..<store.constants.dirty.count { store.constants.dirty[index] = 0 }
+            store.constants.dirty.pointer.update(repeating: 0, count: store.constants.dirty.count)
             readAnimations(store)
         }
         if orderChanged {

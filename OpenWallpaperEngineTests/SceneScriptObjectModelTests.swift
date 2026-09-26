@@ -239,6 +239,23 @@ final class SceneScriptObjectModelTests: XCTestCase {
         XCTAssertEqual(f.evaluate("fx.getMaterial(0).multiply")?.toDouble() ?? 0, 0.1, accuracy: 1e-6)
         XCTAssertEqual(f.evaluate("fx.getMaterialCount() + ',' + thisScene.getLayer(0).getEffectCount() + ',' + fx.getMaterial(3)")?
             .toString(), "1,1,null")
+        // A bound constant's script returns every frame: rewriting what the renderer already holds
+        // sends nothing; a constant the material doesn't declare still goes, and a new value does.
+        f.evaluate("""
+            fx.setMaterialProperty('multiply', 0.1);
+            fx.getMaterial(0).multiply = 0.1;
+            fx.getMaterial(0).setMaterialProperty('color', new Vec3(0, 0, 1));
+            fx.setMaterialProperty('speed', new Vec2(1, 2));
+            """)
+        f.runtime.frame(deltaTime: 1.0 / 60)
+        XCTAssertEqual(f.host.takeCommands(), [
+            .setMaterialProperty(slot: 0, effect: 0, material: nil, name: "speed", value: [1, 2]),
+        ])
+        f.evaluate("fx.getMaterial(0).multiply = 0.2;")
+        f.runtime.frame(deltaTime: 1.0 / 60)
+        XCTAssertEqual(f.host.takeCommands(), [
+            .setMaterialProperty(slot: 0, effect: 0, material: 0, name: "multiply", value: [0.2]),
+        ])
     }
 
     func testSceneLevelScriptsGetTheScene() throws {

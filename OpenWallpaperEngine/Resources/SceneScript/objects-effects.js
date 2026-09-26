@@ -38,6 +38,15 @@
         }
     }
 
+    // Whether writing `values` would leave the pool entry as it is (the pool is Float32).
+    function holds(t, entry, values) {
+        for (let k = 0; k < entry.count; k++) {
+            const v = values.length === 1 ? values[0] : values[k];
+            if (typeof v === 'number' && Math.fround(v) !== t[entry.offset + k]) return false;
+        }
+        return true;
+    }
+
     // IMaterial: one pass of an effect. Its shader constants are members by their scene.json key
     // (`thisObject.multiply`, `thisObject['Bar Color']`), read from the pool and written through
     // `setMaterialProperty`.
@@ -54,6 +63,10 @@
                 constants.set(c.name, { offset: c.offset, count: c.count });
             }
             Object.defineProperty(this, '_constants', { value: constants });
+            // Constants a write already reached the renderer for: rewriting one with the value it
+            // holds changes nothing, so no command is sent (a bound constant's script returns
+            // every frame).
+            Object.defineProperty(this, '_sent', { value: new Set() });
             constants.forEach(function (entry, name) {
                 if (name in Material.prototype) return;
                 Object.defineProperty(this, name, {
@@ -83,10 +96,14 @@
     }
     objects.defineMethod(Material.prototype, '_write', function (key, values) {
         const entry = this._constants.get(key);
-        if (entry !== undefined) writeConstant(this._t, entry, values);
+        if (entry !== undefined) {
+            if (this._sent.has(key) && holds(this._t, entry, values)) return;
+            writeConstant(this._t, entry, values);
+        }
         const layer = this._effect._layer;
         if (this._dead || layer._dead) return;
         objects.push(OP.setMaterialProperty, layer._slot, [this._effect._index, this._index].concat(values), [key]);
+        if (entry !== undefined) this._sent.add(key);
     });
 
     // IEffect: one entry of a layer's `effects`.
@@ -117,12 +134,21 @@
             const values = valueComponents(value);
             if (values === undefined) return;
             const key = String(name);
+            let changes = false, found = false;
             for (let i = 0; i < this._materials.length; i++) {
-                const entry = this._materials[i]._constants.get(key);
-                if (entry !== undefined) writeConstant(this._materials[i]._t, entry, values);
+                const material = this._materials[i];
+                const entry = material._constants.get(key);
+                if (entry === undefined) continue;
+                found = true;
+                if (!material._sent.has(key) || !holds(material._t, entry, values)) changes = true;
+                writeConstant(material._t, entry, values);
             }
-            if (this._dead) return;
+            // Unchanged everywhere it was sent before: nothing to tell the renderer.
+            if ((found && !changes) || this._dead) return;
             objects.push(OP.setMaterialProperty, this._layer._slot, [this._index, -1].concat(values), [key]);
+            for (let i = 0; i < this._materials.length; i++) {
+                if (this._materials[i]._constants.has(key)) this._materials[i]._sent.add(key);
+            }
         }
 
         executeMaterialFunction(name) {
