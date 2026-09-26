@@ -1103,7 +1103,7 @@ S28 and S11 were closed with WP8 (see WP8 below).
 - `spatialization` (3D sound position, `attenuation`, `mindistance`) is read but not applied. No library sound sets it.
 - Ogg Vorbis relies on Core Audio's decoder. Verified on macOS 27; the deployment target (13) is not verified, and no library sound is Ogg.
 - The desktop hit test treats a window at or below the desktop-icon level as the wallpaper. Clicks on Finder's desktop icons count too; WE's own treatment of icons is not known.
-- WE applies `brightness` only when an unidentified flag (0x2000 at layer+0xc8+0x118) is set; ours always applies it.
+- ~~WE applies `brightness` only when an unidentified flag (0x2000 at layer+0xc8+0x118) is set; ours always applies it.~~ Fixed: the flag is the `ultra`/`displayhdr` post-processing setting (`0x14010e6ba`), and `SceneRenderSettings.appliesBrightness` follows it (docs/we-reference-report.md R4).
 - Unsigned test hosts (CI) run JavaScriptCore without its JIT, so CI timings are the interpreter's; `SceneScriptJITTests` skips its JIT halves there.
 - **S19 again, found by the full suite in a signed host.** With the JIT on, the watchdog could not stop a compiled `while (true) {}`. `SceneScriptRenderTests.testAHungScriptHaltsOnlyItsWallpaper` hung the suite: JavaScriptCore's VMTraps thread kept signalling while the loop never reached a trap. Polling traps (`JSC_usePollingTraps`, set in `main.swift` before the first VM) fix it: the loop stops at 0.31 s under a 0.3 s limit, and tight loops cost about 10 % more. It relies on JavaScriptCore reading that option from the environment, as it does on macOS 27; `SceneScriptJITTests.testTheWatchdogStopsAJITCompiledEmptyLoop` fails if that stops working.
 

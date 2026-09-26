@@ -96,6 +96,7 @@ Blocked on WE ground truth (captures on Windows): see docs/test-risks.md "needs 
 2. Perspective camera path (`orthogonalprojection: null`, fov/near/far), depth buffer, draw order with depth.
 3. Model shaders (`generic4`, `foliage4`, `fur4`, `flag`, …) through the translator, with the full vertex attribute set.
 4. Skinning (bones) and morph targets.
+5. 2D objects in a perspective scene: text, solid and image layers drawn through the scene camera, not the orthographic 2D path. WE's captures show it: 3455121165's clock and orbit rings are missing, and 3378346807's VHS clock lands as a white strip at x 0–63 (docs/we-reference-report.md).
 
 ### 7. Puppet warp (not implemented)
 

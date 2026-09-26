@@ -233,7 +233,7 @@ Legend: ✅ working · 🟡 partial · ❌ missing or broken
 WE model (docs plus RE):
 - Scene space is y-up with (0,0) at the bottom-left.
 - `horizontalalign`/`verticalalign` pick which edge of the text block sits at `origin`.
-- `anchor` is a screen anchor. Pixel size = `pointsize × 96/72`.
+- `anchor` is a screen anchor. The em is `pointsize × 300/72` scene units (WE's FreeType face at 300 dpi, `0x1401ad1c9`; the 96/72 first written here was wrong, docs/we-reference-report.md R1).
 - A tiny stub `size` such as "2 2" means auto-size.
 - The parent's full transform applies to its children.
 
@@ -582,7 +582,7 @@ Ordering principle: make the **generic WE pipeline** correct, so arbitrary Works
 3. **Text layout:**
    - `horizontalalign`/`verticalalign` choose the text-block edge placed at `origin`.
    - Handle `anchor` and `blockalign`.
-   - Pixel size = `pointsize·96/72`.
+   - The em is `pointsize·300/72` scene units (see D above).
    - A stub `size` means auto-size.
    - No shrink-to-fit. Wrap only with `limitwidth`/`maxwidth`.
 4. **Text color and rasterizing.** Use the authored `color`, `alpha`, `brightness` and `colorBlendMode`. Rasterize at output pixel scale (Retina).

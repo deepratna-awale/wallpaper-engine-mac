@@ -1,6 +1,6 @@
 # WE reference comparison
 
-Status: 2026-09-26, branch `deepratna/feature-work` at `aecac93`. Our frames against real Wallpaper Engine 2.8.0.42 (the captures on the `we-test-wp-images` branch, `tools/peer/README.md`).
+Status: 2026-09-26, branch `deepratna/feature-work`. First triaged at `aecac93`; R1–R4 fixed and re-run at `62e41d8` (the run at `/Volumes/980Pro/dd-agentREF/rb-final`). Our frames against real Wallpaper Engine 2.8.0.42 (the captures on the `we-test-wp-images` branch, `tools/peer/README.md`).
 
 ## How it runs
 
@@ -48,15 +48,15 @@ xcodebuild test -project OpenWallpaperEngine.xcodeproj -scheme OpenWallpaperEngi
 | 3352730400 Hinata | vol_low / medium / high | 0.4 / 0.5 / 0.2 | 0.998 / 0.996 / 0.999 | **Matches.** The wedge is 40.2 / 40.4 / 40.4 against WE's 40.1 / 40.3 / 40.3 |
 | 3352730400 Hinata | vol_disabled still1 / still2 | 2.3 / 5.0 | 0.938 / 0.870 | Matches outside the figure's breathing (N2). The wedge is 15.2, as WE's |
 | 2764281221 2B | still1 / still2 | 1.9 / 2.7 | 0.961 / 0.948 | Matches. The rotated flares line up (edge shift 0, 0). still2 catches WE's periodic glitch (N2) |
-| 3270035750 One piece girls | still1 / still2 | 8.1 / 5.4 | 0.802 / 0.870 | The tube-light bands match. The figures' bob phase differs (N2). The names are too small (R1) |
-| 3245833232 Tanjirou | still1 | 18.8 | 0.570 | The magenta energy is darker (R3). still2 is WE's grey capture artefact (N4) |
-| 2321732083 Cyberpunk Samurai | still1 / still2 | 19.1 / 19.2 | 0.903 / 0.896 | The puppet is area 7. The frame is ~11 % darker and the backlight dimmer (R4) |
+| 3270035750 One piece girls | still1 / still2 | 8.2 / 5.5 | 0.796 / 0.865 | The tube-light bands match. The figures' bob phase differs (N2). The names match WE's size and place (R1, fixed) |
+| 3245833232 Tanjirou | still1 | 17.6 | 0.569 | The fluid fire now flows (R3, fixed); the top strip is 229,114,234 against 210,110,222, the rest is the simulation's phase. The clock matches (R1). still2 is WE's grey capture artefact (N4) |
+| 2321732083 Cyberpunk Samurai | still1 / still2 | 7.3 / 7.3 | 0.935 / 0.931 | The puppet is area 7. Brightness and backlight match (R4, fixed) |
 | 2515150033 Knight | still1 / still2 | 46.4 / 52.1 | 0.378 / 0.386 | The puppet is area 7 (the sheet is drawn raw). The lit background matches |
 | 3455121165 Solar system | all | 7.9 | 0.336 | Area 6: black (the models, and the 2D text in a perspective scene, are missing) |
-| 3159348391 PaRappa | all | 125–141 | 0.000 | Area 6: black. The clear colour is also missing (R2) |
-| 3378346807 3D Snowflakes | all | 76 / 128 | 0.001 | Area 6. The background should be the clear colour (R2) |
-| 3734636606 More Physics | still1, still2 | 76.7 | 0.014 | Area 6: black |
-| 3657770939 WE_Phys α_01 | still1, still2 | 34.9 | 0.054 | Area 6: black |
+| 3159348391 PaRappa | all | 84–93 | 0.47–0.56 | Area 6: the clear colour (0.7 grey, 195 after bloom) where WE draws the sky model (R2 fixed) |
+| 3378346807 3D Snowflakes | all | 0.2 / 51.6 | 0.99 / 0.84 | The background is WE's clear colour, (65,80,83) exactly (R2, fixed). With shadows high, WE's lit flakes and light shaft are area 6 |
+| 3734636606 More Physics | still1, still2 | 134.5 | 0.615 | Area 6: the authored clear colour (magenta) where WE draws the models |
+| 3657770939 WE_Phys α_01 | still1, still2 | 163.7 | 0.157 | Area 6: the authored clear colour (0.7 grey) where WE draws the models |
 
 ### The specific checks
 
@@ -83,7 +83,12 @@ xcodebuild test -project OpenWallpaperEngine.xcodeproj -scheme OpenWallpaperEngi
 
 ### Real rendering bugs
 
-**R1. Text is drawn about three times too small.** Measured on 3352730400 (bright ink, over y 380–780, x 0–560):
+**R1 (fixed). Text was drawn about three times too small.**
+- Cause: WE sets its FreeType face with `FT_Set_Char_Size(face, 0, pointsize × 64, 300, 300)` (`0x1401ad1c9`, from the text object's `pointsize` at object+0x4e0) and lays glyphs out one atlas pixel per scene unit. The em is `pointsize × 300/72` scene units, not × 96/72. Fitting "Nami" and "Robin" (Deutschlands, 25 pt) against WE's capture gives an em of 104, which is 25 × 300/72.
+- At that size a script's string can outgrow the size the editor saved ("SATURDAY" in the block saved for "DAY"). WE's glyph quads aren't clipped, so the block now grows around its text.
+- A text object's effects run in buffers of its size, one pixel a scene unit (its `font` material has no texture, see "Solid layers" below). Ours ran them on the text rasterised at its on-screen density: 3245833232's date (scale 0.28 in a 4K scene) was 0.14 px a unit, and `blurprecise` smeared it.
+- Now the day name, date and time of 3352730400 and 3245833232, 3270035750's names and the VHS clocks of 2963872291 and 2764281221 match WE's in size and place (`SceneTextLayoutTests`). The clock texts stay masked (N1).
+- Before the fix, measured on 3352730400 (bright ink, over y 380–780, x 0–560):
 
 | Text | WE | Ours |
 |---|---|---|
@@ -97,22 +102,29 @@ xcodebuild test -project OpenWallpaperEngine.xcodeproj -scheme OpenWallpaperEngi
   - 3270035750's names (static text, no parent scale, `pointsize` 25): "Robin", "Nami" and "Boa" are about 2.7× smaller than WE's;
   - 3245833232's clock;
   - 2963872291's VHS clock.
-- `TextLayout.pixelSize(pointSize:)` is `pt × 96/72`. WE's ink is about 3–3.5× ours, so the conversion (or the raster scale applied to it) is the place to look.
 - The text inside each item's clock mask isn't scored. The names and the clock crops in the compare pictures show the bug.
 
-**R2. `general.clearcolor` is ignored.**
+**R2 (fixed). `general.clearcolor` was ignored.** WE clears the scene target to it every frame, as authored, alpha 1 (`0x14018031f…0x140180351`; black when unauthored, `0x140186f61`). The scene pass now does, through its user binding and a script's `thisScene.clearcolor`; 3378346807's background is (65,80,83) as WE's. Before:
 - `SceneDocument.clearcolor` is decoded, but the scene pass always clears to `SceneFrameDestination.clearColor` (black): `SceneMetalRenderer.swift:816–820`.
 - In 3378346807 WE's empty background is (65,80,83) in every cell. That is the scene's clear colour exactly: the user property `backgroundcolor`, 0.2549 0.3137 0.3255. Ours is (0,0,0).
 - 3159348391's clear colour is 0.7 grey. WE covers it with the sky model; we draw black.
 - This is independent of models, so it can be fixed before area 6.
 
-**R3. 3245833232: the magenta energy at the top is about 20 % darker and less saturated.**
+**R3 (fixed). 3245833232: the magenta energy at the top was about 20 % darker.**
+- Cause: `effects/fluidsimulation`. Isolating the background's effects (a library copy per variant through `OWE_LIBRARY`) showed that with none of them the top strip is the same (164,95,180), the raw texture's colour: the effects added nothing. The fluid simulation never built up, for two reasons:
+  - An effect's `swap` command swapped a per-frame copy of the layer's FBO table, so each frame started from the unswapped buffers. The simulation's velocity and dye ping-pong through swaps.
+  - FBOs came from the target pool with whatever they last held, never their `clear` colour. With the swaps kept, a NaN in the pressure buffer poisoned the velocity for good.
+- Now swaps persist, new FBOs are cleared before any pass reads them, and a chain with a swap is never reused as static (`EffectGraphSwapTests`). The fire flows along the top as in WE; the top strip is (229,114,234) against WE's (210,110,222), within the simulation's phase.
+- Before:
 - In x 480–1440, y 0–172, ours is (166,95,181) at 10 s and (167,96,182) at 12 s.
 - WE's is (208–213, 108–114, 220–225) in every non-artefact frame of its 5 s clip. It's stable, so this isn't animation phase.
 - The whole frame is 97.0 against 99.7.
 - The background layer runs waterripple, iris, waterwaves, foliagesway, shake, chromatic_aberration, nitro, fluidsimulation, pulse_ and waterflow. The scene has no bloom. `fluidsimulation` and `nitro`, which build up over time, are the first suspects.
 
-**R4. 2321732083: the frame is about 11 % darker, and the backlight far dimmer.**
+**R4 (fixed). 2321732083: the frame was about 11 % darker, and the backlight far dimmer.**
+- Cause: the background's `brightness` 0.89. WE multiplies a layer's draw colour by its brightness only under engine flag 0x2000 (`0x140207a2b…0x140207a72`), which the `ultra` and `displayhdr` post-processing settings set (`0x14010e6ba`, `0x14010e6da`). The captures were taken with post-processing enabled, so WE drew it at 1. Found by isolation: without the vhs effect, the particles or bloom nothing changed; brightness 1 matched.
+- Now `SceneRenderSettings.appliesBrightness` follows the setting (`RenderCheckTests.testBrightnessAppliesOnlyUnderUltraPostProcessing`). Backlight 244.5 against 246.0, top-left corner 41.3 against 41.1, street 59.1 against 59.0, whole frame 104.0 against 104.0.
+- Before:
 
 | Region | WE | Ours | Ours, post-processing disabled |
 |---|---|---|---|
@@ -125,10 +137,11 @@ xcodebuild test -project OpenWallpaperEngine.xcodeproj -scheme OpenWallpaperEngi
 - Our bloom (strength 1.97, threshold 0.85; `hdr: true` but LDR under "enabled") adds 14 to the backlight and nothing in the darks. So bloom may be weak, but it can't explain the darks.
 - Next suspects: the haze particle systems (`bg_copy1` and five `column_copy1`, `Light shafts 2`), and the `vhs` effect on the background.
 
-**R5 (minor, open). The vertical parallax drift.**
+**R5 (not ours). The vertical parallax drift.**
 - WE's image moves 2 px vertically between the cursor at the left edge and at the centre or right edge; ours doesn't move.
-- The cursor is on row 540 in all three captures (`shoot.ps1`).
-- It is small enough to be a rounding difference in WE's cursor mapping. Worth a look only if it recurs elsewhere.
+- The cursor is on row 540 in all three captures (`shoot.ps1`), so any y formula (including `1 − cursor.y`) gives the same y in all three; the centre and right frames match WE's y exactly. Only the left capture differs, whose cursor sits on the capture display's boundary (`$b.X`) after coming from the other display. That is the capture's cursor state, not a formula; nothing changed.
+
+**Solid layers' effects (fixed, from the effects agent).** A layer whose material has no texture (a solid layer's `flat`, a shape, a text object's `font`) gets effect buffers of its `size`, rounded (`0x140209206…0x14020923c`), without texture reduction. Ours ran a solid layer's effects on its 1×1 fill, so masks, gradients and blurs collapsed to one colour (21 library layers, e.g. 2963872291's player bars and 3352730400's album shadow). They now start from the fill at the layer's size (`RenderCheckTests.testSolidLayerEffectsRunAtTheLayersSize`).
 
 ### Not yet implemented
 

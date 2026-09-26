@@ -722,7 +722,7 @@ Originally planned:
 - **`brightness` and `size`.**
   - WE's image property table (`0x1401ee520`) registers both as scriptable. `brightness` is a float that multiplies the colour (`0x140257fc0`: `rgb × brightness`). It is now a table field (`thisLayer.brightness`, and a bound script's return is drawn).
   - `size` is read-only in the typings but writable natively (`0x1401a4200`) and read by the transforms every frame (`0x1401e8bb0`). A script bound to `size` now sets the drawn quad through `objects.writeBound`; member writes stay ignored.
-  - Best guess left: WE applies `brightness` only when a flag (0x2000 at layer+0xc8+0x118) is set. The flag isn't identified, and ours always applies it, as the renderer did before.
+  - WE applies `brightness` only under engine flag 0x2000 (layer+0xc8+0x118), which the `ultra` and `displayhdr` post-processing settings set (`0x14010e6ba`, `0x14010e6da`). Ours follows it (`SceneRenderSettings.appliesBrightness`).
 - **Scripts in particle files don't exist.** The only reader of `"script"` in `wallpaper64.exe` is the scriptable-property loader (`0x1401a5803` in `0x1401a4db0`). It is reached only from the property tables of scene objects, `instanceoverride` included. Particle files' numbers go through the plain JSON-to-float reader (`0x140086220`; rate `0x1401c1c87`, drag `0x1401cb35e`, fade times `0x1401cb8e0`). The dead `rateScript`/`ParticleValueScript` fields and `WEFlexibleDouble.script` are deleted.
 - **Optimisation.** See the cost table below.
 
