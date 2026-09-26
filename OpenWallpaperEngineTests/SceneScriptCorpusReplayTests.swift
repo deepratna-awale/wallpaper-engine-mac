@@ -5,7 +5,9 @@ import XCTest
 /// WP9 of docs/scenescript-plan.md: every script of every corpus wallpaper, at its real attachment
 /// site, on the SceneScript runtime for 600 frames of fake clock, audio, cursor, media and property
 /// changes (`SceneScriptReplayHarness`). The corpus part is skipped when the corpus is absent (CI);
-/// the synthetic fixtures in `Tests/Fixtures/SceneScript/replay` always run.
+/// the synthetic fixtures in `Tests/Fixtures/SceneScript/replay` always run. A corpus wallpaper
+/// that changed since the corpus was extracted (`SceneScriptCorpus.state`) is replayed without
+/// the site count check; one that left the library is skipped. The attachment lists both.
 ///
 /// A finding outside `expectedFailures` fails the test. Each expected entry is an `XCTExpectFailure`
 /// naming its reason, and fails once the finding is gone, so the list only shrinks.
@@ -17,11 +19,7 @@ final class SceneScriptCorpusReplayTests: XCTestCase {
         var reason: String
     }
 
-    private static let corpus = URL(fileURLWithPath: "/Volumes/980Pro/dd-scenescript/corpus", isDirectory: true)
-    private static let roots = [
-        "workshop": URL(fileURLWithPath: "/Volumes/980Pro/Crossover/bottles/Steam Bottle/drive_c/Program Files (x86)/Steam/steamapps/workshop/content/431960"),
-        "owe": URL(fileURLWithPath: "/Volumes/980Pro/OpenWallpaperStorage"),
-    ]
+    private static let roots = SceneScriptCorpus.roots
 
     /// Findings of the corpus replay that are known. Findings RF*n* are written up in
     /// docs/scenescript-replay-findings.md.
@@ -51,42 +49,47 @@ final class SceneScriptCorpusReplayTests: XCTestCase {
     // MARK: - Corpus
 
     func testEveryCorpusWallpaperReplays() throws {
-        let index = Self.corpus.appending(path: "index.json")
+        let index = SceneScriptCorpus.directory.appending(path: "index.json")
         try XCTSkipUnless(FileManager.default.fileExists(atPath: index.path), "SceneScript corpus not present")
-        let entries = try JSONSerialization.jsonObject(with: Data(contentsOf: index)) as? [[String: Any]] ?? []
-        var expectedSites: [String: Int] = [:]
-        for entry in entries where entry["hash"] is String {
-            guard let library = entry["library"] as? String, let wallpaper = entry["wallpaper"] as? String else { continue }
-            expectedSites["\(library)/\(wallpaper)", default: 0] += 1
-        }
-        XCTAssertGreaterThanOrEqual(expectedSites.count, 43)
+        let corpus = try SceneScriptCorpus.wallpapers()
+        XCTAssertGreaterThanOrEqual(corpus.count, 43)
 
         let prelude = SceneScriptPrelude.load()
         XCTAssertNotNil(prelude.baseClasses)
         var rows: [String] = []
         var allFindings: [SceneScriptReplayChecks.Finding] = []
         var sites = 0
-        for (label, count) in expectedSites.sorted(by: { $0.key < $1.key }) {
-            let parts = label.split(separator: "/").map(String.init)
-            guard let root = Self.roots[parts[0]] else { continue }
-            let directory = root.appending(path: parts[1], directoryHint: .isDirectory)
+        var changed: [String] = [], removed: [String] = []
+        for entry in corpus {
+            let label = entry.label
+            guard let directory = entry.directory else { continue }
+            let state = SceneScriptCorpus.state(of: entry)
+            if state == .removed {
+                removed.append(label)
+                continue
+            }
             let wallpaper: SceneScriptReplayWallpaper
             do {
-                wallpaper = try SceneScriptReplayWallpaper(directory: directory, id: parts[1])
+                wallpaper = try SceneScriptReplayWallpaper(directory: directory, id: entry.id)
             } catch {
                 XCTFail("\(label): \(error)")
                 continue
             }
-            XCTAssertEqual(wallpaper.sites.count, count, "\(label): sites found vs corpus index")
+            if state == .current {
+                XCTAssertEqual(wallpaper.sites.count, entry.entries.count, "\(label): sites found vs corpus index")
+            } else {
+                changed.append(label)
+            }
             sites += wallpaper.sites.count
             let options = SceneScriptReplayHarness.Options()
             let result = try SceneScriptReplayHarness(wallpaper: wallpaper, options: options).run(prelude: prelude)
             let findings = SceneScriptReplayChecks.findings(result, options: options)
             allFindings += findings
             rows.append(Self.row(label, result, findings))
-            Self.assert(findings, expected: Self.expectedFailures, scope: Set(wallpaper.sites.map(\.hash) + [parts[1]]),
+            Self.assert(findings, expected: Self.expectedFailures, scope: Set(wallpaper.sites.map(\.hash) + [entry.id]),
                         label: label)
         }
+        LibraryReport.attach("SceneScript corpus: library changes since index.json", SceneScriptCorpus.notes(changed: changed, removed: removed))
         let report = Self.report(rows: rows, findings: allFindings, sites: sites)
         XCTContext.runActivity(named: "SceneScript corpus replay") { activity in
             activity.add(XCTAttachment(string: report))

@@ -173,38 +173,44 @@ final class SceneScriptSiteBuilderTests: XCTestCase {
     }
 
     /// Every corpus wallpaper (skipped without the corpus): the builder finds the corpus index's
-    /// sites, with the same sources and field paths, and every script id is unique.
+    /// sites, with the same sources and field paths, and every script id is unique. A wallpaper
+    /// that changed since the corpus was extracted is checked for unique ids only; one that left
+    /// the library is skipped (`SceneScriptCorpus.state`, listed in the attachment).
     func testFindsEveryCorpusSite() throws {
-        let corpus = URL(fileURLWithPath: "/Volumes/980Pro/dd-scenescript/corpus/index.json")
-        try XCTSkipUnless(FileManager.default.fileExists(atPath: corpus.path), "SceneScript corpus not present")
-        let roots = [
-            "workshop": URL(fileURLWithPath: "/Volumes/980Pro/Crossover/bottles/Steam Bottle/drive_c/Program Files (x86)/Steam/steamapps/workshop/content/431960"),
-            "owe": URL(fileURLWithPath: "/Volumes/980Pro/OpenWallpaperStorage"),
-        ]
-        let entries = try JSONSerialization.jsonObject(with: Data(contentsOf: corpus)) as? [[String: Any]] ?? []
-        var expected: [String: [String]] = [:]
-        for entry in entries {
-            guard let hash = entry["hash"] as? String, let library = entry["library"] as? String,
-                  let wallpaper = entry["wallpaper"] as? String, var field = entry["field"] as? String else { continue }
-            if let range = field.range(of: #"^objects\.\d+\."#, options: .regularExpression) { field.removeSubrange(range) }
-            expected["\(library)/\(wallpaper)", default: []].append("\(field) \(hash)")
-        }
-        XCTAssertGreaterThanOrEqual(expected.count, 43)
-        var total = 0
-        for (label, sites) in expected.sorted(by: { $0.key < $1.key }) {
-            let parts = label.split(separator: "/").map(String.init)
-            guard let root = roots[parts[0]] else { continue }
-            let wallpaper = try SceneScriptReplayWallpaper(directory: root.appending(path: parts[1]), id: parts[1])
+        let index = SceneScriptCorpus.directory.appending(path: "index.json")
+        try XCTSkipUnless(FileManager.default.fileExists(atPath: index.path), "SceneScript corpus not present")
+        let corpus = try SceneScriptCorpus.wallpapers()
+        XCTAssertGreaterThanOrEqual(corpus.count, 43)
+        var compared = 0
+        var changed: [String] = [], removed: [String] = []
+        for entry in corpus {
+            let label = entry.label
+            guard let directory = entry.directory else { continue }
+            let state = SceneScriptCorpus.state(of: entry)
+            if state == .removed {
+                removed.append(label)
+                continue
+            }
+            let wallpaper = try SceneScriptReplayWallpaper(directory: directory, id: entry.id)
             let data = try XCTUnwrap(wallpaper.file(wallpaper.documentName), label)
             let project = try SceneScriptSiteBuilder.document(from: Data(contentsOf: wallpaper.directory.appending(path: "project.json")))
-            let builder = SceneScriptSiteBuilder(wallpaperID: parts[1], userProperties: SceneScriptUserProperties(project: project))
+            let builder = SceneScriptSiteBuilder(wallpaperID: entry.id, userProperties: SceneScriptUserProperties(project: project))
             let found = builder.sites(in: try SceneScriptSiteBuilder.document(from: data))
-            XCTAssertEqual(found.map { "\($0.property.path) \(SceneScriptReplayWallpaper.hash($0.instance.source))" }.sorted(),
-                           sites.sorted(), label)
             XCTAssertEqual(Set(found.map(\.instance.id)).count, found.count, label)
-            total += found.count
+            guard state == .current else {
+                changed.append(label)
+                continue
+            }
+            // assets.json's fields keep the object's path; the builder's are relative to the object.
+            let expected = entry.entries.map { site in
+                "\(site.field.replacingOccurrences(of: #"^objects\.\d+\."#, with: "", options: .regularExpression)) \(site.hash)"
+            }
+            XCTAssertEqual(found.map { "\($0.property.path) \(SceneScriptReplayWallpaper.hash($0.instance.source))" }.sorted(),
+                           expected.sorted(), label)
+            compared += 1
         }
-        XCTAssertGreaterThanOrEqual(total, 508)
+        XCTAssertGreaterThan(compared, 0, "no corpus wallpaper is as the corpus extracted it")
+        LibraryReport.attach("SceneScript corpus: library changes since index.json", SceneScriptCorpus.notes(changed: changed, removed: removed))
     }
 
     func testAssetPacksUseTheSameWalk() throws {
