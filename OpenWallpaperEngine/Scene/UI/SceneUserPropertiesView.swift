@@ -251,7 +251,7 @@ private final class SceneUserPropertiesModel: ObservableObject {
         return scene.objects.enumerated().compactMap { index, object in
             guard object.textValue != nil else { return nil }
             return SceneTextControl(id: String(object.id ?? index), title: object.name?.isEmpty == false ? object.name! : "Text \(index + 1)",
-                                    font: object.font ?? "", size: object.pointsize ?? 24)
+                                    font: object.font ?? "", size: object.pointsize ?? WETextDefaults.pointSize)
         }
     }
 }

@@ -920,17 +920,18 @@ class SceneWallpaperViewModel: ObservableObject {
         let sizeValue = object.size?.parseVector2() ?? (0, 0)
         let textScale = object.scale?.parseVector3() ?? (1, 1, 1)
         let color = object.color?.parseVector3() ?? (1, 1, 1)
-        // Padding is authored as "32" or "32 32"; a scalar applies to both axes.
-        let paddingParts = (object.padding ?? "0").split(separator: " ").compactMap { Float($0) }
-        let padding = SIMD2<Float>(paddingParts.first ?? 0,
-                                   paddingParts.count > 1 ? paddingParts[1] : (paddingParts.first ?? 0))
+        // Padding is authored as "32" or "32 32"; a scalar applies to both axes. Absent, WE's 32.
+        let paddingParts = (object.padding ?? "").split(separator: " ").compactMap { Float($0) }
+        let firstPadding = paddingParts.first ?? WETextDefaults.padding
+        let padding = SIMD2<Float>(firstPadding, paddingParts.count > 1 ? paddingParts[1] : firstPadding)
         let textConfig = SceneMetalText(value: text, font: registerFont(object.font),
-                                         pointSize: CGFloat(object.pointsize ?? 24),
+                                         pointSize: CGFloat(object.pointsize ?? WETextDefaults.pointSize),
                                          horizontalAlignment: object.horizontalalign,
                                          verticalAlignment: object.verticalalign,
                                          padding: padding,
-                                         maxWidth: object.limitwidth == true ? object.maxwidth.map(Float.init) : nil,
-                                         maxRows: object.limitrows == true ? object.maxrows : nil,
+                                         maxWidth: object.limitwidth == true
+                                            ? Float(object.maxwidth ?? WETextDefaults.maxWidth) : nil,
+                                         maxRows: object.limitrows == true ? object.maxrows ?? WETextDefaults.maxRows : nil,
                                          useEllipsis: object.limituseellipsis ?? false,
                                          anchor: object.anchor, blockAlign: object.blockalign ?? false)
         var layer = SceneMetalLayer(id: String(object.id ?? -1), name: object.name ?? String(object.id ?? -1),

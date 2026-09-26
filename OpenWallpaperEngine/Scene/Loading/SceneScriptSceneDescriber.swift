@@ -113,6 +113,13 @@ struct SceneScriptSceneDescriber {
         var parentID: Int?
         if case .number(let parent)? = json["parent"], parent.isFinite, abs(parent) < 1e15 { parentID = Int(parent) }
         var description = SceneScriptObjectDescription(kind: kind, id: id, name: name, parentID: parentID)
+        if kind == .text {
+            // WE's text constructor's values for what the object leaves out (`WETextDefaults`).
+            description.values[.pointsize] = [Float(WETextDefaults.pointSize)]
+            description.values[.padding] = [WETextDefaults.padding]
+            description.values[.maxwidth] = [Float(WETextDefaults.maxWidth)]
+            description.values[.maxrows] = [Float(WETextDefaults.maxRows)]
+        }
         for field in SceneScriptObjectField.allCases where field.group == .layer && !field.isReadOnly {
             // scene.json writes `angles` in radians, the table's unit (scripts see degrees).
             if let components = components(json[field.rawValue], count: field.components) { description.values[field] = components }
