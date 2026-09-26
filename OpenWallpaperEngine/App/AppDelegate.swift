@@ -91,6 +91,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     /// What every scene's SceneScripts share: WE's prelude, `localStorage`, the one media session and
     /// the desktop's left clicks.
     lazy var sceneScriptServices: SceneScriptServices = {
+        if !SceneScriptJIT.isEnabled {
+            OWELog.info(.script, "JavaScriptCore runs without its JIT (no \(SceneScriptJIT.entitlement)): scripts run several times slower")
+        }
         let clicks = DesktopClickMonitor()
         clicks.start()
         return SceneScriptServices(
