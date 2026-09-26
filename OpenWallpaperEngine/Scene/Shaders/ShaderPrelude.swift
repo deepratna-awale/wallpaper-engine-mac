@@ -21,6 +21,8 @@ enum ShaderPrelude {
         let loadsTexels: Bool
         /// The shader discards with HLSL's `clip`.
         let clips: Bool
+        /// The shader samples a volume texture (`texSample3D`, `ccsimple`'s LUT).
+        let samplesVolumes: Bool
         /// GLSL reserved words the shader uses as names (`GLSLReservedWords`), sorted.
         let glslReservedNames: [String]
         /// Every identifier the source names (comments and `// [COMBO]` declarations included).
@@ -34,6 +36,7 @@ enum ShaderPrelude {
             self.identifiers = identifiers
             loadsTexels = Self.loadNames.contains { identifiers.contains(Substring($0)) }
             clips = identifiers.contains("clip")
+            samplesVolumes = identifiers.contains("texSample3D")
             reservedLocals = cppReservedWords.subtracting(macros).sorted().filter { name in
                 identifiers.contains(Substring(name)) && declaresLocal(name, in: source)
             }
@@ -93,6 +96,7 @@ enum ShaderPrelude {
         }
         if analysis.loadsTexels { lines.append(loadFunctions) }
         if analysis.clips && stage == .fragment && !defined.contains("clip") { lines.append(clipFunctions) }
+        if analysis.samplesVolumes && !defined.contains("texSample3D") { lines.append(volumeFunctions) }
         lines.append(conversionFunctions)
         // After every helper, so their own `mix` calls stay the built-in.
         if !defined.contains("mix") { lines.append("#define mix(a, b, t) weMix(a, b, t)") }
@@ -273,6 +277,13 @@ enum ShaderPrelude {
     vec4 weLoad2D(sampler2D s, vec2 uv, vec2 res) { return texelFetch(s, clamp(ivec2(uv * res), ivec2(0), textureSize(s, 0) - 1), 0); }
     vec4 texLoad2D(sampler2D s, vec2 uv, vec2 res) { return weLoad2D(s, uv, res); }
     vec4 texSample2DBackBuffer(sampler2D s, vec2 uv, vec2 res) { return weLoad2D(s, uv, res); }
+    """
+
+    /// WE's volume sampling (`ccsimple` reads its colour LUT so). Only shaders that name
+    /// `texSample3D` get it, so no other shader's translation changes.
+    private static let volumeFunctions = """
+    vec4 texSample3D(sampler3D s, vec3 uvw) { return texture(s, uvw); }
+    vec4 texSample3DLod(sampler3D s, vec3 uvw, float lod) { return textureLod(s, uvw, lod); }
     """
 
     /// HLSL's `clip`: discards the fragment when any component is below zero.
