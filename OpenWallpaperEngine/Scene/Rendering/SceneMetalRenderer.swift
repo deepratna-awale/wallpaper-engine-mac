@@ -88,6 +88,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     let timelines = SceneRendererAnimations()
     /// The instance's `SceneAnimationSet`; nil without a scene document.
     var animations: SceneAnimationSet? { timelines.set }
+    /// Records what each frame draws while set (tests and diagnostics, `SceneDrawProbe`).
+    var drawProbe: SceneDrawProbe?
     private let contentQueue = DispatchQueue(label: "SceneMetalRenderer.content", qos: .userInitiated)
     private let contentGenerationLock = NSLock()
     private var contentGeneration = 0
@@ -599,6 +601,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         applyScriptEvents(scripts.beginFrame())
         // WE writes every timeline before the scripts run; a script's calls act on the next advance.
         let animationEvents = timelines.advance(by: Float(clock.delta))
+        drawProbe?.beginFrame()
         let cursorSample = cursorTracker.update(sceneCursor(in: view, drawableSize: realDrawableSize),
                                                 sceneSize: sceneSize)
         let cursor = cursorSample.position
@@ -1108,6 +1111,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             opacity *= WallpaperServices.shared.userPropertyValue("_owe_text_\(entry.layer.id)_opacity", fallback: 1)
         }
         var local = evaluatedLocal(entry)
+        let own = local
         let parallaxOffset = parallaxOffset(entry, local: local, motion: motion)
         let musicSyncLevel = entry.layer.musicSync?.levelSource.map { $0() } ?? motion.audioLevel
         local.scale *= 1 + (entry.layer.musicSync?.zoomAmount ?? 0) * Float(musicSyncLevel)
@@ -1121,6 +1125,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         let rgb = script?.vector3(.color) ?? animation?.color
         let color = rgb.map { SIMD4<Float>($0.x, $0.y, $0.z, base.color.w) } ?? base.color
         let brightness = script?.scalar(.brightness) ?? animation?.brightness ?? base.brightness
+        drawProbe?.record(layer: entry.layer.id, .init(opacity: opacity, color: color, brightness: brightness, local: own))
         return LayerDraw(opacity: opacity, color: color, brightness: brightness,
                          quad: SceneQuadGeometry(center: center, axisX: quad.axisX, axisY: quad.axisY),
                          musicSyncLevel: musicSyncLevel)
@@ -1270,6 +1275,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
             layerAlpha: draw.opacity)
         context.assetContentSize = { _, source in source.contentSize }
         context.assetSprite = { [unowned self] key, source in self.effectAssetSprite(key: key, source: source) }
+        if let probe = drawProbe { context.recordAnimated = { probe.record(constant: $0, value: $1) } }
         // Hidden effects (authored, user-bound or a script's `visible`) are built but skipped;
         // constants scripts set go over the material's.
         let scripted = scripts.effects(entry.layer.weEffects, of: entry.layer.id)
@@ -1590,6 +1596,7 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
         }
         guard entry.frames.count > 1, let id = Int(entry.layer.id) else { return entry.frames[0] }
         let frame = timelines.spriteFrame(object: id, delta: Float(clock.delta))
+        drawProbe?.record(spriteFrame: frame, object: id)
         // `setFrame(n)` isn't range-checked; a frame outside the sheet draws the first.
         return frame >= 0 && Int(frame) < entry.frames.count ? entry.frames[Int(frame)] : entry.frames[0]
     }

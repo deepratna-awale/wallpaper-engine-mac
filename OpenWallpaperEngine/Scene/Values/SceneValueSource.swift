@@ -111,6 +111,15 @@ indirect enum SceneValueSource: Equatable {
         }
     }
 
+    /// The timeline site this source reads, under a script; nil when there is none or it's unbound.
+    var animationSite: SceneAnimationSite? {
+        switch self {
+        case .literal, .user: return nil
+        case .script(_, _, let fallback): return fallback.animationSite
+        case .animation(let site, _): return site
+        }
+    }
+
     /// This source with its static and user-bound part replaced by `base`, keeping a script and a
     /// timeline over it; `base` itself when there is neither.
     func replacingBase(with base: SceneValueSource) -> SceneValueSource {

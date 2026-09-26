@@ -191,6 +191,9 @@ final class EffectGraphRenderer {
         /// Image size inside a padded asset texture (the `.tex` width/height), when known; used
         /// for `g_TextureNResolution.zw`. nil means the whole texture is content.
         var assetContentSize: ((String, SceneMetalTextureSource) -> SIMD2<Float>?)? = nil
+        /// Called with each animated constant's site and the value its uniform got this frame
+        /// (`SceneDrawProbe`); nil records nothing.
+        var recordAnimated: ((SceneAnimationSite, [Float]) -> Void)? = nil
         /// An animated asset texture's sprite frame this frame (`g_TextureNRotation/Translation`),
         /// whose texture `assetTexture` gives; nil for a still one.
         var assetSprite: ((String, SceneMetalTextureSource) -> BuiltinSpriteFrame?)? = nil
@@ -471,6 +474,7 @@ final class EffectGraphRenderer {
             passContext.alpha = context.layerAlpha
             program.update(frame: context.frame, pass: passContext, values: context.values)
             program.write(scriptWrites.filter { $0.reaches(material: pass.materialIndex) })
+            if let record = context.recordAnimated { program.recordAnimated(record) }
             program.bytes.withUnsafeBytes { raw in
                 uniformArena.bind(raw, index: 0, to: encoder, commandBuffer: commandBuffer)
             }
@@ -680,6 +684,21 @@ final class UniformProgram {
         passBuiltins = builtins.filter { !varies($0) }
         needsTextureInfo = builtins.contains { $0.name.hasPrefix("g_Texture") }
         isReusable = frameBuiltins.isEmpty
+    }
+
+    /// Hands `record` each animated constant's site and the floats its uniform holds (script writes
+    /// included): what the GPU gets. Integer and matrix members aren't read back.
+    func recordAnimated(_ record: (SceneAnimationSite, [Float]) -> Void) {
+        for (member, constant) in dynamic {
+            guard let site = constant.source.animationSite, member.type.hasPrefix("float") || member.type.hasPrefix("vec")
+            else { continue }
+            let count = min(constant.count, 4)
+            guard member.offset + count * 4 <= bytes.count else { continue }
+            let values = (0..<count).map { component in
+                bytes.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: member.offset + component * 4, as: Float.self) }
+            }
+            record(site, values)
+        }
     }
 
     /// Appends the live-bound constants' values this frame, as `update` writes them.

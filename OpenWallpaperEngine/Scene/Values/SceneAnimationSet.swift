@@ -273,6 +273,9 @@ final class SceneAnimationSet {
         return true
     }
 
+    /// The delta of the last `advance(by:)`.
+    var lastDelta: Float { recentDeltas[Int(frameCounter % UInt64(Self.replayedFrames))] }
+
     /// The deltas of the advances after frame `frame`, oldest first: at most `replayedFrames`
     /// (a script frame later than that loses the older ones, logged).
     func deltas(since frame: UInt64) -> [Float] {
