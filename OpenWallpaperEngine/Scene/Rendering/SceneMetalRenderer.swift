@@ -88,6 +88,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// matched to a display smaller than it, `GSSceneDetail.matchDisplay`): the size effects on
     /// scene regions and text, and the bloom, stand for.
     private var fullDetailScale: Float = 1
+    /// Bumped for every prelit image an effect chain starts from (`runEffects`).
+    private var prelitVersion: UInt64 = 0
     /// Draws particle systems through their WE material.
     private lazy var particleMaterials = ParticleMaterialRenderer(device: device)
     /// Draws image layers through their own WE material.
@@ -143,6 +145,8 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
     /// Layers drawn through their material, and prelighting passes run (tests, diagnostics).
     var imageMaterialDraws: Int { imageMaterials?.drawsEncoded ?? 0 }
     var imageMaterialPrelitDraws: Int { imageMaterials?.prelitDraws ?? 0 }
+    /// Effect passes encoded so far, for tests.
+    var effectPassesEncoded: Int { effectGraph?.passesEncoded ?? 0 }
     /// The last frame's scene target, before the post-process (tests, diagnostics).
     var lastSceneTarget: MTLTexture? { sceneRenderTarget }
     /// A drawn layer's effect plans (tests, diagnostics).
@@ -1450,8 +1454,14 @@ final class SceneMetalRenderer: NSObject, MTKViewDelegate {
                 context.inputStandInSize = SIMD2(Int(standIn.x), Int(standIn.y))
             }
         }
-        return effectGraph.apply(entry.layer.weEffects, to: prelit(entry, draw: draw, input: input, snapshot: snapshot,
-                                                                   frame: frame, commandBuffer: commandBuffer) ?? input,
+        let lit = prelit(entry, draw: draw, input: input, snapshot: snapshot, frame: frame, commandBuffer: commandBuffer)
+        if lit != nil {
+            // The prelit image is redrawn into the same texture every frame (its lights, the
+            // reflection it samples): a new version, so no kept chain output outlives it.
+            prelitVersion &+= 1
+            context.inputVersion = prelitVersion
+        }
+        return effectGraph.apply(entry.layer.weEffects, to: lit ?? input,
                                  layerID: entry.layer.id, context: context, commandBuffer: commandBuffer)
     }
 
