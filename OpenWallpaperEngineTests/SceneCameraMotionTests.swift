@@ -84,6 +84,28 @@ final class SceneCameraMotionTests: XCTestCase {
         assertEqual(parallax.offset(rootOrigin: SIMD2(1440, 270), rootDepth: SIMD2(1, 1), amount: 0.5), .zero)
     }
 
+    /// WE 2.8.0.42 measured on Windows at 1920×1080 (3802047741: orthographic 1920×1080, amount 0.5,
+    /// mouse influence 0.17, no parallaxDepth): the cursor from the left edge to the centre moves the
+    /// image by −82 px and to the right edge by −164 px, opposite to the cursor and linearly.
+    /// Position, eye and size are all scene units, so that is −amount · influence · width = −163.2.
+    func testParallaxSweepMatchesWEsMeasurement() {
+        func offset(cursorX: Float) -> SIMD2<Float> {
+            var parallax = SceneCameraParallax(sceneSize: size)
+            parallax.update(cursor: SIMD2(cursorX, 0.5), eye: .zero, sceneSize: size, influence: 0.17, delay: 0,
+                            deltaTime: 1 / 60)
+            return parallax.offset(rootOrigin: SIMD2(960, 540), rootDepth: SIMD2(1, 1), amount: 0.5)
+        }
+        let left = offset(cursorX: 0)
+        XCTAssertEqual(offset(cursorX: 0.5).x - left.x, -82, accuracy: 1)
+        XCTAssertEqual(offset(cursorX: 1).x - left.x, -164, accuracy: 1)
+        XCTAssertEqual(offset(cursorX: 1).y - left.y, 0)
+        // Linear: each quarter of the sweep moves the image by the same amount.
+        let quarters = (0...4).map { offset(cursorX: Float($0) / 4).x }
+        for index in 1..<4 {
+            XCTAssertEqual(quarters[index + 1] - quarters[index], quarters[1] - quarters[0], accuracy: 1e-3)
+        }
+    }
+
     // MARK: - Shake
 
     /// t = speed² · time; v = (cos t, sin 1.333t, 0) · amplitude · 0.1 · height · 0.1 in an
